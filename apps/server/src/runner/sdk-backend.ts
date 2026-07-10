@@ -282,7 +282,8 @@ export class SdkBackend implements RunnerBackend {
         sessionId: this.sdkSessionId,
       });
       if (decision.behavior === 'allow') {
-        return decision.updatedInput ? { behavior: 'allow', updatedInput: decision.updatedInput } : { behavior: 'allow' };
+        // CLI-side zod validation rejects an allow without updatedInput — always echo input back.
+        return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
       }
       return { behavior: 'deny', message: decision.message ?? 'denied' };
     };

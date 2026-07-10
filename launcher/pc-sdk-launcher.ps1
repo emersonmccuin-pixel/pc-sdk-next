@@ -11,6 +11,7 @@ $AppUrl     = "http://localhost:$Port"
 $ServerDist = Join-Path $RepoRoot "apps\server\dist\index.js"
 $LogDir     = Join-Path $env:LOCALAPPDATA "PC-SDK\logs"
 $LogFile    = Join-Path $LogDir "server.log"
+$ErrFile    = Join-Path $LogDir "server.err.log"
 
 function Show-FatalError([string]$Message) {
     Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
@@ -37,21 +38,22 @@ if (-not (Test-Health)) {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
     if (Test-Path $ServerDist) {
-        $exe  = "node"
-        $args = @($ServerDist)
+        $exe        = "node"
+        $serverArgs = @($ServerDist)
     } else {
         # Fall back to workspace start script if a build hasn't been produced yet.
-        $exe  = "pnpm"
-        $args = @("--filter", "@pc-sdk/server", "start")
+        # pnpm is a .cmd — CreateProcess (used when redirecting) can't exec it directly.
+        $exe        = $env:ComSpec
+        $serverArgs = @("/c", "pnpm", "--filter", "@pc-sdk/server", "start")
     }
 
     try {
         Start-Process -FilePath $exe `
-            -ArgumentList $args `
+            -ArgumentList $serverArgs `
             -WorkingDirectory $RepoRoot `
             -WindowStyle Hidden `
             -RedirectStandardOutput $LogFile `
-            -RedirectStandardError $LogFile `
+            -RedirectStandardError $ErrFile `
             | Out-Null
     } catch {
         Show-FatalError "PC-SDK server failed to start.`n`n$($_.Exception.Message)"
