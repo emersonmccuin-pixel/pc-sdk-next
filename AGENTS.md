@@ -36,11 +36,21 @@ Same product, no fluff: projects + orchestrator chat + agents with hardened cont
 ## Phases (gates + detail in `docs/master-plan.md`)
 
 0. **Spike ✅** (2026-07-10): `apps/spike` — SDK chat CLI on the Max plan, account switcher + usage meter. Subscription auth proven.
-1. **Port the foundation:** copy trimmed `db`, `domain`, `contracts`, `mcp`, `app-services`, `utils` from PC-PTY-Chat (no `supervisor` — boot recovery replaces it); prune workflow/work-item/PTY modules to typecheck-green.
-2. **Orchestrator chat in the browser:** server + boot recovery, SDK loop per project, conversation_events, WS streaming, chat UI, account switcher, MCP client core (AInativePM attached via config), one-click taskbar launcher v1.
+1. **Port the foundation ✅** (2026-07-10, gate met): six packages copied trimmed, typecheck + tests + dead-import gate green on CI.
+2. **Orchestrator chat in the browser ✅ built** (2026-07-10): server + boot recovery + kill-test, SDK loop, WS streaming, ported shell, account switcher, MCP client core, launcher v1. **Gate week OPEN** — daily-drive from the taskbar icon; see Current state below.
 3. **Specialists + dispatch:** SDK/codex-exec runner, dispatch→contract→verify→land, worktrees, run views, specialist builder v1.
 4. **MCP manager + pipeline + usage dashboard:** manager UI meeting the reliability bar, hardcoded Plan→Build→Review→Fix pipeline, per-account quota headroom.
 5. **Daily-driver hardening:** Windows service, boot-recovery soak, polish from real use.
+
+## Current state (2026-07-10 — read this first in a fresh session)
+
+- **Repo:** github.com/emersonmccuin-pixel/pc-sdk (private). CI = GitHub Actions running `pnpm ci:check` (typecheck + all tests + dead-import gate). Keep it green; it runs on every push.
+- **Run it:** taskbar/Start-Menu "PC-SDK" shortcut (launcher/pc-sdk-launcher.ps1) → hidden server on :5123 → Edge app window. Dev: `pnpm --filter @pc-sdk/server start` + `pnpm --filter @pc-sdk/web dev`. One real-turn check: `pnpm smoke`.
+- **AInativePM:** attached via user-scope env `PC_AINATIVE_PM_URL`/`PC_AINATIVE_PM_TOKEN` (already set on this machine); probed healthy at boot, 69 tools. Degrade-never-block.
+- **Docs:** `docs/master-plan.md` (product plan) · `docs/event-contract.md` (THE wire — typed in `@pc/contracts` src/events) · `docs/phase-2-plan.md` (server/web layout) · `docs/pm-anchoring.md` (scoped, unbuilt) · `docs/research/event-contract-research.json` (old-app + SDK research; don't re-research).
+- **Gate week (open):** daily-drive real chat for a week from the icon, incl. PM actions. Doubles as the quota experiment (watch the header usage meter; STOP at any account warning — premortem #3). Kill-test + guard tests are standing CI.
+- **Next work queue, in order:** (1) fixes surfaced by gate-week testing; (2) PM anchoring v1 (~1 agent-day, spec in docs/pm-anchoring.md); (3) Phase 3 after the gate holds. Phase-3-deferred cleanups are listed in docs/pm-anchoring.md v2/v3 + the stage-B port commit message (registry re-prune: 5 orphan tools, context-docs tools, ProjectDto.stages trim, ReviewProvenance pmRef).
+- **Known Phase-2 gaps (by design):** activity/agents panels empty until Phase 3 endpoints; model hardcoded 'opus'; usage cache in-memory (no boot re-hydrate); no periodic MCP re-probe.
 
 ## Rules
 
