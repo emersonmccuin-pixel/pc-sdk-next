@@ -91,6 +91,9 @@ async function main(): Promise<void> {
       tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,
       ask: ctx.ask,
+      // Ask UI isn't built yet — never block a session on a permission prompt.
+      // Revisit when the ask flow lands; the plumbing (ctx.ask) stays wired.
+      bypassPermissions: true,
     };
     return ctx.resumeNativeSessionId
       ? adapter.resumeSession({ ...input, nativeSessionId: ctx.resumeNativeSessionId })
