@@ -1,22 +1,40 @@
-// Pod (agent-definition) HTTP client — READ-ONLY for Phase 2.
-//
-// LOOSE END: no `/api/projects/:id/pods` route exists yet — apps/server's
-// Phase 2 HTTP surface (docs/phase-2-plan.md) doesn't list pods; the DB layer
-// (@pc/db repos/pods.ts, @pc/domain pod.ts) is already ported, but the full
-// create/edit surface (secrets, MCP attachments, context docs, membership —
-// ~1600 lines in PC-PTY-Chat's CreatePodModal/PodDetailModal/ContextTab) is
-// Phase 3 "specialist builder v1" per AGENTS.md. This client + AgentsList are
-// read-only roster viewing only, ready to light up once the route lands.
+// Agent-pool HTTP client — full CRUD + project attachment over the
+// /api/agents/pods routes (apps/server/src/http/agents.ts).
 
-import { getJson } from '@/api/http';
+import { deleteJson, getJson, postJson, postJsonMethod } from '@/api/http';
 import type { PodAgentRow } from '@pc/domain';
-import type { ULID } from '@pc/contracts';
+import type { CreatePodRequest, UpdatePodRequest, ULID } from '@pc/contracts';
 
-export type Pod = PodAgentRow;
+/** Roster row: the agent + server annotations. `driftedFields` is null for
+ *  user agents, [] for pristine stock, field names when customized. */
+export type Pod = PodAgentRow & {
+  driftedFields: string[] | null;
+  memberProjectIds: ULID[];
+};
+
+const base = '/api/agents/pods';
 
 export const agentsApi = {
-  listPods: (projectId: ULID) =>
-    getJson<{ pods: Pod[] }>(`/api/projects/${projectId}/pods`).then((r) => r.pods),
+  /** With projectId: the project's visible set (stock ∪ members). Without:
+   *  the whole global pool (Project Settings uses this). */
+  listPods: (projectId?: ULID) =>
+    getJson<{ pods: Pod[] }>(projectId ? `${base}?projectId=${projectId}` : base).then((r) => r.pods),
+  getPod: (id: ULID) => getJson<{ pod: Pod }>(`${base}/${id}`).then((r) => r.pod),
+  createPod: (input: CreatePodRequest) =>
+    postJson<{ pod: Pod }>(base, input).then((r) => r.pod),
+  updatePod: (id: ULID, patch: UpdatePodRequest) =>
+    postJsonMethod<{ pod: Pod }>(`${base}/${id}`, patch, 'PATCH').then((r) => r.pod),
+  deletePod: (id: ULID) => deleteJson<{ ok: true }>(`${base}/${id}`).then(() => undefined),
+  resetToDefault: (id: ULID) =>
+    postJson<{ pod: Pod; resetFields: string[] }>(`${base}/${id}/reset-to-default`, {}),
+  attachToProject: (id: ULID, projectId: ULID) =>
+    postJsonMethod<{ memberProjectIds: ULID[] }>(`${base}/${id}/projects/${projectId}`, {}, 'PUT').then(
+      (r) => r.memberProjectIds,
+    ),
+  detachFromProject: (id: ULID, projectId: ULID) =>
+    deleteJson<{ memberProjectIds: ULID[] }>(`${base}/${id}/projects/${projectId}`).then(
+      (r) => r.memberProjectIds,
+    ),
 };
 
 export function resolveModelLabel(model: string | null): string {

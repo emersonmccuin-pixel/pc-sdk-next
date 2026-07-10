@@ -1,35 +1,35 @@
-// Agents tab roster — READ-ONLY (see features/agents/client.ts for why: no
-// pods HTTP route yet, and the full edit surface is Phase 3 specialist
-// builder). Two-pane: searchable list (stock + project), detail pane.
+// Agents tab roster — the global-pool edit surface. Two-pane: searchable list
+// (Built-in + This project), detail pane with three variants:
+//   - user-created: editable (prompt/scalars/tools) + delete
+//   - stock specialist: read-only, "Customized" pill + reset-to-default
+//   - orchestrator: editable prompt/model/effort/maxTurns (name + tools locked);
+//     edits apply on the chat's next message.
 // Refetches wholesale on any `specialist` resource frame for this project —
-// the payload is signal-only by design (contract), so a refetch is correct,
-// not a workaround.
+// the payload is signal-only by design (contract), so a refetch is correct.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
 import { agentsApi, resolveModelLabel, type Pod } from '@/features/agents/client';
+import { CreateAgentModal } from '@/components/agents/CreateAgentModal';
 import { formatToolLabel } from '@/lib/tool-labels';
 import { useResourceEvents } from '@/state/resource-store';
+import type { ULID } from '@pc/contracts';
+
+const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 export function AgentsList({ project }: { project: Project }) {
   const [pods, setPods] = useState<Pod[] | null>(null);
-  const [notAvailable, setNotAvailable] = useState(false);
   const [filter, setFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [builtinCollapsed, setBuiltinCollapsed] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(() => {
     agentsApi
-      .listPods(project.id)
-      .then((r) => {
-        setPods(r);
-        setNotAvailable(false);
-      })
-      .catch(() => {
-        setPods([]);
-        setNotAvailable(true);
-      });
+      .listPods(project.id as ULID)
+      .then(setPods)
+      .catch(() => setPods([]));
   }, [project.id]);
 
   useEffect(() => {
@@ -78,17 +78,13 @@ export function AgentsList({ project }: { project: Project }) {
     [selectedId, pods],
   );
 
+  /** Replace one pod in place (mutation responses beat the frame refetch). */
+  const applyPod = useCallback((next: Pod) => {
+    setPods((prev) => (prev ? prev.map((p) => (p.id === next.id ? next : p)) : prev));
+  }, []);
+
   if (pods === null) {
     return <div className="grid h-full place-items-center text-xs text-muted-foreground">Loading…</div>;
-  }
-
-  if (notAvailable && pods.length === 0) {
-    return (
-      <div className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground">
-        Agent roster isn't wired up on the server yet — the pods HTTP route lands with the
-        Phase 3 specialist builder.
-      </div>
-    );
   }
 
   return (
@@ -104,6 +100,12 @@ export function AgentsList({ project }: { project: Project }) {
             className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="shrink-0 bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          + New agent
+        </button>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr] overflow-hidden">
@@ -135,7 +137,15 @@ export function AgentsList({ project }: { project: Project }) {
 
         <main className="overflow-y-auto">
           {selectedPod ? (
-            <DetailPane pod={selectedPod} />
+            <DetailPane
+              key={`${selectedPod.id}:${selectedPod.updatedAt}`}
+              pod={selectedPod}
+              onMutated={applyPod}
+              onDeleted={() => {
+                setSelectedId(null);
+                load();
+              }}
+            />
           ) : (
             <div className="grid h-full place-items-center p-8 text-center text-xs text-muted-foreground">
               No agent selected.
@@ -143,6 +153,18 @@ export function AgentsList({ project }: { project: Project }) {
           )}
         </main>
       </div>
+
+      {createOpen && (
+        <CreateAgentModal
+          projectId={project.id as ULID}
+          onCancel={() => setCreateOpen(false)}
+          onCreated={(pod) => {
+            setCreateOpen(false);
+            setPods((prev) => (prev ? [...prev, pod] : [pod]));
+            setSelectedId(pod.id);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -228,49 +250,127 @@ function ListRow({ pod, selected, onSelect }: { pod: Pod; selected: boolean; onS
   );
 }
 
-function DetailPane({ pod }: { pod: Pod }) {
+function DetailPane({
+  pod,
+  onMutated,
+  onDeleted,
+}: {
+  pod: Pod;
+  onMutated: (next: Pod) => void;
+  onDeleted: () => void;
+}) {
   const isStock = pod.origin === 'stock';
+  const isOrchestrator = isStock && pod.name === 'orchestrator';
+  if (isStock && !isOrchestrator) return <StockDetail pod={pod} onMutated={onMutated} />;
+  return (
+    <EditableDetail
+      pod={pod}
+      lockName={isOrchestrator}
+      lockTools={isOrchestrator}
+      hint={
+        isOrchestrator
+          ? "This is the chat orchestrator's system prompt — changes apply on your next message."
+          : undefined
+      }
+      showReset={isOrchestrator && (pod.driftedFields?.length ?? 0) > 0}
+      onMutated={onMutated}
+      onDeleted={onDeleted}
+    />
+  );
+}
+
+function Badges({ pod }: { pod: Pod }) {
+  const isStock = pod.origin === 'stock';
+  return (
+    <>
+      <span
+        className={
+          'px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ' +
+          (isStock
+            ? 'border border-success/40 bg-success/10 text-success'
+            : 'border border-primary/40 bg-primary/10 text-primary')
+        }
+      >
+        {isStock ? 'built-in' : 'custom'}
+      </span>
+      {(pod.driftedFields?.length ?? 0) > 0 && (
+        <span className="border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-warning">
+          customized
+        </span>
+      )}
+    </>
+  );
+}
+
+function StatGrid({ pod }: { pod: Pod }) {
+  return (
+    <div className="mb-6 grid grid-cols-2 gap-px border border-border/40 bg-border/40 sm:grid-cols-3 lg:grid-cols-5">
+      <Stat label="Model" value={resolveModelLabel(pod.model)} />
+      <Stat label="Effort" value={pod.effort ?? '—'} />
+      <Stat label="Max turns" value={pod.maxTurns != null ? String(pod.maxTurns) : '∞'} />
+      <Stat label="Tools" value={pod.tools.length === 0 ? 'all' : String(pod.tools.length)} />
+      <Stat label="Edited" value={formatRelativeTime(pod.updatedAt)} />
+    </div>
+  );
+}
+
+function ToolChips({ tools }: { tools: string[] }) {
+  if (tools.length === 0) {
+    return <div className="text-[11px] text-muted-foreground">No allowlist — all tools permitted.</div>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {tools.map((t) => (
+        <span key={t} title={t} className="border border-border/60 bg-card px-2 py-0.5 text-[11px] text-foreground">
+          {formatToolLabel(t)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Stock specialist — read-only, reset-to-default when customized. */
+function StockDetail({ pod, onMutated }: { pod: Pod; onMutated: (next: Pod) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const drifted = (pod.driftedFields?.length ?? 0) > 0;
+
+  async function reset() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await agentsApi.resetToDefault(pod.id as ULID);
+      onMutated(r.pod);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col px-6 py-5">
       <header className="mb-4 flex items-center gap-2">
         <h2 className="truncate text-lg font-semibold text-foreground">{pod.name}</h2>
-        <span
-          className={
-            'px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider ' +
-            (isStock ? 'border border-success/40 bg-success/10 text-success' : 'border border-primary/40 bg-primary/10 text-primary')
-          }
-        >
-          {isStock ? 'stock' : 'project'}
-        </span>
-        <span className="bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          read-only
-        </span>
-      </header>
-
-      {pod.description && <p className="mb-5 max-w-3xl text-sm text-muted-foreground">{pod.description}</p>}
-
-      <div className="mb-6 grid grid-cols-2 gap-px border border-border/40 bg-border/40 sm:grid-cols-3 lg:grid-cols-5">
-        <Stat label="Model" value={resolveModelLabel(pod.model)} />
-        <Stat label="Effort" value={pod.effort ?? '—'} />
-        <Stat label="Max turns" value={pod.maxTurns != null ? String(pod.maxTurns) : '∞'} />
-        <Stat label="Tools" value={String(pod.tools.length)} />
-        <Stat label="Edited" value={formatRelativeTime(pod.updatedAt)} />
-      </div>
-
-      <DetailSection title="Tools">
-        {pod.tools.length === 0 ? (
-          <div className="text-[11px] text-muted-foreground">No tools allowed.</div>
-        ) : (
-          <div className="flex flex-wrap gap-1">
-            {pod.tools.map((t) => (
-              <span key={t} title={t} className="border border-border/60 bg-card px-2 py-0.5 text-[11px] text-foreground">
-                {formatToolLabel(t)}
-              </span>
-            ))}
-          </div>
+        <Badges pod={pod} />
+        {drifted && (
+          <button
+            onClick={reset}
+            disabled={busy}
+            className="ml-auto border border-border px-2 py-1 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            {busy ? 'Resetting…' : 'Reset to default'}
+          </button>
         )}
+      </header>
+      <p className="mb-2 text-[11px] text-muted-foreground">Built-in — managed by PC-SDK, available in every project.</p>
+      {err && <p className="mb-2 text-xs text-destructive">{err}</p>}
+      {pod.description && <p className="mb-5 max-w-3xl text-sm text-muted-foreground">{pod.description}</p>}
+      <StatGrid pod={pod} />
+      <DetailSection title="Tools">
+        <ToolChips tools={pod.tools} />
       </DetailSection>
-
       <DetailSection title="Prompt">
         {pod.prompt ? (
           <pre className="whitespace-pre-wrap text-xs text-foreground">{pod.prompt}</pre>
@@ -278,6 +378,244 @@ function DetailPane({ pod }: { pod: Pod }) {
           <div className="text-[11px] italic text-muted-foreground">(no prompt)</div>
         )}
       </DetailSection>
+    </div>
+  );
+}
+
+/** Editable detail — user agents (everything) and the orchestrator (name +
+ *  tools locked). Dirty-tracked Save/Discard like ProjectInfoForm. */
+function EditableDetail({
+  pod,
+  lockName,
+  lockTools,
+  hint,
+  showReset,
+  onMutated,
+  onDeleted,
+}: {
+  pod: Pod;
+  lockName: boolean;
+  lockTools: boolean;
+  hint?: string;
+  showReset: boolean;
+  onMutated: (next: Pod) => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState(pod.name);
+  const [description, setDescription] = useState(pod.description);
+  const [prompt, setPrompt] = useState(pod.prompt);
+  const [model, setModel] = useState(pod.model ?? '');
+  const [effort, setEffort] = useState(pod.effort ?? '');
+  const [maxTurns, setMaxTurns] = useState(pod.maxTurns != null ? String(pod.maxTurns) : '');
+  const [tools, setTools] = useState(pod.tools.join(', '));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const trimmedName = name.trim();
+  const parsedTools = tools.split(',').map((t) => t.trim()).filter(Boolean);
+  const turnsValid = maxTurns.trim() === '' || (Number.isInteger(Number(maxTurns)) && Number(maxTurns) > 0);
+  const nameValid = lockName || /^[a-z0-9][a-z0-9-]*$/.test(trimmedName);
+
+  const dirty =
+    (!lockName && trimmedName !== pod.name) ||
+    description !== pod.description ||
+    prompt !== pod.prompt ||
+    (model.trim() || null) !== (pod.model ?? null) ||
+    (effort || null) !== (pod.effort ?? null) ||
+    (maxTurns.trim() ? Number(maxTurns) : null) !== (pod.maxTurns ?? null) ||
+    (!lockTools && JSON.stringify(parsedTools) !== JSON.stringify(pod.tools));
+
+  async function save() {
+    if (busy || !dirty || !nameValid || !turnsValid) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const patch: Record<string, unknown> = {};
+      if (!lockName && trimmedName !== pod.name) patch.name = trimmedName;
+      if (description !== pod.description) patch.description = description;
+      if (prompt !== pod.prompt) patch.prompt = prompt;
+      if ((model.trim() || null) !== (pod.model ?? null)) patch.model = model.trim() || null;
+      if ((effort || null) !== (pod.effort ?? null)) patch.effort = effort || null;
+      if ((maxTurns.trim() ? Number(maxTurns) : null) !== (pod.maxTurns ?? null)) {
+        patch.maxTurns = maxTurns.trim() ? Number(maxTurns) : null;
+      }
+      if (!lockTools && JSON.stringify(parsedTools) !== JSON.stringify(pod.tools)) patch.tools = parsedTools;
+      const next = await agentsApi.updatePod(pod.id as ULID, patch);
+      onMutated(next);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await agentsApi.resetToDefault(pod.id as ULID);
+      onMutated(r.pod);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doDelete() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await agentsApi.deletePod(pod.id as ULID);
+      onDeleted();
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col px-6 py-5">
+      <header className="mb-4 flex items-center gap-2">
+        <h2 className="truncate text-lg font-semibold text-foreground">{pod.name}</h2>
+        <Badges pod={pod} />
+        {showReset && (
+          <button
+            onClick={reset}
+            disabled={busy}
+            className="ml-auto border border-border px-2 py-1 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            {busy ? 'Working…' : 'Reset to default'}
+          </button>
+        )}
+      </header>
+      {hint && <p className="mb-3 text-[11px] text-warning">{hint}</p>}
+      <StatGrid pod={pod} />
+
+      <div className="max-w-3xl space-y-3">
+        {!lockName && (
+          <Field label="Name" help="Lowercase kebab-case. Renames apply everywhere the agent is attached.">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full border border-border bg-background px-2 py-1 font-mono text-xs"
+            />
+            {trimmedName && !nameValid && (
+              <div className="mt-1 text-xs text-destructive">kebab-case only (a-z, 0-9, dashes)</div>
+            )}
+          </Field>
+        )}
+        <Field label="Description">
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="w-full border border-border bg-background px-2 py-1 text-sm"
+          />
+        </Field>
+        <Field label="Prompt">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={16}
+            className="w-full resize-y border border-border bg-background px-2 py-1 font-mono text-xs"
+          />
+        </Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="Model" help="haiku / sonnet / opus or a full id">
+            <input
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="default"
+              className="w-full border border-border bg-background px-2 py-1 text-sm"
+            />
+          </Field>
+          <Field label="Effort">
+            <select
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              className="w-full border border-border bg-background px-2 py-1 text-sm"
+            >
+              {EFFORTS.map((v) => (
+                <option key={v} value={v}>
+                  {v || 'default'}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Max turns">
+            <input
+              type="text"
+              value={maxTurns}
+              onChange={(e) => setMaxTurns(e.target.value)}
+              placeholder="∞"
+              className="w-full border border-border bg-background px-2 py-1 text-sm"
+            />
+            {!turnsValid && <div className="mt-1 text-xs text-destructive">positive integer or blank</div>}
+          </Field>
+        </div>
+        {lockTools ? (
+          <Field label="Tools" help="Locked — the chat runner owns the orchestrator's tool surface until dispatch lands.">
+            <ToolChips tools={pod.tools} />
+          </Field>
+        ) : (
+          <Field label="Tools" help="Comma-separated allowlist. Empty = allow all.">
+            <input
+              type="text"
+              value={tools}
+              onChange={(e) => setTools(e.target.value)}
+              className="w-full border border-border bg-background px-2 py-1 font-mono text-xs"
+            />
+          </Field>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={save}
+            disabled={busy || !dirty || !nameValid || !turnsValid}
+            className="bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          {!lockName && (
+            <>
+              {confirmDelete ? (
+                <span className="flex items-center gap-2">
+                  <span className="text-xs text-destructive">Delete this agent everywhere?</span>
+                  <button
+                    onClick={doDelete}
+                    disabled={busy}
+                    className="border border-destructive/60 px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={busy}
+                    className="border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                  >
+                    Keep
+                  </button>
+                </span>
+              ) : (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={busy}
+                  className="ml-auto border border-destructive/60 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                >
+                  Delete…
+                </button>
+              )}
+            </>
+          )}
+          {err && <span className="text-xs text-destructive">{err}</span>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -299,6 +637,16 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
       </div>
       {children}
     </section>
+  );
+}
+
+function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      {children}
+      {help && <div className="text-[11px] text-muted-foreground/80">{help}</div>}
+    </div>
   );
 }
 

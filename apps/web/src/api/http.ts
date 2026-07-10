@@ -84,6 +84,15 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
+export async function deleteJson<T>(path: string): Promise<T> {
+  const res = await fetchWithRetry(path, { method: 'DELETE' }, WRITE_RETRY);
+  const data = (await res.json()) as T & { ok?: boolean; error?: string };
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error ?? `${path} → ${res.status}`);
+  }
+  return data;
+}
+
 export async function postJsonMethod<T>(
   path: string,
   body: unknown,
