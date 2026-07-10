@@ -1,0 +1,8 @@
+{
+  "name": "pc-sdk",
+  "private": true,
+  "scripts": {
+    "spike": "pnpm --filter @pc-sdk/spike start",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
