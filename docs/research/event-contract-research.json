@@ -1,0 +1,687 @@
+{
+  "summary": "Parallel research for the PC-SDK event contract doc + port inventory",
+  "agentCount": 4,
+  "logs": [],
+  "result": {
+    "chatWire": {
+      "events": [
+        {
+          "name": "session-changed",
+          "direction": "server->client",
+          "shape": "{ projectId: string; type: 'session-changed'; transition?: 'new-session' | 'resume-session'; session: OrchestratorSession | null }  // session fields read: id, projectId, model, title, status ('active'|'ended'), startedAt",
+          "consumers": "chat-session-reducer (applySessionChanged: on 'new-session' wipes timeline/aggregates/seenTs and bumps sessionChangedNonce; on resume just adopts session.id); Orchestrator.tsx scans latest one to setSession() which drives header title, model fallback, sessionEnded (status==='ended' hides composer); sessions rail refetches off sessionChangedNonce",
+          "verdict": "keep",
+          "notes": "Sent on every WS connect (connect snapshot), on send-ensured session, and on new/resume/close. Also returned inline by HTTP POST /sessions/new and /sessions/:id/resume as SessionTransitionResponse { transition, session, replay, highWaterSeq } which the client feeds into the same reducer path."
+        },
+        {
+          "name": "session-replay",
+          "direction": "server->client",
+          "shape": "{ projectId: string; type: 'session-replay'; sessionId: string; highWaterSeq?: number; events: SessionReplayItem[] }  // each item: { id?: string ('<sessionId>:<seq>'), sessionId?, seq?, type: 'jsonl'|'event', kind?: string|null, event: unknown, source?: { kind, cursor } }",
+          "consumers": "chat-session-reducer applySnapshot: wholesale re-seed of the sequenced timeline sorted by seq, adopts highWaterSeq, recomputes token aggregates from the replay set (never carries forward, to avoid double-count). use-project-ws rebuilds the hook-event seenTs dedup set from replay items' event.ts",
+          "verdict": "keep",
+          "notes": "This IS the reconnect story for chat: the server pushes the FULL checkpoint (all conversation_events rows for the active session) on every socket (re)connect — the client does not send a per-session cursor over WS. An additive HTTP ?afterSeq replay endpoint exists (runtimeApi.getSessionEventsAfter) but nothing in the web app calls it. Items with no seq fall back to unsequenced append."
+        },
+        {
+          "name": "jsonl (the chat-content envelope)",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'jsonl'; id: '<sessionId>:<seq>'; sessionId: string; seq: number; kind: string; source: { kind: 'claude-jsonl', cursor: number|null }; clientMessageId?: string; event: JsonlEvent }",
+          "consumers": "chat-session-reducer applyDelta: keyed and deduped by `${sessionId}:${seq}`, inserted in seq order (out-of-order safe), highWaterSeq advanced; buildCanonicalChatEnvelopes filters events to type==='jsonl'|'ask' ONLY — this is the sole chat content source. usePendingPrompts consumes top-level clientMessageId to retire the optimistic placeholder by id",
+          "verdict": "redefine",
+          "notes": "Every row is simultaneously (a) persisted to conversation_events (one writer: OrchestratorHostSession.persistJsonlEvent allocates seq, id = sessionId:seq) and (b) broadcast live via the project hub — NOT via live_outbox. The rewrite replaces the JSONL-tailer source with SDK loop messages but must preserve: per-session monotonic seq, id = sessionId:seq, persist-then-broadcast, and clientMessageId stamping on the user-turn row."
+        },
+        {
+          "name": "jsonl kind: jsonl-user",
+          "direction": "server->client",
+          "shape": "{ kind: 'jsonl-user'; text: string }  (+ envelope-level clientMessageId when queue-correlated)",
+          "consumers": "normalizeJsonlEnvelope -> user bubble (text); deriveJsonlBusy (busy=true); usePendingPrompts text-match fallback; hideSystem filter parses `[pc:…]` system-turn markers out of text",
+          "verdict": "keep"
+        },
+        {
+          "name": "jsonl kind: jsonl-assistant-text / jsonl-turn-end / jsonl-thinking",
+          "direction": "server->client",
+          "shape": "jsonl-assistant-text: { text: string; midLoop: boolean } · jsonl-turn-end: { text: string; stopReason: string } · jsonl-thinking: { text: string }",
+          "consumers": "normalizeJsonlEnvelope -> assistant bubble (text, midLoop badge) / assistant bubble (text only; stopReason is NOT read by the UI) / collapsed Thinking block (text). deriveJsonlBusy flips busy=false on jsonl-turn-end (thinking indicator off)",
+          "verdict": "keep",
+          "notes": "Message start/end today: there is no explicit message-start event; assistant text arrives as COMPLETE blocks (midLoop preamble blocks + final turn-end block). jsonl-turn-end doubles as the turn-complete signal."
+        },
+        {
+          "name": "jsonl kind: jsonl-tool-call / jsonl-tool-result / jsonl-tool-progress",
+          "direction": "server->client",
+          "shape": "tool-call: { toolUseId: string; name: string; input: unknown } · tool-result: { toolUseId: string; result: unknown; isError: boolean } · tool-progress: { toolUseId; toolName; elapsedSeconds: number|null; taskId: string|null }",
+          "consumers": "normalize -> tool-start/tool-end/tool-progress; toolGrouping pairs start/end by toolUseId into collapsible tool-group cards, suppresses Agent/Task/Todo* tools, promotes Edit/Write/NotebookEdit to standalone diff cards; injectTodoSnapshots synthesizes todos panels from TodoWrite/TaskCreate/TaskUpdate inputs; deriveActivity builds the live 'Reading X…' label from name+input; tool-progress enriches the matching open call (live elapsed)",
+          "verdict": "keep",
+          "notes": "tool-result.isError is carried on the wire but the normalizer drops it (tool-end has no error flag) — the UI never reads it. Fix or drop in the new contract."
+        },
+        {
+          "name": "jsonl kind: jsonl-usage / jsonl-turn-duration / jsonl-session-state",
+          "direction": "server->client",
+          "shape": "usage: { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens: number; model: string|null; speed: string|null; cacheMissReason: string|null } · turn-duration: { durationMs: number|null } (budgetTokens/messageCount unread) · session-state: { state: string; permissionMode: string|null; timestamp: string|null }",
+          "consumers": "Reducer foldAggregate maintains O(1) running totals -> StatusBar + header telemetry (usage sums, latestModel, latestSessionState, lastTurnDurationMs); normalize turns usage into a turn-footer chip ONLY when speed!=='standard' or cacheMissReason set (fields: speed, cacheMissReason, model); session-state renders an inline divider + drives composer placeholder hint",
+          "verdict": "keep"
+        },
+        {
+          "name": "jsonl kind: jsonl-system / jsonl-compact / jsonl-microcompact",
+          "direction": "server->client",
+          "shape": "system: { subtype: string; level: string; message: string; timestamp: string|null; raw: unknown } · compact: { trigger, preTokens, messagesSummarized, timestamp } · microcompact: { trigger, preTokens, tokensSaved, timestamp }",
+          "consumers": "normalize -> muted system bubble (subtype tag, message, raw expandable) / centered compaction rule with tokens-freed annotation / inline divider. This is also the API-error surface: rate-limit / auth errors from the runtime land as jsonl-system rows",
+          "verdict": "keep"
+        },
+        {
+          "name": "jsonl kind: jsonl-sidechain",
+          "direction": "server->client",
+          "shape": "{ kind: 'jsonl-sidechain'; raw: unknown }  // client parses raw.message.content into { role: 'user'|'assistant'|'tool', text }",
+          "consumers": "normalize parseSidechainStep -> sidechain events; toolGrouping coalesces consecutive ones into a collapsed sub-agent block",
+          "verdict": "redefine",
+          "notes": "Client-side parsing of raw Claude transcript rows is a PTY/JSONL artifact. SDK subagent events should arrive pre-shaped as { role, text }."
+        },
+        {
+          "name": "jsonl kind: jsonl-stream-event",
+          "direction": "server->client",
+          "shape": "{ kind: 'jsonl-stream-event'; event: unknown; parentToolUseId; raw }",
+          "consumers": "ONLY deriveActivity ('Writing a response' label on the thinking indicator). normalizeJsonlEnvelope returns null — token deltas are NEVER rendered incrementally",
+          "verdict": "redefine",
+          "notes": "There is no real streaming in the old UI. The new SDK contract should define proper delta events (message-start / text-delta / message-end); the old UI has no delta reducer to preserve."
+        },
+        {
+          "name": "jsonl kinds: jsonl-ai-title / jsonl-post-turn-summary / jsonl-last-prompt / jsonl-file-history / jsonl-bridge-session / jsonl-queue-enqueue / jsonl-queue-dequeue",
+          "direction": "server->client",
+          "shape": "various; none rendered — normalizeJsonlEnvelope returns null for all of these",
+          "consumers": "ai-title and post-turn-summary are consumed SERVER-side in the pty-handlers jsonl hook (maybeApplyAiTitle -> session title write -> 'session.title.changed' live event; maybePersistPostTurnSummary -> table). The rest are dead weight on the wire for the web client",
+          "verdict": "drop",
+          "notes": "Don't rebroadcast internal kinds to browsers in the new contract; keep the title/summary effects as server-internal, surfacing only session.title.changed."
+        },
+        {
+          "name": "event (hook-event envelope)",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'event'; event: { kind: string; ts?: string; ... } }  // kinds: user, assistant, thinking, tool-start/end, todos, task-start/end, notification, session-end, subagent-stop, subagent-failure, stop-failure, system…",
+          "consumers": "Mostly VESTIGIAL: buildCanonicalChatEnvelopes filters input to type 'jsonl'|'ask' only, so live 'event' CONTENT never renders (the dual-source path was deleted, S8c). Survivors: deriveLiveState reads event.kind==='stop-failure' as a defensive turn-end; use-project-ws dedupes these by event.ts across reconnects; synthetic type:'event' envelopes are still the CLIENT-side render currency (normalizer output, todos snapshots, pending-prompt placeholders)",
+          "verdict": "drop",
+          "notes": "Drop the hook-event wire channel. Keep two semantics somewhere in the new contract: a turn-failed/stop-failure signal (API error ended the turn with no assistant content) and subagent-failure { workflowRunId is workflow-only, but agentName/cause/surfaceError/transcriptPath is chat-rendered — redefine for the new agent dispatch loop }."
+        },
+        {
+          "name": "ask",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'ask'; sessionId: string|null; toolName: string; toolUseId: string; toolInput: unknown }",
+          "consumers": "Passed through the reducer unsequenced; useChatRenderItems keeps it if sessionId matches; useChatTimelineRenderer renders an approval card reading toolName (special-cases 'ExitPlanMode' -> 'plan ready'), toolUseId (answer keying + answered-state), toolInput (display). Reply goes back over WS as ask-reply",
+          "verdict": "keep",
+          "notes": "Originates from an MCP/hook HTTP bridge (chat-bridges routes) that broadcasts and awaits a promise resolved by resolvePendingAsk. Same UX is needed for SDK canUseTool/permission prompts."
+        },
+        {
+          "name": "send (client->server)",
+          "direction": "client->server",
+          "shape": "{ type: 'send'; text: string; clientMessageId?: string }",
+          "consumers": "handleRuntimeHostWsMessage -> ConversationSendService.sendUserTurn: ensures a session exists (broadcasting session-changed + full session-replay if it minted one), delivers to the runtime directly or enqueues in the durable send queue when busy/spawning; replies send-ack to the sending socket and broadcasts send-queue-snapshot",
+          "verdict": "keep",
+          "notes": "Composer batches follow-ups while a turn is in flight (useSendBatch) — batching is client-side, each flush is one 'send'. Attachments: none on the wire; pasted images are uploaded first via HTTP POST /api/projects/:id/pasted-images (raw binary) which returns an absolute file path that is inserted into text (agent reads it with the Read tool)."
+        },
+        {
+          "name": "send-ack",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'send-ack'; clientMessageId: string; ok: boolean; status: 'received'|'queued'|'invalid-message'|'no-session'|'error'; error?: string; queueItem?: SendQueueItem }",
+          "consumers": "usePendingPrompts: matches by clientMessageId; ok -> status 'server-received' (+queued flag if status==='queued'); !ok -> pending bubble flips to failed with error ?? status. Reducer stores it unsequenced, replacing any prior ack with the same clientMessageId. queueItem is not read by the client",
+          "verdict": "keep",
+          "notes": "Sent only to the originating socket, not broadcast. 3s no-ack -> placeholder shows 'unconfirmed'; 15s no transcript echo -> 'waiting-transcript'."
+        },
+        {
+          "name": "send-queue-snapshot",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'send-queue-snapshot'; sessionId: string; items: Array<{ id; clientMessageId: string; text: string; status: 'queued_busy'|'queued_spawning'|'queued_backlog'|'delivering'|'delivered_to_pty'|'observed_in_jsonl'|'failed'|'cancelled'; createdAt; updatedAt; deliveryAttempts; failureReason: string|null }> }",
+          "consumers": "usePendingPrompts: status 'observed_in_jsonl' retires the optimistic placeholder; queued_*/delivering -> placeholder shows queued; 'failed' -> failed with failureReason. Reducer keeps only the latest snapshot per sessionId (replace semantics). Also rendered as the queued-messages tray",
+          "verdict": "redefine",
+          "notes": "The queue exists because a PTY can't accept input while busy/spawning. The SDK loop still needs 'send while turn in flight' semantics, but statuses tied to PTY delivery (delivered_to_pty, observed_in_jsonl, queued_spawning) need renaming/rethinking. Snapshot-replaces-snapshot (not per-item deltas) is a nice property to keep."
+        },
+        {
+          "name": "runtime-state",
+          "direction": "server->client",
+          "shape": "{ projectId; type: 'runtime-state'; sessionId; health: 'not_spawned'|'spawning'|'ready'|'busy'|'exited'|'respawning'|'failed_resume'|'provider_missing'; waitPoint; ptyState; exitCode; exitSignal; failureReason: string|null; queueDepth; queue: SendQueueItem[]; lastReadyAt; nextRetryAt; rawJsonlPath; replayHighWaterSeq; ... }",
+          "consumers": "Orchestrator.tsx keeps the latest one -> orchestratorInputCapabilities gates composer/interrupt/terminal by health + wsStatus; failure banners read health/failureReason/exitCode; reducer stores latest-only per sessionId",
+          "verdict": "redefine",
+          "notes": "Broadcast on nearly every runtime transition (state/turn-end/jsonl/exit/error handlers). Keep the concept (one authoritative runtime snapshot, latest-wins) but the shape is PTY-soaked: waitPoint, ptyState, rawJsonl*, spawnAttempt*, respawning/failed_resume health values all die with the PTY engine."
+        },
+        {
+          "name": "state / turn-end / exit / raw / terminal-input-ack",
+          "direction": "server->client",
+          "shape": "state: { type: 'state'; state: string } · turn-end: { type: 'turn-end' } · exit: { type: 'exit'; code; signal } · raw: { type: 'raw'; sessionId; terminalSeq: number; text: string } · terminal-input-ack: { type: 'terminal-input-ack'; ok: false; status: 'invalid-message'|'no-session'|'write-failed'; error: string }",
+          "consumers": "state/turn-end: deriveLiveState (latest PTY state; turn-end==='ready') feeding the thinking indicator + capability fallback. exit: broadcast but NOTHING in the web reads it (health arrives via runtime-state). raw: PTY bytes, routed around React straight to xterm subscribers. terminal-input-ack: terminal-mode error toast",
+          "verdict": "drop",
+          "notes": "All PTY-engine artifacts. The one semantic to re-home: a lightweight busy/ready turn-lifecycle signal (deriveLiveState/isRuntimeThinking currently blends PTY state + jsonl-user/turn-end); the new contract's session-state / turn events can own that outright."
+        },
+        {
+          "name": "client-ping / server-pong",
+          "direction": "client->server",
+          "shape": "ping: { type: 'client-ping'; nonce: string; sentAt: number } -> pong: { projectId; type: 'server-pong'; nonce; sentAt; serverTime }",
+          "consumers": "ws-heartbeat: client pings every WS_HEARTBEAT_INTERVAL_MS; any inbound frame refreshes lastInboundAt; heartbeat timeout forces close(4000) + reconnect with backoff (2/5/15/30s cap). Pong updates diagnostics only",
+          "verdict": "keep"
+        },
+        {
+          "name": "interrupt / resize / terminal-input / ask-reply",
+          "direction": "client->server",
+          "shape": "{ type: 'interrupt' } · { type: 'resize'; cols; rows } · { type: 'terminal-input'; data: string } · { type: 'ask-reply'; toolUseId: string; answer: string }",
+          "consumers": "interrupt -> pty.interrupt() (Esc/stop button — SDK equivalent: abort the in-flight turn). resize/terminal-input -> PTY only. ask-reply -> resolvePendingAsk(toolUseId, answer) resolving the blocked ask bridge",
+          "verdict": "redefine",
+          "notes": "keep interrupt + ask-reply semantics; drop resize + terminal-input with the PTY."
+        },
+        {
+          "name": "subscribe (live-events handshake)",
+          "direction": "client->server",
+          "shape": "{ type: 'subscribe'; lastVersion?: string; projectId?: ULID }  // lastVersion = global live_outbox seq cursor persisted client-side",
+          "consumers": "Sent on every socket open (after the epoch bump). Server relay replays committed live_outbox rows (lastVersion, head] to THIS socket, then live rows flow via the hub subscription. A below-pruned-floor cursor triggers live-reset",
+          "verdict": "keep",
+          "notes": "This is the RESOURCE-event replay channel (work items, agent runs, session titles…), not chat. Chat has its own replay (session-replay). Keep the pattern for whatever resource events survive the rewrite."
+        },
+        {
+          "name": "live-event",
+          "direction": "server->client",
+          "shape": "{ type: 'live-event'; event: { id: ULID; cursor: string; scope: 'project'|'global'; projectId: ULID|null; type: LiveEventTypeName; entity; entityId; version: number|null; createdAt; payload } }",
+          "consumers": "use-project-ws intercepts BEFORE the chat reducer: persists event.cursor as the lastVersion cursor, feeds useLiveStore.applyEnvelope, and returns (never timelined). Resource views read the identity-keyed live store; dedup = event id + per-entity version, latest-cursor-wins. Chat-adjacent consumer: 'session.title.changed' -> Orchestrator title updates via useLiveEvents('session-title')",
+          "verdict": "keep",
+          "notes": "Durable-outbox pattern: gateway writes live_outbox row inside the DB txn, post-commit relay drains and fans out. Verdict is keep for the mechanism; the entity list shrinks (drop workflow-*, work-item, stage, field-schema, pod entities)."
+        },
+        {
+          "name": "live-reset",
+          "direction": "server->client",
+          "shape": "{ type: 'live-reset'; projectId: ULID|null; cursor: string|null }",
+          "consumers": "use-project-ws: clears the persisted cursor, clears the whole live store, bumps ws-epoch so every resource-list hook refetches HTTP truth (gap signal when the cursor predates the pruned outbox floor)",
+          "verdict": "keep"
+        },
+        {
+          "name": "project.changed (legacy refetch envelope)",
+          "direction": "server->client",
+          "shape": "{ type: 'project.changed', ... } or its live-event-frame form; payload unread — presence alone triggers refetch",
+          "consumers": "App.tsx project-list refetch scan; deliberately preserved across session resets in the chat reducer",
+          "verdict": "redefine",
+          "notes": "Fold into the live-event channel properly in the new contract instead of a special-cased envelope + frame dual form."
+        }
+      ],
+      "gotchas": [
+        "Chat and resource events are TWO separate replay systems sharing one socket: chat = per-session seq in conversation_events, resent as one full session-replay checkpoint on every connect; resources = global cursor in live_outbox, replayed incrementally via the subscribe{lastVersion} handshake with live-reset as the gap signal. Don't merge their cursors in the new contract without preserving both recovery behaviors.",
+        "Chat dedup key the whole UI relies on: envelope id = `${sessionId}:${seq}` with per-session monotonic seq allocated at persist time (UNIQUE(session_id, seq) in DB). The reducer replaces on duplicate key WITHOUT re-folding aggregates (re-delivery must not double-count tokens), and inserts out-of-order arrivals into seq position.",
+        "Persist-then-broadcast, single writer: OrchestratorHostSession.persistJsonlEvent writes the conversation_events row and the SAME payload is broadcast with its replay meta (id/sessionId/seq/kind/source). Live delivery does NOT go through live_outbox — chat rows are hub-broadcast directly. If the new server keeps this, a broadcast can never precede its durable write.",
+        "Reconnect = full re-seed: server resends session-changed -> ('state' if live) -> runtime-state -> session-replay(full) -> send-queue-snapshot on every socket open; the client wipes and rebuilds (applySnapshot recomputes aggregates from the replay set). Client additionally bumps ws-epoch on open so all HTTP resource lists refetch. The afterSeq incremental chat replay endpoint exists server-side but is UNUSED by the web app — full-checkpoint-on-connect is the only exercised path.",
+        "Optimistic send reconcile has three confirmation paths, in priority order: (1) send-queue-snapshot item status==='observed_in_jsonl' by clientMessageId, (2) the canonical jsonl-user envelope stamped with top-level clientMessageId (the correlation happens server-side BEFORE broadcast), (3) fuzzy text match with an eventFloor guard. The new contract should keep (2) as the primary key and can drop (3).",
+        "send-ack goes only to the sending socket; session-changed / session-replay / send-queue-snapshot / jsonl are broadcast to all of the project's sockets (multi-tab is first-class; hub supports N subscribers per project, prunes dead sockets on send).",
+        "Unsequenced envelopes (send-ack, send-queue-snapshot, runtime-state, session-changed, ask) use replace-by-predicate semantics in the reducer — only the latest per key is kept. Sequenced (jsonl) and unsequenced entries interleave in one timeline; timeline is capped at 10,000 entries with aggregates deliberately surviving the trim.",
+        "Session scoping: delta envelopes carrying a sessionId different from activeSessionId are silently dropped (chat types only); on 'new-session' the reducer clears everything except project.changed refetch signals; sessionChangedNonce ticks on EVERY transition including resume-to-same-id (the sessions rail keys refetch off it).",
+        "No true streaming today: jsonl-stream-event deltas are never rendered (only flip an activity label); assistant text lands as complete blocks (midLoop preambles + jsonl-turn-end). A new contract that adds real text deltas needs a message-start/delta/end lifecycle the old UI never had — nothing to port, design fresh.",
+        "Turn/thinking state is derived from a blend that must be replaced coherently: deriveJsonlBusy (jsonl-user => busy, jsonl-turn-end => idle) overrides PTY 'state' envelopes, with hook 'stop-failure' as the defensive turn-end when an API error ends a turn with no assistant content. Keep an explicit error-terminated-turn event.",
+        "Hook 'event' envelopes are deduped client-side by their event.ts TIMESTAMP string across reconnects (seenTsRef) — a fragile legacy mechanism that only exists because hook events had no seq. Dropping the hook channel removes the need.",
+        "Attachments never ride the chat wire: pasted images POST to /api/projects/:id/pasted-images (raw binary body), the returned absolute file path is spliced into the outgoing text, and the agent reads it via the Read tool. Rich previews come from [pc:attachment|file|work-item …] markers parsed OUT OF message text client-side (EventBubbles), backed by separate HTTP lookups + attachment.changed live events.",
+        "Heartbeat/reconnect: client pings every interval, treats heartbeat silence as death (close code 4000), backs off 2/5/15/30s, and force-reconnects on visibilitychange/online/focus if the socket isn't demonstrably fresh (background-tab timer throttling makes this the common recovery path).",
+        "The 'ask' flow is a blocking server-side promise: MCP/hook bridge POSTs, server broadcasts type:'ask' and awaits resolvePendingAsk keyed by toolUseId; the browser answers over WS ask-reply. A timeout watchdog auto-resolves abandoned asks. Same shape maps cleanly onto SDK canUseTool/permission callbacks.",
+        "Viewing a past session bypasses WS entirely: HTTP GET /api/projects/:id/sessions/:sid/events returns the same SessionReplayItem[] shape, rendered through the identical normalize/grouping pipeline (pastEvents). Keeping replay-shape === live-shape is what makes this free.",
+        "conversation_events.type distinguishes 'jsonl' (canonical) from 'event' (legacy pre-backfill import rows). The renderer accepts both from replay but only 'jsonl' from live. New contract can collapse to one type but must still render old imported rows if the DB is migrated."
+      ],
+      "summary": "Chat in PC-PTY-Chat rides one per-project WebSocket (/ws?projectId=X&intent=chat). The server tails the Claude CLI's JSONL transcript, normalizes each line into a typed event (jsonl-user, jsonl-assistant-text, jsonl-tool-call, jsonl-usage, …), persists it as a conversation_events row with a per-session monotonic seq (id = sessionId:seq), and broadcasts the same payload to all of the project's sockets as a {type:'jsonl', seq, sessionId, event} envelope. The browser's chat reducer (apps/web/src/hooks/chat-session-reducer.ts) orders and dedupes by sessionId:seq, folds token/model/state aggregates incrementally, and hands a stable events[] array to the render pipeline (buildCanonicalChatEnvelopes -> normalizeJsonlEnvelope -> toolGrouping), which consumes ONLY type 'jsonl' and 'ask' envelopes — the older hook-event channel ('event') is broadcast but no longer rendered. There is no token streaming: assistant text arrives as complete blocks; jsonl-stream-event exists but only drives a 'Writing a response' label. Reconnect is 'server resends everything': each socket open gets session-changed + runtime-state + a full session-replay checkpoint (query over conversation_events) + send-queue-snapshot, and the client re-seeds wholesale; the live-outbox relay with its lastVersion cursor / live-reset gap signal is a separate replay system for RESOURCE events (titles, work items, agent runs), not chat content. Client->server: {type:'send', text, clientMessageId} with optimistic placeholder UI reconciled via send-ack, send-queue-snapshot (durable queue when the runtime is busy/spawning), and a clientMessageId stamp on the canonical jsonl-user echo; plus interrupt, ask-reply, subscribe, client-ping. Attachments are out-of-band (HTTP image upload returning a file path pasted into text). PTY-only channels (raw, state, turn-end, exit, terminal-input, resize) and the JSONL-tailer internals are droppable; the durable-seq replay model, send/ack/queue reconcile, ask flow, runtime snapshot, and live-outbox pattern are the semantics the SDK rewrite should keep or redefine."
+    },
+    "agentStatus": {
+      "events": [
+        {
+          "name": "live-event (relay frame wrapper)",
+          "direction": "server->client",
+          "shape": "{ type: 'live-event', event: { id: ULID, cursor: string /* numeric-string global seq */, scope: 'project'|'global', projectId: ULID|null, type: string /* e.g. 'agent.run.changed' */, entity: LiveEventEntity, entityId: ULID|null, version: number|null, createdAt: number, payload: unknown } }",
+          "consumers": "use-project-ws.ts intercepts it BEFORE the chat reducer: advances the persisted per-project cursor (advanceLiveCursor) then feeds useLiveStore.applyEnvelope and STOPS (never reaches chat timeline). live-store keys by `${entity}::${entityId}` with version dedup (null version = last-write-wins). All resource views (ActivityPanel agents/workflows, AgentsList pod refetch, mailbox inbox signatures, work-log contracts) read the store via useLiveEvents/useLiveEntitySignature selectors.",
+          "verdict": "keep",
+          "notes": "This is the durable channel: server writes facts to an outbox, relay replays (lastVersion, snapshot] on the subscribe handshake. The wrapper + cursor + version-dedup mechanics are the best-engineered part of the old system — keep the pattern wholesale."
+        },
+        {
+          "name": "agent.run.changed (live-event, entity 'agent-run')",
+          "direction": "server->client",
+          "shape": "payload: { reason: 'queued'|'spawning'|'running'|'paused'|'resumed'|'stalled'|'completed'|'failed'|'cancelled'|'reconciled', run: AgentRunDto, pendingAskId?: ULID|null /* set on reason:'paused' */ }. AgentRunDto fields the UI actually reads: runId, sessionId, agentName, projectId, worktreeDir, startedAt, status ('queued'|'spawning'|'running'|'paused'|'completed'|'failed'|'cancelled'), endedAt, rev. Fields carried but only read in detail surfaces: model, result, failureReason, failureCause, dispatcherSessionId, parentWorkItemId.",
+          "consumers": "useProjectAgentRuns (ActivityPanel 'Running agents'): HTTP seed (list endpoint excludes terminal rows) + live overlay via useResourceList; terminal status drops the row; rev is the dedup version; reason==='stalled' stamps a client-only `stalled` badge flag (any other reason clears it). Card renders agentName, elapsed from startedAt, 'starting…' for spawning, 'paused', stalled badge; click opens transcript by runId. AgentTranscriptModal header renders status pill, sessionId, worktreeDir; enables Cancel/Force-kill while non-terminal.",
+          "verdict": "keep",
+          "notes": "Full-snapshot payload (apply-if-full-record, no refetch). parentWorkItemId is work-item plumbing — drop that field. 'stalled'/'reconciled' come from the watchdog; both bump rev so the version-deduped store accepts them. pendingAskId links a paused run to its pending ask."
+        },
+        {
+          "name": "contract.changed (live-event, entity 'contract')",
+          "direction": "server->client",
+          "shape": "payload: { reason: 'created'|'dispatched'|'deliverable-set'|'verification-set'|'landing-set'|'patched', contract: Contract }. Contract fields the work-log renderer reads: id, projectId, workItemId, agentRunId, podName, expectedOutput (kind + per-kind detail via summarizeExpectedOutput), deliverable (per-kind: answer.text, prose.text/attachmentId/ref, payload.data, repo.branch/commit/diffStat/prUrl, external.system/handle/url/idempotencyKey, binary.mime/bytes/attachmentId, action.tool/count), report, verificationStatus ('pending'|'passed'|'failed'), verificationTier, verificationNotes, landingStatus ('pending'|'landed'|'conflict'|'failed'|'abandoned'|null), landedBranch, landedSha, landingError, worktreePath, status ('issued'|'dispatched'|'submitted'|'verifying'|'accepted'|'rejected'), version, createdAt.",
+          "consumers": "useWorkItemContracts: HTTP seed of the WI's contract timeline + live overlay from useLiveEvents('contract'), merged by id with version dedup (strictly-older loses), sorted by createdAt. work-log.ts (describeDeliverable/describeLanding/summarizeExpectedOutput) turns it into render descriptors. This is where AC verdicts surface: acceptanceCriteria results land as verificationStatus + verificationNotes on the SAME contract.changed frame (reason 'verification-set'); landing receipts land as reason 'landing-set'.",
+          "verdict": "redefine",
+          "notes": "Contract semantics are core-keep, but the only consumer hook is keyed by workItemId (work-items are deleted). Rewrite: same payload shape, project-scoped list keyed by contract id / agentRunId instead. The AC evaluator (packages/domain/ac-evaluator.ts) is server-side only — the browser never sees per-predicate verdicts over WS, only the rolled-up verificationStatus/Notes; per-predicate detail rides the HTTP ReviewPackage (review-package.ts) into ReviewModal."
+        },
+        {
+          "name": "agent-jsonl-event",
+          "direction": "server->client",
+          "shape": "{ projectId, type: 'agent-jsonl-event', runId: string, event: JsonlEvent }. JsonlEvent kinds/fields actually rendered: jsonl-user{text}, jsonl-turn-end{text,stopReason}, jsonl-tool-call{toolUseId,name,input}, jsonl-tool-result{toolUseId,result,isError}, jsonl-system{subtype,level,message}, jsonl-usage{inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,model}, jsonl-thinking{text}, jsonl-assistant-text{text,midLoop}, jsonl-queue-*/jsonl-sidechain (rendered as bare labels). Dedup id: event.row.uuid|id, else toolUseId, prefixed by kind.",
+          "consumers": "AgentTranscriptModal + chat AgentDispatchGroupBubble: mergeAgentTranscriptEvents merges HTTP backfill (GET /api/projects/:pid/agent-runs/:runId/events → {events, jsonlPath, transcriptStatus:'ready'|'empty'|'missing', status}) with live frames filtered by runId, deduped by the stable id above. RichAgentTranscript re-wraps each as {type:'jsonl', event} and feeds the SAME chat render pipeline the orchestrator uses; first 'user' row renders as the labeled 'Agent contract' header. TranscriptRow is the bare fallback renderer.",
+          "verdict": "redefine",
+          "notes": "Latency-class direct broadcast — NOT on the durable outbox, no replay; missed frames are healed by the HTTP backfill on modal open. With the SDK replacing PTY+JSONL tailing, the kinds map ~1:1 to SDK stream events; keep the {runId, event} envelope + stable-id dedup contract, rename kinds off 'jsonl-'."
+        },
+        {
+          "name": "[pc:agent-event kind=…] text markers (dispatch lifecycle in chat)",
+          "direction": "server->client",
+          "shape": "NOT a WS type — mailbox-delivered text inside a jsonl-user turn. Body leads with '[pc:agent-event kind=<k>]' plus '[runId: …]' '[agentName: …]' marker lines. Kinds consumed: agent-queued-started, agent-completed (body scanned for '[verification: passed|failed|pending]'), agent-failed (body scanned for '[cause: <slug>]'), agent-asks-orchestrator, agent-approval-request. Workflow twin: '[pc:workflow-event kind=…]' + '[workflowRunId: …]'.",
+          "consumers": "parse-chat-text.ts regex-classifies user-turn text into agent-event parts; toolGrouping.ts hoists them into AgentDispatchGroupItem keyed by runId; AgentDispatchGroupBubble derives its status chip (running / completed / completed·verify failed / failed(cause) / awaiting orchestrator / awaiting approval) from the LAST entry's kind + regex-extracted markers, and renders the ask/approval prompt text.",
+          "verdict": "redefine",
+          "notes": "The single most fragile piece: dispatch lifecycle + verification verdict reach the chat UI by regex-parsing prose. The new contract should emit these as structured events (they already exist as agent.run.changed / contract.changed facts — the chat bubble should subscribe to those by runId instead of scraping text)."
+        },
+        {
+          "name": "runtime-state",
+          "direction": "server->client",
+          "shape": "{ type: 'runtime-state', projectId } & OrchestratorRuntimeSnapshot. Fields StatusBar actually reads: health ('not_spawned'|'spawning'|'ready'|'busy'|'exited'|'respawning'|'failed_resume'|'provider_missing'), waitPoint ('session'|'queue'|'spawn'|'jsonl'|'provider_resume'|'ready_state'|'none'), queueDepth, spawnAttempt, spawnAttemptId, sessionId, replayHighWaterSeq, rawJsonlCursor, lastJsonlAt, failureReason. Also read elsewhere: health for live-session detection (live-session-project-ids.ts); queue[] items feed the send-queue tray.",
+          "consumers": "Orchestrator.tsx scans events[] newest-first for the last runtime-state and passes it to StatusBar (runtime pill label/dot/title + data- attributes) and to the chat send path. Last-one-wins; no dedup key.",
+          "verdict": "redefine",
+          "notes": "The health/waitPoint state machine is PTY-shaped (ptyState, rawJsonl*, replay*, provider_resume are transcript-tailer concepts). SDK rewrite keeps the pill's job — orchestrator liveness + busy/queue depth — with a much smaller snapshot: {health, queueDepth, sessionId, failureReason}."
+        },
+        {
+          "name": "statusline-snapshot",
+          "direction": "server->client",
+          "shape": "{ type: 'statusline-snapshot', projectId, snapshot: { pcSessionId, ccSessionId, receivedAt, model: {id, displayName}|null, rateLimits: { fiveHour: {usedPercentage, resetsAt}|null, sevenDay: {usedPercentage, resetsAt}|null }, cost: {totalCostUsd,...}|null, contextWindow: { usedPercentage, ... }|null } }. UsageCapsPanel reads ONLY rateLimits.fiveHour/sevenDay.{usedPercentage, resetsAt}; the composer ctx bar reads contextWindow.usedPercentage; App header reads model via telemetry.",
+          "consumers": "use-statusline-sync scans events[] for the type and writes useStatuslineStore (keyed by project) + publishes contextWindow.usedPercentage into useOrchestratorTelemetry. UsageCapsPanel renders the 5h/7d bars with clamp-at-100 fill and 'resets in' countdown (resetsAt parsed as ISO, falls back to epoch-seconds numeric string).",
+          "verdict": "keep",
+          "notes": "Broadcast on every POST to /api/internal/statusline-data (CC statusLine hook). NOT replayed on reconnect — the client re-fetches the server's cached snapshot via HTTP keyed off the ws-epoch bump. On the SDK, the same data comes from SDK usage/rate-limit callbacks; keep the wire shape, UsageCapsPanel ports untouched."
+        },
+        {
+          "name": "jsonl (orchestrator transcript row) + event (hook event)",
+          "direction": "server->client",
+          "shape": "{ projectId, type: 'jsonl'|'event', event: { kind, ...} }. 'event' kinds carry ts for dedup. jsonl-usage{inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,model} is aggregated incrementally into aggregates.usage/latestModel; jsonl-session-state{state} → aggregates.latestSessionState; jsonl-turn-duration{durationMs} → lastTurnDurationMs.",
+          "consumers": "chat-session-reducer builds the chat timeline + aggregates; Orchestrator publishes aggregates into useOrchestratorTelemetry (App slim header: model + token roll-up; composer state hint). TranscriptRow/RichAgentTranscript consume the same kinds for agent transcripts (see agent-jsonl-event).",
+          "verdict": "redefine",
+          "notes": "The chat stream itself is the SDK rewrite's main new contract (out of this scope), but note the status surfaces piggyback on it: token totals, model, session state. 'event' frames dedup by ts across reconnects (seenTs set, cleared on new-session/session-replay)."
+        },
+        {
+          "name": "session-changed / session-replay",
+          "direction": "server->client",
+          "shape": "session-changed: { type, transition: 'new-session'|'resume-session', session: OrchestratorSession {id, projectId, model, title, status:'active'|'ended', ...} }. session-replay: { type, projectId, sessionId, highWaterSeq?, events: SessionReplayItem[] ({type:'jsonl'|'event', kind, event, seq}) }.",
+          "consumers": "use-project-ws: new-session clears the ts-dedup set; session-replay replaces the timeline as one checkpoint and re-seeds the dedup set. Orchestrator reads session (title/status/model) for the header + ended-state; sessionChangedNonce ticks the sessions rail refetch.",
+          "verdict": "redefine",
+          "notes": "Chat lifecycle, orthogonal to PTY — keep the checkpoint-replay idea (one replay frame, not an event burst) in the new contract."
+        },
+        {
+          "name": "workflow.run.changed (live-event, entity 'workflow-run')",
+          "direction": "server->client",
+          "shape": "payload: { run: WorkflowRunDto { id, workflowSlug, workflowName, projectId, workItemId, status: 'pending'|'running'|'paused'|'completed'|'failed'|'cancelled', worktreePath, lastReason, rev, createdAt, startedAt, endedAt } }",
+          "consumers": "useProjectWorkflowV2Runs → ActivityPanel 'Running workflows' region (name, status label, elapsed, awaiting-human badge) and 'Failed recently' (status+lastReason, endedAt window, dismissals via HTTP). CommandActivityPanel gets the same data by HTTP poll only.",
+          "verdict": "drop",
+          "notes": "Workflow engine is deleted. The ActivityPanel region dies with it; the 'Failed recently' + dismissal UX pattern is worth re-homing onto agent runs/contracts."
+        },
+        {
+          "name": "workflow.review.changed (live-event, entity 'workflow-review') + workflow.run.event, workflow.definition.changed, [pc:workflow-event] chat markers, subagent-failure hook event",
+          "direction": "server->client",
+          "shape": "review payload: { flavor: 'human'|…, state: 'pending'|'approved'|'rejected' }, entityId = runId. subagent-failure (hook 'event'): { kind, workflowRunId, nodeId, agentName, attemptNumber, cause, surfaceError, transcriptPath }.",
+          "consumers": "useProjectWorkflowHumanReviews → ActivityPanel 'Waiting on you' count/badge (pending adds runId, approved/rejected removes; intersected with paused runs). WorkflowRunGroupBubble + FailureBubble in chat.",
+          "verdict": "drop",
+          "notes": "All workflow-engine. BUT the human-review-gate concept partially survives via contract verificationTier 'human-review' — the rewrite's equivalent should ride contract/review events, not workflow-review."
+        },
+        {
+          "name": "work-item.changed, stage.list.changed, field-schema.list.changed, attachment.changed, work-item-dossier, area.changed, context-doc.changed, project.claude-md.changed (live-event entities)",
+          "direction": "server->client",
+          "shape": "work-item payload: { workItem: WorkItem } full snapshot; others analogous.",
+          "consumers": "useLiveWorkItems / KanbanBoard / dossier hooks / work-items views.",
+          "verdict": "drop",
+          "notes": "Internal work-item/board system is deleted. context-doc/area/project entities: decide separately — they are project-shell, not board (AgentsList's ContextTab uses context docs via HTTP)."
+        },
+        {
+          "name": "pod.changed (live-event, entity 'pod')",
+          "direction": "server->client",
+          "shape": "payload: { podId: ULID, ... }. UI reads only payload.podId + frame entityId/version/cursor as a change signal; pod data itself comes from HTTP (listPods/getPod: name, description, model, effort, maxTurns, tools[], prompt, origin 'stock'|…, shareable, memberProjectIds, driftedFields, updatedAt, scope).",
+          "consumers": "AgentsList DetailPane: hasNewPodFrameFor(events, podId, seenMap) — refetches the open pod's bundle when a NEW frame (newer version/cursor than seen) matches the open podId. useProjectPods refetches the list similarly.",
+          "verdict": "keep",
+          "notes": "Pure refetch-signal pattern (signal-only payload is fine here, unlike the full-snapshot entities). Global-scope pod frames (projectId null) must still reach project views — the selector unions global."
+        },
+        {
+          "name": "mailbox.message.changed / mailbox.delivery.changed (live-event, entity 'mailbox-message')",
+          "direction": "server->client",
+          "shape": "Signal-only for the UI: consumers read only the store signature (entityId + version/cursor per frame), never the payload.",
+          "consumers": "use-mailbox-inbox keys an HTTP refetch (listProjectInbox/listAllInbox actionableOnly=true) off useLiveEntitySignature('mailbox-message'). Feeds MailboxInbox inside ActivityPanel + CommandActivityPanel + the cross-project InboxBell (all-projects signature via background sockets). ReviewModal opens a ReviewPackage (HTTP) from an inbox item — that's where per-AC verdict detail and approve/reject live.",
+          "verdict": "redefine",
+          "notes": "Mailbox is how asks/approvals/verification-reviews reach the human. The rewrite keeps agent asks + contract human-review, so a message-changed signal survives; workflow-gate-flavored messages drop."
+        },
+        {
+          "name": "host-health.changed (live-event, entity 'host-health', global scope) + session.title.changed (entity 'session-title')",
+          "direction": "server->client",
+          "shape": "host-health payload: { health: { state: 'connected'|'reconnecting'|'down', hostId, pid, lastError?, since } }. session-title: full session row, latest-by-cursor wins.",
+          "consumers": "HostHealthPill (agent-host connection liveness); Orchestrator header session title.",
+          "verdict": "redefine",
+          "notes": "host-health is about the out-of-process PTY agent host; with the SDK in-process this becomes an SDK/auth health signal or disappears. session-title keeps its job."
+        },
+        {
+          "name": "live-reset",
+          "direction": "server->client",
+          "shape": "{ type: 'live-reset', projectId: ULID|null, cursor: string|null }",
+          "consumers": "use-project-ws: clears the persisted cursor, clears the entire live store (clearAll — so a stale frame can never re-merge over reseeded HTTP truth), bumps ws-epoch → every resource hook refetches HTTP.",
+          "verdict": "keep",
+          "notes": "Emitted during the subscribe handshake when the client's lastVersion predates the pruned outbox floor. Essential to the replay design."
+        },
+        {
+          "name": "subscribe + client-ping / server-pong",
+          "direction": "client->server",
+          "shape": "{ type: 'subscribe', lastVersion?: string, projectId?: ULID } sent on every (re)connect open; { type: 'client-ping', nonce, sentAt } every WS_HEARTBEAT_INTERVAL_MS, server answers server-pong.",
+          "consumers": "Server relay replays (lastVersion, snapshot] of live-events; heartbeat drives forced reconnect on timeout + wake-from-background staleness checks. StatusBar's ws pill renders the client-side WsStatus/WsDiagnostics derived from this machinery.",
+          "verdict": "keep",
+          "notes": "Also on open: ws-epoch bump (belt-and-suspenders full HTTP reload) + cursor replay (precise catch-up) — both, deliberately."
+        },
+        {
+          "name": "GET /api/projects/:projectId/worktrees/stranded (HTTP, no WS event)",
+          "direction": "server->client",
+          "shape": "{ ok: true, stranded: [{ name: string, branch: string, path: string|null }] } — unmerged run worktrees/branches no live run references, minus contract branches explicitly marked 'abandoned'.",
+          "consumers": "NO web UI consumer exists (grep of apps/web finds zero 'stranded' hits) — it is read by the orchestrator/MCP side. Worktrees otherwise surface in UI only as: AgentRunDto.worktreeDir (transcript modal header 'cwd:'), Contract.worktreePath/worktreeBaseBranch/worktreeBaseSha + landingStatus/landedBranch/landedSha receipts (work-log 'describeLanding' line).",
+          "verdict": "keep",
+          "notes": "Keep the stranded report + landing receipts (worktrees are in-scope for the rewrite). The periodic worktree sweep is a server-side janitor with no event emission; if the rewrite wants stranded worktrees VISIBLE in the shell, that's a new event/panel, not a port."
+        },
+        {
+          "name": "agent-run-changed (legacy v1 envelope)",
+          "direction": "server->client",
+          "shape": "{ type: 'agent-run-changed', record: LegacyAgentRunRecord } — compatibility projection of agent.run.changed (re-adds constant wait:false).",
+          "consumers": "None remaining — useProjectAgentRuns migrated to the canonical live-event in slice 015b; the builder survives only as an adapter (toLegacyAgentRunChanged).",
+          "verdict": "drop",
+          "notes": "Dead compatibility shim; do not port."
+        }
+      ],
+      "gotchas": [
+        "Two distinct delivery classes with different guarantees, and the new contract must preserve the split: (1) durable outbox-relayed `live-event` frames — global monotonic string cursor (`seq`), replayed on subscribe via lastVersion, `live-reset` when the cursor predates the pruned floor; (2) latency-class direct broadcasts (agent-jsonl-event, statusline-snapshot, runtime-state, jsonl/event chat rows) — NO catch-up at all; every consumer heals via HTTP on reconnect (ws-epoch bump triggers refetch of lists, transcript backfill endpoint, cached statusline snapshot).",
+        "Reconnect does BOTH a ws-epoch bump (full HTTP reseed of every resource list) AND a cursor replay (precise live-event catch-up). Belt-and-suspenders is intentional — the epoch bump is what killed the historical 'refresh to see new agents' bug. Keep both.",
+        "Dedup keys, per stream: live-events by (entity, entityId) + numeric `version`, where null version = last-write-wins by cursor; agent runs by `rev`, contracts by `version` (strictly-older loses, equal wins — supports same-version overlay like the stalled flag); agent transcript rows by `${kind}:row:${row.uuid|id}` else `${kind}:tool:${toolUseId}` (rows without either are never deduped — backfill/live overlap relies on stable ids being present); hook 'event' envelopes by `ts` string (cleared on new-session and re-seeded from session-replay).",
+        "Every *.changed live event carries the FULL DTO snapshot ('apply-if-full-record') — consumers never refetch on-frame, except the two deliberate signal-only entities (pod, mailbox-message) which are refetch triggers. Don't mix the two styles per entity in the new contract.",
+        "The running-agents HTTP list endpoint EXCLUDES terminal rows; the client drops a row the moment a terminal-status frame lands (dropOnTerminal). Workflow runs did the opposite (terminal rows kept for 'Failed recently'). Pick per-list and document it.",
+        "reason:'stalled' on agent.run.changed is a non-terminal watchdog warn — status stays running/spawning, the frame only flips a UI badge, and it MUST bump rev or the version-deduped store rejects it. It is absent from the HTTP seed, so a cold reload clears the badge until the next live frame. reason:'paused' carries pendingAskId.",
+        "Dispatch lifecycle + verification verdicts reach the CHAT surface only as regex-parsed text markers ([pc:agent-event kind=…] [runId: …] [verification: …] [cause: …]) inside mailbox-delivered user turns — the AgentDispatchGroupBubble scrapes prose. The structured facts already exist (agent.run.changed, contract.changed); the new contract should have the chat bubble subscribe to those by runId and delete the text-marker protocol.",
+        "Per-predicate acceptance-criteria verdicts never cross the WS: the browser sees only the rolled-up contract.verificationStatus/verificationNotes on contract.changed (reason 'verification-set'); predicate-level detail rides the HTTP ReviewPackage into ReviewModal. Landing receipts (landed/conflict/failed/abandoned + branch/sha) arrive as reason 'landing-set'.",
+        "Global-scope frames (projectId === null, e.g. stock pods, host-health) must be unioned into project-scoped selectors — useLiveEvents accepts project frames PLUS global frames; a project-only filter silently breaks stock-pod refresh.",
+        "Ordering: no cross-entity ordering guarantee on the relay; per-entity ordering is enforced by version, not arrival. The chat stream ('jsonl'/'event') is ordered per session by seq/arrival and is last-one-wins for runtime-state scans (Orchestrator walks events[] backwards).",
+        "raw PTY frames bypass React entirely (imperative subscriber path) and 'live-event' frames bypass the chat reducer entirely — the WS message handler is a router, not a pipe. Preserving that routing (chat timeline vs identity-keyed store vs imperative) is what keeps re-render cost sane.",
+        "CommandActivityPanel (cross-project rail) has NO WS path at all: 5s HTTP poll of per-project listAgentRuns + workflow runs; it opens transcripts cross-project by passing the full preloadedRun into the transcript store because the run isn't in the active project's live data.",
+        "statusline-snapshot arrives only when CC's statusLine hook POSTs — an idle reconnected tab would show stale caps forever without the epoch-keyed HTTP re-prime in use-statusline-sync. If the SDK gives usage synchronously per turn, consider putting it on the durable channel instead.",
+        "AgentTranscriptModal's liveness diagnostics (pid, processAlive, idleMs, lastAction) are a 5s HTTP poll of the inspect route while non-terminal — not events. Same for MCP status in StatusBar (5s poll).",
+        "Stranded-worktree surfacing is HTTP-only (GET /worktrees/stranded) with NO web-UI consumer today (orchestrator/MCP reads it); worktrees appear in the UI only via AgentRunDto.worktreeDir and Contract landing receipts. Abandoned contract branches are filtered OUT of the stranded report server-side."
+      ],
+      "summary": "PC-PTY-Chat pushes agent status to the browser over one per-project WebSocket (/ws?projectId=…&intent=chat) whose message handler is a three-way router. (1) Durable facts ride `live-event` frames: a generic envelope {entity, entityId, version, cursor, payload} written to a server outbox and relayed; the client persists a global cursor, sends it back in a `subscribe` handshake on every reconnect for precise replay, gets `live-reset` if the cursor fell below the pruned floor, and merges every frame into one identity-keyed zustand store (live-store) with per-entity version dedup. All status views are 'HTTP seed + live overlay': the ActivityPanel's Running Agents region seeds from the running-agents list endpoint and overlays `agent.run.changed` frames (full AgentRunDto snapshot + a reason enum covering queued/spawning/running/paused/resumed/stalled/completed/failed/cancelled/reconciled), dropping rows on terminal; contract lifecycle + verification + landing verdicts ride `contract.changed` (full Contract snapshot, reasons created/dispatched/deliverable-set/verification-set/landing-set); pods and mailbox use signal-only frames that trigger HTTP refetch. (2) Latency-class broadcasts bypass the outbox with no replay: `agent-jsonl-event` streams each agent transcript row (runId-filtered, deduped against an HTTP backfill by row-uuid/toolUseId) into AgentTranscriptModal and the chat dispatch bubble; `statusline-snapshot` feeds UsageCapsPanel's 5h/7d rate-limit bars; `runtime-state` feeds StatusBar's orchestrator-health pill. (3) Raw PTY frames go to an imperative subscriber, never touching React state. Reconnect healing is dual: cursor replay for live-events plus a ws-epoch bump that refetches every HTTP seed. The notable wart: dispatch lifecycle and verify verdicts reach the chat transcript as regex-parsed `[pc:agent-event …]` text markers inside user turns rather than structured events. Workflow-run/review events and all work-item/board entities are pure workflow-engine surface (drop); stranded worktrees are an HTTP-only report with no web consumer; per-predicate AC results never cross the wire (only the rolled-up verificationStatus does — detail rides the HTTP ReviewPackage into ReviewModal)."
+    },
+    "sdkShapes": {
+      "summary": "SDK: @anthropic-ai/claude-agent-sdk, pinned ^0.3.206 in apps/spike/package.json, installed 0.3.206 (plus platform binary @anthropic-ai/claude-agent-sdk-win32-x64@0.3.206). Types read from node_modules/.pnpm/.../claude-agent-sdk/sdk.d.ts (6917 lines). query({prompt: string | AsyncIterable<SDKUserMessage>, options}) returns Query, an AsyncGenerator<SDKMessage, void> that ALSO carries control methods (interrupt, setPermissionMode, setModel, close, streamInput, initializationResult, supportedCommands/Models/Agents, mcpServerStatus, getContextUsage, accountInfo, setMcpServers, stopTask, backgroundTasks, rewindFiles, usage_EXPERIMENTAL...) — most control methods only work when prompt is an AsyncIterable (streaming-input mode), not a plain string. SDKMessage is a 39-variant discriminated union on `type` (and `subtype` for type:'system'). Every variant carries uuid + session_id. Core flow per turn: system/init → assistant (full BetaMessage, may contain text/thinking/tool_use blocks) → user (tool_result blocks) → ... → result (success or error) — with optional stream_event token deltas interleaved when options.includePartialMessages:true. tool_use appears as content blocks INSIDE assistant messages (block.type==='tool_use' with id/name/input); tool_result comes back as a type:'user' message whose message.content holds tool_result blocks referencing the tool_use id, plus a parsed tool_use_result field. parent_tool_use_id is non-null on assistant/user/stream_event messages produced inside a subagent (Task tool) — key for filtering main-thread vs subagent output. Custom in-process tools: tool(name, desc, zodShape, handler) + createSdkMcpServer({name, version, tools, instructions?, alwaysLoad?}) → pass under options.mcpServers['key']; tool surfaces to the model as mcp__<server>__<toolname> and must be listed in allowedTools (spike proves this path works: mcp__spike__save_note). Permission hook: options.canUseTool(toolName, input, {signal, suggestions, toolUseID, agentID, requestId, title, displayName, description, blockedPath, decisionReason}) => Promise<PermissionResult|null> where PermissionResult = {behavior:'allow', updatedInput?, updatedPermissions?} | {behavior:'deny', message, interrupt?}. PermissionMode = 'default'|'acceptEdits'|'bypassPermissions'|'plan'|'dontAsk'|'auto'. The spike (apps/spike/src/chat.ts) uses permissionMode:'dontAsk' + allowedTools, single string prompt per turn, resume for continuity, and only consumes init/assistant/result — a WS event contract should at minimum add stream_event, user (tool results), permission_denied, rate_limit_event, status, and the error result subtypes.",
+      "messageTypes": [
+        {
+          "name": "system/init (SDKSystemMessage)",
+          "shape": "{type:'system', subtype:'init', session_id, uuid, apiKeySource:'user'|'project'|'org'|'temporary'|'oauth', claude_code_version, cwd, model, permissionMode, tools:string[], slash_commands:string[], skills:string[], agents?:string[], mcp_servers:{name,status}[], plugins:{name,path}[], output_style, betas?, capabilities?:string[], fast_mode_state?}",
+          "whenEmitted": "First message of every query() call, after the CLI subprocess initializes",
+          "mapsTo": "session id capture (resume), session-ready event, tool/MCP inventory for UI"
+        },
+        {
+          "name": "assistant (SDKAssistantMessage)",
+          "shape": "{type:'assistant', message:BetaMessage (id, model, role, stop_reason, usage, content:[{type:'text',text}|{type:'thinking',thinking}|{type:'tool_use',id,name,input}]), parent_tool_use_id:string|null, error?:SDKAssistantMessageError, uuid, session_id, request_id?, supersedes?:UUID[], subagent_type?, task_description?}",
+          "whenEmitted": "Once per completed API response (one or more per turn when tools run); parent_tool_use_id non-null when produced inside a subagent",
+          "mapsTo": "chat text + thinking + tool-call activity; error field feeds error UI ('rate_limit'|'billing_error'|'authentication_failed'|'overloaded'|'invalid_request'|'model_not_found'|'server_error'|'max_output_tokens'|'oauth_org_not_allowed'|'unknown')"
+        },
+        {
+          "name": "user (SDKUserMessage)",
+          "shape": "{type:'user', message:MessageParam (content includes tool_result blocks {type:'tool_result', tool_use_id, content, is_error?}), parent_tool_use_id:string|null, tool_use_result?:unknown, isSynthetic?, priority?, origin?, shouldQuery?, timestamp?, uuid?, session_id?}",
+          "whenEmitted": "After each tool execution (tool results are user-role messages), and for synthetic/queued user turns",
+          "mapsTo": "tool activity (result payloads); pair tool_result.tool_use_id with the earlier tool_use block id"
+        },
+        {
+          "name": "user replay (SDKUserMessageReplay)",
+          "shape": "Same as SDKUserMessage plus {isReplay:true, uuid:UUID (required), file_attachments?}",
+          "whenEmitted": "Echo/ack of user input and on session resume replays",
+          "mapsTo": "transcript reconciliation (dedupe by uuid); usually hidden from chat"
+        },
+        {
+          "name": "stream_event (SDKPartialAssistantMessage)",
+          "shape": "{type:'stream_event', event:BetaRawMessageStreamEvent (raw Anthropic API events: message_start | content_block_start | content_block_delta{delta:{type:'text_delta',text}|{type:'thinking_delta',thinking}|{type:'input_json_delta',partial_json}} | content_block_stop | message_delta{usage} | message_stop), parent_tool_use_id, uuid, session_id, ttft_ms?}",
+          "whenEmitted": "ONLY when options.includePartialMessages:true; interleaved during generation before the full assistant message arrives",
+          "mapsTo": "live token streaming to chat UI — text_delta for text, thinking_delta for reasoning, input_json_delta for tool args as they're typed"
+        },
+        {
+          "name": "result success (SDKResultSuccess)",
+          "shape": "{type:'result', subtype:'success', result:string (final text), is_error, num_turns, stop_reason, duration_ms, duration_api_ms, ttft_ms?, total_cost_usd, usage:NonNullableUsage (BetaUsage: input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, ...), modelUsage:Record<model,{inputTokens,outputTokens,cacheReadInputTokens,cacheCreationInputTokens,webSearchRequests,costUSD,contextWindow,maxOutputTokens}>, permission_denials:{tool_name,tool_use_id,tool_input}[], structured_output?, deferred_tool_use?, terminal_reason?, fast_mode_state?, uuid, session_id}",
+          "whenEmitted": "Terminal message of every successful query(); iterator ends after it",
+          "mapsTo": "turn-complete event + usage/cost display (spike reads usage.input_tokens/output_tokens/cache_read_input_tokens and total_cost_usd here)"
+        },
+        {
+          "name": "result error (SDKResultError)",
+          "shape": "{type:'result', subtype:'error_during_execution'|'error_max_turns'|'error_max_budget_usd'|'error_max_structured_output_retries', is_error, errors:string[], num_turns, duration_ms, duration_api_ms, total_cost_usd, usage, modelUsage, permission_denials, terminal_reason?:TerminalReason ('blocking_limit'|'prompt_too_long'|'max_turns'|'aborted_streaming'|'api_error'|'completed'|...), uuid, session_id}",
+          "whenEmitted": "Terminal message when the turn fails or hits maxTurns/maxBudgetUsd",
+          "mapsTo": "error UI + usage still available; spike logs subtype when !== 'success'"
+        },
+        {
+          "name": "system/status (SDKStatusMessage)",
+          "shape": "{type:'system', subtype:'status', status:'compacting'|'requesting'|null, permissionMode?, compact_result?:'success'|'failed', compact_error?, uuid, session_id}",
+          "whenEmitted": "Loop state transitions (starting an API request, compacting context)",
+          "mapsTo": "spinner/status indicator"
+        },
+        {
+          "name": "system/compact_boundary (SDKCompactBoundaryMessage)",
+          "shape": "{type:'system', subtype:'compact_boundary', compact_metadata:{trigger:'manual'|'auto', pre_tokens, post_tokens?, duration_ms?, preserved_segment?, preserved_messages?}, uuid, session_id}",
+          "whenEmitted": "After context compaction",
+          "mapsTo": "transcript divider / context-usage reset"
+        },
+        {
+          "name": "tool_progress (SDKToolProgressMessage)",
+          "shape": "{type:'tool_progress', tool_use_id, tool_name, parent_tool_use_id, elapsed_time_seconds, task_id?, uuid, session_id}",
+          "whenEmitted": "Periodically while a long-running tool executes",
+          "mapsTo": "tool activity spinner ('Bash running 12s...')"
+        },
+        {
+          "name": "system/task_started / task_progress / task_notification / task_updated / background_tasks_changed",
+          "shape": "task_started:{task_id, tool_use_id?, description, subagent_type?, task_type?, prompt?, skip_transcript?}; task_progress:{task_id, description, usage:{total_tokens, tool_uses, duration_ms}, last_tool_name?, summary?}; task_notification:{task_id, status:'completed'|'failed'|'stopped', output_file, summary, usage?}; task_updated:{task_id, patch:{status?:'pending'|'running'|'completed'|'failed'|'killed'|'paused', description?, end_time?, error?, is_backgrounded?}}; background_tasks_changed:{tasks:{task_id,task_type,description}[] — REPLACE semantics}",
+          "whenEmitted": "Subagent (Task tool) and background-task lifecycle; task_progress ~30s summaries need options.agentProgressSummaries:true",
+          "mapsTo": "agent-dispatch panel — this is the natural feed for PC-SDK's agent dispatch UI"
+        },
+        {
+          "name": "rate_limit_event (SDKRateLimitEvent)",
+          "shape": "{type:'rate_limit_event', rate_limit_info:{status:'allowed'|'allowed_warning'|'rejected', resetsAt?:number (epoch), rateLimitType?:'five_hour'|'seven_day'|'seven_day_opus'|'seven_day_sonnet'|'seven_day_overage_included'|'overage', utilization?:number, overageStatus?, overageResetsAt?, overageDisabledReason?, isUsingOverage?, surpassedThreshold?, errorCode?:'credits_required'}, uuid, session_id}",
+          "whenEmitted": "Whenever subscription rate-limit info changes (claude.ai plan users — exactly the Max-plan case)",
+          "mapsTo": "usage/quota meter — the push-based 5-hour / 7-day window signal"
+        },
+        {
+          "name": "system/permission_denied (SDKPermissionDeniedMessage)",
+          "shape": "{type:'system', subtype:'permission_denied', tool_name, tool_use_id, agent_id?, decision_reason_type? ('classifier'|'mode'|'rule'|...), decision_reason?, message (rejection text sent to model), uuid, session_id}",
+          "whenEmitted": "Tool auto-denied without a prompt (dontAsk mode, deny rule, auto classifier) — the 'ask' path goes through canUseTool instead",
+          "mapsTo": "tool activity (denied badge); important under the spike's dontAsk mode"
+        },
+        {
+          "name": "system/api_retry (SDKAPIRetryMessage)",
+          "shape": "{type:'system', subtype:'api_retry', attempt, max_retries, retry_delay_ms, error_status:number|null, error:SDKAssistantMessageError, uuid, session_id}",
+          "whenEmitted": "Retryable API failure (429/529/timeouts) before the retry fires",
+          "mapsTo": "transient-error toast / status line"
+        },
+        {
+          "name": "system/informational + system/local_command_output + system/notification",
+          "shape": "informational:{content, level:'info'|'notice'|'suggestion'|'warning', tool_use_id?, prevent_continuation?}; local_command_output:{content}; notification:{key, text, priority:'low'|'medium'|'high'|'immediate', color?, timeout_ms?}",
+          "whenEmitted": "Loop banners, hook feedback, slash-command output, REPL-style notifications",
+          "mapsTo": "chat-adjacent system text"
+        },
+        {
+          "name": "system/hook_started / hook_progress / hook_response",
+          "shape": "{hook_id, hook_name, hook_event, stdout, stderr, output, exit_code?, outcome:'success'|'error'|'cancelled'}",
+          "whenEmitted": "Only when options.includeHookEvents:true (SessionStart/Setup always emitted)",
+          "mapsTo": "tool/hook activity detail"
+        },
+        {
+          "name": "system/session_state_changed (SDKSessionStateChangedMessage)",
+          "shape": "{type:'system', subtype:'session_state_changed', state:'idle'|'running'|'requires_action', uuid, session_id}",
+          "whenEmitted": "Session-level state transitions; 'idle' is the authoritative turn-over signal",
+          "mapsTo": "busy indicator / input enable-disable"
+        },
+        {
+          "name": "system/thinking_tokens (SDKThinkingTokensMessage)",
+          "shape": "{type:'system', subtype:'thinking_tokens', estimated_tokens, estimated_tokens_delta, uuid, session_id}",
+          "whenEmitted": "During redacted-thinking phases (approximate progress, not billed tokens)",
+          "mapsTo": "thinking spinner progress"
+        },
+        {
+          "name": "tool_use_summary (SDKToolUseSummaryMessage)",
+          "shape": "{type:'tool_use_summary', summary, preceding_tool_use_ids:string[], uuid, session_id}",
+          "whenEmitted": "AI-generated summary of a run of tool calls",
+          "mapsTo": "collapsed tool-activity caption"
+        },
+        {
+          "name": "system/model_refusal_fallback / model_refusal_no_fallback",
+          "shape": "{original_model, fallback_model?, request_id, content, api_refusal_category?, retracted_message_uuids?:string[] (EVICT these from transcript), refused_user_message_uuid?}",
+          "whenEmitted": "Model refusal → retried on fallback model (or not); assistant messages may carry supersedes?:UUID[] with the same eviction semantics",
+          "mapsTo": "error/notice UI + transcript message eviction"
+        },
+        {
+          "name": "remaining variants (lower priority)",
+          "shape": "auth_status {isAuthenticating, output[], error?}; prompt_suggestion {suggestion}; conversation_reset {new_conversation_id}; system subtypes: commands_changed {commands}, plugin_install, files_persisted, elicitation_complete, memory_recall, mirror_error, worker_shutting_down {reason}, control_request_progress {request_id, status:'started'|'api_retry'}",
+          "whenEmitted": "Various niche lifecycle points",
+          "mapsTo": "mostly ignorable for v1 — contract should tolerate unknown type/subtype and drop them"
+        }
+      ],
+      "sessionAndResume": "Every SDKMessage carries session_id. The canonical capture point is the system/init message (first message of each query() call) — the spike does exactly this: `if (msg.type==='system' && msg.subtype==='init') sessionId = msg.session_id`. To continue a conversation, pass options.resume = that session id on the NEXT query() call; the CLI reloads the transcript from disk (~/.claude/projects/ under whichever CLAUDE_CONFIG_DIR is active — the spike's account switcher works because sessions live per config dir, so switching accounts must clear the session id). Related options: `continue: true` resumes the most recent session in cwd (mutually exclusive with resume); `forkSession: true` makes resume branch to a NEW session id instead of appending; `sessionId` forces a specific UUID for a new session (only combinable with resume/continue when forkSession is set); `resumeSessionAt: <message uuid>` resumes only up to a specific message (uuid from SDKAssistantMessage.uuid) — the basis for edit/rewind; `persistSession: false` disables disk persistence entirely (then resume is impossible). Standalone session-management exports: listSessions(), getSessionInfo(), getSessionMessages(), getSubagentMessages(), forkSession(sessionId, {upToMessageId?, title?}) → {sessionId} resumable via resume, deleteSession(), renameSession(), tagSession(). Alternative to per-turn resume: pass prompt as an AsyncIterable<SDKUserMessage> (streaming-input mode) and keep ONE query() alive across turns via q.streamInput(); this is also the only mode where Query control methods (interrupt, setModel, setPermissionMode, setMcpServers, ...) work — relevant since a WS server will want interrupt().",
+      "usageAndLimits": "Three layers. (1) Per-turn, in the result message: total_cost_usd (API-equivalent dollars — informational on Max subscription, not billed), usage: NonNullableUsage = BetaUsage with nulls stripped (input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, plus server tool use counts), and modelUsage: per-model breakdown {inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, webSearchRequests, costUSD, contextWindow, maxOutputTokens}. Present on BOTH success and error results. Each assistant message's embedded BetaMessage also carries its own usage. (2) Push-based subscription quota: type:'rate_limit_event' fires whenever limit info changes, with rate_limit_info {status: allowed | allowed_warning | rejected, rateLimitType: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included' | 'overage', utilization (percent), resetsAt (epoch), overage fields incl. overageDisabledReason and errorCode:'credits_required'} — this is the 5-hour-window signal for Max plans. (3) Pull-based: Query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() returns SDKControlGetUsageResponse: session totals (cost, durations, lines added/removed, model_usage), subscription_type ('pro'|'max'|'team'|'enterprise'|null), rate_limits_available flag, rate_limits {five_hour, seven_day, seven_day_opus, seven_day_sonnet, seven_day_oauth_apps each {utilization 0-100, resets_at ISO}, model_scoped[], extra_usage {monthly_limit, used_credits, ...}}, and behaviors (local-transcript attribution of what's consuming quota, day/week windows, per-skill/agent/plugin/MCP-server percentages). Method name is explicitly unstable. Query.getContextUsage() gives a context-window breakdown per category. Query.accountInfo() → {email, organization, subscriptionType, apiProvider}. When rate limits hard-reject, expect assistant.error or api_retry error 'rate_limit' plus rate_limit_event status 'rejected'.",
+      "gotchas": [
+        "Token-level streaming is OFF by default: the spike gets only whole assistant messages. The WS contract needs options.includePartialMessages:true to receive type:'stream_event' deltas; final assistant messages still arrive afterward, so the UI must dedupe (replace streamed buffer with the final message, keyed by uuid/message id).",
+        "Query control methods (interrupt, setPermissionMode, setModel, setMcpServers, streamInput, ...) require streaming-input mode — prompt must be an AsyncIterable<SDKUserMessage>, not a string. The spike's string-prompt-per-turn pattern cannot interrupt mid-turn except via options.abortController (which throws AbortError from the iterator) or q.close() (hard process kill).",
+        "Auth on Max subscription: ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in env SHADOW the Claude Code OAuth login — the spike explicitly deletes both and sets CLAUDE_CONFIG_DIR to pick the account. Any server env passthrough must preserve this.",
+        "tool_result payloads arrive as type:'user' messages (role user), not on the assistant side — a naive 'user messages = human input' mapping will mislabel tool results. Distinguish via message.content block types / tool_use_result / isSynthetic.",
+        "parent_tool_use_id != null means the assistant/user/stream_event message came from inside a subagent (Task tool). Without filtering, subagent chatter interleaves with main-thread chat. Subagent text is also gated by options.forwardSubagentText.",
+        "SDKMessage has 39 variants and grows (open set; system/init even ships a `capabilities` feature-detect array). The WS contract should switch on known type/subtype and silently drop unknowns rather than throwing.",
+        "system/init arrives on EVERY query() call (each call spawns a CLI subprocess in string-prompt mode) — treat it as turn-start metadata, not app-level session creation.",
+        "total_cost_usd is API-equivalent pricing; on Max it is not money spent. The real constraint is rate_limit_event utilization (five_hour / seven_day windows).",
+        "permissionMode 'dontAsk' auto-denies anything not pre-allowed and emits system/permission_denied (the spike relies on allowedTools). canUseTool is the interactive 'ask' hook: return {behavior:'allow'|'deny'}; note PreToolUse hook denies bypass canUseTool entirely, and options.hooks (PreToolUse/PostToolUse/Stop/...) only surface as hook_* messages when includeHookEvents:true.",
+        "Custom SDK MCP tools run IN the host process (createSdkMcpServer returns {type:'sdk', instance} — McpSdkServerConfigWithInstance); handler exceptions and blocking work happen on your server's event loop. Tool name on the wire is mcp__<serverKey>__<toolName> and must appear in allowedTools to run unprompted.",
+        "Refusal-fallback eviction semantics: assistant messages may carry supersedes:UUID[] and system/model_refusal_fallback carries retracted_message_uuids — a durable transcript store must support removing already-delivered messages by uuid.",
+        "maxTurns/maxBudgetUsd overruns are NOT exceptions — they surface as a normal result message with subtype 'error_max_turns'/'error_max_budget_usd' and is_error:true; only transport/abort failures throw from the iterator (AbortError on abort).",
+        "SDKUserMessage.uuid is optional (session_id too) while SDKUserMessageReplay.uuid is required with isReplay:true — key WS message identity on (uuid ?? server-generated id).",
+        "The pinned range ^0.3.206 floats; 0.x semver means minor bumps can break the message union. Pin exact or lock before writing the contract. Types file: E:/Claude Code Projects/Personal/PC-SDK/node_modules/.pnpm/@anthropic-ai+claude-agent-_8ae415a772cdcb02b8c21e8642d8e15f/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts; spike consumer: E:/Claude Code Projects/Personal/PC-SDK/apps/spike/src/chat.ts."
+      ]
+    },
+    "portInventory": {
+      "summary": "Surveyed all six packages in PC-PTY-Chat (src total ~29,900 LOC, 133 src files + 70 test files). Bottom line: domain, contracts, and utils are clean leaf packages (no @pc imports; domain needs only `yaml`, contracts needs nothing) — easy copies once workflow/work-item modules are cut. db and app-services carry the heaviest demolition: roughly 1/3 of the 36 DB tables die (work-item board, workflow engine, PTY send-queue, statusline/post-turn JSONL tailers), and app-services loses 4 of its 7 service families. The three biggest tangles: (1) domain/tool-registry.ts is one 2,229-line array mixing 74 tools across families — 40 die (29 work-item + 11 workflow) and it is parity-tested against @pc/mcp's handler map, so both must be pruned in lockstep; (2) the kept 'write door' gateways (agent-runs, contracts, mailbox) all emit OLD live-event type names into live_outbox — they compile fine but fight the new event contract; (3) kept agent-dispatch shapes (agent_contracts.work_item_id, parentWorkItemId in agent-runs DTOs, ac-evaluator importing WorkItemStatus) carry soft references to the dead work-item concept that must be stubbed or nulled, not deleted blindly. The 3 dying runtime-* wire modules in contracts are cleanly isolated — nothing in the web UI imports their symbols.",
+      "packages": [
+        {
+          "name": "db",
+          "approxSize": "37 src files / ~9,670 LOC (+18 test files, 66 SQL migrations). Biggest files: schema.ts 1,175; repos/work-items.ts 1,027; repos/pods.ts 711.",
+          "keepModules": "connection.ts, id.ts, migrate.ts, index.ts (barrel, needs trimming). Repos: projects, live-outbox, worktrees, orchestrator-sessions, settings, pods, pod-audit, pod-revision, mcp-servers, mcp-attachments, credentials, context-docs, context-doc-reads, mailbox, conversation-events, agent-runs, contracts, pending-asks. KEEP tables (~23): projects, live_outbox (rework: entity/type enums are the old wire), worktrees (drop work_item_id/workflow_run_id columns), orchestrator_sessions (drop jsonl_path/jsonl_line_cursor PTY columns), settings_global, agents, agent_secrets, agent_projects, agent_audit, mcp_servers, agent_mcp_attachments, conversation_events (chat replay store — concept keeps, shape follows new contract), mailbox_messages/recipients/deliveries/dead_letters/audit (5 tables), context_docs, context_doc_reads, credentials, agent_runs, agent_contracts, pending_asks.",
+          "deleteModules": "Repos: work-items (1,027 LOC incl getBoardHealth), work-item-dossiers, areas, field-schemas, attachments, workflows (560), workflow-runs-v2, workflow-audit, failed-run-dismissals, orchestrator-send-queue (407, PTY delivery), statusline-snapshots, post-turn-summaries. DYING tables (~13 of 36, the ~1/3): work_items, work_item_dossiers, areas (work-item buckets), field_schemas (work-item detail editors), attachments (work-item-bound, inline content), workflows, workflow_audit, workflow_runs_v2, workflow_run_events, failed_run_dismissals (FK → workflow_runs_v2), orchestrator_send_queue (statuses incl 'delivered_to_pty'), statusline_snapshots (fed by CC statusline hook via PTY spawn — quota UI loses its store), post_turn_summaries (fed by the PTY JSONL tailer). schema-dossier.ts dies whole; schema-agent-system.ts keeps whole (agent_runs/agent_contracts/pending_asks).",
+          "externalDeps": "npm: better-sqlite3, drizzle-orm, ulid (+ drizzle-kit, @types/better-sqlite3 dev). Cross-package: @pc/domain (36 imports — types for every repo), @pc/utils (data-dir for the sqlite file path).",
+          "risks": "(1) schema.ts is ONE 1,175-line file — table pruning is surgery in a single file, and connection.ts + migrate.ts both do `import * as schema`, so half-deleted tables break everything at once. (2) 66-migration ledger + migrate.ts's schema-drift guard (walks every declared table/column and refuses to boot on drift): you cannot just delete tables from schema.ts and keep the migrations — decide fresh-DB-with-squashed-schema up front or the guard fights you. (3) live_outbox hardcodes the OLD entity union ('work-item', 'workflow-run', ...) in a $type annotation — harmless at runtime (sqlite text) but the kept repos/gateways insert old event type strings. (4) agent_contracts.work_item_id and worktrees.work_item_id/workflow_run_id are soft columns referencing dead tables — keep-and-null or drop, but repos/contracts.ts indexes and queries by workItemId (forWorkItem route) so its query surface needs a trim. (5) index.ts barrel (488 LOC) re-exports every repo — each pruned repo is also a barrel edit."
+        },
+        {
+          "name": "domain",
+          "approxSize": "27 src files / ~7,146 LOC (+12 test files). tool-registry.ts alone is 2,229 LOC (31%).",
+          "keepModules": "ulid.ts, agent.ts, agent-file.ts (yaml round-trip parser), agent-system.ts (agent_runs/pending_asks shapes), agent-comms.ts (pc_invoke_agent/pc_ask_orchestrator event kinds), contract.ts (v2 ExpectedOutput/Deliverable/acceptance predicates — the dispatch→contract→verify core), ac-derivation.ts, ac-evaluator.ts, pod.ts, pod-defaults.ts, project.ts (Project keeps; its Stage type is board-only — trim), settings.ts, orchestrator.ts, worktree.ts, tool-registry.ts (heavily trimmed), tool-catalog.ts, index.ts (barrel, trimmed).",
+          "deleteModules": "workflow-v2.ts (409), workflow-row.ts, workflow-mermaid.ts, work-item.ts, work-item-policy.ts, roll-up.ts (work-item roll-up engine), subagent-failure.ts (emitted by workflow runtime), attachment.ts (work-item-bound), field-schema.ts (work-item detail editors), statusline.ts (CC statusline hook shape — PTY-plumbed; dies unless the SDK rewrite re-sources quota data). Inside tool-registry.ts: the 29 family:'work-item' + 11 family:'workflow' entries (40 of 74 tools) die.",
+          "externalDeps": "npm: yaml (only runtime dep — used by agent-file.ts). Cross-package: NONE — clean leaf. Note the `./tool-registry` subpath export: @pc/mcp imports it barrel-free to keep yaml out of its esbuild bundle; preserve that export or the mcp build breaks.",
+          "risks": "(1) tool-registry.ts is a single ordered array that four consumers derive from (mcp TOOLS, PC_RIG_TOOL_NAMES, TOOL_CATALOG, CAPABILITIES) and a parity test asserts a bijection with @pc/mcp's PC_RIG_HANDLERS — pruning 40 tools means synchronized edits in domain + mcp + the test. (2) Kept-code tangles into dead modules: ac-evaluator.ts imports WorkItemStatus from work-item.ts; pod-defaults.ts imports expectedOutputRequiresWorkItem from work-item-policy.ts; agent-system.ts/agent-comms.ts carry parentWorkItemId fields. These are the verify/dispatch core — they need small stub edits, not module deletion. (3) index.ts barrel (282 lines) re-exports WorkflowV2 etc.; apps/web imports WorkflowV2 from @pc/domain, so the old UI's workflow pages break the moment the barrel is trimmed — sequencing matters. (4) contract.ts's landing status references worktree/mainline landing — fine (kept), but comments claim workflow-owned runs land via the workflow merge node; the landing state machine may have workflow-shaped branches to amputate."
+        },
+        {
+          "name": "contracts",
+          "approxSize": "22 src files / ~4,356 LOC (+16 test files). Zero runtime npm deps — pure TS shapes/guards.",
+          "keepModules": "shared.ts (ULID, ParseResult), projects.ts, contracts.ts (agent-contract DTOs — trim the forWorkItem route helper), agent-runs.ts (trim parentWorkItemId), pending-asks.ts, conversations.ts (ConversationKind across sessions/agent runs), mailbox.ts (trim kinds), pods.ts, review-package.ts (trim the 'workflow-gate' producer flavor; keep agent-verification + orchestrator-adhoc), inbox-classifier.ts (trim workflow cases), live-events.ts (KEEP ONLY AS REFERENCE — it is the old WS wire the new event contract replaces; its LiveEventEntity/LiveEventTypeName unions are 50% dead entities), index.ts (barrel, trimmed).",
+          "deleteModules": "runtime-transcript.ts (133), runtime-send-queue.ts (118), runtime-hook-ask.ts (50) — the 3 PTY wire modules. Plus board-side: work-items.ts (325), stages.ts, field-schemas.ts, attachments.ts, areas.ts, workflow-definitions.ts (111), workflow-runs.ts (368). ~1,450 LOC dies.",
+          "externalDeps": "npm: NONE (devDeps only). Cross-package: NONE. The web UI imports exclusively via the '@pc/contracts' barrel (37 import sites) — heaviest consumers: LiveEvent machinery, project DTOs, Contract/ExpectedOutput/Deliverable/AcceptanceCriteria, mailbox DTOs, pod/area/host-health live payloads.",
+          "risks": "(1) Everything flows through index.ts — every pruned module is a barrel edit, and the web UI's 37 barrel imports mean any missed re-export is an immediate UI type break. (2) mailbox.ts's MAILBOX_MESSAGE_KINDS union bakes in dying kinds ('workflow-run-failed', 'workflow-first-run-review', 'runtime-hook-ask', work-item 'verification-review') that are string-matched in inbox-classifier.ts AND in the web UI (MailboxInbox.tsx groups/orders by these literals) — pruning the enum ripples into classifier switch cases, its table-driven test, and UI grouping maps. (3) review-package.ts (370 LOC) unifies three producers; excising the workflow-gate flavor touches its discriminated union, guards, and the UI review surfaces. (4) live-events.ts is load-bearing for the OLD UI until the rewire lands — copy it as the porting reference, but do not let its entity enums leak into the new contract."
+        },
+        {
+          "name": "mcp",
+          "approxSize": "21 src files / ~5,471 LOC (+12 test files, plus scripts/build.mjs esbuild bundler).",
+          "keepModules": "server.ts (TOOLS zipped from domain registry), http-endpoint.ts (the shared /api/mcp HTTP door — the ONLY live transport since FD-2 killed per-session STDIO), transport.ts, call.ts, probe.ts, oauth/provider.ts, client/typed-client.ts, tools/context.ts, tools/handlers.ts (trim the map), tools/meta.ts (pc_find_tool/pc_call_tool two-tier door), tools/retry.ts, tools/agents.ts (632 — pod CRUD), tools/agent-runs.ts (571 — pc_invoke_agent/continue/kill/inspect), tools/context-docs.ts (287), tools/index.ts, parts of tools/project-config.ts (pc_list_projects/pc_write_claude_md keep; pc_replace_stages/pc_replace_field_schemas die).",
+          "deleteModules": "tools/work-items.ts (1,061 — largest file), tools/workflows.ts (587), tools/work-item-dossiers.ts (286), tools/board-health.ts, tools/next-action.ts (196 — picks the next work item). ~2,200 LOC dies.",
+          "externalDeps": "npm: @modelcontextprotocol/sdk (+ esbuild dev, for the dist/server.mjs bundle). Cross-package: @pc/contracts, @pc/domain, and the barrel-free '@pc/domain/tool-registry' subpath (deliberate — keeps yaml's dynamic CJS require out of the esbuild ESM bundle; a barrel import breaks the dist boot).",
+          "risks": "(1) The bijection parity test: PC_RIG_HANDLERS (handlers.ts) must match domain's PC_RIG_TOOL_REGISTRY name-for-name in order — a half-pruned tool fails the build; prune domain registry + mcp handler + test together. (2) Every kept tool handler dispatches over localhost HTTP to apps/server routes (typed-client + retry.ts) — kept tools like pc_get_contract/pc_submit_deliverable/pc_list_context assume server routes the rewrite must re-provide; the package compiles even when routes are missing, so breakage is runtime-only. (3) tools/context.ts likely injects PC_PROJECT_ID/session identity from spawn env headers — the identity scheme was designed for PTY-spawned claude.exe children; the SDK dispatch path must reproduce the signed-header handshake http-endpoint.ts verifies. (4) The esbuild build script + subpath exports map in package.json are fragile copy items — keep exports for ./http-endpoint, ./probe, ./call, ./oauth/provider intact (apps/server imports all four)."
+        },
+        {
+          "name": "app-services",
+          "approxSize": "24 src files / ~3,208 LOC (+12 test files).",
+          "keepModules": "agent-runs/ (run-gateway 284 + adapters — the live_outbox write door for agent_runs transitions), contracts/ (service 236 — write door for agent contracts), mailbox/ (mailbox-service 461 + adapters — durable mailbox write door; trim workflow-kind handling), projects.ts (346), index.ts barrel (trimmed).",
+          "deleteModules": "work-items/ (gateway 336 + adapters), workflows/ (run-gateway 271 + boot-reconcile 97 + adapters), areas/ (service 149), conversations/ (send-service 352 + replay-service + transcript-repository + adapters, ~610 total — built entirely on the dying runtime-send-queue/runtime-transcript wire and the orchestrator_send_queue PTY table; the chat replay CONCEPT survives but this code is a rewrite, not a port).",
+          "externalDeps": "npm: NONE. Cross-package: @pc/contracts, @pc/db, @pc/domain only. apps/server has 33 import sites on this package — the composition layer that fans out gateway publications lives server-side.",
+          "risks": "(1) All three kept modules follow the same pattern: mutation + insertLiveEvent(tx, draft) in one transaction, emitting OLD event type names ('agent.run.changed', 'contract.changed', 'mailbox.message.changed') — the code ports cleanly but every emitted draft must be re-pointed at the NEW event contract, which is exactly the seam the rewrite is about; porting these unmodified silently resurrects the old wire. (2) mailbox-service's delivery model has targetRefKind 'send-queue' — orchestrator-bound deliveries drain through the PTY send queue via a server-injected send facade; the kept mailbox loses its orchestrator delivery leg until the SDK equivalent exists (kind strings + drain logic reference it). (3) conversations/ is the tempting trap: it looks like 'orchestrator chat' (keep-listed) but is 100% the old PTY wire — copying it drags in runtime-transcript, runtime-send-queue, orchestrator_send_queue, and conversation_events' jsonl-shaped envelopes. Budget it as new code."
+        },
+        {
+          "name": "utils",
+          "approxSize": "2 src files / 38 LOC. Trivial.",
+          "keepModules": "data-dir.ts (PC_DATA_DIR env override, else walk up to pnpm-workspace.yaml → <root>/data), index.ts.",
+          "deleteModules": "Nothing.",
+          "externalDeps": "None (node builtins only). @pc/db depends on it for the sqlite path.",
+          "risks": "Only that its default assumes a pnpm workspace root with pnpm-workspace.yaml — if PC-SDK changes workspace tooling or layout, the fallback silently picks the wrong data dir. 10-minute copy."
+        }
+      ],
+      "contractsTrim": "The 3 dying runtime-* wire modules in packages/contracts/src: (1) runtime-transcript.ts (133 LOC — TranscriptEventDto/TranscriptReplayResponse, a byte-identical mirror of the PTY server's ReplayEnvelope and the GET /sessions/:id/events body); (2) runtime-send-queue.ts (118 LOC — RuntimeSendQueueItemDto + the 8 orchestrator_send_queue statuses incl 'delivered_to_pty'/'observed_in_jsonl', plus SendRuntimeTurn request/response); (3) runtime-hook-ask.ts (50 LOC — parse-only mirror of the PTY hook's /api/ask body). Complete importer list (verified by symbol grep across the repo): [a] packages/contracts/src/index.ts lines 15-17 — barrel re-exports, delete 3 lines; [b] packages/app-services/src/conversations/replay-service.ts and conversations/adapters.ts — import transcript symbols (module dies anyway); [c] packages/app-services/src/conversations/send-service.ts and adapters.ts — import send-queue symbols (dies anyway); [d] apps/server/src/features/runtime-host/routes.ts — imports transcript symbols (PTY host, dies with the server); [e] their own tests: contracts/test/runtime-transcript.test.ts, runtime-send-queue.test.ts, runtime-hook-ask.test.ts. runtime-hook-ask's symbols are imported by NOTHING outside its own test — the hook route consumed it untyped. Critically, the web UI imports ZERO symbols from any runtime-* module; the only UI trace is the string literal 'runtime-hook-ask' used as a MailboxMessageKind (defined in mailbox.ts's kind enum, with a switch case in inbox-classifier.ts and a grouping label in apps/web MailboxInbox.tsx) — that is a mailbox-kind cleanup, not a module dependency. Net: deleting the 3 modules + 3 barrel lines + 3 test files is self-contained once app-services/conversations and the server's runtime-host feature are already condemned."
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Research"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "chat-wire",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a1921c7d1f8b6e52c",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783693809806,
+      "queuedAt": 1783693809782,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Chat in PC-PTY-Chat rides one per-project WebSocket (/ws?pr…",
+      "promptPreview": "You are researching an old codebase (PC-PTY-Chat at E:/Claude Code Projects/Personal/PC-PTY-Chat) to inform a rewrite (PC-SDK at E:/Claude Code Projects/Personal/PC-SDK). Context: the rewrite deletes the PTY terminal engine, the workflow engine, and internal work items. It keeps: orchestrator chat, agent dispatch->contract->verify->land, worktrees, MCP tooling, and the whole web UI shell. The rewr…",
+      "lastProgressAt": 1783694238410,
+      "tokens": 121348,
+      "toolCalls": 43,
+      "durationMs": 428603,
+      "resultPreview": "{\"events\":[{\"name\":\"session-changed\",\"direction\":\"server->client\",\"shape\":\"{ projectId: string; type: 'session-changed'; transition?: 'new-session' | 'resume-session'; session: OrchestratorSession | null }  // session fields read: id, projectId, model, title, status ('active'|'ended'), startedAt\",\"consumers\":\"chat-session-reducer (applySessionChanged: on 'new-session' wipes timeline/aggregates/see…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "agent-status",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "ab64eab47c4e4485a",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783693809808,
+      "queuedAt": 1783693809782,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "PC-PTY-Chat pushes agent status to the browser over one per…",
+      "promptPreview": "You are researching an old codebase (PC-PTY-Chat at E:/Claude Code Projects/Personal/PC-PTY-Chat) to inform a rewrite (PC-SDK at E:/Claude Code Projects/Personal/PC-SDK). Context: the rewrite deletes the PTY terminal engine, the workflow engine, and internal work items. It keeps: orchestrator chat, agent dispatch->contract->verify->land, worktrees, MCP tooling, and the whole web UI shell. The rewr…",
+      "lastProgressAt": 1783694356865,
+      "tokens": 167784,
+      "toolCalls": 61,
+      "durationMs": 547057,
+      "resultPreview": "{\"events\":[{\"name\":\"live-event (relay frame wrapper)\",\"direction\":\"server->client\",\"shape\":\"{ type: 'live-event', event: { id: ULID, cursor: string /* numeric-string global seq */, scope: 'project'|'global', projectId: ULID|null, type: string /* e.g. 'agent.run.changed' */, entity: LiveEventEntity, entityId: ULID|null, version: number|null, createdAt: number, payload: unknown } }\",\"consumers\":\"use…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "sdk-shapes",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a21d4c2d2d5a9b357",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783693809821,
+      "queuedAt": 1783693809782,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "SDK: @anthropic-ai/claude-agent-sdk, pinned ^0.3.206 in app…",
+      "promptPreview": "You are researching the Claude Agent SDK to inform a new server event contract for a chat + agent-dispatch app (PC-SDK at E:/Claude Code Projects/Personal/PC-SDK).\n\nTASK: Document exactly what the SDK's query() async iterator emits, so we can map SDK output onto our own WebSocket events.\nSources, in priority order: (1) the working spike at E:/Claude Code Projects/Personal/PC-SDK/apps/spike — read …",
+      "lastProgressAt": 1783694127602,
+      "tokens": 78131,
+      "toolCalls": 28,
+      "durationMs": 317781,
+      "resultPreview": "{\"summary\":\"SDK: @anthropic-ai/claude-agent-sdk, pinned ^0.3.206 in apps/spike/package.json, installed 0.3.206 (plus platform binary @anthropic-ai/claude-agent-sdk-win32-x64@0.3.206). Types read from node_modules/.pnpm/.../claude-agent-sdk/sdk.d.ts (6917 lines). query({prompt: string | AsyncIterable<SDKUserMessage>, options}) returns Query, an AsyncGenerator<SDKMessage, void> that ALSO carries con…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "port-inventory",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a6ef0a5c2ef1de26f",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783693809833,
+      "queuedAt": 1783693809783,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Surveyed all six packages in PC-PTY-Chat (src total ~29,900…",
+      "promptPreview": "You are researching an old codebase (PC-PTY-Chat at E:/Claude Code Projects/Personal/PC-PTY-Chat) to inform a rewrite (PC-SDK at E:/Claude Code Projects/Personal/PC-SDK). Context: the rewrite deletes the PTY terminal engine, the workflow engine, and internal work items. It keeps: orchestrator chat, agent dispatch->contract->verify->land, worktrees, MCP tooling, and the whole web UI shell. The rewr…",
+      "lastProgressAt": 1783694305870,
+      "tokens": 82447,
+      "toolCalls": 33,
+      "durationMs": 496037,
+      "resultPreview": "{\"summary\":\"Surveyed all six packages in PC-PTY-Chat (src total ~29,900 LOC, 133 src files + 70 test files). Bottom line: domain, contracts, and utils are clean leaf packages (no @pc imports; domain needs only `yaml`, contracts needs nothing) — easy copies once workflow/work-item modules are cut. db and app-services carry the heaviest demolition: roughly 1/3 of the 36 DB tables die (work-item boar…"
+    }
+  ],
+  "totalTokens": 449710,
+  "totalToolCalls": 165
+}
