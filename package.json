@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "spike": "pnpm --filter @pc-sdk/spike start",
+    "smoke": "pnpm --filter @pc-sdk/server smoke",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r --if-present test",
     "check:dead-imports": "node scripts/check-dead-imports.mjs",

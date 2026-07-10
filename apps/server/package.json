@@ -1,0 +1,36 @@
+{
+  "name": "@pc-sdk/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runner": "./src/runner/backend.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.206",
+    "@hono/node-server": "^1.13.7",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@pc/contracts": "workspace:*",
+    "@pc/db": "workspace:*",
+    "@pc/domain": "workspace:*",
+    "@pc/mcp": "workspace:*",
+    "@pc/utils": "workspace:*",
+    "hono": "^4.6.14",
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

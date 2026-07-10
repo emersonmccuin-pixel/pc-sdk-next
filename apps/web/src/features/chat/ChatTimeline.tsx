@@ -1,0 +1,121 @@
+// The message timeline: persisted frames (grouped) + live streaming buffers +
+// optimistic sends + pending asks, one render pipeline. Auto-scrolls to the
+// bottom while pinned. Read-only mode (past-session HTTP view) hides live
+// buffers, optimistic sends, and ask cards.
+
+import { useEffect, useMemo, useRef } from 'react';
+
+import type { ChatFrame } from '@pc/contracts';
+import { buildRenderItems } from './chat-render';
+import { RenderItemView, AssistantBubble, ThinkingBubble, UserBubble } from './Bubbles';
+import { AskCard } from './AskCard';
+import type { ChatState } from './chat-reducer';
+
+export function ChatTimeline({
+  state,
+  onAskReply,
+  readOnly,
+}: {
+  state: ChatState;
+  onAskReply?: (askId: string, answer: string) => void;
+  readOnly?: boolean;
+}) {
+  const items = useMemo(() => buildRenderItems(state.frames), [state.frames]);
+  const liveBuffers = useMemo(() => Object.values(state.deltas).filter((b) => b.text || b.thinking), [state.deltas]);
+
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRef = useRef(true);
+
+  const scrollSignal =
+    state.frames.length + liveBuffers.reduce((n, b) => n + b.text.length + b.thinking.length, 0) + state.optimistic.length;
+  useEffect(() => {
+    if (pinnedRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
+  }, [scrollSignal]);
+
+  const empty = items.length === 0 && liveBuffers.length === 0 && state.optimistic.length === 0 && state.asks.length === 0;
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      }}
+      className="flex-1 overflow-y-auto"
+    >
+      <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-4">
+        {empty && (
+          <div className="grid place-items-center py-16 text-center text-sm text-muted-foreground">
+            {readOnly ? 'No events in this session.' : 'Send a message to start the conversation.'}
+          </div>
+        )}
+
+        {items.map((item) => (
+          <RenderItemView key={item.key} item={item} />
+        ))}
+
+        {!readOnly &&
+          liveBuffers.map((b) => (
+            <div key={`live-${b.sdkUuid}`} className="flex flex-col gap-2">
+              {b.thinking && <ThinkingBubble text={b.thinking} live />}
+              {b.text && <AssistantBubble text={b.text} live />}
+            </div>
+          ))}
+
+        {!readOnly &&
+          state.optimistic.map((o) => (
+            <UserBubble
+              key={`opt-${o.clientMessageId}`}
+              text={o.text}
+              pending={o.status === 'failed' ? 'failed' : o.status === 'queued' ? 'queued' : 'sending'}
+            />
+          ))}
+
+        {!readOnly &&
+          state.asks.map((ask) => (
+            <div key={ask.askId} className="border border-accent/40 bg-accent/5 px-3 py-2">
+              <AskCard
+                toolName={ask.toolName}
+                toolUseId={ask.toolUseId}
+                toolInput={ask.toolInput}
+                answered={state.answeredAsks[ask.askId]}
+                onReply={(answer) => onAskReply?.(ask.askId, answer)}
+              />
+            </div>
+          ))}
+
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+/** Read-only timeline for a past session fetched over HTTP: reuses the exact
+ *  render pipeline by seeding a bare ChatState from the fetched frames. */
+export function PastSessionTimeline({ frames }: { frames: ChatFrame[] }) {
+  const state = useMemo<ChatState>(
+    () => ({
+      sessionId: frames[0]?.sessionId ?? null,
+      highWaterSeq: 0,
+      frames: frames.slice().sort((a, b) => a.seq - b.seq),
+      aggregates: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        latestModel: null,
+        sessionState: null,
+        permissionMode: null,
+        lastTurnDurationMs: null,
+      },
+      deltas: {},
+      sendQueue: [],
+      optimistic: [],
+      asks: [],
+      answeredAsks: {},
+    }),
+    [frames],
+  );
+  return <ChatTimeline state={state} readOnly />;
+}

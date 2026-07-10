@@ -1,0 +1,457 @@
+// Projects list rail. Vendored look from PC-PTY-Chat (wax-stamp rows, filter,
+// drag-reorder, right-click menu). Adapted: statusline store → usage store
+// (selected account); runtimeApi.startNewSession → sessionsApi.newSession.
+
+import { useEffect, useMemo, useState } from 'react';
+
+import { COMMAND_PROJECT_SLUG } from '@pc/contracts';
+
+import { projectsApi, type Project } from '@/features/projects/client';
+import { sessionsApi } from '@/state/sessions';
+import { useAccounts } from '@/state/accounts';
+import { useUsageSnapshot } from '@/state/usage-store';
+import { useActiveCenterTab } from '@/store/active-center-tab';
+import { useActiveProject } from '@/store/active-project';
+import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
+import { UsageCapsPanel } from './UsageCapsPanel';
+
+interface ProjectRailProps {
+  projects: Project[];
+  onCreateProject: () => void;
+  onProjectDeleted: (projectId: string) => void;
+  onProjectReorder: (orderedIds: string[]) => void;
+  unreadProjectIds: ReadonlySet<string>;
+  liveSessionProjectIds?: ReadonlySet<string>;
+  showCommandSpace: boolean;
+}
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
+interface MenuPos {
+  project: Project;
+  x: number;
+  y: number;
+}
+
+type DangerModal =
+  | { kind: 'soft-delete'; project: Project }
+  | { kind: 'delete-files'; project: Project };
+
+function initials(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9]/g, '');
+  return cleaned.slice(0, 2).toUpperCase() || '··';
+}
+
+export function ProjectRail({
+  projects,
+  onCreateProject,
+  onProjectDeleted,
+  onProjectReorder,
+  unreadProjectIds = EMPTY_SET,
+  liveSessionProjectIds = EMPTY_SET,
+  showCommandSpace,
+}: ProjectRailProps) {
+  const activeSlug = useActiveProject((s) => s.activeSlug);
+  const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
+  const setTab = useActiveCenterTab((s) => s.setTab);
+  const selectedAccountId = useAccounts((s) => s.selectedId);
+  const usageSnapshot = useUsageSnapshot(selectedAccountId);
+  const commandProject = useMemo(
+    () =>
+      showCommandSpace
+        ? projects.find((p) => p.slug === COMMAND_PROJECT_SLUG) ?? null
+        : null,
+    [projects, showCommandSpace],
+  );
+  const userProjects = useMemo(
+    () => projects.filter((p) => p.slug !== COMMAND_PROJECT_SLUG),
+    [projects],
+  );
+  const commandActive = commandProject?.slug === activeSlug;
+  const commandUnread =
+    !!commandProject && !commandActive && unreadProjectIds.has(commandProject.id);
+  const commandHasLiveSession =
+    !!commandProject && liveSessionProjectIds.has(commandProject.id);
+  const [menu, setMenu] = useState<MenuPos | null>(null);
+  const [danger, setDanger] = useState<DangerModal | null>(null);
+  const [filesNote, setFilesNote] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dragOverPos, setDragOverPos] = useState<'before' | 'after'>('before');
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return userProjects;
+    return userProjects.filter((p) => p.name.toLowerCase().includes(q));
+  }, [userProjects, filter]);
+
+  const dragEnabled = filter.trim() === '' && userProjects.length > 1;
+
+  useEffect(() => {
+    if (!menu) return;
+    const dismiss = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenu(null);
+    };
+    window.addEventListener('click', dismiss);
+    window.addEventListener('contextmenu', dismiss);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', dismiss);
+      window.removeEventListener('contextmenu', dismiss);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!filesNote) return;
+    const t = setTimeout(() => setFilesNote(null), 4_000);
+    return () => clearTimeout(t);
+  }, [filesNote]);
+
+  function openProjectSettings(project: Project) {
+    setMenu(null);
+    setActiveSlug(project.slug);
+    setTab('project-settings');
+  }
+
+  async function revealInExplorer(project: Project) {
+    setMenu(null);
+    try {
+      await projectsApi.revealProject(project.id);
+    } catch (err) {
+      alert(`Couldn't open the folder: ${(err as Error).message}`);
+    }
+  }
+
+  async function copyFolderPath(project: Project) {
+    setMenu(null);
+    try {
+      await navigator.clipboard.writeText(project.folderPath);
+    } catch (err) {
+      alert(`Couldn't copy: ${(err as Error).message}`);
+    }
+  }
+
+  async function toggleFocus(project: Project) {
+    setMenu(null);
+    try {
+      await projectsApi.setFocus(project.id, project.focusedAt == null);
+    } catch (err) {
+      alert(`Couldn't update focus: ${(err as Error).message}`);
+    }
+  }
+
+  async function startNewSession(project: Project) {
+    setMenu(null);
+    try {
+      await sessionsApi.newSession(project.id);
+    } catch (err) {
+      alert(`Couldn't start a new session: ${(err as Error).message}`);
+    }
+  }
+
+  function handleDragStart(e: React.DragEvent, project: Project) {
+    if (!dragEnabled) return;
+    setDraggingId(project.id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', project.id);
+  }
+
+  function handleDragOver(e: React.DragEvent, project: Project) {
+    if (!draggingId || draggingId === project.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const pos: 'before' | 'after' = e.clientY < midY ? 'before' : 'after';
+    if (project.id !== dragOverId) setDragOverId(project.id);
+    if (pos !== dragOverPos) setDragOverPos(pos);
+  }
+
+  function handleDrop(e: React.DragEvent, target: Project) {
+    e.preventDefault();
+    const srcId = draggingId;
+    setDraggingId(null);
+    setDragOverId(null);
+    if (!srcId || srcId === target.id) return;
+    const srcIdx = userProjects.findIndex((p) => p.id === srcId);
+    const tgtIdx = userProjects.findIndex((p) => p.id === target.id);
+    if (srcIdx < 0 || tgtIdx < 0) return;
+    const insertAt = dragOverPos === 'after' ? tgtIdx + 1 : tgtIdx;
+    const next = userProjects.slice();
+    const [moved] = next.splice(srcIdx, 1);
+    if (!moved) return;
+    const adjusted = srcIdx < insertAt ? insertAt - 1 : insertAt;
+    next.splice(adjusted, 0, moved);
+    onProjectReorder(next.map((p) => p.id));
+  }
+
+  function handleDragEnd() {
+    setDraggingId(null);
+    setDragOverId(null);
+  }
+
+  return (
+    <div className="flex h-full flex-col border-r border-border bg-card text-foreground">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs uppercase tracking-wider text-muted-foreground">
+        <span>Projects</span>
+        <button
+          onClick={onCreateProject}
+          title="New project"
+          aria-label="New project"
+          className="flex h-5 w-5 items-center justify-center text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          +
+        </button>
+      </div>
+      {userProjects.length > 0 && (
+        <div className="border-b border-border px-2 py-1.5">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter projects…"
+            className="w-full px-2 py-1 text-xs"
+          />
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto">
+        {commandProject && (
+          <div className="relative">
+            <button
+              onClick={() => setActiveSlug(commandProject.slug)}
+              title={[
+                'Command — plan across all projects',
+                commandHasLiveSession ? 'Live chat session active' : '',
+                commandUnread ? 'Unread chat activity' : '',
+              ].filter(Boolean).join('\n')}
+              aria-label={
+                commandUnread ? 'Command has unread chat activity' : 'Command — plan across all projects'
+              }
+              className={
+                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                (commandActive
+                  ? 'border-l-[3px] border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary font-semibold '
+                  : 'border-l-[3px] border-transparent text-foreground/80 ')
+              }
+            >
+              <span
+                aria-hidden="true"
+                className={[
+                  'pc-project-tile pc-project-tile-row shrink-0',
+                  commandActive || commandUnread
+                    ? 'pc-project-tile-unread'
+                    : commandHasLiveSession
+                      ? 'pc-project-tile-chat-open'
+                      : 'pc-project-tile-inactive',
+                ].join(' ')}
+              >
+                <span className="text-[1.1rem] leading-none">★</span>
+              </span>
+              <span className="min-w-0 flex-1 truncate font-medium tracking-wide">
+                {commandProject.name}
+              </span>
+            </button>
+            {commandActive && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0"
+                style={{
+                  background: [
+                    'repeating-linear-gradient(0deg, color-mix(in srgb, var(--primary) 32%, transparent) 0px, color-mix(in srgb, var(--primary) 32%, transparent) 1px, transparent 1px, transparent 4px)',
+                    'color-mix(in srgb, var(--primary) 22%, transparent)',
+                  ].join(', '),
+                }}
+              />
+            )}
+          </div>
+        )}
+        {commandProject && <div aria-hidden="true" className="my-1 border-t-2 border-border" />}
+        {userProjects.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No projects yet.</div>
+        ) : filtered.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground">No matches.</div>
+        ) : (
+          filtered.map((p) => {
+            const isActive = p.slug === activeSlug;
+            const hasUnread = !isActive && unreadProjectIds.has(p.id);
+            const hasLiveSession = liveSessionProjectIds.has(p.id);
+            const isDragging = draggingId === p.id;
+            const isOver = dragOverId === p.id;
+            const showLineBefore = isOver && dragOverPos === 'before';
+            const showLineAfter = isOver && dragOverPos === 'after';
+            return (
+              <div key={p.id} className="relative">
+                {showLineBefore && (
+                  <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 h-0.5 bg-primary" />
+                )}
+                <button
+                  draggable={dragEnabled}
+                  onDragStart={(e) => handleDragStart(e, p)}
+                  onDragOver={(e) => handleDragOver(e, p)}
+                  onDrop={(e) => handleDrop(e, p)}
+                  onDragEnd={handleDragEnd}
+                  onClick={() => setActiveSlug(p.slug)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenu({ project: p, x: e.clientX, y: e.clientY });
+                  }}
+                  title={[
+                    p.folderPath,
+                    hasLiveSession ? 'Live chat session active' : '',
+                    hasUnread ? 'Unread chat activity' : '',
+                  ].filter(Boolean).join('\n')}
+                  aria-label={hasUnread ? `${p.name} has unread chat activity` : p.name}
+                  className={
+                    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                    (isActive
+                      ? 'border-l-[3px] border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary font-semibold '
+                      : 'border-l-[3px] border-transparent text-foreground/80 ') +
+                    (isDragging ? 'opacity-40 ' : '') +
+                    (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
+                  }
+                >
+                  <span
+                    aria-hidden="true"
+                    className={[
+                      'pc-project-tile pc-project-tile-row shrink-0',
+                      isActive || hasUnread
+                        ? 'pc-project-tile-unread'
+                        : hasLiveSession
+                          ? 'pc-project-tile-chat-open'
+                          : 'pc-project-tile-inactive',
+                    ].join(' ')}
+                  >
+                    {initials(p.name)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                  {p.focusedAt != null && (
+                    <span
+                      aria-hidden="true"
+                      className="shrink-0 text-sm leading-none text-amber-400"
+                      title="In focus"
+                    >
+                      ★
+                    </span>
+                  )}
+                </button>
+                {isActive && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      background: [
+                        'repeating-linear-gradient(0deg, color-mix(in srgb, var(--primary) 15%, transparent) 0px, color-mix(in srgb, var(--primary) 15%, transparent) 1px, transparent 1px, transparent 4px)',
+                        'color-mix(in srgb, var(--primary) 9%, transparent)',
+                      ].join(', '),
+                    }}
+                  />
+                )}
+                {showLineAfter && (
+                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary" />
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+      <UsageCapsPanel snapshot={usageSnapshot} />
+      {filesNote && (
+        <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
+          {filesNote}
+        </div>
+      )}
+      {menu && (
+        <div
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          style={{ position: 'fixed', top: menu.y, left: menu.x, zIndex: 50 }}
+          className="min-w-[12rem] border border-primary/40 bg-popover py-1 text-popover-foreground shadow-2xl"
+        >
+          <MenuItem onClick={() => toggleFocus(menu.project)}>
+            {menu.project.focusedAt != null ? '★ Remove from focus' : '☆ Add to focus'}
+          </MenuItem>
+          <div className="my-1 border-t border-border" />
+          <MenuItem onClick={() => openProjectSettings(menu.project)}>Open project settings</MenuItem>
+          <MenuItem onClick={() => revealInExplorer(menu.project)}>Open in file explorer</MenuItem>
+          <MenuItem onClick={() => copyFolderPath(menu.project)}>Copy folder path</MenuItem>
+          <MenuItem onClick={() => startNewSession(menu.project)}>New session</MenuItem>
+          <div className="my-1 border-t border-border" />
+          <MenuItem
+            onClick={() => {
+              setMenu(null);
+              setDanger({ kind: 'soft-delete', project: menu.project });
+            }}
+            variant="danger"
+          >
+            Archive…
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setMenu(null);
+              setFilesNote(null);
+              setDanger({ kind: 'delete-files', project: menu.project });
+            }}
+            variant="danger"
+          >
+            Delete files…
+          </MenuItem>
+        </div>
+      )}
+      {danger?.kind === 'soft-delete' && (
+        <SoftDeleteProjectModal
+          project={danger.project}
+          onCancel={() => setDanger(null)}
+          onDeleted={(id) => {
+            setDanger(null);
+            onProjectDeleted(id);
+          }}
+        />
+      )}
+      {danger?.kind === 'delete-files' && (
+        <DeleteProjectFilesModal
+          project={danger.project}
+          onCancel={() => setDanger(null)}
+          onDone={(removed) => {
+            setDanger(null);
+            setFilesNote(
+              removed.length === 0
+                ? `${danger.project.name}: PC scaffold dirs were already gone.`
+                : `${danger.project.name}: removed ${removed.join(', ')}.`,
+            );
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  onClick,
+  children,
+  variant,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+  variant?: 'danger';
+}) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={
+        'block w-full px-3 py-1.5 text-left text-xs hover:bg-muted ' +
+        (variant === 'danger' ? 'text-destructive' : '')
+      }
+    >
+      {children}
+    </button>
+  );
+}

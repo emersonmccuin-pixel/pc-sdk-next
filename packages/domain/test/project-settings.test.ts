@@ -53,5 +53,6 @@ test('existing settings keys are unaffected by the new field', () => {
     cancelledVisibility: 'force-hidden',
     remoteControl: 'on',
     integrationBranch: null,
+    defaultAccountId: null,
   });
 });

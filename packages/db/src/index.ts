@@ -196,6 +196,7 @@ export {
   getOrchestratorSession,
   listOrchestratorSessionsForProject,
   reactivateOrchestratorSession,
+  setOrchestratorSessionProvider,
   setOrchestratorSessionTitle,
 } from './repos/orchestrator-sessions.ts';
 export type {

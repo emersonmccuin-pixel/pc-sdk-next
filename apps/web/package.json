@@ -1,0 +1,48 @@
+{
+  "name": "@pc-sdk/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@fontsource/atkinson-hyperlegible": "^5.2.8",
+    "@fontsource/fira-code": "^5.2.7",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/source-serif-4": "^5.2.9",
+    "@pc/contracts": "workspace:*",
+    "@pc/domain": "workspace:*",
+    "@radix-ui/react-slot": "^1.2.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.16.0",
+    "mermaid": "^11.15.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^4.11.1",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.6.0",
+    "zustand": "^5.0.13"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^22.19.19",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

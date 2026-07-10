@@ -1,0 +1,244 @@
+// App-wide settings modal. Trimmed vs. PC-PTY-Chat: the Usage tab (old
+// statusline aggregate — replaced by the durable usage channel + Phase-4
+// dashboard), the Updates tab (Electron auto-update — browser-only now), and
+// the MCP-servers tab (Phase-4 manager) are deferred. Tabs: General (folder /
+// fonts / scale / layout) + Accounts (the login registry).
+
+import { useState } from 'react';
+
+import {
+  FONT_SCALE_MAX,
+  FONT_SCALE_MIN,
+  FONT_SCALE_STEP,
+  settingsApi,
+  type GlobalSettings,
+} from '@/features/settings/client';
+import { FONT_REGISTRY, applyFontCssVars, fontsForGroup } from '@/features/settings/fonts';
+import type { FontGroup, FontKey } from '@/features/settings/types';
+import { useAccounts } from '@/state/accounts';
+
+type TabId = 'general' | 'accounts';
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: 'general', label: 'General' },
+  { id: 'accounts', label: 'Accounts' },
+];
+
+const FONT_GROUPS: { group: FontGroup; label: string }[] = [
+  { group: 'chat', label: 'Chat' },
+  { group: 'workItems', label: 'Content' },
+  { group: 'ui', label: 'UI / chrome' },
+  { group: 'code', label: 'Code' },
+];
+
+interface AppSettingsModalProps {
+  settings: GlobalSettings;
+  onClose: () => void;
+  onSaved: (next: GlobalSettings, restartRequired: boolean) => void;
+}
+
+export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModalProps) {
+  const [active, setActive] = useState<TabId>('general');
+  const [draft, setDraft] = useState<GlobalSettings>(settings);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  function patchDraft(patch: Partial<GlobalSettings>) {
+    setDraft((d) => {
+      const next = { ...d, ...patch };
+      if (patch.fonts) applyFontCssVars(patch.fonts);
+      if (patch.fontScale !== undefined) {
+        document.documentElement.style.setProperty('--font-scale', String(patch.fontScale));
+      }
+      return next;
+    });
+  }
+
+  async function save() {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await settingsApi.patchSettings({
+        projectsFolder: draft.projectsFolder,
+        fontScale: draft.fontScale,
+        fonts: draft.fonts,
+        showCommandSpace: draft.showCommandSpace,
+        activityPanel: draft.activityPanel,
+      });
+      onSaved(res.settings, res.restartRequired);
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50" onClick={onClose}>
+      <div
+        className="flex h-[560px] w-[720px] flex-col border border-border bg-card text-foreground shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="text-base font-semibold uppercase tracking-wider">App settings</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
+            ×
+          </button>
+        </header>
+
+        <div className="flex min-h-0 flex-1">
+          <nav className="flex w-44 shrink-0 flex-col border-r border-border bg-card py-2">
+            {TABS.map((t) => {
+              const isActive = active === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setActive(t.id)}
+                  className={
+                    'block w-full border-l-2 px-3 py-2 text-left text-xs ' +
+                    (isActive
+                      ? 'border-primary bg-muted text-primary font-medium'
+                      : 'border-transparent text-foreground/80 hover:bg-muted')
+                  }
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="flex-1 overflow-y-auto p-6 text-sm">
+            {active === 'general' && (
+              <div className="space-y-5">
+                <Field label="Projects folder" help="Where new projects are created by default.">
+                  <input
+                    type="text"
+                    value={draft.projectsFolder}
+                    onChange={(e) => patchDraft({ projectsFolder: e.target.value })}
+                    placeholder="C:\\Users\\me\\Projects"
+                    className="w-full border border-border bg-background px-2 py-1 font-mono text-xs"
+                  />
+                </Field>
+
+                <Field label={`Font scale — ${Math.round(draft.fontScale * 100)}%`}>
+                  <input
+                    type="range"
+                    min={FONT_SCALE_MIN}
+                    max={FONT_SCALE_MAX}
+                    step={FONT_SCALE_STEP}
+                    value={draft.fontScale}
+                    onChange={(e) => patchDraft({ fontScale: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </Field>
+
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Fonts
+                  </div>
+                  {FONT_GROUPS.map(({ group, label }) => (
+                    <Field key={group} label={label}>
+                      <select
+                        value={draft.fonts[group]}
+                        onChange={(e) =>
+                          patchDraft({ fonts: { ...draft.fonts, [group]: e.target.value as FontKey } })
+                        }
+                        className="w-full border border-border bg-background px-2 py-1 text-sm"
+                      >
+                        {fontsForGroup(group).map((key) => (
+                          <option key={key} value={key}>
+                            {FONT_REGISTRY[key].label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  ))}
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-foreground/90">
+                  <input
+                    type="checkbox"
+                    checked={draft.showCommandSpace}
+                    onChange={(e) => patchDraft({ showCommandSpace: e.target.checked })}
+                  />
+                  <span>Show the Command cross-project space in the rail</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-foreground/90">
+                  <input
+                    type="checkbox"
+                    checked={draft.activityPanel.open}
+                    onChange={(e) =>
+                      patchDraft({ activityPanel: { ...draft.activityPanel, open: e.target.checked } })
+                    }
+                  />
+                  <span>Open the activity panel by default</span>
+                </label>
+              </div>
+            )}
+
+            {active === 'accounts' && <AccountsTab />}
+          </div>
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          {err && <span className="mr-auto text-xs text-destructive">{err}</span>}
+          <button onClick={onClose} className="border border-border px-3 py-1.5 text-sm hover:bg-muted">
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={busy}
+            className="bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function AccountsTab() {
+  const accounts = useAccounts((s) => s.accounts);
+  const selectedId = useAccounts((s) => s.selectedId);
+  const select = useAccounts((s) => s.select);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Each account is a Claude login (config dir). The orchestrator + agents run under the selected
+        account; switching starts a new session. The registry + config dirs are server-owned — this is
+        the current selection.
+      </p>
+      {accounts.map((a) => {
+        const isActive = a.id === selectedId;
+        return (
+          <button
+            key={a.id}
+            onClick={() => select(a.id)}
+            className={
+              'flex w-full items-center justify-between border px-3 py-2 text-left ' +
+              (isActive ? 'border-primary bg-muted' : 'border-border hover:bg-muted')
+            }
+          >
+            <div className="min-w-0">
+              <div className={`text-sm ${isActive ? 'text-primary' : 'text-foreground'}`}>{a.label}</div>
+              <div className="truncate font-mono text-[11px] text-muted-foreground">{a.configDir}</div>
+            </div>
+            {isActive && <span className="shrink-0 text-[10px] uppercase tracking-wider text-primary">active</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      {children}
+      {help && <div className="text-xs text-muted-foreground">{help}</div>}
+    </div>
+  );
+}

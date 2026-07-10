@@ -167,6 +167,21 @@ export function reactivateOrchestratorSession(id: ULID): OrchestratorSessionRow 
   return row ? toDomain(row) : null;
 }
 
+/** Capture the SDK's own session id (+ model) once the runner's `init` fires,
+ *  so subsequent turns — and turns after a server restart — `resume` the same
+ *  provider session. Minted app-side at create time; overwritten with the real
+ *  SDK id here. */
+export function setOrchestratorSessionProvider(
+  id: ULID,
+  input: { providerSessionId: string; model?: string | null },
+): void {
+  const patch: { providerSessionId: string; model?: string | null } = {
+    providerSessionId: input.providerSessionId,
+  };
+  if (input.model !== undefined) patch.model = input.model;
+  getDb().update(orchestratorSessions).set(patch).where(eq(orchestratorSessions.id, id)).run();
+}
+
 /** Set or update the title. Caller decides when (first user message today). */
 export function setOrchestratorSessionTitle(id: ULID, title: string): void {
   getDb()

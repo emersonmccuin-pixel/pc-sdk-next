@@ -19,6 +19,11 @@ export interface ProjectSettings {
    *  not yet resolved; the integration-branch resolver auto-detects once and
    *  persists the result here, making it visible + editable in settings. */
   integrationBranch: string | null;
+  /** Phase 2 — the account (Claude Code config dir) new orchestrator sessions
+   *  for this project launch under. `null` = use the server's default account
+   *  ('personal'). Switching this mints a NEW session (sessions live per config
+   *  dir). Value is an account id from the server's account registry. */
+  defaultAccountId: string | null;
 }
 
 /** Git ref-name shape for the integration branch. Unlike the runtime's
@@ -26,7 +31,12 @@ export interface ProjectSettings {
 export const INTEGRATION_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export function defaultProjectSettings(): ProjectSettings {
-  return { cancelledVisibility: 'use-global', remoteControl: 'use-global', integrationBranch: null };
+  return {
+    cancelledVisibility: 'use-global',
+    remoteControl: 'use-global',
+    integrationBranch: null,
+    defaultAccountId: null,
+  };
 }
 
 /** Backfill missing keys on a stored project-settings JSON blob. */
@@ -38,6 +48,7 @@ export function withProjectSettingsDefaults(
   const v = stored.cancelledVisibility;
   const rc = stored.remoteControl;
   const ib = typeof stored.integrationBranch === 'string' ? stored.integrationBranch.trim() : null;
+  const acct = typeof stored.defaultAccountId === 'string' ? stored.defaultAccountId.trim() : null;
   return {
     cancelledVisibility:
       v === 'force-visible' || v === 'force-hidden' || v === 'use-global'
@@ -46,6 +57,7 @@ export function withProjectSettingsDefaults(
     remoteControl:
       rc === 'on' || rc === 'off' || rc === 'use-global' ? rc : defaults.remoteControl,
     integrationBranch: ib && INTEGRATION_BRANCH_RE.test(ib) ? ib : null,
+    defaultAccountId: acct && acct.length > 0 ? acct : null,
   };
 }
 
