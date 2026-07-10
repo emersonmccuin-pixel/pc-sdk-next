@@ -34,6 +34,9 @@ export interface HttpDeps {
   usage?: UsageCache;
   /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
   dispatch?: DispatchService;
+  /** In-app engine restart (Settings → Restart engine). The composition root
+   *  owns the mechanics (close + self-respawn); absent ⇒ route returns 501. */
+  onRestartRequest?: () => void;
 }
 
 const bootAt = Date.now();
@@ -53,6 +56,16 @@ export function createHttpApp(deps: HttpDeps): Hono {
   app.get('/health', (c) =>
     c.json({ ok: true, name: '@pc-sdk/server', version: deps.version ?? '0.0.0', uptimeMs: Date.now() - bootAt }),
   );
+
+  // ── Engine restart (Settings button) ────────────────────────────────────────
+  // Respond first, then hand off to the composition root, which closes the
+  // listener, respawns the same process, and exits. The web client polls
+  // /health and reloads when the new process is up.
+  app.post('/api/admin/restart', (c) => {
+    if (!deps.onRestartRequest) return c.json({ ok: false, error: 'restart not available' }, 501);
+    setTimeout(() => deps.onRestartRequest?.(), 150);
+    return c.json({ ok: true, restarting: true });
+  });
 
   // ── Projects + settings (the @pc/contracts APIs the web chrome speaks) ───────
   mountProjects(app);

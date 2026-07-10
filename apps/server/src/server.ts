@@ -39,6 +39,8 @@ export interface StartServerOptions {
   usage?: UsageCache;
   /** Phase-3 dispatch service — mounts the agent-run routes when set. */
   dispatch?: DispatchService;
+  /** In-app engine restart hook (composition root owns the respawn). */
+  onRestartRequest?: () => void;
   /** Run boot recovery before listening. Default true. */
   runRecovery?: boolean;
   /** Resource-relay drain cadence (ms). Default 250. */
@@ -89,6 +91,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     accounts: opts.accounts,
     usage: opts.usage,
     dispatch: opts.dispatch,
+    onRestartRequest: opts.onRestartRequest,
   });
 
   // Static serving (SPA) — only when a built web dir is present.

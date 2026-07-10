@@ -13,6 +13,7 @@ import {
   settingsApi,
   type GlobalSettings,
 } from '@/features/settings/client';
+import { postJson } from '@/api/http';
 import { FONT_REGISTRY, applyFontCssVars, fontsForGroup } from '@/features/settings/fonts';
 import type { FontGroup, FontKey } from '@/features/settings/types';
 import { useAccounts } from '@/state/accounts';
@@ -173,6 +174,8 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                   />
                   <span>Open the activity panel by default</span>
                 </label>
+
+                <EngineSection />
               </div>
             )}
 
@@ -194,6 +197,64 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/** Engine restart — the no-terminal way to pick up new server code. POSTs the
+ *  restart, polls /health until the fresh process is up, then reloads the app. */
+function EngineSection() {
+  const [state, setState] = useState<'idle' | 'restarting' | 'failed'>('idle');
+
+  async function restart() {
+    if (state === 'restarting') return;
+    if (!window.confirm('Restart the PC-SDK engine? In-flight chat turns and agent runs will be stopped (boot recovery closes them out loudly).')) {
+      return;
+    }
+    setState('restarting');
+    try {
+      await postJson('/api/admin/restart', {});
+    } catch {
+      // The connection may drop as the server exits — that IS the restart.
+    }
+    // Old process exits, new one binds the same port. Poll until healthy.
+    const deadline = Date.now() + 60_000;
+    // Give the old listener a beat to actually close before polling.
+    await new Promise((r) => setTimeout(r, 1_500));
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch('/health', { cache: 'no-store' });
+        if (res.ok) {
+          location.reload();
+          return;
+        }
+      } catch {
+        /* still down — keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    setState('failed');
+  }
+
+  return (
+    <div className="space-y-2 border-t border-border pt-4">
+      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Engine</div>
+      <p className="text-xs text-muted-foreground">
+        Restarts the local server on the current code — use after an update. The window reloads
+        automatically when it&apos;s back (a few seconds).
+      </p>
+      <button
+        onClick={restart}
+        disabled={state === 'restarting'}
+        className="border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+      >
+        {state === 'restarting' ? 'Restarting… (window reloads when it’s back)' : 'Restart engine'}
+      </button>
+      {state === 'failed' && (
+        <p className="text-xs text-destructive">
+          The engine didn&apos;t come back within 60s — relaunch it from the PC-SDK taskbar icon.
+        </p>
+      )}
     </div>
   );
 }

@@ -9,6 +9,7 @@
 // hangs off the canonical `RuntimeSession` seam — `claude-adapter.ts` is the
 // only SDK importer.
 
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
 import type { ULID } from '@pc/domain';
@@ -104,6 +105,27 @@ async function main(): Promise<void> {
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
+    // Settings → Restart engine: close the listener (releases the port), then
+    // respawn this exact process (same node binary + argv + cwd) detached, and
+    // exit. The new process picks up the current source; the browser polls
+    // /health and reloads. Logs go to the fresh process's own stdio (the
+    // launcher's redirect does not follow a self-respawn — cold starts re-attach it).
+    onRestartRequest: () => {
+      console.warn('[pc-sdk] restart requested — closing, respawning, exiting.');
+      void (async () => {
+        usagePoller.stop();
+        await dispatch.disposeAll().catch(() => {});
+        await server.close().catch(() => {});
+        spawn(process.execPath, process.argv.slice(1), {
+          cwd: process.cwd(),
+          env: process.env,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+        }).unref();
+        process.exit(0);
+      })();
+    },
   });
   portRef.port = server.port;
   dispatch.attach({ registry: server.registry, hub: server.hub, serverPort: server.port });
