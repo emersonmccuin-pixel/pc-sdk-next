@@ -14,7 +14,7 @@ Not a public product. No installer, no releases, no marketing — until it earns
 | --- | --- |
 | Posture | Personal tool first. Public later only if it earns it. |
 | Shell | Browser + one local server process. No Electron, no separate agent-host, no supervisor process. |
-| Keep-alive + launch | **One-click, no terminal.** Server runs as an auto-start Windows service; UI is an installed browser app (Edge/Chrome app mode) pinned to the taskbar. The pinned icon runs a hidden launcher: engine up → open window; engine down → start it silently, then open. First version of the launcher ships in Phase 2 (daily-drive gate depends on it); full service install in Phase 5. Design rule either way: **server boot recovers from the DB** — interrupted work is re-driven or failed loudly, never lost. |
+| Keep-alive + launch | **One-click, no terminal.** Server runs as an auto-start Windows service; UI opens in a dedicated Brave app-mode window pinned to the taskbar. The pinned icon runs a hidden launcher: engine up → open window; engine down → start it silently, then open. First version of the launcher ships in Phase 2 (daily-drive gate depends on it); full service install in Phase 5. Design rule either way: **server boot recovers from the DB** — interrupted work is re-driven or failed loudly, never lost. |
 | Specialists | **Full builder survives.** Define experts in plain English; per-specialist runtime/account/model/effort, prompt, tools, and MCP attachments; roster UI. |
 | Agent runtimes | **PC-SDK is the app; runtimes are adapters.** Claude Agent SDK and OpenAI Codex are peer implementations behind one canonical contract. No provider-native types or branches in core product behavior. |
 | Repository mutation | **Worktrees always.** Every agent-produced repo change, including small code/docs/config edits, happens in a run-owned worktree. Review depth is policy-controlled; isolation is not. |
@@ -22,6 +22,7 @@ Not a public product. No installer, no releases, no marketing — until it earns
 | UI surfaces | Chat + agent run views · MCP manager · usage/quota dashboard. **No board, no workflow builder, no files browser.** |
 | MCP manager | Rebuild, don't port. The old one is unreliable — reliability is the requirement, not a feature. See below. |
 | UI | **Port the Caisson shell wholesale — no redesign.** The carefully-crafted layout is the spec: left rail, right activity rail, status bar, settings, agent click-through. Changes limited to rewiring data sources and deleting dead surfaces. Do not revisit layout/interaction decisions that already work. |
+| Attention + notifications | When work in a project becomes ready for the user, its inactive left-rail project tile softly pulses until viewed. A configurable one-shot ding and Brave/Windows desktop notification alert the user when the app is unfocused. “Ready,” “needs a decision,” and “failed” remain distinct states. Full contract: `docs/attention-notifications.md`. |
 
 Plus everything locked in AGENTS.md: subscription-first auth (Claude Max and ChatGPT/Codex; no API key by default), runtime-aware account switcher, one canonical agent-runtime adapter contract, mandatory worktree isolation, guarded service-controlled landing/teardown, no internal work items, DB as source of truth.
 
@@ -89,7 +90,8 @@ AInativePM is the first registered server and the standing test case.
 **Phase 4 — MCP manager + lifecycle policy + usage dashboard.** MCP manager UI meeting the reliability requirements; policy/UX over the Phase 3 hardcoded Plan → Build → Review/Verify → Fix → Merge → Teardown lifecycle (cheap orchestrator-review default, full-review escalation, auto-merge eligibility); usage dashboard with provider-aware per-runtime/account headroom.
 *Gate:* kill/revive an MCP server mid-session and watch every state change surface correctly; run the pipeline on a real work item from AInativePM.
 
-**Phase 5 — Daily-driver hardening (as needed).** Auto-start Windows service (launcher then never needs to cold-start the engine); boot-recovery soak; polish list driven by actual daily use. No fixed scope — intake is whatever using it surfaces.
+**Phase 5 — Daily-driver hardening (as needed).** Auto-start Windows service (launcher then never needs to cold-start the engine); boot-recovery soak; the Brave attention/notification slice in `docs/attention-notifications.md`; polish driven by actual daily use.
+*Gate:* an orchestrator completion, user-decision request, and failure each produce the correct durable project attention state; inactive-project pulse, one-shot ding, and Brave/Windows notification follow their settings without replaying after reconnect or reload.
 
 ## Rules that carry over
 
