@@ -12,6 +12,7 @@ export interface SessionRegistryDeps {
   cwd?: string;
   askTimeoutMs?: number;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
+  orchestratorRev?: () => number | null;
 }
 
 export class SessionRegistry {
@@ -32,6 +33,7 @@ export class SessionRegistry {
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,
         onRateLimit: this.deps.onRateLimit,
+        orchestratorRev: this.deps.orchestratorRev,
       });
       this.services.set(projectId, svc);
     }

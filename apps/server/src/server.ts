@@ -28,6 +28,9 @@ export interface StartServerOptions {
   cwd?: string;
   askTimeoutMs?: number;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
+  /** Rev of the orchestrator agent row — SessionService re-mints the backend
+   *  between turns when it changes (prompt/model edits apply next message). */
+  orchestratorRev?: () => number | null;
   version?: string;
   /** Account switcher registry — mounts the accounts + usage HTTP routes. */
   accounts?: AccountRegistry;
@@ -74,6 +77,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
     onRateLimit: opts.onRateLimit,
+    orchestratorRev: opts.orchestratorRev,
   });
 
   const app = createHttpApp({

@@ -53,6 +53,10 @@ export interface SessionServiceDeps {
   askTimeoutMs?: number;
   /** Durable per-account usage sink (the sibling's usage cache). */
   onRateLimit?: (snapshot: UsageSnapshot) => void;
+  /** Current rev of the orchestrator agent row. When it changes between turns
+   *  the backend is re-minted (with SDK `resume`) so prompt/model edits apply
+   *  on the next message. Null/absent = never re-mint. */
+  orchestratorRev?: () => number | null;
 }
 
 function deriveTitle(text: string): string | null {
@@ -73,9 +77,13 @@ export class SessionService {
   private readonly cwd?: string;
   private readonly onRateLimit?: (snapshot: UsageSnapshot) => void;
 
+  private readonly orchestratorRev?: () => number | null;
+
   private session: OrchestratorSessionRow | null;
   private backend: RunnerBackend | null = null;
   private backendStarted = false;
+  /** Orchestrator-row rev the live backend was minted under. */
+  private backendRev: number | null = null;
   private nextSeq = 1;
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
@@ -89,6 +97,7 @@ export class SessionService {
     this.backendFactory = deps.backendFactory;
     this.cwd = deps.cwd;
     this.onRateLimit = deps.onRateLimit;
+    this.orchestratorRev = deps.orchestratorRev;
 
     this.session = getActiveOrchestratorSession(this.projectId);
     if (this.session) this.nextSeq = getConversationReplayState(this.session.id).nextSeq;
@@ -193,7 +202,18 @@ export class SessionService {
   // ── delivery (the turn) ──────────────────────────────────────────────────────
 
   private async ensureBackendStarted(session: OrchestratorSessionRow): Promise<RunnerBackend> {
-    if (this.backend && this.backendStarted) return this.backend;
+    const rev = this.orchestratorRev?.() ?? null;
+    if (this.backend && this.backendStarted) {
+      if (rev === null || rev === this.backendRev) return this.backend;
+      // The orchestrator row changed since this backend was minted — dispose
+      // and re-mint so the new systemPrompt/model apply. SDK `resume` (below)
+      // re-attaches the conversation; SendQueue serializes deliver(), so the
+      // swap only ever happens between turns.
+      const old = this.backend;
+      this.backend = null;
+      this.backendStarted = false;
+      void old.dispose().catch(() => {});
+    }
     this.setHealth('starting');
     const resume = session.providerSessionId && session.providerSessionId.length > 0
       ? session.providerSessionId
@@ -211,6 +231,7 @@ export class SessionService {
       ask: this.askRegistry.ask,
     });
     this.backendStarted = true;
+    this.backendRev = rev;
     return backend;
   }
 

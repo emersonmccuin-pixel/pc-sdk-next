@@ -8,7 +8,7 @@
 // off the `RunnerBackend` seam — `SdkBackend` is the only SDK importer.
 
 import { join } from 'node:path';
-import { getProjectById, runMigrations } from '@pc/db';
+import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import type { BackendContext, RunnerBackend } from './runner/backend.ts';
 import { AccountRegistry } from './runner/account-env.ts';
@@ -33,17 +33,26 @@ async function main(): Promise<void> {
   if (hydrated > 0) console.log(`[pc-sdk][usage] hydrated ${hydrated} account snapshot(s) from db`);
   const mcp = new McpManager();
 
+  // The chat runs under the orchestrator agent row (seeded above, editable in
+  // the Agents tab). Read fresh per mint — SessionService re-mints on rev change
+  // so edits apply on the next message. SdkBackend itself never touches the DB.
+  const orchestratorRow = () => getAgentByName({ name: 'orchestrator', scope: 'global' });
+
   // Mint one SdkBackend per session: resolve the project's account (env +
   // CLAUDE_CONFIG_DIR), bridge the currently-healthy MCP tools, run in the
   // project folder.
   const backendFactory = (ctx: BackendContext): RunnerBackend => {
     const account = accounts.resolveForProject(ctx.projectId as ULID);
     const project = getProjectById(ctx.projectId as ULID);
+    const orchestrator = orchestratorRow();
     return new SdkBackend({
       env: accounts.buildEnv(account.id),
       accountId: account.id,
       cwd: project?.folderPath || undefined,
       bridge: mcp.buildBridge(),
+      systemPrompt: orchestrator?.prompt || undefined,
+      model: orchestrator?.model ?? undefined,
+      maxTurns: orchestrator?.maxTurns ?? undefined,
     });
   };
 
@@ -52,6 +61,7 @@ async function main(): Promise<void> {
     accounts,
     usage,
     onRateLimit: (snapshot) => usage.record(snapshot),
+    orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
   });
