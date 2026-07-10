@@ -44,7 +44,7 @@ export function ChatTimeline({
       }}
       className="flex-1 overflow-y-auto"
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-4">
+      <div className="flex max-w-none flex-col gap-2 px-4 py-4">
         {empty && (
           <div className="grid place-items-center py-16 text-center text-sm text-muted-foreground">
             {readOnly ? 'No events in this session.' : 'Send a message to start the conversation.'}
