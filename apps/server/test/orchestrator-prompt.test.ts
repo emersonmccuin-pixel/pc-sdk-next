@@ -1,14 +1,15 @@
-// Orchestrator-prompt plumbing guards: the backend is re-minted (with resume)
-// when the orchestrator row's rev changes between turns, and left alone when
-// it doesn't — this is what makes a prompt/model edit apply "next message".
+// Orchestrator-prompt plumbing guards: the runtime session is re-minted (with
+// native resume) when the orchestrator row's rev changes between turns, and
+// left alone when it doesn't — this is what makes a prompt/model edit apply
+// "next message".
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listConversationEvents } from '@pc/db';
 import type { ChatEvent } from '@pc/contracts';
-import type { BackendContext } from '../src/runner/backend.ts';
+import type { MintRuntimeSession } from '../src/runner/runtime.ts';
 import { SessionService } from '../src/chat/session-service.ts';
-import { FakeBackend } from '../src/runner/fake-backend.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { freshDb, newProject, until } from './helpers.ts';
 
 function terminalCount(sessionId: string): number {
@@ -17,30 +18,30 @@ function terminalCount(sessionId: string): number {
     .filter((e) => e.kind === 'turn-end' || e.kind === 'turn-failed').length;
 }
 
-test('rev change between turns re-mints the backend with resume; stable rev reuses it', async () => {
+test('rev change between turns re-mints the runtime with resume; stable rev reuses it', async () => {
   freshDb();
   const project = newProject();
   let rev = 1;
-  const minted: Array<{ backend: FakeBackend; ctx: BackendContext }> = [];
+  const minted: Array<{ runtime: FakeRuntime; ctx: MintRuntimeSession }> = [];
   const svc = new SessionService({
     projectId: project.id,
     broadcast: () => {},
     orchestratorRev: () => rev,
-    backendFactory: (ctx) => {
+    mintSession: (ctx) => {
       // Each turn script: init (carries the provider session id) + success.
-      const backend = new FakeBackend({
+      const runtime = new FakeRuntime({
         turns: Array.from({ length: 5 }, () => [
           { type: 'init', sdkSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
           { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null },
         ]),
       });
-      minted.push({ backend, ctx });
-      return backend;
+      minted.push({ runtime, ctx });
+      return runtime;
     },
   });
   const session = svc.ensureActiveSession();
 
-  // Turn 1 mints backend #1.
+  // Turn 1 mints runtime #1.
   svc.handleSend('one', 'cm1');
   await until(() => terminalCount(session.id) === 1);
   assert.equal(minted.length, 1);
@@ -48,20 +49,19 @@ test('rev change between turns re-mints the backend with resume; stable rev reus
   // Turn 2, same rev — no re-mint.
   svc.handleSend('two', 'cm2');
   await until(() => terminalCount(session.id) === 2);
-  assert.equal(minted.length, 1, 'stable rev must reuse the live backend');
+  assert.equal(minted.length, 1, 'stable rev must reuse the live runtime session');
 
-  // Rev bump (prompt edit) — turn 3 re-mints, resuming the SDK session.
+  // Rev bump (prompt edit) — turn 3 re-mints, resuming the native session.
   rev = 2;
   svc.handleSend('three', 'cm3');
   await until(() => terminalCount(session.id) === 3);
-  assert.equal(minted.length, 2, 'rev change must re-mint the backend');
+  assert.equal(minted.length, 2, 'rev change must re-mint the runtime session');
   assert.equal(
-    minted[1]!.ctx.resumeSdkSessionId,
+    minted[1]!.ctx.resumeNativeSessionId,
     'sdk-1',
-    're-mint must resume the provider session so the conversation continues',
+    're-mint must resume the native session so the conversation continues',
   );
-  assert.equal(minted[1]!.backend.lastStartOptions?.resumeSdkSessionId, 'sdk-1');
-  assert.equal(minted[1]!.backend.sentTexts[0], 'three');
+  assert.equal(minted[1]!.runtime.sentTexts[0], 'three');
 });
 
 test('no orchestratorRev dep → never re-mints (test/back-compat path)', async () => {
@@ -71,9 +71,9 @@ test('no orchestratorRev dep → never re-mints (test/back-compat path)', async 
   const svc = new SessionService({
     projectId: project.id,
     broadcast: () => {},
-    backendFactory: () => {
+    mintSession: () => {
       mints++;
-      return new FakeBackend();
+      return new FakeRuntime();
     },
   });
   const session = svc.ensureActiveSession();

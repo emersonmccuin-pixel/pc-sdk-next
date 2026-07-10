@@ -14,8 +14,10 @@ import type {
   ServerFrame,
 } from '@pc/contracts';
 
+import { useAgentEventStore } from '@/state/agent-event-store';
 import { useChatStore, type ChatChannelFrame } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
+import { useResourceStore } from '@/state/resource-store';
 import { useUsageStore } from '@/state/usage-store';
 import { useMcpStatus } from '@/state/mcp-status';
 
@@ -171,9 +173,14 @@ export class ProjectSocket {
       case 'live-reset':
         this.cursor = undefined;
         writeCursor(this.projectId, null);
+        useResourceStore.getState().applyLiveReset(frame);
         useConnectionStore.getState().bumpEpoch();
         break;
-      // agent-event → latency-class agent transcript (activity sibling); ignore here.
+      case 'agent-event':
+        // Latency-class agent transcript stream (Channel 3) — live buffer only;
+        // missed frames heal on modal open via the HTTP backfill.
+        useAgentEventStore.getState().applyAgentEventFrame(frame);
+        break;
       default:
         break;
     }
@@ -183,6 +190,8 @@ export class ProjectSocket {
     const ev = frame.event;
     this.cursor = ev.cursor;
     writeCursor(this.projectId, ev.cursor);
+    // Identity-keyed store — feeds agent-run/contract consumers (activity rail).
+    useResourceStore.getState().applyResourceFrame(frame);
     if (ev.entity === 'usage') {
       useUsageStore.getState().setSnapshot(ev.payload);
     } else if (ev.entity === 'mcp-server') {
@@ -194,8 +203,6 @@ export class ProjectSocket {
         { id: server.id, name: server.name, status: server.status, toolCount: server.toolCount },
       ]);
     }
-    // Other entities (agent-run/contract/specialist/...) belong to the activity
-    // sibling; unioned there.
   }
 
   private setHealth(health: OrchestratorHealth): void {

@@ -48,6 +48,10 @@ export interface InsertAgentRunRowInput {
   /** Repo dispatch provenance. NULL for non-repo/legacy rows. */
   worktreeBaseBranch?: string | null;
   worktreeBaseSha?: string | null;
+  /** Runtime-selection stamp: adapter id / account / model for this run. */
+  runtimeId?: string | null;
+  accountId?: string | null;
+  model?: string | null;
   queuedAt: number;
 }
 
@@ -83,6 +87,9 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     worktreeDir: input.worktreeDir ?? null,
     worktreeBaseBranch: input.worktreeBaseBranch ?? null,
     worktreeBaseSha: input.worktreeBaseSha ?? null,
+    runtimeId: input.runtimeId ?? null,
+    accountId: input.accountId ?? null,
+    model: input.model ?? null,
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
@@ -290,6 +297,16 @@ export function findActiveContinuation(priorRunId: ULID): AgentRunRow | null {
 /** Point an agent_run at the first-class contract it's producing. Does NOT
  *  bump rev — the contract link is dispatch bookkeeping, not a status
  *  transition the frontend versions. Idempotent. */
+/** Stamp the adapter-native session id once the runtime's init event lands
+ *  (the SDK mints it; we can't choose it up front). Resume routes through it. */
+export function setAgentRunCcSession(id: ULID, ccSessionId: string): void {
+  getDb()
+    .update(agentRuns)
+    .set({ ccSessionId, rev: sql`${agentRuns.rev} + 1` })
+    .where(eq(agentRuns.id, id))
+    .run();
+}
+
 export function setAgentRunContractId(id: ULID, contractId: ULID | null): void {
   getDb().update(agentRuns).set({ contractId }).where(eq(agentRuns.id, id)).run();
 }

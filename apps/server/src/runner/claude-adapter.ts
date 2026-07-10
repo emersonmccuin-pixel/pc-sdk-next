@@ -1,18 +1,19 @@
-// SdkBackend — the RunnerBackend over @anthropic-ai/claude-agent-sdk.
+// ClaudeRuntimeAdapter — the Claude Agent SDK runtime behind the canonical
+// AgentRuntimeAdapter contract.
 //
 // THIS IS THE ONLY FILE IN THE REPO THAT IMPORTS THE SDK (guard test:
-// test/sdk-import-guard.test.ts greps for the import specifier). Everything else
-// hangs off the `RunnerBackend` seam. The MCP bridge hands us plain tool
-// definitions; we do the `tool()`/`createSdkMcpServer()` wrapping here so the
-// one-SDK-import invariant holds.
+// test/sdk-import-guard.test.ts greps for the import specifier). Everything
+// else hangs off the canonical `RuntimeSession` seam. The MCP bridge hands us
+// plain tool definitions; we do the `tool()`/`createSdkMcpServer()` wrapping
+// here so the one-SDK-import invariant holds.
 //
 // Streaming-input mode: ONE `query()` per session with an AsyncIterable prompt.
 // Each `sendTurn` pushes a user message into that prompt so `interrupt()` works
 // (control methods require streaming-input). `includePartialMessages: true`
 // yields `stream_event` deltas → chat-delta frames. `resume` re-attaches after a
-// restart. `canUseTool` bridges to the app's ask registry. SDK messages are
-// mapped to `RunnerMessage`s per the contract table; unknown variants are
-// dropped here (never surfaced as an unknown RunnerMessage).
+// restart. `canUseTool` bridges to the app's ask registry. Native SDK messages
+// are mapped to canonical `RuntimeEvent`s per the contract table; unknown
+// variants are dropped here (never surfaced as an unknown RuntimeEvent).
 
 import {
   createSdkMcpServer,
@@ -25,38 +26,53 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { UsageSnapshot } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
+import type { AccountRegistry } from './account-env.ts';
 import type {
+  AgentRuntimeAdapter,
   AskDecision,
-  RunnerBackend,
-  RunnerDelta,
-  RunnerMessage,
-  RunnerUsage,
-  StartSessionOptions,
-} from './backend.ts';
+  AskHandler,
+  CreateRuntimeSession,
+  ResumeRuntimeSession,
+  RuntimeDelta,
+  RuntimeEvent,
+  RuntimeSession,
+  RuntimeUsage,
+} from './runtime.ts';
 
-/** Tools auto-allowed for the orchestrator (read-only surface). Anything else
- *  routes through `canUseTool` → the browser ask. */
+export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
+
+/** Native tools auto-allowed for the orchestrator (read-only surface).
+ *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
 
 const DEFAULT_SYSTEM_PROMPT = `You are the orchestrator of a local-first project workspace (PC-SDK).
 You help the user explore and reason about the project in the working directory, using your tools.
 Be direct and terse. Lead with the answer. Read files instead of guessing.`;
 
-export interface SdkBackendConfig {
+export interface ClaudeSessionConfig {
   /** Per-query env (account-scrubbed; sets CLAUDE_CONFIG_DIR). */
   env: Record<string, string>;
-  /** Account id this backend runs under — stamped onto usage snapshots. */
+  /** Account id this session runs under — stamped onto usage snapshots. */
   accountId: string;
   model?: string;
   systemPrompt?: string;
-  /** Working directory for the loop (the project folder). `startSession`'s
-   *  `cwd` wins; then this; then `process.cwd()`. */
+  /** Working directory for the loop. `start`'s cwd wins; then this; then
+   *  `process.cwd()`. */
   cwd?: string;
-  /** Auto-allowed tools; bridged MCP tool names are unioned in. */
+  /** Auto-allowed native tools; bridged MCP tool names are unioned in. */
   allowedTools?: string[];
-  /** Bridge build from the MCP manager (may be empty). */
+  /** Bridge build (app-owned tool policy; may be empty). */
   bridge?: BridgeBuild;
   maxTurns?: number;
+  /** Non-interactive dispatch: never block on permissions. */
+  bypassPermissions?: boolean;
+}
+
+interface StartOptions {
+  appSessionId: string;
+  resumeSdkSessionId?: string;
+  cwd?: string;
+  ask?: AskHandler;
 }
 
 /** Single-consumer push queue with async iteration. */
@@ -120,22 +136,24 @@ function rememberKey(keys: SdkKeyContext, envelopeUuid: string, key: string): vo
   }
 }
 
-export class SdkBackend implements RunnerBackend {
-  private readonly config: SdkBackendConfig;
+export class ClaudeRuntimeSession implements RuntimeSession {
+  private readonly config: ClaudeSessionConfig;
   private readonly keys: SdkKeyContext = createSdkKeyContext();
   private started = false;
   private disposed = false;
   private q: Query | null = null;
   private promptQueue: AsyncQueue<SDKUserMessage> | null = null;
-  private currentTurn: AsyncQueue<RunnerMessage> | null = null;
-  private pendingInit: RunnerMessage | null = null;
+  private currentTurn: AsyncQueue<RuntimeEvent> | null = null;
+  private pendingInit: RuntimeEvent | null = null;
   private sdkSessionId: string | null = null;
 
-  constructor(config: SdkBackendConfig) {
+  constructor(config: ClaudeSessionConfig) {
     this.config = config;
   }
 
-  async startSession(opts: StartSessionOptions): Promise<void> {
+  /** Open (or resume) the SDK session loop. The adapter calls this exactly
+   *  once before handing the session out. */
+  async start(opts: StartOptions): Promise<void> {
     if (this.started) return;
     this.started = true;
 
@@ -171,7 +189,7 @@ export class SdkBackend implements RunnerBackend {
       env: this.config.env,
       cwd: opts.cwd ?? this.config.cwd ?? process.cwd(),
       includePartialMessages: true,
-      permissionMode: 'default',
+      permissionMode: this.config.bypassPermissions ? 'bypassPermissions' : 'default',
       maxTurns: this.config.maxTurns ?? 30,
       allowedTools,
       ...(mcpServers ? { mcpServers } : {}),
@@ -183,10 +201,10 @@ export class SdkBackend implements RunnerBackend {
     void this.consume(this.q);
   }
 
-  sendTurn(text: string): AsyncIterable<RunnerMessage> {
-    if (!this.started) throw new Error('SdkBackend.sendTurn before startSession');
-    if (this.disposed) throw new Error('SdkBackend.sendTurn after dispose');
-    const turn = new AsyncQueue<RunnerMessage>();
+  sendTurn(text: string): AsyncIterable<RuntimeEvent> {
+    if (!this.started) throw new Error('ClaudeRuntimeSession.sendTurn before start');
+    if (this.disposed) throw new Error('ClaudeRuntimeSession.sendTurn after dispose');
+    const turn = new AsyncQueue<RuntimeEvent>();
     this.currentTurn = turn;
     if (this.pendingInit) {
       turn.push(this.pendingInit);
@@ -218,7 +236,7 @@ export class SdkBackend implements RunnerBackend {
     } catch {
       /* best-effort */
     }
-    this.endCurrentTurnIfOpen('backend disposed');
+    this.endCurrentTurnIfOpen('session disposed');
   }
 
   // ── SDK consumption ──────────────────────────────────────────────────────────
@@ -239,7 +257,7 @@ export class SdkBackend implements RunnerBackend {
     const anyMsg = msg as { type: string; subtype?: string; session_id?: string; model?: string; permissionMode?: string };
     if (anyMsg.type === 'system' && anyMsg.subtype === 'init') {
       this.sdkSessionId = anyMsg.session_id ?? null;
-      const rm: RunnerMessage = {
+      const rm: RuntimeEvent = {
         type: 'init',
         sdkSessionId: anyMsg.session_id ?? '',
         model: anyMsg.model ?? null,
@@ -298,7 +316,7 @@ export class SdkBackend implements RunnerBackend {
     turn.end();
   }
 
-  private makeCanUseTool(ask: NonNullable<StartSessionOptions['ask']>) {
+  private makeCanUseTool(ask: AskHandler) {
     return async (
       toolName: string,
       input: Record<string, unknown>,
@@ -319,10 +337,52 @@ export class SdkBackend implements RunnerBackend {
   }
 }
 
-// ── SDK message → RunnerMessage[] (contract mapping table) ─────────────────────
+/** The Claude Agent SDK adapter. Owns credential-directory selection (via the
+ *  account registry) and the native session lifecycle; receives everything
+ *  else (instructions, tools, cwd, model) as the provider-neutral package. */
+export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
+  readonly id = CLAUDE_RUNTIME_ID;
+  private readonly accounts: AccountRegistry;
 
-/** Exported for the mapping guard test — production callers go through SdkBackend. */
-export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyContext): RunnerMessage[] {
+  constructor(deps: { accounts: AccountRegistry }) {
+    this.accounts = deps.accounts;
+  }
+
+  async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
+    return this.mint(input, undefined);
+  }
+
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return this.mint(input, input.nativeSessionId);
+  }
+
+  private async mint(input: CreateRuntimeSession, resume: string | undefined): Promise<RuntimeSession> {
+    const session = new ClaudeRuntimeSession({
+      env: this.accounts.buildEnv(input.selection.accountId),
+      accountId: input.selection.accountId,
+      model: input.selection.model,
+      systemPrompt: input.instructions,
+      cwd: input.cwd,
+      bridge: input.tools,
+      ...(input.allowedNativeTools ? { allowedTools: input.allowedNativeTools } : {}),
+      maxTurns: input.maxTurns,
+      bypassPermissions: input.bypassPermissions,
+    });
+    await session.start({
+      appSessionId: input.appSessionId,
+      resumeSdkSessionId: resume,
+      cwd: input.cwd,
+      ask: input.ask,
+    });
+    return session;
+  }
+}
+
+// ── native SDK message → RuntimeEvent[] (contract mapping table) ───────────────
+
+/** Exported for the mapping guard test — production callers go through
+ *  ClaudeRuntimeSession. */
+export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyContext): RuntimeEvent[] {
   const m = msg as Record<string, unknown> & { type: string };
   switch (m.type) {
     case 'assistant':
@@ -344,8 +404,8 @@ export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyCo
   }
 }
 
-function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
-  const out: RunnerMessage[] = [];
+function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {
+  const out: RuntimeEvent[] = [];
   const envelopeUuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
   const message = m.message as { id?: unknown; content?: unknown; error?: unknown } | undefined;
@@ -385,13 +445,13 @@ function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMe
   return out;
 }
 
-function mapUser(m: Record<string, unknown>): RunnerMessage[] {
+function mapUser(m: Record<string, unknown>): RuntimeEvent[] {
   if (m.isReplay === true) return []; // resume echo — not live tool activity
   const uuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
   const message = m.message as { content?: unknown } | undefined;
   const blocks = Array.isArray(message?.content) ? (message!.content as Array<Record<string, unknown>>) : [];
-  const out: RunnerMessage[] = [];
+  const out: RuntimeEvent[] = [];
   for (const block of blocks) {
     if (block.type !== 'tool_result') continue;
     out.push({
@@ -406,7 +466,7 @@ function mapUser(m: Record<string, unknown>): RunnerMessage[] {
   return out;
 }
 
-function mapStreamEvent(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
+function mapStreamEvent(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {
   const uuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
   const event = m.event as
@@ -417,7 +477,7 @@ function mapStreamEvent(m: Record<string, unknown>, keys: SdkKeyContext): Runner
   // All of one message's deltas share the inner message id opened at
   // message_start — envelope uuids are per-emission and would split the buffer.
   const key = keys.streamMsgId ?? uuid;
-  let delta: RunnerDelta | null = null;
+  let delta: RuntimeDelta | null = null;
   if (event.type === 'message_start') delta = { kind: 'message-start' };
   else if (event.type === 'message_stop') {
     delta = { kind: 'message-end' };
@@ -437,10 +497,10 @@ function translateUuids(uuids: unknown[], keys: SdkKeyContext): string[] {
   return uuids.map((u) => keys.uuidToKey.get(String(u)) ?? String(u));
 }
 
-function mapResult(m: Record<string, unknown>): RunnerMessage {
+function mapResult(m: Record<string, unknown>): RuntimeEvent {
   const subtype = String(m.subtype ?? 'success');
   const ok = subtype === 'success';
-  const usage = toRunnerUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
+  const usage = toRuntimeUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
   const durationMs = typeof m.duration_ms === 'number' ? m.duration_ms : null;
   const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
   let error: string | null = null;
@@ -451,7 +511,7 @@ function mapResult(m: Record<string, unknown>): RunnerMessage {
   return { type: 'result', ok, subtype, stopReason, usage, durationMs, error };
 }
 
-function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
+function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {
   switch (m.subtype) {
     case 'session_state_changed':
       return [{ type: 'session-state', state: (m.state as 'idle' | 'running' | 'requires_action') ?? 'idle', permissionMode: null }];
@@ -490,7 +550,7 @@ function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessa
     case 'model_refusal_fallback':
     case 'model_refusal_no_fallback': {
       const uuids = m.retracted_message_uuids;
-      const out: RunnerMessage[] = [{ type: 'system', subtype: String(m.subtype), level: 'warning', message: String(m.content ?? 'model refused the request') }];
+      const out: RuntimeEvent[] = [{ type: 'system', subtype: String(m.subtype), level: 'warning', message: String(m.content ?? 'model refused the request') }];
       if (Array.isArray(uuids) && uuids.length > 0) out.push({ type: 'supersedes', uuids: translateUuids(uuids, keys) });
       return out;
     }
@@ -505,10 +565,10 @@ function mapInfoLevel(level: unknown): 'info' | 'notice' | 'warning' | 'error' {
   return 'info';
 }
 
-function toRunnerUsage(
+function toRuntimeUsage(
   usage: Record<string, unknown> | undefined,
   modelUsage: Record<string, unknown> | undefined,
-): RunnerUsage | null {
+): RuntimeUsage | null {
   if (!usage) return null;
   const model = modelUsage ? (Object.keys(modelUsage)[0] ?? null) : null;
   return {

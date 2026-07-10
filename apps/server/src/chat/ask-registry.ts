@@ -9,7 +9,7 @@
 import { newId } from '@pc/db';
 import type { AskFrame } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { AskDecision, AskRequest } from '../runner/backend.ts';
+import type { AskDecision, AskRequest } from '../runner/runtime.ts';
 
 /** Answers that grant permission. Anything else denies, carrying the answer as
  *  the denial reason (Phase 2 semantics; richer edit/allow-once is a looseEnd). */

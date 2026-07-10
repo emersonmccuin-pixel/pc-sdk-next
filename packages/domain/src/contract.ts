@@ -81,6 +81,12 @@ export type ExpectedOutput =
       paths_touched?: string[];
       checks?: RepoCheck[];
       require_diff?: boolean; // default true
+      /** docs/worktree-lifecycle.md — auto-merge is OPT-IN contract policy.
+       *  Default (absent/false): a passed repo contract parks merge-ready and
+       *  the orchestrator authorizes landing via pc_review_contract accept.
+       *  True: PC-SDK lands automatically when verification passed with
+       *  positive receipts. The builder can never set this. */
+      auto_land?: boolean;
     }
   | {
       kind: 'external';

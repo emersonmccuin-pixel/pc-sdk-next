@@ -616,8 +616,8 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
     "name": "pc_invoke_agent",
     "family": "agent-run",
     "label": "Dispatch another agent",
-    "description": "Dispatch a named agent (kebab-case, e.g. \"researcher\") in this project. Every dispatch CREATES A CONTRACT — the machine-checkable assignment with a typed expected output. The work item is an OPTIONAL link, not the trigger. Always async — returns `{ ok, mode: 'async', sessionId, runId, agentName, startedAt, status }` immediately; the terminal `agent-completed` / `agent-failed` event lands on your next turn. Author the dispatch's output via `expected_output` (defaults to the pod's default). Decision-4 work-item rule: supply exactly one of — a `workItemId` to attach to (the source material, or an existing output home), nothing (contract-only: answer / payload / contract-stored prose / action / external), or — when the output needs a durable home you don't already have in hand — create one first via `pc_create_agent_work_item` and pass its id. An output kind that requires a home (prose stored on a work item / attachment / repo file, or a repo change) with no `workItemId` is REJECTED loudly (422) — never silent. Optional `parentWorkItemId` pins lineage; defaults to `PC_AGENT_PARENT_WORK_ITEM_ID` inside another agent. Project route URL derives from `PC_PROJECT_ID`.",
-    "catalogDescription": "Dispatch a pod — creates a contract; attach or create a work item only when the output needs one.",
+    "description": "Dispatch a named specialist agent (kebab-case, e.g. \"researcher\") in this project. Every dispatch CREATES A CONTRACT — the machine-checkable assignment with a typed expected output and derived acceptance criteria the deliverable is verified against. Always async — returns `{ ok, runId, agentName, status }` immediately; the terminal `[agent-completed]` / `[agent-failed]` envelope (result + verification verdict) arrives as a message on a later turn. Author the dispatch's output via `expected_output` (defaults to the pod's stored/stock default). A pod with no default is REJECTED without an explicit `expected_output` (422) — an empty contract that checks nothing is never minted. `kind: 'repo'` dispatches run in an isolated git worktree; once verified they park merge-ready for YOUR review (pc_review_contract accept lands them) unless the spec sets `auto_land: true`. Optional `pmRef` records the external PM item (AInativePM) this work belongs to.",
+    "catalogDescription": "Dispatch a specialist — creates a verified contract; repo work runs isolated and lands after review (or auto_land).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -627,19 +627,15 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
         },
         "input": {
           "type": "string",
-          "description": "the child's first user message — the task. State what you want done. When you also pass workItemId pointing at source material, you can keep this a short pointer (\"Process the linked work item.\") and let the agent read the work item for detail."
+          "description": "the agent's first user message — the task. State what you want done, the constraints, and any file paths or context it needs; the agent cannot see your conversation."
         },
-        "workItemId": {
+        "pmRef": {
           "type": "string",
-          "description": "OPTIONAL work-item link (ULID or callsign). Two uses: source material the agent reads via pc_get_work_item, and/or the output home where the deliverable lands. Required only when the expected_output kind needs a home (Decision-4). Omit for contract-only dispatches. Create a fresh home via pc_create_agent_work_item when needed."
-        },
-        "parentWorkItemId": {
-          "type": "string",
-          "description": "optional parent work-item ULID for lineage (not the assignment — that is `workItemId`); defaults to PC_AGENT_PARENT_WORK_ITEM_ID"
+          "description": "optional external PM-item ref (AInativePM id/URL) recorded on the contract for traceability"
         },
         "expected_output": {
           "type": "object",
-          "description": "contract-first output spec authored directly onto the dispatch's contract. `{ kind }` is one of answer | prose | payload | repo | external | binary | action. Optional ONLY for stock pods that carry a default (researcher, writer, code-writer, reviewer, planner, extractor, …); a pod with no stored/stock default is REJECTED without it (an empty contract that checks nothing). A bare `{ kind: 'answer' }` with no must_address/min_chars escalates to review unless you set `trust_end_turn: true`. Kinds that must land in a work item (prose unless store='contract', and repo) REQUIRE a workItemId — dispatching without one returns 422."
+          "description": "contract-first output spec authored directly onto the dispatch's contract. `{ kind }` is one of answer | prose | payload | repo | external | binary | action. Optional ONLY for stock pods that carry a default (researcher, writer, code-writer, reviewer, planner, extractor, …); a pod with no stored/stock default is REJECTED without it. A bare `{ kind: 'answer' }` with no min_chars escalates to orchestrator review unless you set `trust_end_turn: true`. For `repo`, add `checks` (e.g. [\"typecheck\",\"test\"]) so verification runs them in the worktree."
         }
       },
       "required": [
@@ -652,7 +648,7 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
     "name": "pc_continue_agent",
     "family": "agent-run",
     "label": "Continue an agent run",
-    "description": "Resume a recent terminal agent run (`completed` or `failed`) with a follow-up input by spawning via `--resume <ccSessionId>` — the prior conversation is preserved so phrase your input as a continuation, not a fresh ask. The continuation carries the parent run's contract forward, so the same expected output + acceptance criteria still apply. Cancelled runs cannot be continued; start a fresh dispatch. Single-active-continuation guard per parent (409 on concurrent). JSONL retention guard (410 on session-expired). Optional `workItemId` re-links the resumed run's contract to a (possibly different) work item; omit to carry the parent's link forward. Returns the same shape as `pc_invoke_agent`.",
+    "description": "Resume a recent terminal agent run (`completed` or `failed`) with a follow-up input — the prior conversation is preserved (SDK session resume) so phrase your input as a continuation, not a fresh ask. The continuation carries the parent run's contract forward: the same expected output + acceptance criteria still apply, and the deliverable must still be submitted via pc_submit_deliverable. Cancelled runs cannot be continued; start a fresh dispatch. Single-active-continuation guard per parent (409 on concurrent). Returns the same shape as `pc_invoke_agent`.",
     "catalogDescription": "Resume a terminal AgentRun with a follow-up input (carries the contract forward).",
     "inputSchema": {
       "type": "object",
@@ -664,10 +660,6 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
         "input": {
           "type": "string",
           "description": "free-form follow-up — becomes the next user message in the resumed conversation. Phrase as a continuation, not a fresh request."
-        },
-        "workItemId": {
-          "type": "string",
-          "description": "optional work-item link. Omitted = carry the parent run's contract + link forward. Supply when the follow-up re-links the contract to a different work item (rare)."
         }
       },
       "required": [
@@ -978,6 +970,32 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
       "required": ["id"]
     }
   },
+  {
+    "name": "pc_review_contract",
+    "family": "agent-run",
+    "label": "Review a contract",
+    "description": "Record YOUR verdict on a contract parked for review (verification status 'pending' with tier 'orchestrator-review', or an escalated empty-criteria contract). Read the deliverable first (pc_get_deliverable), judge it against the expected output, then accept or reject. Accepting a passed repo contract triggers landing (merge into the base branch). Rejecting records your notes as the verification failure — re-dispatch (pc_invoke_agent) or continue the run (pc_continue_agent) to get it fixed. Returns { ok, contract: { id, status, verificationStatus, landingStatus } }.",
+    "catalogDescription": "Accept or reject a contract parked for orchestrator review (accept ⇒ land for repo work).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "contractId": {
+          "type": "string",
+          "description": "contract id (ULID) — from the review envelope or pc_get_deliverable"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["accept", "reject"],
+          "description": "accept = deliverable meets the contract; reject = it does not (say why in notes)"
+        },
+        "notes": {
+          "type": "string",
+          "description": "optional reviewer notes — REQUIRED in practice for reject (what failed, what to fix)"
+        }
+      },
+      "required": ["contractId", "verdict"]
+    }
+  },
 ];
 
 /** FD-16 — every registry tool's tier. `first-order` = meant to be carried in
@@ -1033,6 +1051,8 @@ export const PC_RIG_TOOL_TIERS: Readonly<Record<string, PcRigToolTier>> = {
   pc_write_claude_md: 'on-demand',
   // Slice 4 — orchestrator read door for the contract deliverable.
   pc_get_deliverable: 'first-order',
+  // Phase 3 — tier-2 sign-off door (accept ⇒ land / reject with notes).
+  pc_review_contract: 'first-order',
   // Worker-side — these flow INTO the orchestrator from dispatched agents.
   pc_ask_orchestrator: 'worker',
   // ☠ M7 (FD-6, 2026-06-04) — `pc_ask_user` deleted: ONE ask door. Agents ask

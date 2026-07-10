@@ -1,7 +1,7 @@
 // Server assembly — Hono HTTP + `ws` on one Node listener. Wires the session
 // registry, resource relay drain, WS upgrade routing, and (optionally) static
-// serving of a built web app. Injectable backend factory: prod passes SdkBackend
-// (sibling), tests pass FakeBackend.
+// serving of a built web app. Injectable runtime-session factory: prod resolves
+// an adapter at the composition root, tests pass a FakeRuntime.
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import type { Server } from 'node:http';
@@ -10,7 +10,8 @@ import { serve } from '@hono/node-server';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { BackendFactory } from './runner/backend.ts';
+import type { RuntimeSessionFactory } from './runner/runtime.ts';
+import type { DispatchService } from './dispatch/service.ts';
 import type { AccountRegistry } from './runner/account-env.ts';
 import type { UsageCache } from './usage/cache.ts';
 import { SessionRegistry } from './chat/registry.ts';
@@ -21,7 +22,7 @@ import { ProjectWebSocketHub } from './ws/hub.ts';
 import { attachSocket, type RouterSocket } from './ws/router.ts';
 
 export interface StartServerOptions {
-  backendFactory: BackendFactory;
+  mintSession: RuntimeSessionFactory;
   port?: number;
   /** Absolute path to a built web app (apps/web/dist). Absent/missing tolerated. */
   webDist?: string | null;
@@ -36,6 +37,8 @@ export interface StartServerOptions {
   accounts?: AccountRegistry;
   /** Usage cache — served by the `/api/usage` re-prime route. */
   usage?: UsageCache;
+  /** Phase-3 dispatch service — mounts the agent-run routes when set. */
+  dispatch?: DispatchService;
   /** Run boot recovery before listening. Default true. */
   runRecovery?: boolean;
   /** Resource-relay drain cadence (ms). Default 250. */
@@ -73,7 +76,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   relay.primeToHead();
   const registry = new SessionRegistry({
     hub,
-    backendFactory: opts.backendFactory,
+    mintSession: opts.mintSession,
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
     onRateLimit: opts.onRateLimit,
@@ -85,6 +88,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     version: opts.version,
     accounts: opts.accounts,
     usage: opts.usage,
+    dispatch: opts.dispatch,
   });
 
   // Static serving (SPA) — only when a built web dir is present.

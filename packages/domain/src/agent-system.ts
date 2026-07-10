@@ -153,6 +153,11 @@ export interface AgentRunRow {
   /** Repo dispatch provenance. NULL for non-repo and legacy rows. */
   worktreeBaseBranch: string | null;
   worktreeBaseSha: string | null;
+  /** Runtime-selection stamp (agent-runtime architecture guard rule 2): the
+   *  adapter id, account, and model this run executed under. NULL = legacy. */
+  runtimeId: string | null;
+  accountId: string | null;
+  model: string | null;
 }
 
 /** Pending-ask kind. ☠ M7 (FD-6, 2026-06-04) — `'user'` deleted with

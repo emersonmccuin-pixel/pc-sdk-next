@@ -103,6 +103,11 @@ export const agentRuns = sqliteTable(
      *  worktree branch forked from. NULL for non-repo/legacy rows. */
     worktreeBaseBranch: text('worktree_base_branch'),
     worktreeBaseSha: text('worktree_base_sha'),
+    /** Runtime-selection stamp (architecture guard rule 2): the adapter id,
+     *  account, and model this run executed under. NULL = pre-Phase-3 row. */
+    runtimeId: text('runtime_id'),
+    accountId: text('account_id'),
+    model: text('model'),
   },
   (t) => [
     index('agent_runs_session_queued_idx').on(t.dispatcherSessionId, t.queuedAt),

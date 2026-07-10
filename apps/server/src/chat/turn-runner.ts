@@ -1,5 +1,5 @@
-// Turn-runner — maps a backend's RunnerMessage stream to ChatEvents per the
-// SDK→contract mapping table (docs/event-contract.md).
+// Turn-runner — maps a runtime session's RuntimeEvent stream to ChatEvents per
+// the runtime→contract mapping table (docs/event-contract.md).
 //
 // Invariants this owns:
 //  - Rule 3: every turn terminates in EXACTLY ONE `turn-end` or `turn-failed`.
@@ -13,7 +13,7 @@
 // lives there). Deltas ride `emitDelta` (broadcast-only, never persisted).
 
 import type { ChatDeltaEvent, ChatEvent, UsageSnapshot } from '@pc/contracts';
-import type { RunnerMessage } from '../runner/backend.ts';
+import type { RuntimeEvent } from '../runner/runtime.ts';
 
 export type TurnTerminal = 'turn-end' | 'turn-failed';
 
@@ -36,7 +36,7 @@ function isAbortSubtype(subtype: string): boolean {
 
 /** Drive one turn to completion. Returns the single terminal kind emitted. */
 export async function runTurn(
-  messages: AsyncIterable<RunnerMessage>,
+  messages: AsyncIterable<RuntimeEvent>,
   deps: TurnRunnerDeps,
 ): Promise<TurnTerminal> {
   let terminated = false;
@@ -44,7 +44,7 @@ export async function runTurn(
   let lastAssistantText = '';
   const drop = (reason: string, msg: unknown): void => deps.onDropped?.(reason, msg);
 
-  const emitUsage = (usage: NonNullable<RunnerMessage & { type: 'result' }>['usage']): void => {
+  const emitUsage = (usage: NonNullable<RuntimeEvent & { type: 'result' }>['usage']): void => {
     if (!usage) return;
     deps.emitChat({
       kind: 'usage',

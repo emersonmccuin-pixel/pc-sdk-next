@@ -178,6 +178,7 @@ export {
   listRecentTerminalAgentRuns,
   markAgentRunDelivered,
   markAgentRunTerminal,
+  setAgentRunCcSession,
   setAgentRunContractId,
   touchAgentRunActivity,
   updateAgentRunPid,

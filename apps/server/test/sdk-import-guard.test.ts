@@ -1,7 +1,7 @@
 // Guard: the Claude Agent SDK is imported in EXACTLY ONE server file
-// (runner/sdk-backend.ts). Everything else hangs off the RunnerBackend seam.
+// (runner/claude-adapter.ts). Everything else hangs off the RuntimeSession seam.
 // If this fails, a second file imported `@anthropic-ai/claude-agent-sdk` — route
-// it through the seam (or re-export from sdk-backend) instead.
+// it through the seam (or re-export from claude-adapter) instead.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,12 +23,12 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test('only runner/sdk-backend.ts imports the Claude Agent SDK', () => {
+test('only runner/claude-adapter.ts imports the Claude Agent SDK', () => {
   const importers: string[] = [];
   for (const file of walk(SRC)) {
     if (SDK_IMPORT.test(readFileSync(file, 'utf8'))) {
       importers.push(relative(SRC, file).replace(/\\/g, '/'));
     }
   }
-  assert.deepEqual(importers, ['runner/sdk-backend.ts'], `unexpected SDK importers: ${importers.join(', ')}`);
+  assert.deepEqual(importers, ['runner/claude-adapter.ts'], `unexpected SDK importers: ${importers.join(', ')}`);
 });

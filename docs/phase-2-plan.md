@@ -2,11 +2,18 @@
 
 Scope per master-plan Phase 2. Wire shapes: `docs/event-contract.md` + `@pc/contracts` `src/events/` (the ONLY wire — never resurrect old names). Locked decisions: AGENTS.md.
 
+> **Historical implementation note:** Phase 2 intentionally proved the first
+> runtime with Claude Agent SDK. It does not define a Claude-only target
+> architecture. Phase 3 generalizes this seam and extracts Claude into a
+> concrete adapter before Codex is added; see
+> `docs/agent-runtime-architecture.md`. Statements below describe what Phase 2
+> built and must stay true during the behavior-preserving extraction.
+
 ## Decisions (2026-07-10)
 
 - **Server:** Hono (`@hono/node-server`) + `ws`. One process. Serves `apps/web/dist` statically. Port 5123 (`PC_PORT` override). Package `@pc-sdk/server`.
 - **Web:** Vite + React + TS. Package `@pc-sdk/web`. Ported Caisson shell, old file structure kept where sane.
-- **SDK behind one adapter.** `apps/server/src/runner/` owns the only `@anthropic-ai/claude-agent-sdk` import. `RunnerBackend` interface; `SdkBackend` (real) + `FakeBackend` (tests, scripted turns). Tests and the kill-test run on `FakeBackend` — CI has no Claude login.
+- **Claude SDK behind the first adapter precursor.** `apps/server/src/runner/` owns the only `@anthropic-ai/claude-agent-sdk` import. `RunnerBackend` interface; `SdkBackend` (real Claude implementation) + `FakeBackend` (tests, scripted turns). Tests and the kill-test run on `FakeBackend` — CI has no Claude login. Phase 3 moves native vocabulary into `ClaudeRuntimeAdapter` and applies the same conformance suite to every runtime.
 - **SDK mode:** streaming-input (one `query()` per active session, `AsyncIterable` prompt, turns via `streamInput`) so `interrupt()` works. `resume: sessionId` when re-attaching after restart. `includePartialMessages: true` → `chat-delta` frames.
 - **Accounts:** registry `{ personal: C:\Users\emers\.claude, work: C:\Users\emers\.claude-work }` in settings; per-project default; selected via `CLAUDE_CONFIG_DIR` in the query env. Scrub `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from env. Switching account ⇒ new session.
 - **Boot recovery v1 (chat):** on boot, any session/turn marked live in DB with no process behind it → emit `turn-failed { source: 'internal', error: 'server restarted mid-turn' }` + `session-state idle`, loudly. Never silently resume, never fake success.
@@ -25,8 +32,8 @@ src/ws/router.ts      client frames: send | interrupt | ask-reply | subscribe | 
 src/http/             health, projects CRUD (minimal), sessions (new/resume/list/events), pasted-images, accounts, usage re-prime
 src/chat/session-service.ts   seq allocation, persist-then-broadcast (guard rule 1), conversation_events
 src/chat/send-queue.ts        busy-turn queue (statuses per contract)
-src/chat/turn-runner.ts       drives RunnerBackend msgs → ChatEvents per the SDK mapping table
-src/runner/           backend.ts (interface) | sdk-backend.ts | fake-backend.ts | account-env.ts
+src/chat/turn-runner.ts       drives RunnerBackend msgs → ChatEvents per the current Claude mapping table
+src/runner/           backend.ts (Phase-2 seam) | sdk-backend.ts (Claude) | fake-backend.ts | account-env.ts
 src/mcp/              registry.ts, probe.ts, bridge.ts (proxy tools into runner opts)
 src/usage/            cache.ts → usage resource events
 src/resources/        outbox relay (drain live_outbox → ResourceFrames)

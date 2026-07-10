@@ -3,9 +3,9 @@
 // Owns: the active app session row, per-session `seq` allocation, the
 // persist-then-broadcast door (guard rule 1), clientMessageId stamping, the
 // send-queue, the ask registry, and the turn bracket (session-state
-// running/idle) the boot-recovery reads. Backend-agnostic: it drives whatever
-// `RunnerBackend` the injected factory mints (SdkBackend in prod, FakeBackend in
-// tests).
+// running/idle) the boot-recovery reads. Runtime-agnostic: it drives whatever
+// `RuntimeSession` the injected factory mints (the composition root resolves
+// the adapter — ClaudeRuntimeAdapter in prod, FakeRuntime in tests).
 
 import {
   appendConversationEvent,
@@ -38,7 +38,7 @@ import type {
 } from '@pc/contracts';
 import type { AskFrame } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { BackendFactory, RunnerBackend } from '../runner/backend.ts';
+import type { RuntimeSession, RuntimeSessionFactory } from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
 import { replayFrames } from './replay.ts';
 import { SendQueue } from './send-queue.ts';
@@ -48,13 +48,14 @@ export interface SessionServiceDeps {
   projectId: ULID;
   /** Fan a frame to the project room (all sockets). */
   broadcast: (frame: ServerFrame) => void;
-  backendFactory: BackendFactory;
+  /** Mint one live runtime session (composition root resolves the adapter). */
+  mintSession: RuntimeSessionFactory;
   cwd?: string;
   askTimeoutMs?: number;
   /** Durable per-account usage sink (the sibling's usage cache). */
   onRateLimit?: (snapshot: UsageSnapshot) => void;
   /** Current rev of the orchestrator agent row. When it changes between turns
-   *  the backend is re-minted (with SDK `resume`) so prompt/model edits apply
+   *  the session is re-minted (with native resume) so prompt/model edits apply
    *  on the next message. Null/absent = never re-mint. */
   orchestratorRev?: () => number | null;
 }
@@ -73,17 +74,16 @@ function deriveTitle(text: string): string | null {
 export class SessionService {
   private readonly projectId: ULID;
   private readonly broadcast: (frame: ServerFrame) => void;
-  private readonly backendFactory: BackendFactory;
+  private readonly mintSession: RuntimeSessionFactory;
   private readonly cwd?: string;
   private readonly onRateLimit?: (snapshot: UsageSnapshot) => void;
 
   private readonly orchestratorRev?: () => number | null;
 
   private session: OrchestratorSessionRow | null;
-  private backend: RunnerBackend | null = null;
-  private backendStarted = false;
-  /** Orchestrator-row rev the live backend was minted under. */
-  private backendRev: number | null = null;
+  private runtime: RuntimeSession | null = null;
+  /** Orchestrator-row rev the live runtime session was minted under. */
+  private runtimeRev: number | null = null;
   private nextSeq = 1;
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
@@ -94,7 +94,7 @@ export class SessionService {
   constructor(deps: SessionServiceDeps) {
     this.projectId = deps.projectId;
     this.broadcast = deps.broadcast;
-    this.backendFactory = deps.backendFactory;
+    this.mintSession = deps.mintSession;
     this.cwd = deps.cwd;
     this.onRateLimit = deps.onRateLimit;
     this.orchestratorRev = deps.orchestratorRev;
@@ -133,9 +133,9 @@ export class SessionService {
   }
 
   async handleInterrupt(): Promise<void> {
-    if (this.backend && (this.health === 'busy' || this.health === 'starting')) {
+    if (this.runtime && (this.health === 'busy' || this.health === 'starting')) {
       try {
-        await this.backend.interrupt();
+        await this.runtime.interrupt();
       } catch {
         /* positive receipt: the turn stream will still terminate */
       }
@@ -186,53 +186,46 @@ export class SessionService {
   private teardownRunner(reason: string): void {
     this.sendQueue.cancelAll(reason);
     this.askRegistry.clear(reason);
-    const b = this.backend;
-    this.backend = null;
-    this.backendStarted = false;
+    const b = this.runtime;
+    this.runtime = null;
     this.setHealth('idle');
     if (b) void b.dispose().catch(() => {});
   }
 
   async dispose(): Promise<void> {
     this.askRegistry.clear('server shutdown');
-    if (this.backend) await this.backend.dispose().catch(() => {});
-    this.backend = null;
+    if (this.runtime) await this.runtime.dispose().catch(() => {});
+    this.runtime = null;
   }
 
   // ── delivery (the turn) ──────────────────────────────────────────────────────
 
-  private async ensureBackendStarted(session: OrchestratorSessionRow): Promise<RunnerBackend> {
+  private async ensureRuntime(session: OrchestratorSessionRow): Promise<RuntimeSession> {
     const rev = this.orchestratorRev?.() ?? null;
-    if (this.backend && this.backendStarted) {
-      if (rev === null || rev === this.backendRev) return this.backend;
-      // The orchestrator row changed since this backend was minted — dispose
-      // and re-mint so the new systemPrompt/model apply. SDK `resume` (below)
+    if (this.runtime) {
+      if (rev === null || rev === this.runtimeRev) return this.runtime;
+      // The orchestrator row changed since this session was minted — dispose
+      // and re-mint so the new instructions/model apply. Native resume (below)
       // re-attaches the conversation; SendQueue serializes deliver(), so the
       // swap only ever happens between turns.
-      const old = this.backend;
-      this.backend = null;
-      this.backendStarted = false;
+      const old = this.runtime;
+      this.runtime = null;
       void old.dispose().catch(() => {});
     }
     this.setHealth('starting');
     const resume = session.providerSessionId && session.providerSessionId.length > 0
       ? session.providerSessionId
       : undefined;
-    const backend = this.backend ?? this.backendFactory({
+    const runtime = await this.mintSession({
       projectId: this.projectId,
       appSessionId: session.id,
-      resumeSdkSessionId: resume,
-    });
-    this.backend = backend;
-    await backend.startSession({
-      appSessionId: session.id,
-      resumeSdkSessionId: resume,
+      resumeNativeSessionId: resume,
       cwd: this.cwd,
       ask: this.askRegistry.ask,
     });
-    this.backendStarted = true;
-    this.backendRev = rev;
-    return backend;
+    this.runtime = runtime;
+    this.runtimeRev = rev;
+    return runtime;
   }
 
   private async deliver(item: { clientMessageId: string; text: string }): Promise<void> {
@@ -250,13 +243,13 @@ export class SessionService {
     this.persistAndBroadcast({ kind: 'session-state', state: 'running', permissionMode: null });
     this.broadcast(this.orchestratorStateFrame());
     try {
-      const backend = await this.ensureBackendStarted(session);
+      const runtime = await this.ensureRuntime(session);
       // In flight now — health is authoritative for interrupt().
       this.setHealth('busy');
       this.broadcast(this.orchestratorStateFrame());
-      await runTurn(backend.sendTurn(item.text), this.turnDeps(session));
+      await runTurn(runtime.sendTurn(item.text), this.turnDeps(session));
     } catch (err) {
-      // Reaches here only if the backend refused to start / stream — runTurn
+      // Reaches here only if the runtime refused to mint / stream — runTurn
       // itself always terminates internally. Guarantee the turn's terminal.
       const message = err instanceof Error ? err.message : String(err);
       this.persistAndBroadcast({ kind: 'turn-failed', error: message, source: 'internal' });

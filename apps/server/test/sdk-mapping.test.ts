@@ -1,4 +1,4 @@
-// SDK message → RunnerMessage key-correlation guard. Envelope uuids are minted
+// SDK message → RuntimeEvent key-correlation guard. Envelope uuids are minted
 // per emission (fresh per stream_event); the mapping must key deltas and final
 // assistant blocks by the INNER Anthropic message id, or the web reducer opens
 // one bubble per chunk (the phase-2 streaming bug this test pins).
@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkKeyContext, mapSdkMessage } from '../src/runner/sdk-backend.ts';
+import { createSdkKeyContext, mapSdkMessage } from '../src/runner/claude-adapter.ts';
 
 const ACCOUNT = 'personal';
 

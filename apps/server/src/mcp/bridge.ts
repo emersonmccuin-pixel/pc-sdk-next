@@ -1,6 +1,6 @@
 // MCP bridge — turns discovered REMOTE MCP tools into tool DEFINITIONS the
 // orchestrator's SDK loop can expose. The definitions are plain data + a
-// handler; `sdk-backend.ts` (the sole SDK importer) wraps them with the SDK's
+// handler; `claude-adapter.ts` (the sole SDK importer) wraps them with the SDK's
 // `tool()` / `createSdkMcpServer()`. Keeping the wrapping out of here preserves
 // the one-SDK-import invariant.
 //

@@ -39,14 +39,8 @@ export async function handleAgentRunTool(
           isError: true,
         };
       }
-      const parentWorkItemId =
-        typeof args.parentWorkItemId === 'string' && args.parentWorkItemId.trim()
-          ? args.parentWorkItemId.trim()
-          : ctx.agentParentWorkItemId || undefined;
-      const workItemId =
-        typeof args.workItemId === 'string' && args.workItemId.trim()
-          ? args.workItemId.trim()
-          : undefined;
+      const pmRef =
+        typeof args.pmRef === 'string' && args.pmRef.trim() ? args.pmRef.trim() : undefined;
       // Slice 019 (contract-first) — the dispatch may carry its own expected
       // output spec; the server authors it onto the contract. snake_case in,
       // camelCase out (route convention).
@@ -62,8 +56,7 @@ export async function handleAgentRunTool(
         parentInvokeDepth,
         dispatcherSessionId: ctx.dispatcherSessionId,
       };
-      if (parentWorkItemId) payload.parentWorkItemId = parentWorkItemId;
-      if (workItemId) payload.workItemId = workItemId;
+      if (pmRef) payload.pmRef = pmRef;
       if (expectedOutput) payload.expectedOutput = expectedOutput;
       try {
         // Slice 011 — typed client parses AgentRunDto; raw body emitted verbatim.
@@ -126,16 +119,11 @@ export async function handleAgentRunTool(
           isError: true,
         };
       }
-      const continueWorkItemId =
-        typeof args.workItemId === 'string' && args.workItemId.trim()
-          ? args.workItemId.trim()
-          : undefined;
       try {
         const continuePayload: Record<string, unknown> = {
           input,
           dispatcherSessionId: ctx.dispatcherSessionId,
         };
-        if (continueWorkItemId) continuePayload.workItemId = continueWorkItemId;
         const res = await ctx.client.continueAgent(
           `/api/projects/${ctx.projectId}/agent-runs/${encodeURIComponent(runId)}/continue`,
           continuePayload,
@@ -492,6 +480,52 @@ export async function handleAgentRunTool(
         return {
           content: [
             { type: 'text', text: `pc_get_deliverable failed: ${(err as Error).message}` },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case 'pc_review_contract': {
+      // Phase 3 — the tier-2 sign-off door. Orchestrator records its verdict on
+      // a contract parked for review; accept on a passed repo contract lands it.
+      const contractId = typeof args.contractId === 'string' ? args.contractId.trim() : '';
+      const verdict = typeof args.verdict === 'string' ? args.verdict.trim() : '';
+      if (!contractId || (verdict !== 'accept' && verdict !== 'reject')) {
+        return {
+          content: [
+            { type: 'text', text: 'pc_review_contract: contractId and verdict (accept|reject) required' },
+          ],
+          isError: true,
+        };
+      }
+      if (!ctx.projectId) {
+        return {
+          content: [{ type: 'text', text: 'pc_review_contract: PC_PROJECT_ID not set' }],
+          isError: true,
+        };
+      }
+      const reviewPayload: Record<string, unknown> = { verdict };
+      if (typeof args.notes === 'string' && args.notes.trim()) reviewPayload.notes = args.notes;
+      try {
+        const res = await ctx.postServer(
+          ctx.projectPath(`contracts/${encodeURIComponent(contractId)}/review`),
+          reviewPayload,
+        );
+        if (res.status >= 200 && res.status < 300) {
+          return { content: [{ type: 'text', text: res.body }] };
+        }
+        return {
+          content: [
+            { type: 'text', text: `pc_review_contract failed (${res.status}): ${res.body}` },
+          ],
+          isError: true,
+          next_valid_actions: ['pc_get_deliverable'],
+        };
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text', text: `pc_review_contract failed: ${(err as Error).message}` },
           ],
           isError: true,
         };

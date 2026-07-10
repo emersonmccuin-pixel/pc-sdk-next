@@ -18,10 +18,12 @@ import type { SessionRegistry } from '../chat/registry.ts';
 import { replayFrames } from '../chat/replay.ts';
 import { toSessionSummary } from './dto.ts';
 import { mountAgents } from './agents.ts';
+import { mountAgentRuns } from './agent-runs.ts';
 import { mountProjects } from './projects.ts';
 import { mountSettings } from './settings.ts';
 import { mountAccounts } from './accounts.ts';
 import type { AccountRegistry } from '../runner/account-env.ts';
+import type { DispatchService } from '../dispatch/service.ts';
 import type { UsageCache } from '../usage/cache.ts';
 
 export interface HttpDeps {
@@ -30,6 +32,8 @@ export interface HttpDeps {
   /** Account switcher registry (accounts + usage endpoints mount when set). */
   accounts?: AccountRegistry;
   usage?: UsageCache;
+  /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
+  dispatch?: DispatchService;
 }
 
 const bootAt = Date.now();
@@ -54,6 +58,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
   mountProjects(app);
   mountSettings(app);
   mountAgents(app);
+  if (deps.dispatch) mountAgentRuns(app, { dispatch: deps.dispatch });
 
   // ── Sessions ────────────────────────────────────────────────────────────────
   app.get('/api/projects/:id/sessions', (c) => {

@@ -1,6 +1,13 @@
 # Event Contract — PC-SDK
 
-v1, 2026-07-10. Every shape the server emits to the browser, and every client→server message. This is the spine: all ported code rewires to these shapes in one pass. No shims, no compatibility layers. Types land in `packages/contracts/src/events/` as the single source; this doc is the design record.
+v1, 2026-07-10. Every shape the server currently emits to the browser, and every client→server message. This is the spine: all ported code rewires to these shapes in one pass. No shims, no compatibility layers. Types land in `packages/contracts/src/events/` as the single source; this doc is the design record.
+
+Phase 2's implemented v1 wire contains Claude-derived names such as `sdkUuid`.
+Those names describe current code, not the locked multi-runtime architecture.
+Phase 3 performs a one-pass canonical rename after the adapter boundary is
+defined; see **Provider-neutral evolution** below and
+`docs/agent-runtime-architecture.md`. Until that code change lands, this v1
+section remains exact rather than claiming an unimplemented wire.
 
 Sources: `docs/research/event-contract-research.json` (what the old UI actually consumes; what the SDK emits). Fields nobody reads were not carried.
 
@@ -9,7 +16,7 @@ Sources: `docs/research/event-contract-research.json` (what the old UI actually 
 - **DB is the source of truth; sockets are projections.** Chat events persist before they broadcast — a broadcast can never precede its durable write.
 - **Two durable replay systems, deliberately separate.** Chat replays by per-session `seq`; resources replay by a global cursor. Their recovery semantics differ; do not merge.
 - **Three delivery classes.** Durable-chat, durable-resource, and latency-class (no replay — consumers heal via HTTP on reconnect). Every event type belongs to exactly one.
-- **Unknown-tolerant both ways.** Client drops unknown `type`/`kind` silently. Server drops unknown SDK message variants silently (the SDK union grows).
+- **Unknown-tolerant both ways.** Client drops unknown `type`/`kind` silently. A concrete runtime adapter drops/logs unknown native variants without leaking them into the canonical stream (provider unions grow).
 - **Positive receipt.** Errors and timeouts are typed events, never silence. `isError`, `failureReason`, `cause` are read and rendered — the old contract carried `tool-result.isError` and dropped it; this one renders it.
 - **Structured over scraped.** Dispatch lifecycle and verification verdicts are events, not `[pc:agent-event …]` text markers parsed out of prose. The marker protocol is dead.
 
@@ -77,7 +84,7 @@ type ChatEvent =
 
 Every persisted ChatEvent also stores `sdkUuid?: string` (the SDK message uuid) for retraction and delta-reconciliation.
 
-Turn/busy state is owned by two kinds only: `session-state` (authoritative, from the SDK's `session_state_changed`) with `turn-end`/`turn-failed` as the per-turn boundary. No derived blends of PTY state — that machinery is gone. **Every turn terminates in exactly one of `turn-end` or `turn-failed`** — an API error that kills a turn with no assistant content must still emit `turn-failed` (the old "stop-failure" defensive semantics, now first-class).
+Turn/busy state is owned by two kinds only: `session-state` (authoritative; currently mapped from Claude SDK `session_state_changed`) with `turn-end`/`turn-failed` as the per-turn boundary. No derived blends of PTY state — that machinery is gone. **Every turn terminates in exactly one of `turn-end` or `turn-failed`** — a runtime error that kills a turn with no assistant content must still emit `turn-failed` (the old "stop-failure" defensive semantics, now first-class).
 
 ### Streaming deltas (ephemeral, broadcast-only, never persisted)
 
@@ -131,7 +138,8 @@ Attachments never ride the wire: images POST to `/api/projects/:id/pasted-images
 
 ### Ask / permission
 
-The SDK `canUseTool` callback blocks on a browser answer:
+The runtime approval bridge blocks on a browser answer (currently Claude SDK
+`canUseTool`; Codex adapter maps its native approval request to the same frame):
 
 ```ts
 { type: 'ask'; projectId: Ulid; askId: Ulid; sessionId: string | null
@@ -152,7 +160,7 @@ Client answers with `ask-reply { askId, answer }`. Server resolves the pending p
   highWaterSeq: number; events: ChatFrame[] }   // full checkpoint, same frame shape as live
 ```
 
-`new-session` wipes client timeline + aggregates; replay re-seeds wholesale and recomputes aggregates from the set (never carries forward). SDK `system/init` is turn-start metadata, **not** app-session creation — app sessions are server-owned rows; the SDK `session_id` is captured per turn for `resume`.
+`new-session` wipes client timeline + aggregates; replay re-seeds wholesale and recomputes aggregates from the set (never carries forward). Native runtime initialization is turn/session metadata, **not** app-session creation — app sessions are server-owned rows. The adapter captures the native session/thread id for same-runtime resume. Runtime/account/model switching creates a new app session; it never reuses a native id across adapters.
 
 ## Channel 2 — Resources (durable, global cursor)
 
@@ -212,7 +220,7 @@ type UsageSnapshot = {
 }
 ```
 
-Sourced from SDK `rate_limit_event` (push) + per-turn `result.usage`; cached server-side per account. Rides the durable channel (the old statusline-snapshot's "idle tab shows stale caps forever" wart dies with it). `status: 'rejected'` or `allowed_warning` is the premortem-#3 tripwire — surface loudly.
+Current Claude source: SDK `rate_limit_event` (push) + per-turn `result.usage`, cached server-side per account. Rides the durable channel (the old statusline-snapshot's "idle tab shows stale caps forever" wart dies with it). `status: 'rejected'` or `allowed_warning` is the premortem-#3 tripwire — surface loudly. Phase 3 adds runtime/provider attribution and an explicit unavailable state rather than forcing Codex telemetry into Claude's window shape.
 
 ## Channel 3 — Latency-class broadcasts (no replay; HTTP heals)
 
@@ -235,7 +243,12 @@ Agent transcripts reuse `ChatEvent` — one render pipeline for orchestrator cha
 
 Latest-wins, no dedup key. The PTY-era snapshot (waitPoint, ptyState, rawJsonl cursors, respawn counters) is dead; this is the whole shape.
 
-## SDK → contract mapping
+## Current Claude SDK → contract mapping
+
+This table is the Phase 2 `ClaudeRuntimeAdapter` extraction checklist. Each row
+must move behind that adapter without changing the v1 browser behavior. Codex
+gets its own native-to-canonical mapping inside `CodexRuntimeAdapter`; core code
+must never add Codex item kinds to this table or to Claude-shaped runner types.
 
 | SDK message | Contract emission |
 | --- | --- |
@@ -277,6 +290,48 @@ Latest-wins, no dedup key. The PTY-era snapshot (waitPoint, ptyState, rawJsonl c
 2. Duplicate `chat.id` delivery never double-counts aggregates.
 3. Every turn ends in exactly one `turn-end` or `turn-failed` — including abort and API-error paths.
 4. `ask` never hangs: watchdog resolves to typed denial.
-5. Unknown SDK variant → dropped, logged, loop continues.
+5. Unknown provider-native variant → dropped and logged by its adapter; loop continues.
 6. Reconnect: replay + cursor + epoch-refetch produce identical state to an uninterrupted socket.
 7. `resource` frames for a dead entity name fail typecheck (closed union, no strings).
+
+## Provider-neutral evolution (Phase 3, one pass)
+
+The durable delivery classes and browser semantics remain. The provider-shaped
+identifiers are generalized across contracts, persistence mapping, server,
+tests, and web consumers in one change:
+
+- `sdkUuid` → `runtimeMessageId` (stable adapter-supplied message correlation);
+- SDK/native session wording → `runtimeSessionId` or `nativeSessionId`;
+- `RunnerMessage` → canonical `RuntimeEvent` variants;
+- usage gains runtime/provider attribution plus explicit unavailable telemetry;
+- session summaries expose the immutable runtime/account/model selection while
+  keeping native credentials out of the browser.
+
+No compatibility aliases or dual fields. The adapter conformance suite proves
+that Claude, Codex, and the fake runtime all produce the same canonical turn,
+streaming, tool, approval, interrupt, and terminal-outcome behavior.
+
+## Worktree lifecycle evolution (Phase 3)
+
+`docs/worktree-lifecycle.md` adds a durable app-owned lifecycle above individual
+agent turns. Before implementation, the contract/types must select one explicit
+aggregate id for the run that owns the worktree; sequential Plan/Build/Review/
+Fix agent runs reference that owner rather than each pretending to own an
+independent checkout.
+
+The browser must receive enough durable state to show provisioning/readiness,
+active phase, sealed deliverable, verification/review outcome, merge queue,
+conflict/stranded retention, merge receipt, and teardown. This may be an
+expanded closed `agent-run` snapshot or a dedicated delivery-run resource, but
+must be chosen once before code lands. Do not infer lifecycle state from agent
+transcript events or process presence.
+
+Wire invariants:
+
+- review and merge actions identify the lifecycle owner + sealed commit;
+- every mutation state transition is persist-then-broadcast;
+- missing/inconclusive auto-merge evidence is a visible non-pass state;
+- base advancement/revalidation and landing-queue position surface explicitly;
+- merge and teardown receipts are durable snapshots;
+- conflict, failure, cancellation, stranding, and uncertainty retain visible
+  recovery actions and never disappear because a worktree was removed.

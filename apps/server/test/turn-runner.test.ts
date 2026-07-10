@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChatEvent, ChatDeltaEvent } from '@pc/contracts';
-import type { RunnerMessage } from '../src/runner/backend.ts';
+import type { RuntimeEvent } from '../src/runner/runtime.ts';
 import { runTurn } from '../src/chat/turn-runner.ts';
 
 function collector() {
@@ -22,7 +22,7 @@ function collector() {
   };
 }
 
-async function* stream(msgs: RunnerMessage[]): AsyncIterable<RunnerMessage> {
+async function* stream(msgs: RuntimeEvent[]): AsyncIterable<RuntimeEvent> {
   for (const m of msgs) yield m;
 }
 
@@ -104,7 +104,7 @@ test('unknown variant is dropped + logged, loop continues — rule 5', async () 
   const c = collector();
   const term = await runTurn(
     stream([
-      { type: 'no-such-variant' } as unknown as RunnerMessage,
+      { type: 'no-such-variant' } as unknown as RuntimeEvent,
       { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null },
     ]),
     c.deps,

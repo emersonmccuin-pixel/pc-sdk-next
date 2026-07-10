@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { appendConversationEvent, listConversationEvents } from '@pc/db';
 import type { ChatEvent, ChatFrame, ServerFrame } from '@pc/contracts';
 import { SessionService } from '../src/chat/session-service.ts';
-import { FakeBackend } from '../src/runner/fake-backend.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { freshDb, newProject, until } from './helpers.ts';
 
 function terminals(sessionId: string): ChatEvent[] {
@@ -19,7 +19,7 @@ function terminals(sessionId: string): ChatEvent[] {
 test('rule 1: every chat frame is committed before it broadcasts', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[
       { type: 'init', sdkSessionId: 's1', model: 'opus', permissionMode: 'default' },
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'hi' } },
@@ -29,7 +29,7 @@ test('rule 1: every chat frame is committed before it broadcasts', async () => {
   let violations = 0;
   const svc = new SessionService({
     projectId: project.id,
-    backendFactory: () => backend,
+    mintSession: () => backend,
     broadcast: (f: ServerFrame) => {
       if (f.type === 'chat') {
         const persisted = listConversationEvents(f.sessionId).some((r) => r.seq === f.seq);
@@ -50,7 +50,7 @@ test('rule 1: every chat frame is committed before it broadcasts', async () => {
 test('rule 2: the writer never reuses a seq (UNIQUE session_id, seq)', async () => {
   freshDb();
   const project = newProject();
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => new FakeBackend(), broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => new FakeRuntime(), broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('hi', 'cm1');
   await until(() => terminals(session.id).length === 1);
@@ -71,10 +71,10 @@ test('rule 2: the writer never reuses a seq (UNIQUE session_id, seq)', async () 
 test('rule 3: success turn ends in exactly one turn-end', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }]],
   });
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => backend, broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('hi', 'cm1');
   await until(() => terminals(session.id).length === 1);
@@ -86,10 +86,10 @@ test('rule 3: success turn ends in exactly one turn-end', async () => {
 test('rule 3: api-error turn ends in exactly one turn-failed', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[{ type: 'result', ok: false, subtype: 'error_during_execution', stopReason: null, usage: null, durationMs: null, error: 'boom' }]],
   });
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => backend, broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('hi', 'cm1');
   await until(() => terminals(session.id).length === 1);
@@ -102,13 +102,13 @@ test('rule 3: api-error turn ends in exactly one turn-failed', async () => {
 test('rule 3: interrupt mid-turn ends in exactly one turn-failed (abort)', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'working' } },
       { hang: true },
     ]],
   });
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => backend, broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('do it', 'cm1');
   // Wait until the turn is genuinely in flight — the backend has streamed
@@ -129,7 +129,7 @@ test('rule 3: interrupt mid-turn ends in exactly one turn-failed (abort)', async
 test('queued sends drain FIFO and reconcile via the user frame', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [
       [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }],
       [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }],
@@ -139,7 +139,7 @@ test('queued sends drain FIFO and reconcile via the user frame', async () => {
   const acks: string[] = [];
   const svc = new SessionService({
     projectId: project.id,
-    backendFactory: () => backend,
+    mintSession: () => backend,
     broadcast: (f) => {
       if (f.type === 'chat' && (f as ChatFrame).event.kind === 'user') acks.push((f as ChatFrame).clientMessageId ?? '');
     },

@@ -1,4 +1,4 @@
-// Kill-recovery (standing test, plan DoD). FakeBackend + a real SQLite file:
+// Kill-recovery (standing test, plan DoD). FakeRuntime + a real SQLite file:
 // start a turn → hang it mid-flight → "hard-stop" (drop the DB connection) →
 // boot → assert exactly one turn-failed persisted, the session is not stuck
 // busy, and replay is coherent. A second boot is a no-op (idempotent).
@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { closeDb, listConversationEvents } from '@pc/db';
 import type { ChatEvent } from '@pc/contracts';
 import { SessionService } from '../src/chat/session-service.ts';
-import { FakeBackend } from '../src/runner/fake-backend.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
 import { freshDb, newProject, until } from './helpers.ts';
 
@@ -27,14 +27,14 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
 
   // A turn that emits some content then hangs forever (models the process dying
   // with the turn in flight). We deliberately never resolve it.
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[
       { type: 'init', sdkSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'working on it' } },
       { hang: true },
     ]],
   });
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => backend, broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('do the thing', 'cm1');
 
@@ -77,10 +77,10 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
 test('a cleanly-idle session is not touched by boot recovery', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({
+  const backend = new FakeRuntime({
     turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }]],
   });
-  const svc = new SessionService({ projectId: project.id, backendFactory: () => backend, broadcast: () => {} });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
   svc.handleSend('hi', 'cm1');
   await until(() => terminals(session.id).length === 1);

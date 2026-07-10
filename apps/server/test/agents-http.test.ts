@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { getLiveEventHighWater, listLiveOutboxRowsAfter } from '@pc/db';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { UsageCache } from '../src/usage/cache.ts';
-import { FakeBackend } from '../src/runner/fake-backend.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import { freshDb, newProject } from './helpers.ts';
@@ -17,7 +17,7 @@ const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
 
 async function boot(): Promise<{ server: RunningServer; base: string }> {
   const server = await startServer({
-    backendFactory: () => new FakeBackend({ turns: [] as never, stepDelayMs: 1 }),
+    mintSession: () => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 }),
     port: 0,
     runRecovery: false,
     accounts: new AccountRegistry(),

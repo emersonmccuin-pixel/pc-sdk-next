@@ -17,7 +17,7 @@ test('pc_invoke_agent success: emits raw body; posts invoke payload', async () =
   const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok(serverBody) });
   const res = await handleAgentRunTool(
     'pc_invoke_agent',
-    { name: 'researcher', input: 'Begin.', workItemId: 'WI1' },
+    { name: 'researcher', input: 'Begin.', pmRef: 'AINPM-42' },
     ctx,
   );
   assert.equal(firstText(res), serverBody);
@@ -28,7 +28,7 @@ test('pc_invoke_agent success: emits raw body; posts invoke payload', async () =
       input: 'Begin.',
       parentInvokeDepth: 0,
       dispatcherSessionId: 'DSESS',
-      workItemId: 'WI1',
+      pmRef: 'AINPM-42',
     },
   });
 });

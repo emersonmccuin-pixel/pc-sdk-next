@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
-import { FakeBackend } from '../src/runner/fake-backend.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { freshDb, newProject, sleep } from './helpers.ts';
 
@@ -57,10 +57,10 @@ const SCRIPT = [[
 test('ws connect → send → deltas → persisted frames → turn-end → reconnect replay identical', async () => {
   freshDb();
   const project = newProject();
-  const backend = new FakeBackend({ turns: SCRIPT, stepDelayMs: 1 });
+  const backend = new FakeRuntime({ turns: SCRIPT, stepDelayMs: 1 });
   let server: RunningServer | null = null;
   try {
-    server = await startServer({ backendFactory: () => backend, port: 0, runRecovery: false });
+    server = await startServer({ mintSession: () => backend, port: 0, runRecovery: false });
     const url = `ws://localhost:${server.port}/ws?projectId=${project.id}`;
 
     const c1 = connect(url);

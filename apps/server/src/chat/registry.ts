@@ -2,13 +2,13 @@
 
 import type { ServerFrame, UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { BackendFactory } from '../runner/backend.ts';
+import type { RuntimeSessionFactory } from '../runner/runtime.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { SessionService } from './session-service.ts';
 
 export interface SessionRegistryDeps {
   hub: ProjectWebSocketHub<ULID>;
-  backendFactory: BackendFactory;
+  mintSession: RuntimeSessionFactory;
   cwd?: string;
   askTimeoutMs?: number;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
@@ -29,7 +29,7 @@ export class SessionRegistry {
       svc = new SessionService({
         projectId,
         broadcast: (frame: ServerFrame) => this.deps.hub.broadcast(projectId, frame),
-        backendFactory: this.deps.backendFactory,
+        mintSession: this.deps.mintSession,
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,
         onRateLimit: this.deps.onRateLimit,

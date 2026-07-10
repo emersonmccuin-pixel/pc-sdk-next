@@ -2,18 +2,27 @@
 // HTTP + WS on PC_PORT (default 5123), serving apps/web/dist when built
 // (tolerated absent in dev).
 //
-// The real SDK backend is wired here: the account switcher resolves each
-// project's login, the MCP manager bridges healthy remote tools, and the usage
-// cache turns rate-limit events into durable quota snapshots. All of it hangs
-// off the `RunnerBackend` seam — `SdkBackend` is the only SDK importer.
+// This is the COMPOSITION ROOT — the only place (with the runtime registry)
+// that selects a concrete agent-runtime adapter. The account switcher resolves
+// each project's login, the MCP manager bridges healthy remote tools, and the
+// usage cache turns rate-limit events into durable quota snapshots. All of it
+// hangs off the canonical `RuntimeSession` seam — `claude-adapter.ts` is the
+// only SDK importer.
 
 import { join } from 'node:path';
 import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
 import type { ULID } from '@pc/domain';
-import type { BackendContext, RunnerBackend } from './runner/backend.ts';
+import {
+  RuntimeRegistry,
+  type MintRuntimeSession,
+  type RuntimeSession,
+  type RuntimeSelection,
+} from './runner/runtime.ts';
 import { AccountRegistry } from './runner/account-env.ts';
-import { SdkBackend } from './runner/sdk-backend.ts';
+import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter.ts';
 import { seedStockAgents } from './agents/seed.ts';
+import { DispatchService } from './dispatch/service.ts';
+import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
 import { McpManager } from './mcp/manager.ts';
 import { UsageCache } from './usage/cache.ts';
 import { UsagePoller } from './usage/poller.ts';
@@ -35,36 +44,73 @@ async function main(): Promise<void> {
 
   // The chat runs under the orchestrator agent row (seeded above, editable in
   // the Agents tab). Read fresh per mint — SessionService re-mints on rev change
-  // so edits apply on the next message. SdkBackend itself never touches the DB.
+  // so edits apply on the next message. Adapters never touch the DB.
   const orchestratorRow = () => getAgentByName({ name: 'orchestrator', scope: 'global' });
 
-  // Mint one SdkBackend per session: resolve the project's account (env +
-  // CLAUDE_CONFIG_DIR), bridge the currently-healthy MCP tools, run in the
-  // project folder.
-  const backendFactory = (ctx: BackendContext): RunnerBackend => {
+  const runtimes = new RuntimeRegistry();
+  runtimes.register(new ClaudeRuntimeAdapter({ accounts }));
+
+  const dispatch = new DispatchService({ runtimes, accounts, mcp });
+  // The server's live port — set after listen; sessions mint on first message,
+  // which is always after listen.
+  const portRef = { port: 0 };
+
+  // Mint one runtime session per app session: resolve the project's account,
+  // stamp the runtime selection, bridge the currently-healthy MCP tools + the
+  // pc_* dispatch tools, run in the project folder. Adapter selection happens
+  // HERE and nowhere else.
+  const mintSession = async (ctx: MintRuntimeSession): Promise<RuntimeSession> => {
     const account = accounts.resolveForProject(ctx.projectId as ULID);
     const project = getProjectById(ctx.projectId as ULID);
     const orchestrator = orchestratorRow();
-    return new SdkBackend({
-      env: accounts.buildEnv(account.id),
+    const selection: RuntimeSelection = {
+      runtimeId: CLAUDE_RUNTIME_ID,
       accountId: account.id,
-      cwd: project?.folderPath || undefined,
-      bridge: mcp.buildBridge(),
-      systemPrompt: orchestrator?.prompt || undefined,
-      model: orchestrator?.model ?? undefined,
+      model: orchestrator?.model ?? 'opus',
+    };
+    const adapter = runtimes.get(selection.runtimeId);
+    const tools =
+      portRef.port > 0
+        ? mergePcTools(
+            mcp.buildBridge(),
+            buildPcToolDefs(ORCHESTRATOR_PC_TOOLS, {
+              projectId: ctx.projectId,
+              dispatcherSessionId: ctx.appSessionId,
+              serverPort: portRef.port,
+            }),
+          )
+        : mcp.buildBridge();
+    const input = {
+      appSessionId: ctx.appSessionId,
+      projectId: ctx.projectId,
+      selection,
+      instructions: orchestrator?.prompt || undefined,
+      cwd: ctx.cwd ?? (project?.folderPath || undefined),
+      tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,
-    });
+      ask: ctx.ask,
+    };
+    return ctx.resumeNativeSessionId
+      ? adapter.resumeSession({ ...input, nativeSessionId: ctx.resumeNativeSessionId })
+      : adapter.createSession(input);
   };
 
   const server = await startServer({
-    backendFactory,
+    mintSession,
     accounts,
     usage,
+    dispatch,
     onRateLimit: (snapshot) => usage.record(snapshot),
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
   });
+  portRef.port = server.port;
+  dispatch.attach({ registry: server.registry, hub: server.hub, serverPort: server.port });
+  // Re-drive landings interrupted mid-flight (idempotent; degrade-never-block).
+  void dispatch.recoverPendingLandings().catch((err) =>
+    console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err),
+  );
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
