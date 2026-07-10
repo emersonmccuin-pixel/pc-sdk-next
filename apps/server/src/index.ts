@@ -9,7 +9,8 @@
 // hangs off the canonical `RuntimeSession` seam — `claude-adapter.ts` is the
 // only SDK importer.
 
-import { spawn } from 'node:child_process';
+import { spawn, type StdioOptions } from 'node:child_process';
+import { mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
 import type { ULID } from '@pc/domain';
@@ -106,21 +107,22 @@ async function main(): Promise<void> {
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
     // Settings → Restart engine: close the listener (releases the port), then
-    // respawn this exact process (same node binary + argv + cwd) detached, and
-    // exit. The new process picks up the current source; the browser polls
-    // /health and reloads. Logs go to the fresh process's own stdio (the
-    // launcher's redirect does not follow a self-respawn — cold starts re-attach it).
+    // respawn this exact process detached, and exit. execArgv MUST be carried —
+    // tsx injects its TS loader there, not in argv; without it the child is
+    // plain `node src/index.ts` and dies instantly (2026-07-10 live finding).
+    // Child stdio appends to the launcher's log files so a failed respawn is
+    // never invisible.
     onRestartRequest: () => {
       console.warn('[pc-sdk] restart requested — closing, respawning, exiting.');
       void (async () => {
         usagePoller.stop();
         await dispatch.disposeAll().catch(() => {});
         await server.close().catch(() => {});
-        spawn(process.execPath, process.argv.slice(1), {
+        spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
           cwd: process.cwd(),
           env: process.env,
           detached: true,
-          stdio: 'ignore',
+          stdio: respawnStdio(),
           windowsHide: true,
         }).unref();
         process.exit(0);
@@ -154,6 +156,20 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+}
+
+/** Respawn stdio: append to the launcher's log files (%LOCALAPPDATA%\PC-SDK\logs)
+ *  so a failed respawn leaves evidence; fall back to ignore if that fails. */
+function respawnStdio(): StdioOptions {
+  try {
+    const base = process.env.LOCALAPPDATA;
+    if (!base) return 'ignore';
+    const dir = join(base, 'PC-SDK', 'logs');
+    mkdirSync(dir, { recursive: true });
+    return ['ignore', openSync(join(dir, 'server.log'), 'a'), openSync(join(dir, 'server.err.log'), 'a')];
+  } catch {
+    return 'ignore';
+  }
 }
 
 void main();

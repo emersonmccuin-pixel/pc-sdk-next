@@ -154,6 +154,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       await registry.disposeAll();
+      // Idle keep-alive sockets would otherwise hold close() open ~5s.
+      (server as Server & { closeIdleConnections?: () => void }).closeIdleConnections?.();
       await new Promise<void>((r) => server.close(() => r()));
     },
   };
