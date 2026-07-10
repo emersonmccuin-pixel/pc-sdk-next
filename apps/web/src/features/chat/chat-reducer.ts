@@ -187,6 +187,10 @@ export function applyChatFrame(state: ChatState, frame: ChatFrame): ChatState {
   // Rule 3: the persisted block supersedes any live buffer for its sdkUuid.
   let deltas = frame.sdkUuid ? omit(state.deltas, frame.sdkUuid) : state.deltas;
 
+  // Turn terminal: any buffer still live is an orphan (its persisted block
+  // never landed, or landed under a different key) — drop, never ghost.
+  if (frame.event.kind === 'turn-end' || frame.event.kind === 'turn-failed') deltas = {};
+
   // Rule 5: retract evicts already-delivered events by sdkUuid.
   if (frame.event.kind === 'retract') {
     const evict = new Set(frame.event.uuids);

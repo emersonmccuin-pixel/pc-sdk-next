@@ -93,6 +93,22 @@ test('persisted frame replaces the delta buffer by sdkUuid', () => {
   assert.equal(s.deltas[uuid], undefined, 'late delta resurrected a persisted buffer');
 });
 
+// Turn terminal clears orphaned delta buffers (a buffer whose persisted block
+// never landed must not ghost into the next turn).
+test('turn-end drops orphaned delta buffers', () => {
+  let s = seed();
+  s = applyDelta(s, {
+    type: 'chat-delta',
+    projectId: 'proj-1',
+    sessionId: SID,
+    sdkUuid: 'msg-orphan',
+    event: { kind: 'text-delta', text: 'stray' },
+  });
+  assert.equal(s.deltas['msg-orphan']?.text, 'stray');
+  s = applyChatFrame(s, frame(1, { kind: 'turn-end', text: 'done', stopReason: null }));
+  assert.deepEqual(s.deltas, {}, 'orphan buffer survived turn-end');
+});
+
 // Rule 4 + 6: replay re-seed produces state identical to an uninterrupted socket.
 test('replay re-seed equals uninterrupted delivery (frames + aggregates)', () => {
   const events: ChatFrame[] = [

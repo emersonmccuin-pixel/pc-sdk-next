@@ -92,8 +92,37 @@ class AsyncQueue<T> {
   }
 }
 
+/**
+ * Correlation state so streamed deltas and their final assistant blocks share
+ * ONE key. Envelope `uuid`s are minted per emission — every `stream_event`
+ * carries a fresh one — so keying on them splits a single streamed message
+ * across many delta buffers (one bubble per chunk in the UI). The inner
+ * Anthropic message id (`message.id`) is stable across a message's stream
+ * events and its final `assistant` message(s), so it is the frame key.
+ * `uuidToKey` translates `supersedes` lists (which reference envelope uuids)
+ * to the keys the frames were actually stamped with.
+ */
+export interface SdkKeyContext {
+  streamMsgId: string | null;
+  uuidToKey: Map<string, string>;
+}
+
+export function createSdkKeyContext(): SdkKeyContext {
+  return { streamMsgId: null, uuidToKey: new Map() };
+}
+
+/** Bounded so a long-lived session can't grow the map without limit. */
+function rememberKey(keys: SdkKeyContext, envelopeUuid: string, key: string): void {
+  keys.uuidToKey.set(envelopeUuid, key);
+  if (keys.uuidToKey.size > 500) {
+    const oldest = keys.uuidToKey.keys().next().value;
+    if (oldest !== undefined) keys.uuidToKey.delete(oldest);
+  }
+}
+
 export class SdkBackend implements RunnerBackend {
   private readonly config: SdkBackendConfig;
+  private readonly keys: SdkKeyContext = createSdkKeyContext();
   private started = false;
   private disposed = false;
   private q: Query | null = null;
@@ -221,7 +250,7 @@ export class SdkBackend implements RunnerBackend {
       return;
     }
 
-    const mapped = mapSdkMessage(msg, this.config.accountId);
+    const mapped = mapSdkMessage(msg, this.config.accountId, this.keys);
     if (mapped.length === 0) return;
     const turn = this.currentTurn;
     if (!turn) return; // out-of-turn telemetry with nowhere to go — dropped by design
@@ -292,15 +321,16 @@ export class SdkBackend implements RunnerBackend {
 
 // ── SDK message → RunnerMessage[] (contract mapping table) ─────────────────────
 
-function mapSdkMessage(msg: SDKMessage, accountId: string): RunnerMessage[] {
+/** Exported for the mapping guard test — production callers go through SdkBackend. */
+export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyContext): RunnerMessage[] {
   const m = msg as Record<string, unknown> & { type: string };
   switch (m.type) {
     case 'assistant':
-      return mapAssistant(m);
+      return mapAssistant(m, keys);
     case 'user':
       return mapUser(m);
     case 'stream_event':
-      return mapStreamEvent(m);
+      return mapStreamEvent(m, keys);
     case 'result':
       return [mapResult(m)];
     case 'rate_limit_event': {
@@ -308,17 +338,21 @@ function mapSdkMessage(msg: SDKMessage, accountId: string): RunnerMessage[] {
       return snap ? [{ type: 'rate-limit', snapshot: snap }] : [];
     }
     case 'system':
-      return mapSystem(m);
+      return mapSystem(m, keys);
     default:
       return []; // tool_progress, task_*, and unknowns — dropped by design
   }
 }
 
-function mapAssistant(m: Record<string, unknown>): RunnerMessage[] {
+function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
   const out: RunnerMessage[] = [];
-  const uuid = String(m.uuid ?? '');
+  const envelopeUuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
-  const message = m.message as { content?: unknown; error?: unknown } | undefined;
+  const message = m.message as { id?: unknown; content?: unknown; error?: unknown } | undefined;
+  // Frame key = inner message id (matches this message's stream deltas);
+  // envelope uuid only as a fallback for id-less messages.
+  const uuid = String(message?.id ?? '') || envelopeUuid;
+  if (envelopeUuid) rememberKey(keys, envelopeUuid, uuid);
   const blocks = Array.isArray(message?.content) ? (message!.content as Array<Record<string, unknown>>) : [];
   for (const block of blocks) {
     switch (block.type) {
@@ -341,7 +375,9 @@ function mapAssistant(m: Record<string, unknown>): RunnerMessage[] {
     }
   }
   const supersedes = m.supersedes as string[] | undefined;
-  if (Array.isArray(supersedes) && supersedes.length > 0) out.push({ type: 'supersedes', uuids: supersedes });
+  if (Array.isArray(supersedes) && supersedes.length > 0) {
+    out.push({ type: 'supersedes', uuids: translateUuids(supersedes, keys) });
+  }
   const err = (m as { error?: { message?: string } }).error;
   if (err && typeof err.message === 'string') {
     out.push({ type: 'system', subtype: 'assistant_error', level: 'error', message: err.message });
@@ -370,21 +406,35 @@ function mapUser(m: Record<string, unknown>): RunnerMessage[] {
   return out;
 }
 
-function mapStreamEvent(m: Record<string, unknown>): RunnerMessage[] {
+function mapStreamEvent(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
   const uuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
-  const event = m.event as { type?: string; delta?: Record<string, unknown> } | undefined;
+  const event = m.event as
+    | { type?: string; delta?: Record<string, unknown>; message?: { id?: unknown } }
+    | undefined;
   if (!event) return [];
+  if (event.type === 'message_start') keys.streamMsgId = String(event.message?.id ?? '') || uuid;
+  // All of one message's deltas share the inner message id opened at
+  // message_start — envelope uuids are per-emission and would split the buffer.
+  const key = keys.streamMsgId ?? uuid;
   let delta: RunnerDelta | null = null;
   if (event.type === 'message_start') delta = { kind: 'message-start' };
-  else if (event.type === 'message_stop') delta = { kind: 'message-end' };
-  else if (event.type === 'content_block_delta' && event.delta) {
+  else if (event.type === 'message_stop') {
+    delta = { kind: 'message-end' };
+    keys.streamMsgId = null;
+  } else if (event.type === 'content_block_delta' && event.delta) {
     const d = event.delta;
     if (d.type === 'text_delta') delta = { kind: 'text-delta', text: String(d.text ?? '') };
     else if (d.type === 'thinking_delta') delta = { kind: 'thinking-delta', text: String(d.thinking ?? '') };
     else if (d.type === 'input_json_delta') delta = { kind: 'tool-input-delta', partialJson: String(d.partial_json ?? '') };
   }
-  return delta ? [{ type: 'delta', sdkUuid: uuid, parentToolUseId: parent, delta }] : [];
+  return delta ? [{ type: 'delta', sdkUuid: key, parentToolUseId: parent, delta }] : [];
+}
+
+/** `supersedes`/`retracted_message_uuids` reference envelope uuids; frames were
+ *  stamped with inner message ids — translate so retraction actually evicts. */
+function translateUuids(uuids: unknown[], keys: SdkKeyContext): string[] {
+  return uuids.map((u) => keys.uuidToKey.get(String(u)) ?? String(u));
 }
 
 function mapResult(m: Record<string, unknown>): RunnerMessage {
@@ -401,7 +451,7 @@ function mapResult(m: Record<string, unknown>): RunnerMessage {
   return { type: 'result', ok, subtype, stopReason, usage, durationMs, error };
 }
 
-function mapSystem(m: Record<string, unknown>): RunnerMessage[] {
+function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RunnerMessage[] {
   switch (m.subtype) {
     case 'session_state_changed':
       return [{ type: 'session-state', state: (m.state as 'idle' | 'running' | 'requires_action') ?? 'idle', permissionMode: null }];
@@ -441,7 +491,7 @@ function mapSystem(m: Record<string, unknown>): RunnerMessage[] {
     case 'model_refusal_no_fallback': {
       const uuids = m.retracted_message_uuids;
       const out: RunnerMessage[] = [{ type: 'system', subtype: String(m.subtype), level: 'warning', message: String(m.content ?? 'model refused the request') }];
-      if (Array.isArray(uuids) && uuids.length > 0) out.push({ type: 'supersedes', uuids: uuids.map(String) });
+      if (Array.isArray(uuids) && uuids.length > 0) out.push({ type: 'supersedes', uuids: translateUuids(uuids, keys) });
       return out;
     }
     default:
