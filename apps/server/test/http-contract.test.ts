@@ -128,3 +128,66 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     await server.close();
   }
 });
+
+test('accounts: registry list; switching a project account ends the session + mints a new one', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const dir = mkdtempSync(join(tmpdir(), 'pc-acct-'));
+  try {
+    // registry list + server default
+    const reg = await fetch(`${base}/api/accounts`).then(body);
+    assert.ok(Array.isArray(reg.accounts) && reg.accounts.some((a: { id: string }) => a.id === 'personal'));
+    assert.equal(reg.defaultAccountId, 'personal');
+
+    const created = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Acct', folder_path: dir, mode: 'init-empty' }),
+    }).then(body);
+    const pid = created.project.id;
+
+    // per-project current default
+    assert.equal((await fetch(`${base}/api/projects/${pid}/account`).then(body)).accountId, 'personal');
+
+    // start a session under the current account
+    const sess = await fetch(`${base}/api/projects/${pid}/sessions/new`, { method: 'POST' }).then(body);
+    const oldSessionId = sess.session.id;
+
+    // switch account → ends the old session, mints a new one
+    const sw = await fetch(`${base}/api/projects/${pid}/account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'work' }),
+    }).then(body);
+    assert.equal(sw.accountId, 'work');
+    assert.equal(sw.switched, true);
+    assert.ok(sw.session && sw.session.id && sw.session.id !== oldSessionId);
+
+    // the change is persisted as the project default
+    assert.equal((await fetch(`${base}/api/projects/${pid}/account`).then(body)).accountId, 'work');
+
+    // old session ended, new session active
+    const list = await fetch(`${base}/api/projects/${pid}/sessions`).then(body);
+    assert.equal(list.sessions.find((s: { id: string }) => s.id === oldSessionId).status, 'ended');
+    assert.equal(list.sessions.find((s: { id: string }) => s.id === sw.session.id).status, 'active');
+
+    // same account again → no-op, no new session
+    const noop = await fetch(`${base}/api/projects/${pid}/account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'work' }),
+    }).then(body);
+    assert.equal(noop.switched, false);
+    assert.equal(noop.session, null);
+
+    // unknown account → 400
+    const bad = await fetch(`${base}/api/projects/${pid}/account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'nope' }),
+    });
+    assert.equal(bad.status, 400);
+  } finally {
+    await server.close();
+  }
+});

@@ -56,6 +56,9 @@ export function ProjectRail({
   const setTab = useActiveCenterTab((s) => s.setTab);
   const selectedAccountId = useAccounts((s) => s.selectedId);
   const usageSnapshot = useUsageSnapshot(selectedAccountId);
+  // Show the Command entry only when a backing command project actually exists —
+  // no row is seeded (integrator won't guess a folderPath), so `?? null` hides it
+  // rather than rendering a dead link off the showCommandSpace default.
   const commandProject = useMemo(
     () =>
       showCommandSpace

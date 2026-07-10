@@ -218,7 +218,7 @@ export default function App() {
         <div className="flex flex-1 items-center gap-3 pr-2">
           <div className="ml-auto flex items-center gap-1">
             <UsageMeter />
-            <AccountSwitcher />
+            <AccountSwitcher projectId={activeProject?.id ?? null} />
             {activeProject && (
               <button
                 ref={notesButtonRef}

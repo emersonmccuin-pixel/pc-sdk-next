@@ -1,21 +1,36 @@
 // Header account switcher (NEW). Selects which Claude login (config dir) the
-// orchestrator + agents run under. Switching account starts a new session, so
-// this is a deliberate, visible control. Registry + env selection are
-// server-owned; this reads the accounts store (stub registry until the server
-// /api/accounts round-trip lands).
+// active project's orchestrator + agents run under. Switching ends the current
+// session and mints a new one, so this is a deliberate, visible control. It
+// seeds from the server (registry + the project's current account), POSTs the
+// change, and shows pending/failure state (positive receipt — never silent).
+// The session-changed reset arrives over the WS; the chat store handles it.
 
 import { useEffect, useRef, useState } from 'react';
 
 import { useAccounts } from '@/state/accounts';
 
-export function AccountSwitcher() {
+export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   const accounts = useAccounts((s) => s.accounts);
   const selectedId = useAccounts((s) => s.selectedId);
-  const select = useAccounts((s) => s.select);
+  const status = useAccounts((s) => s.status);
+  const pendingId = useAccounts((s) => s.pendingId);
+  const error = useAccounts((s) => s.error);
+  const loadRegistry = useAccounts((s) => s.loadRegistry);
+  const loadForProject = useAccounts((s) => s.loadForProject);
+  const switchAccount = useAccounts((s) => s.switchAccount);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  // Registry list once; the project's current account on every project change.
+  useEffect(() => {
+    void loadRegistry();
+  }, [loadRegistry]);
+  useEffect(() => {
+    if (projectId) void loadForProject(projectId);
+  }, [projectId, loadForProject]);
+
   const selected = accounts.find((a) => a.id === selectedId) ?? accounts[0] ?? null;
+  const pending = status === 'pending';
 
   useEffect(() => {
     if (!open) return;
@@ -36,6 +51,18 @@ export function AccountSwitcher() {
 
   if (!selected) return null;
 
+  async function choose(id: string) {
+    if (!projectId || pending || id === selectedId) {
+      setOpen(false);
+      return;
+    }
+    await switchAccount(projectId, id);
+    setOpen(false);
+  }
+
+  const dotClass =
+    status === 'error' ? 'bg-destructive' : pending ? 'bg-amber-500 animate-pulse' : 'bg-primary';
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -43,11 +70,17 @@ export function AccountSwitcher() {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        title={`Account: ${selected.label}\n${selected.configDir}`}
+        title={
+          status === 'error' && error
+            ? `Account switch failed: ${error}`
+            : `Account: ${selected.label}\n${selected.configDir}`
+        }
         className="flex items-center gap-1.5 px-2 py-1 text-[11px] uppercase tracking-[0.06em] text-muted-foreground hover:bg-muted hover:text-foreground"
       >
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" aria-hidden />
-        <span className="text-foreground/80">{selected.label}</span>
+        <span className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} aria-hidden />
+        <span className="text-foreground/80">
+          {pending && pendingId ? `${labelOf(accounts, pendingId)}…` : selected.label}
+        </span>
         <span className="text-[9px] text-[var(--fg-dim)]">▾</span>
       </button>
       {open && (
@@ -60,15 +93,14 @@ export function AccountSwitcher() {
           </div>
           {accounts.map((a) => {
             const active = a.id === selectedId;
+            const busy = pending && a.id === pendingId;
             return (
               <button
                 key={a.id}
                 role="menuitem"
-                onClick={() => {
-                  select(a.id);
-                  setOpen(false);
-                }}
-                className={`block w-full px-3 py-1.5 text-left text-xs hover:bg-muted ${
+                disabled={!projectId || pending}
+                onClick={() => void choose(a.id)}
+                className={`block w-full px-3 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${
                   active ? 'text-primary' : 'text-foreground/90'
                 }`}
               >
@@ -77,6 +109,7 @@ export function AccountSwitcher() {
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden />
                   )}
                   <span className="truncate">{a.label}</span>
+                  {busy && <span className="ml-auto text-[10px] text-muted-foreground">switching…</span>}
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
                   {a.configDir}
@@ -84,11 +117,20 @@ export function AccountSwitcher() {
               </button>
             );
           })}
+          {status === 'error' && error && (
+            <div className="border-t border-border px-3 py-1.5 text-[10px] text-destructive">
+              Switch failed: {error}
+            </div>
+          )}
           <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground/70">
-            Switching starts a new session.
+            {projectId ? 'Switching starts a new session.' : 'Select a project to switch account.'}
           </div>
         </div>
       )}
     </div>
   );
+}
+
+function labelOf(accounts: { id: string; label: string }[], id: string): string {
+  return accounts.find((a) => a.id === id)?.label ?? id;
 }
