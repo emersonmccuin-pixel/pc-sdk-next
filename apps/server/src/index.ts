@@ -13,6 +13,7 @@ import type { ULID } from '@pc/domain';
 import type { BackendContext, RunnerBackend } from './runner/backend.ts';
 import { AccountRegistry } from './runner/account-env.ts';
 import { SdkBackend } from './runner/sdk-backend.ts';
+import { seedStockAgents } from './agents/seed.ts';
 import { McpManager } from './mcp/manager.ts';
 import { UsageCache } from './usage/cache.ts';
 import { UsagePoller } from './usage/poller.ts';
@@ -20,6 +21,11 @@ import { startServer } from './server.ts';
 
 async function main(): Promise<void> {
   runMigrations();
+
+  const seeded = seedStockAgents();
+  console.log(
+    `[pc-sdk][agents] seed: ${seeded.inserted} inserted, ${seeded.reseeded} reseeded, ${seeded.unchanged} unchanged`,
+  );
 
   const accounts = new AccountRegistry();
   const usage = new UsageCache();

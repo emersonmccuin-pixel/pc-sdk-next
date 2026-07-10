@@ -1,0 +1,70 @@
+// Stock-agent seed guards: idempotent boot, authoritative drift-reseed for the
+// specialists, insert-only survival for orchestrator edits, and reset-to-default.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { getAgentByName, updateAgent } from '@pc/db';
+import { seedStockAgents, resetAgentToSeed } from '../src/agents/seed.ts';
+import { ORCHESTRATOR_AGENT_CONTENT, STOCK_AGENT_CONTENT } from '../src/agents/stock-agent-content.ts';
+import { freshDb } from './helpers.ts';
+
+const audit = { actor: 'user' as const };
+
+test('fresh boot seeds orchestrator + 6 specialists; second boot no-ops', () => {
+  freshDb();
+  const first = seedStockAgents();
+  assert.equal(first.inserted, 1 + STOCK_AGENT_CONTENT.length);
+  assert.equal(first.reseeded, 0);
+
+  for (const content of [ORCHESTRATOR_AGENT_CONTENT, ...STOCK_AGENT_CONTENT]) {
+    const row = getAgentByName({ name: content.name, scope: 'global' });
+    assert.ok(row, `${content.name} seeded`);
+    assert.equal(row!.origin, 'stock');
+    assert.equal(row!.scope, 'global');
+  }
+
+  const second = seedStockAgents();
+  assert.equal(second.inserted, 0);
+  assert.equal(second.reseeded, 0);
+  assert.equal(second.unchanged, 1 + STOCK_AGENT_CONTENT.length);
+});
+
+test('drifted specialist field is reseeded on the next boot (authoritative)', () => {
+  freshDb();
+  seedStockAgents();
+  const researcher = getAgentByName({ name: 'researcher', scope: 'global' })!;
+  updateAgent(researcher.id, { prompt: 'hand-hacked prompt' }, audit);
+
+  const summary = seedStockAgents();
+  assert.equal(summary.reseeded, 1);
+  const healed = getAgentByName({ name: 'researcher', scope: 'global' })!;
+  assert.notEqual(healed.prompt, 'hand-hacked prompt');
+  assert.equal(healed.prompt, STOCK_AGENT_CONTENT.find((c) => c.name === 'researcher')!.prompt);
+});
+
+test('orchestrator edits survive boots (insert-only); reset restores the seed', () => {
+  freshDb();
+  seedStockAgents();
+  const orch = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  updateAgent(orch.id, { prompt: 'my customized orchestrator prompt', model: 'sonnet' }, audit);
+
+  const summary = seedStockAgents();
+  assert.equal(summary.reseeded, 0, 'orchestrator must never be drift-reseeded');
+  const kept = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  assert.equal(kept.prompt, 'my customized orchestrator prompt');
+  assert.equal(kept.model, 'sonnet');
+
+  const resetFields = resetAgentToSeed(kept);
+  assert.ok(resetFields && resetFields.includes('prompt') && resetFields.includes('model'));
+  const restored = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  assert.equal(restored.prompt, ORCHESTRATOR_AGENT_CONTENT.prompt);
+  assert.equal(restored.model, 'opus');
+});
+
+test('resetAgentToSeed refuses non-seeded agents', () => {
+  freshDb();
+  seedStockAgents();
+  const orch = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  assert.equal(resetAgentToSeed({ ...orch, name: 'not-a-seed' }), null);
+  assert.equal(resetAgentToSeed({ ...orch, origin: 'user-created' }), null);
+});
