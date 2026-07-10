@@ -35,7 +35,6 @@ import type {
   PodSpawnBundle,
   ULID,
 } from '@pc/domain';
-import { mergeRequiredAgentTools } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { agentAudit, agentProjects, agentSecrets, agents } from '../schema.ts';
@@ -125,10 +124,10 @@ export function createAgent(input: CreateAgentInput, audit: AuditInput): PodAgen
     scope: input.scope,
     projectId: homeProjectId,
     prompt: input.prompt ?? '',
-    // Section 26 — every agent always has the work-item contract tools, no
-    // matter what the caller passed. Idempotent merge dedupes if the caller
-    // already listed them.
-    tools: mergeRequiredAgentTools(input.tools ?? []),
+    // Tools stored verbatim. The old app force-merged the pc-rig contract-loop
+    // kit here; that surface doesn't exist in PC-SDK — Phase 3 dispatch re-wires
+    // required tools at the dispatch door, not in storage.
+    tools: input.tools ?? [],
     model: input.model ?? null,
     effort: input.effort ?? null,
     maxTurns: input.maxTurns ?? null,
@@ -279,14 +278,8 @@ export function updateAgent(
   const existing = getAgentById(id);
   if (!existing) return null;
 
-  // Section 26 — every agent always has the work-item contract tools, no
-  // matter what the caller passed. If `tools` is being updated, merge the
-  // required tools back in so they survive removal attempts (UI checkbox,
-  // hand-edited row, etc.).
-  const effectivePatch: UpdateAgentInput =
-    patch.tools !== undefined
-      ? { ...patch, tools: mergeRequiredAgentTools(patch.tools) }
-      : patch;
+  // Tools stored verbatim (see createAgent note — no forced tool merge).
+  const effectivePatch: UpdateAgentInput = patch;
 
   // Identify the fields that ACTUALLY change (patch provides + value differs
   // from existing). We don't emit audit rows for no-op updates.
