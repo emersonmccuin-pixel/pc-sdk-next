@@ -10,7 +10,6 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { NotesPopover } from '@/components/NotesPopover';
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { AccountSwitcher } from '@/components/AccountSwitcher';
-import { UsageMeter } from '@/components/UsageMeter';
 import { Shell } from '@/components/Shell';
 import { COMMAND_PROJECT_SLUG } from '@pc/contracts';
 import { useSessionNav } from '@/state/sessions';
@@ -217,7 +216,6 @@ export default function App() {
         </div>
         <div className="flex flex-1 items-center gap-3 pr-2">
           <div className="ml-auto flex items-center gap-1">
-            <UsageMeter />
             <AccountSwitcher projectId={activeProject?.id ?? null} />
             {activeProject && (
               <button

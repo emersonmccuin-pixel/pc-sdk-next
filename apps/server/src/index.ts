@@ -15,6 +15,7 @@ import { AccountRegistry } from './runner/account-env.ts';
 import { SdkBackend } from './runner/sdk-backend.ts';
 import { McpManager } from './mcp/manager.ts';
 import { UsageCache } from './usage/cache.ts';
+import { UsagePoller } from './usage/poller.ts';
 import { startServer } from './server.ts';
 
 async function main(): Promise<void> {
@@ -22,6 +23,8 @@ async function main(): Promise<void> {
 
   const accounts = new AccountRegistry();
   const usage = new UsageCache();
+  const hydrated = usage.hydrateFromDb();
+  if (hydrated > 0) console.log(`[pc-sdk][usage] hydrated ${hydrated} account snapshot(s) from db`);
   const mcp = new McpManager();
 
   // Mint one SdkBackend per session: resolve the project's account (env +
@@ -49,6 +52,10 @@ async function main(): Promise<void> {
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
+  // Active quota supply — boot poll + interval per account (degrade-never-block).
+  const usagePoller = new UsagePoller({ accounts: accounts.list(), cache: usage });
+  usagePoller.start();
+
   // Seed + probe MCP registry in the background — degrade-never-block: a slow or
   // down server must not delay the server coming up. Bridges appear as probes
   // land; sessions started before then simply have no MCP tools yet.
@@ -58,6 +65,7 @@ async function main(): Promise<void> {
     .catch((err) => console.warn('[pc-sdk][mcp] init failed:', err instanceof Error ? err.message : err));
 
   const shutdown = (): void => {
+    usagePoller.stop();
     void server.close().then(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);

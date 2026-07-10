@@ -168,6 +168,32 @@ export function getLatestLiveEventForEntity<TPayload = unknown>(
 }
 
 /**
+ * Latest row PER entityId for an entity — the multi-key sibling of
+ * `getLatestLiveEventForEntity`. Powers boot re-hydration of last-write-wins
+ * per-key entities (e.g. `usage`, keyed by account id). Prune caveat: rows
+ * older than the prune window are gone, so this is best-effort state, not
+ * history.
+ */
+export function getLatestLiveEventsPerEntityId<TPayload = unknown>(
+  entity: LiveOutboxEntity,
+  db: DbExecutor = getDb(),
+): LiveOutboxEvent<TPayload>[] {
+  const maxSeqs = db
+    .select({ value: max(liveOutbox.seq) })
+    .from(liveOutbox)
+    .where(eq(liveOutbox.entity, entity))
+    .groupBy(liveOutbox.entityId)
+    .all() as Array<{ value: number | null }>;
+  const events: LiveOutboxEvent<TPayload>[] = [];
+  for (const { value } of maxSeqs) {
+    if (value === null) continue;
+    const row = db.select().from(liveOutbox).where(eq(liveOutbox.seq, value)).get();
+    if (row) events.push(rowToEvent<TPayload>(row));
+  }
+  return events;
+}
+
+/**
  * Slice 015a — raw drain read for the relay. Returns ALL committed rows (both
  * `global` and `project` scope) with `seq > after`, ordered by `seq`, capped at
  * `limit`. Unlike `listLiveEventsAfter` (which the replay route uses and which

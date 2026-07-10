@@ -525,7 +525,11 @@ function toRunnerUsage(
 function toUsageSnapshot(info: Record<string, unknown> | undefined, accountId: string): UsageSnapshot | null {
   if (!info) return null;
   const status = info.status === 'allowed_warning' || info.status === 'rejected' ? info.status : 'allowed';
-  const utilization = numberOr(info.utilization, 0);
+  // Contract scale is 0–1. The SDK's rate_limit_info scale is unpinned; a value
+  // past 1.5 can only be a 0–100 percentage (150% quota is unreachable), so
+  // normalize rather than clamp the meter to full.
+  const raw = numberOr(info.utilization, 0);
+  const utilization = raw > 1.5 ? raw / 100 : raw;
   const resetsAt = typeof info.resetsAt === 'number' ? info.resetsAt : null;
   const windowType = String(info.rateLimitType ?? '');
   const win = { utilization, resetsAt };

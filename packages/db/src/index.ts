@@ -31,6 +31,7 @@ export type {
 
 export {
   getLatestLiveEventForEntity,
+  getLatestLiveEventsPerEntityId,
   getLiveEventFloor,
   getLiveEventHighWater,
   insertLiveEvent,

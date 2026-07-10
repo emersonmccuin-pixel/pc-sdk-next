@@ -6,12 +6,29 @@
 // `status: 'rejected' | 'allowed_warning'` is the premortem tripwire — it rides
 // the durable channel loudly.
 
-import { getDb, insertLiveEvent } from '@pc/db';
+import { getDb, getLatestLiveEventsPerEntityId, insertLiveEvent } from '@pc/db';
 import type { UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 
 export class UsageCache {
   private readonly byAccount = new Map<string, UsageSnapshot>();
+
+  /** Boot re-hydrate from the durable rows `emit` wrote in past runs, so the
+   *  meter shows last-known state instead of "—" until fresh data lands. Reads
+   *  only — no re-emit (cold web clients prime via GET /api/usage). */
+  hydrateFromDb(): number {
+    try {
+      const rows = getLatestLiveEventsPerEntityId<UsageSnapshot>('usage', getDb());
+      for (const row of rows) {
+        const snap = row.payload;
+        if (!snap || typeof snap.accountId !== 'string') continue;
+        if (!this.byAccount.has(snap.accountId)) this.byAccount.set(snap.accountId, snap);
+      }
+    } catch (err) {
+      console.warn('[pc-sdk][usage] hydrate failed:', err instanceof Error ? err.message : err);
+    }
+    return this.byAccount.size;
+  }
 
   /** Merge one (possibly partial) snapshot and emit the durable resource event.
    *  Windows absent from the incoming snapshot keep their prior value. */
