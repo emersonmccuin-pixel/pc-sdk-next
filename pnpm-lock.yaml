@@ -11,7 +11,7 @@ importers:
   apps/spike:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.3.206
+        specifier: 0.3.206
         version: 0.3.206(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
       zod:
         specifier: ^4.4.3
