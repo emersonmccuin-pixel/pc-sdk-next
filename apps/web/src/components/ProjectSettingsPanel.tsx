@@ -4,9 +4,12 @@
 // Phase 4, specialists = Phase 3). What survives: project info (name / git
 // remote / integration branch / remote control) + the danger zone.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { agentsApi, resolveModelLabel, type Pod } from '@/features/agents/client';
 import { projectsApi, type Project } from '@/features/projects/client';
+import { useResourceEvents } from '@/state/resource-store';
+import type { ULID } from '@pc/contracts';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
 
 interface ProjectSettingsPanelProps {
@@ -15,10 +18,11 @@ interface ProjectSettingsPanelProps {
   onProjectDeleted: (projectId: string) => void;
 }
 
-type SectionId = 'info' | 'danger';
+type SectionId = 'info' | 'agents' | 'danger';
 
 const SECTIONS: { id: SectionId; label: string; danger?: boolean }[] = [
   { id: 'info', label: 'Project info' },
+  { id: 'agents', label: 'Agents' },
   { id: 'danger', label: 'Danger zone', danger: true },
 ];
 
@@ -65,6 +69,11 @@ export function ProjectSettingsPanel({
             {active === 'info' && (
               <Section title="Project info">
                 <ProjectInfoForm project={project} onSaved={onProjectUpdated} />
+              </Section>
+            )}
+            {active === 'agents' && (
+              <Section title="Agents">
+                <AgentsSection project={project} />
               </Section>
             )}
             {active === 'danger' && (
@@ -218,6 +227,127 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
           Discard
         </button>
         {err && <span className="text-xs text-destructive">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** The global agent pool with per-project attach/detach toggles. Built-ins are
+ *  listed dim — implicitly available everywhere, no toggle. */
+function AgentsSection({ project }: { project: Project }) {
+  const [pods, setPods] = useState<Pod[] | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    agentsApi
+      .listPods() // no projectId → the whole pool
+      .then(setPods)
+      .catch((e) => {
+        setPods([]);
+        setErr((e as Error).message);
+      });
+  }, []);
+
+  useEffect(() => load(), [load]);
+
+  // Live refresh on specialist frames (global + this project's membership).
+  const specialistEvents = useResourceEvents('specialist', project.id);
+  const sigRef = useRef('');
+  useEffect(() => {
+    const sig = specialistEvents.map((e) => `${e.entityId}:${e.version ?? e.cursor}`).join(',');
+    if (sig && sig !== sigRef.current) {
+      sigRef.current = sig;
+      load();
+    }
+  }, [specialistEvents, load]);
+
+  async function toggle(pod: Pod, attached: boolean) {
+    setBusyId(pod.id);
+    setErr(null);
+    try {
+      const memberProjectIds = attached
+        ? await agentsApi.detachFromProject(pod.id as ULID, project.id as ULID)
+        : await agentsApi.attachToProject(pod.id as ULID, project.id as ULID);
+      setPods((prev) => (prev ? prev.map((p) => (p.id === pod.id ? { ...p, memberProjectIds } : p)) : prev));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (pods === null) return <div className="text-xs text-muted-foreground">Loading…</div>;
+
+  const stock = pods.filter((p) => p.origin === 'stock');
+  const custom = pods.filter((p) => p.origin !== 'stock');
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        Agents live in one global pool. Attach the ones this project should see; edit them from the
+        Agents tab.
+      </p>
+      {err && <p className="text-xs text-destructive">{err}</p>}
+
+      <div>
+        <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Your agents
+        </div>
+        {custom.length === 0 ? (
+          <div className="border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
+            No custom agents yet — create one from the Agents tab.
+          </div>
+        ) : (
+          <div className="divide-y divide-border border border-border">
+            {custom.map((pod) => {
+              const attached = pod.memberProjectIds.includes(project.id as ULID);
+              return (
+                <div key={pod.id} className="flex items-center gap-3 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-xs font-medium text-foreground">{pod.name}</span>
+                      <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground">
+                        {resolveModelLabel(pod.model)}
+                      </span>
+                    </div>
+                    {pod.description && (
+                      <div className="truncate text-[11px] text-muted-foreground">{pod.description}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => toggle(pod, attached)}
+                    disabled={busyId === pod.id}
+                    className={
+                      'shrink-0 px-2.5 py-1 text-[11px] font-medium disabled:opacity-50 ' +
+                      (attached
+                        ? 'border border-border text-muted-foreground hover:bg-muted'
+                        : 'bg-primary text-primary-foreground hover:bg-primary/90')
+                    }
+                  >
+                    {busyId === pod.id ? '…' : attached ? 'Detach' : 'Attach'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Built-in — always available in every project
+        </div>
+        <div className="divide-y divide-border/60 border border-border/60">
+          {stock.map((pod) => (
+            <div key={pod.id} className="flex items-center gap-3 px-3 py-1.5 opacity-70">
+              <span className="truncate text-xs text-foreground">{pod.name}</span>
+              <span className="ml-auto shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground">
+                {resolveModelLabel(pod.model)}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

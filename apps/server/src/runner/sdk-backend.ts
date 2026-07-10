@@ -530,7 +530,9 @@ function toUsageSnapshot(info: Record<string, unknown> | undefined, accountId: s
   // normalize rather than clamp the meter to full.
   const raw = numberOr(info.utilization, 0);
   const utilization = raw > 1.5 ? raw / 100 : raw;
-  const resetsAt = typeof info.resetsAt === 'number' ? info.resetsAt : null;
+  // SDK sends epoch SECONDS (observed live 2026-07-10); contract is epoch ms.
+  const rawReset = typeof info.resetsAt === 'number' ? info.resetsAt : null;
+  const resetsAt = rawReset !== null && rawReset < 1e12 ? rawReset * 1000 : rawReset;
   const windowType = String(info.rateLimitType ?? '');
   const win = { utilization, resetsAt };
   const isFiveHour = windowType === 'five_hour';
