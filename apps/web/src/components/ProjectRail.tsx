@@ -225,6 +225,7 @@ export function ProjectRail({
           <div className="relative">
             <button
               onClick={() => setActiveSlug(commandProject.slug)}
+              aria-current={commandActive ? 'page' : undefined}
               title={[
                 'Command — plan across all projects',
                 commandHasLiveSession ? 'Live chat session active' : '',
@@ -234,21 +235,23 @@ export function ProjectRail({
                 commandUnread ? 'Command has unread chat activity' : 'Command — plan across all projects'
               }
               className={
-                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                'pc-project-row flex w-full items-center gap-2 border-l-[3px] px-3 py-1.5 text-left text-sm ' +
                 (commandActive
-                  ? 'border-l-[3px] border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary font-semibold '
-                  : 'border-l-[3px] border-transparent text-foreground/80 ')
+                  ? 'pc-project-row-active border-primary text-primary font-semibold '
+                  : 'border-transparent text-foreground/80 hover:bg-muted ')
               }
             >
               <span
                 aria-hidden="true"
                 className={[
                   'pc-project-tile pc-project-tile-row shrink-0',
-                  commandActive || commandUnread
-                    ? 'pc-project-tile-unread'
-                    : commandHasLiveSession
-                      ? 'pc-project-tile-chat-open'
-                      : 'pc-project-tile-inactive',
+                  commandActive
+                    ? 'pc-project-tile-active'
+                    : commandUnread
+                      ? 'pc-project-tile-unread'
+                      : commandHasLiveSession
+                        ? 'pc-project-tile-chat-open'
+                        : 'pc-project-tile-inactive',
                 ].join(' ')}
               >
                 <span className="text-[1.1rem] leading-none">★</span>
@@ -257,18 +260,6 @@ export function ProjectRail({
                 {commandProject.name}
               </span>
             </button>
-            {commandActive && (
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0"
-                style={{
-                  background: [
-                    'repeating-linear-gradient(0deg, color-mix(in srgb, var(--primary) 32%, transparent) 0px, color-mix(in srgb, var(--primary) 32%, transparent) 1px, transparent 1px, transparent 4px)',
-                    'color-mix(in srgb, var(--primary) 22%, transparent)',
-                  ].join(', '),
-                }}
-              />
-            )}
           </div>
         )}
         {commandProject && <div aria-hidden="true" className="my-1 border-t-2 border-border" />}
@@ -297,6 +288,7 @@ export function ProjectRail({
                   onDrop={(e) => handleDrop(e, p)}
                   onDragEnd={handleDragEnd}
                   onClick={() => setActiveSlug(p.slug)}
+                  aria-current={isActive ? 'page' : undefined}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -309,10 +301,10 @@ export function ProjectRail({
                   ].filter(Boolean).join('\n')}
                   aria-label={hasUnread ? `${p.name} has unread chat activity` : p.name}
                   className={
-                    'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted ' +
+                    'pc-project-row flex w-full items-center gap-2 border-l-[3px] px-3 py-1.5 text-left text-sm ' +
                     (isActive
-                      ? 'border-l-[3px] border-primary -ml-px pl-[calc(0.75rem-1px)] bg-muted text-primary font-semibold '
-                      : 'border-l-[3px] border-transparent text-foreground/80 ') +
+                      ? 'pc-project-row-active border-primary text-primary font-semibold '
+                      : 'border-transparent text-foreground/80 hover:bg-muted ') +
                     (isDragging ? 'opacity-40 ' : '') +
                     (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
                   }
@@ -321,11 +313,13 @@ export function ProjectRail({
                     aria-hidden="true"
                     className={[
                       'pc-project-tile pc-project-tile-row shrink-0',
-                      isActive || hasUnread
-                        ? 'pc-project-tile-unread'
-                        : hasLiveSession
-                          ? 'pc-project-tile-chat-open'
-                          : 'pc-project-tile-inactive',
+                      isActive
+                        ? 'pc-project-tile-active'
+                        : hasUnread
+                          ? 'pc-project-tile-unread'
+                          : hasLiveSession
+                            ? 'pc-project-tile-chat-open'
+                            : 'pc-project-tile-inactive',
                     ].join(' ')}
                   >
                     {initials(p.name)}
@@ -341,18 +335,6 @@ export function ProjectRail({
                     </span>
                   )}
                 </button>
-                {isActive && (
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0"
-                    style={{
-                      background: [
-                        'repeating-linear-gradient(0deg, color-mix(in srgb, var(--primary) 15%, transparent) 0px, color-mix(in srgb, var(--primary) 15%, transparent) 1px, transparent 1px, transparent 4px)',
-                        'color-mix(in srgb, var(--primary) 9%, transparent)',
-                      ].join(', '),
-                    }}
-                  />
-                )}
                 {showLineAfter && (
                   <div className="pointer-events-none absolute bottom-0 left-0 right-0 z-10 h-0.5 bg-primary" />
                 )}

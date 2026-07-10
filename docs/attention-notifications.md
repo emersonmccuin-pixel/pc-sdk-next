@@ -54,6 +54,11 @@ this state rather than replaced with a second badge system.
 
 ## Visual behavior
 
+- The currently selected project uses a stable warm surface tint, crisp left
+  accent, and distinct active monogram tile. It has no scanline/texture overlay
+  and exposes `aria-current="page"`.
+- Selection and attention are separate: selected means “I am viewing this”;
+  pulse/glow and status indicators mean “this inactive project needs me.”
 - Use a restrained pulse/glow on inactive project tiles, not a rapid hard
   blink. The state remains legible without motion.
 - Respect `prefers-reduced-motion`: show the persistent color/indicator with no
