@@ -17,6 +17,7 @@ import type { ULID } from '@pc/domain';
 import type { SessionRegistry } from '../chat/registry.ts';
 import { replayFrames } from '../chat/replay.ts';
 import { toSessionSummary } from './dto.ts';
+import { mountAgents } from './agents.ts';
 import { mountProjects } from './projects.ts';
 import { mountSettings } from './settings.ts';
 import { mountAccounts } from './accounts.ts';
@@ -52,6 +53,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
   // ── Projects + settings (the @pc/contracts APIs the web chrome speaks) ───────
   mountProjects(app);
   mountSettings(app);
+  mountAgents(app);
 
   // ── Sessions ────────────────────────────────────────────────────────────────
   app.get('/api/projects/:id/sessions', (c) => {
