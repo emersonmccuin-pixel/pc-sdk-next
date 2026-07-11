@@ -1,6 +1,11 @@
 # Event Contract — PC-SDK
 
-v1, 2026-07-10. Every shape the server currently emits to the browser, and every client→server message. This is the spine: all ported code rewires to these shapes in one pass. No shims, no compatibility layers. Types land in `packages/contracts/src/events/` as the single source; this doc is the design record.
+As-built v1, 2026-07-10. This records the current browser wire; it is not the
+final PC-SDK Next conversation contract. `docs/architecture/chat-communications.md`
+defines the accepted target, including durable queueing and runtime-neutral
+identities. Types in `packages/contracts/src/events/` remain the executable
+source until that migration lands in one pass. No shim or parallel wire is
+permitted.
 
 Phase 2's implemented v1 wire contains Claude-derived names such as `sdkUuid`.
 Those names describe current code, not the locked multi-runtime architecture.

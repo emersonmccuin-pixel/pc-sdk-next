@@ -1,17 +1,10 @@
 # Phase 3 — runtime adapters + agent dispatch
 
-Status: CORE LANDED (2026-07-10) — steps 1–2 done and steps 3–4 built at v1
-depth, CI-green (canonical runtime contract + ClaudeRuntimeAdapter extracted;
-dispatch→contract→verify→review/land + boot recovery + guard tests; landing
-defaults to orchestrator review, `auto_land` is the opt-in per
-docs/worktree-lifecycle.md). Remaining: the live end-to-end gate; the full
-lifecycle state machine / preparation+readiness receipts / landing queue from
-the worktree doc (current v1: provision receipt, sealed submit, clean-tree +
-base-branch guards, ancestry receipt, per-repo landing lock); Codex adapter
-(step 5); selection UI (step 6). The noun layer (contract model, DB tables,
-DTOs, tool metadata, run-view UI) was ported in Phase 1. The binding provider
-rules live in `docs/agent-runtime-architecture.md`; repository mutation and
-landing rules live in `docs/worktree-lifecycle.md`.
+Status: **historical implementation plan**. The Claude adapter, dispatch,
+contract/deliverable verification, full worktree lifecycle, live gate, recovery,
+and hardening slices have since landed. Remaining runtime selection, Codex, and
+cross-process hardening work is governed by `docs/master-plan.md` N3–N5 and
+`docs/current-state.md`; do not execute this document as the active queue.
 
 ## Phase order
 

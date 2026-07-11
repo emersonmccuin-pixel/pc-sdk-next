@@ -1,79 +1,165 @@
-# PC-SDK (working name)
+# PC-SDK Next
 
-Agent-runtime-based rewrite of PC-PTY-Chat (`E:\Claude Code Projects\Personal\PC-PTY-Chat`). Fresh repo — not a fork. Portable packages get copied in, not inherited with history.
+Provider-neutral, hardened continuation of the known-working PC-SDK baseline.
+The original daily driver is preserved at
+`E:\Claude Code Projects\Personal\PC-SDK` and tag
+`working-v1-2026-07-11`. All new work happens in this fork.
 
-**Build-out plan: `docs/master-plan.md`** — product scope, keep/redefine/drop ledger, phases with gates. **Provider boundary: `docs/agent-runtime-architecture.md`. Worktree lifecycle: `docs/worktree-lifecycle.md`.** This file holds the locked technical decisions; the plan wins on scope.
+## Authority and startup
 
-## Mission
+- `docs/master-plan.md`: product scope, migration phases, and gates.
+- `docs/requirements.md`: stable behavior IDs.
+- `docs/architecture/boundaries.md`: component/data ownership.
+- `docs/agent-runtime-architecture.md`: runtime/provider boundary.
+- `docs/architecture/chat-communications.md`: target conversation semantics.
+- `docs/worktree-lifecycle.md`: repository mutation, landing, and cleanup.
+- `docs/current-state.md`: evidence-backed as-built state and known gaps.
+- `docs/execution/current.md`: the one active slice and next safe action.
+- `docs/pickup-protocol.md`: cross-session startup/close procedure.
 
-Same product, no fluff: projects + orchestrator chat + agents with hardened contracts + files. Delete everything that existed only to drive the Claude Code CLI through a fake terminal.
+Read this file, current state, execution handoff, the active slice, and every
+boundary it names before writing. Historical phase documents explain the
+baseline but do not override the active master plan.
 
-## Locked decisions (2026-07-10)
+## Mission and product boundary
 
-- **Personal tool first.** No installer/releases/marketing until it earns it; code stays packageable.
-- **Browser + one local server process.** No Electron, no agent-host, no supervisor process. Boot recovery from DB replaces the babysitter.
-- **One-click launch, no terminal.** Pinned taskbar icon → hidden launcher (starts engine if down) → browser app-mode window. Launcher v1 in Phase 2; auto-start Windows service in Phase 5.
-- **Full specialist builder survives** (pods, redefined): plain-English charter → runtime + prompt + tools + MCP attachments + account/model/effort, roster UI.
-- **UI surfaces:** chat + run views, MCP manager (rebuilt for reliability — see plan), usage dashboard. No board, no workflow builder, no files browser.
+Personal daily driver: projects, orchestrator chat, user-built specialists,
+hardened contracts, run evidence, and the files/artifacts needed by those views.
+No installer/releases/marketing until it earns them; code stays packageable.
 
-- **PC-SDK owns the app; agent runtimes are adapters.** Projects, chat, transcripts, contracts, dispatch, verification, tools/MCP policy, permissions, usage normalization, and switching semantics are provider-neutral core behavior. Claude Agent SDK and OpenAI Codex are peer `AgentRuntimeAdapter` implementations; future runtimes plug into the same contract. Only composition/adapter modules may import provider packages or parse provider-native events. Full decision: `docs/agent-runtime-architecture.md`.
-- **Auth = subscription-first, no API key by default.** Claude uses the Max subscription through Claude Code login; OpenAI uses the ChatGPT subscription through Codex login. Raw Anthropic/OpenAI APIs are separately billed runtimes and require an explicit future decision. For Claude, scrub `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from spawn env because they shadow subscription credentials. Known Claude risk: prior fleet testing saw headless-subscription bans (6/15 accounts); single personal/work accounts assumed acceptable — user's call, revisit if warnings appear.
-- **Account switcher = runtime-aware core subsystem.** Claude accounts select isolated `CLAUDE_CONFIG_DIR` homes (`personal` → `C:\Users\emers\.claude`, `work` → `C:\Users\emers\.claude-work`); Codex accounts select isolated `CODEX_HOME` homes. Registry entries carry runtime/provider + credential home; per-project default + per-dispatch override. Runtime/account/model changes create a new app session. Old sessions resume only through their stamped adapter and account.
-- **Current chat implementation = Claude adapter precursor.** Phase 2 runs the Claude Agent SDK `query()` loop (streaming, `resume: sessionId`, custom tools via `createSdkMcpServer`). Phase 3 first extracts its Claude-native vocabulary into `ClaudeRuntimeAdapter`, then adds Codex app-server as `CodexRuntimeAdapter`. No PTY, JSONL tailing, or echo-ack returns.
-- **Agents use the same runtime adapter contract as the orchestrator.** Dispatch → contract → verify → land is PC-SDK behavior. `codex exec` may support spikes/non-interactive fallback, but it is not a core product abstraction; rich Codex integration uses app-server/SDK behind the adapter.
-- **Every repository mutation is worktree-isolated.** Code, docs, config, migrations, and generated-file edits by any agent happen in a recorded run worktree—never the user's main working copy. The orchestrator inspects main read-only, reviews worktree diffs/receipts, and requests deterministic service-controlled landing. Isolation is mandatory even when Plan/independent Review/Fix are skipped. Full lifecycle: `docs/worktree-lifecycle.md`.
-- **Hardcoded delivery lifecycle:** Provision/Prepare/Readiness → optional Plan → Build → deterministic Verify → orchestrator review by default, optional independent Review/Fix loop, or policy-gated auto-merge → Merge → Teardown. No workflow engine. Builders may run in parallel; landing is serialized per repository and revalidated against the current base.
-- **Merge/teardown require positive receipts.** The builder submits a sealed commit aligned to its contract; PC-SDK derives actual paths/evidence. Auto-merge is opt-in and fails closed on missing/inconclusive evidence. Conflict, failure, cancellation, stranding, or uncertainty preserves the branch/worktree. Teardown requires proven landing or explicit user-approved abandonment.
-- **No workflow engine.** One hardcoded delivery lifecycle in plain code: Plan → Build → Review/Verify → Fix → Merge → Teardown, with policy-controlled phase skipping but mandatory worktree isolation.
-- **No internal work items.** PM lives in AInativePM (`E:\Claude Code Projects\AInativePM`) over MCP — it's already a full MCP server (official SDK, stdio + HTTP, OAuth, hosted on Railway). Contracts carry an external PM-item ref, not a work-item FK.
-- **MCP registry is a first-class global subsystem owned by PC-SDK**: register once (URL/stdio + auth via vault), attach policy per consumer, health probe + tool-list cache. Adapters translate the same attachment/tool policy into their native delivery mechanism (Claude in-process SDK MCP; Codex native MCP/config or an appropriate PC-SDK endpoint). Provider-native tools are opt-in capabilities, never silently exposed.
-- **DB is the source of truth** (carried over: `conversation_events` transcript store, live-outbox relay).
-- **Billing:** subscription-covered by default (Claude Max or ChatGPT plan, not API dollars). The real constraint is provider-specific plan rate limits. Normalize only positively observed usage; missing/non-equivalent telemetry is visibly unavailable, never invented. Any API-billed runtime requires an explicit decision and separate usage semantics.
+- Browser plus one local server process. No Electron, agent-host, supervisor,
+  or general workflow engine.
+- One-click hidden launcher; DB-backed boot recovery replaces babysitting.
+- Preserve the existing visual shell. Rework behavior/state ownership where an
+  accepted requirement demands it; do not use architecture work as a redesign.
+- UI surfaces: chat/session/run views, specialist builder/roster, MCP manager,
+  usage/context, settings, and attention. No board, workflow builder, terminal,
+  or general file browser.
+- DB is durable truth; processes, sockets, and UI are projections.
 
-## Port map (from 3-agent code sweep of PC-PTY-Chat, 2026-07-10)
+## Modular-monolith rules
 
-- **DELETE (~36k lines):** `packages/runtime` (PTY engine), `agent-host`, `workflows` engine, server host/JSONL/workflow/work-item buckets, web xterm + workflow builder + work-items UI, chat JSONL-envelope plumbing.
-- **PORT (~25-30k):** contract model + ac-evaluator (`domain`), `pc_*` tool registry + MCP serving (`mcp`), ~2/3 of `db` schema, mailbox, live-outbox relay, worktree service, files endpoints, stock-pod-seed prompts, utils, **the whole web shell** — Shell/LeftRail/ActivityPanel/StatusBar/settings/agent-transcript click-through/pod modals + design system + chat bubbles/markdown/diff (see master plan for the component ledger). UI rule: port, don't redesign.
-- **REWRITE smaller (~8-10k):** agent-run-factory dispatch core, pause/resume, pod-spawn (→ "assemble provider-neutral instruction/tool package"), conversations send path, web chat reducer, server boot wiring.
-- Watch: `contracts` package is dual-purpose (API DTOs + work contracts) — trim, don't delete; 3 `runtime-*` wire modules inside it die.
+One process and one SQLite database, divided into explicit components. A
+component owns its state and transition rules. Other components use published
+commands, queries, DTOs, events, ports, and receipts; they do not manipulate its
+tables, import its implementation, or reproduce its state machine.
 
-## Phases (gates + detail in `docs/master-plan.md`)
+Durable transitions and outbox events commit together. Unknown, unavailable,
+stale, unsupported, and inconclusive are explicit states. Timeouts never imply
+success. Every core invariant gets a guard test.
 
-0. **Claude spike ✅** (2026-07-10): `apps/spike` — Claude SDK chat CLI on the Max plan, account switcher + usage meter. First subscription runtime proven.
-1. **Port the foundation ✅** (2026-07-10, gate met): six packages copied trimmed, typecheck + tests + dead-import gate green on CI.
-2. **Orchestrator chat in the browser ✅ built** (2026-07-10): server + boot recovery + kill-test, Claude SDK loop, WS streaming, ported shell, Claude account switcher, MCP client core, launcher v1. **Gate week OPEN** — daily-drive from the taskbar icon; see Current state below.
-3. **Runtime adapters + specialists + worktree lifecycle:** behavior-preserving Claude extraction, Codex subscription adapter, conformance suite, runtime-aware accounts/models, mandatory worktree provisioning/readiness, dispatch→contract→verify→review/auto-land→merge→teardown, parallel builders + serialized landing queue, run views, specialist builder v1, then orchestrator runtime switching.
-4. **MCP manager + pipeline + usage dashboard:** manager UI meeting the reliability bar, hardcoded Plan→Build→Review→Fix pipeline, provider-aware per-runtime/account quota headroom with explicit unavailable states.
-5. **Daily-driver hardening:** Windows service, boot-recovery soak, polish from real use.
+## Runtime and account boundary
 
-## Current state (2026-07-10 — read this first in a fresh session)
+PC-SDK owns projects, chat, transcripts, contracts, dispatch, verification,
+tools/MCP policy, permissions, usage normalization, switching, and handoff.
+Claude Agent SDK and OpenAI Codex are peer `AgentRuntimeAdapter`
+implementations. Only adapter/composition modules may import provider packages,
+parse native events, or know native session shapes.
 
-- **Repo:** github.com/emersonmccuin-pixel/pc-sdk (private). CI = GitHub Actions running `pnpm ci:check` (typecheck + all tests + dead-import gate). Keep it green; it runs on every push.
-- **Run it:** taskbar/Start-Menu "PC-SDK" shortcut (launcher/pc-sdk-launcher.ps1) → hidden server on :5123 → Edge app window. Dev: `pnpm --filter @pc-sdk/server start` + `pnpm --filter @pc-sdk/web dev`. One real-turn check: `pnpm smoke`.
-- **AInativePM:** attached via user-scope env `PC_AINATIVE_PM_URL`/`PC_AINATIVE_PM_TOKEN` (already set on this machine); probed healthy at boot, 69 tools. Degrade-never-block.
-- **Docs:** `docs/master-plan.md` (product plan) · `docs/agent-runtime-architecture.md` (THE provider/runtime boundary) · `docs/worktree-lifecycle.md` (THE repo-mutation/landing lifecycle) · `docs/event-contract.md` (THE browser wire — typed in `@pc/contracts` src/events) · `docs/phase-2-plan.md` (historical first-runtime server/web layout) · `docs/phase-3-dispatch.md` (runtime extraction + dispatch) · `docs/pm-anchoring.md` (scoped, unbuilt) · `docs/research/event-contract-research.json` (old-app + Claude SDK research; don't re-research).
-- **Gate week (open):** daily-drive real chat for a week from the icon, incl. PM actions. Doubles as the quota experiment (watch the left-rail usage caps; STOP at any account warning — premortem #3). Kill-test + guard tests are standing CI.
-- **Gate-week batch 1 landed (2026-07-10):** streaming fixed (deltas keyed by inner Claude message id — one growing bubble); usage panel real for Claude accounts (OAuth usage-endpoint poller per account + DB boot-hydrate; header meter deleted, left-rail caps panel is the one home); **agent system v1** — global pool (all agents `scope:'global'`), 6 stock specialists seeded (authoritative drift-reseed) + orchestrator seeded insert-only, `/api/agents/pods` CRUD + attach/detach, Agents-tab edit surface, project-settings Agents section. Orchestrator prompt/model live from its agents row; edits apply next message (rev-based Claude backend re-mint with native resume). This describes the current implementation, not the provider-neutral target.
-- **Batch-1 browser verification pending (do first next session, with the user driving):** (1) long reply streams as ONE growing bubble, no orphans; (2) left-rail usage bars populated after boot (work account polls fine; personal token was expired 2026-07-10 — stale until a turn runs on it); (3) Agents tab create/edit/delete + project-settings attach/detach, roster live-updates; (4) orchestrator prompt edit changes behavior on the next message. CI + smoke passed; real-browser pass not yet done.
-- **Phase-3 dispatch core landed (2026-07-10, this session — CI green, not yet live-verified):**
-  - **Runtime boundary extracted** per docs/agent-runtime-architecture.md: `runner/runtime.ts` (canonical `AgentRuntimeAdapter`/`RuntimeSession`/`RuntimeEvent`/`RuntimeSelection` + `RuntimeRegistry`), `runner/claude-adapter.ts` (the ONE SDK importer — sdk-backend.ts/backend.ts/fake-backend.ts deleted in one pass, no shims), `runner/fake-runtime.ts`. SessionService/turn-runner/tests moved onto the seam; adapter selection only at the composition root (index.ts).
-  - **Dispatch verb layer** `apps/server/src/dispatch/`: service.ts (fresh/continue/kill/ask/answer/submit/review/settle + per-repo landing lock), pc-bridge.ts (registry-bound pc_* tools for orchestrator + workers, one localhost door), prompt.ts (charter + `## Your contract` block + ask/terminal envelopes), verification.ts (tier gate, fail-closed empty AC, trust_end_turn, inconclusive⇒pending, real executors), worktrees.ts (provision / land --no-ff w/ ancestry receipt / record-then-teardown / stranded scan).
-  - **Landing policy per docs/worktree-lifecycle.md:** passed repo contracts park merge-ready; the orchestrator authorizes via `pc_review_contract` accept. `auto_land: true` on the repo spec is the opt-in auto-merge. Conflict/failed are durable gates; branch always preserved.
-  - **HTTP surface** `http/agent-runs.ts` (invoke/continue/list/by-dispatcher/inspect/kill/events/contract/deliverable/pending-asks/contract review + `/api/projects/:id/agents` roster). Orchestrator SDK loop carries the dispatch tools; new tool `pc_review_contract`; `pc_invoke_agent`/`pc_continue_agent` re-pruned (workItemId → pmRef).
-  - **Migration 0001:** agent_runs + runtime_id/account_id/model (selection stamped on every run). **Boot recovery extended:** non-terminal runs fail loudly (server-restart), open asks cancelled, contracts park verification-pending, stranded worktrees surfaced, pending landings re-driven. **Web:** agent-event + resource frames wired into their stores (activity rail + transcript modal live).
-  - **Guard tests:** dispatch-guards.test.ts (spec-less refusal, unknown-agent, repo⇒worktree invariant, no-deliverable gate, selection stamp, delivered-answer end-to-end pass, boot kill-test) + dispatch-verification.test.ts (empty-AC escalation matrix, tier park, inconclusive⇒pending).
-  - **Not yet done:** the Phase-3 gate (a specialist lands a real fix end-to-end from chat, on the live SDK); orchestrator stock prompt gained a Specialist-dispatch section but the live row is insert-only — reset-to-default (or hand-edit) the orchestrator in the Agents tab so the running chat learns the dispatch tools; full lifecycle states/readiness receipts/landing queue from docs/worktree-lifecycle.md (current: single lock + guards); per-specialist MCP attachments (slot marked in dispatch/service.ts startRun); Codex adapter (phase-order step 4).
-- **Next work queue, in order:** (1) fixes surfaced by gate-week testing; (2) PM anchoring v1 (~1 agent-day, spec in docs/pm-anchoring.md); (3) Phase-3 gate: drive a real dispatch end-to-end from chat (contract→worktree→verify→review→land), then the remaining worktree-lifecycle machinery, then Codex parity. Phase-3-deferred cleanups are listed in docs/pm-anchoring.md v2/v3 + the stage-B port commit message (registry re-prune: 5 orphan tools, context-docs tools, ProjectDto.stages trim, ReviewProvenance pmRef).
-- **Known gaps (by design):** activity panel empty until Phase 3 run endpoints; agents are definitions-only (dispatch = Phase 3; agent tools/effort stored but inert); current Claude usage poller rides an unofficial OAuth endpoint (fallback = passive rate-limit events + persisted snapshots); expired Claude account token → that account's usage stays last-known until a turn refreshes it; Codex adapter/model discovery/usage are not built; no periodic MCP re-probe; MCP-attachment + secrets editing per agent deferred (slots into http/agents.ts).
+- Subscription-first auth. Claude uses Claude Code login; Codex uses ChatGPT
+  login. Raw APIs are separate billed runtimes requiring an explicit decision.
+- Scrub `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from Claude spawn env so
+  they cannot shadow subscription credentials.
+- Credential homes are runtime-aware (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). The
+  working and Next apps intentionally share provider login homes and quota, but
+  not app databases or session records.
+- Selection is runtime/account/model/effort and immutable per app session.
+  Changing it creates a new app session. Native continuation is allowed only by
+  a positive adapter capability/receipt. Cross-provider continuity is an
+  attributed PC-SDK handoff, never fake resume.
+- Models, effort values, context, MCP, approvals, structured output, usage, and
+  stream granularity are adapter capabilities. Unsupported means typed visible
+  degradation, never fallback.
+- Prior fleet testing saw Claude headless-subscription warnings/bans on 6/15
+  accounts. Stop at any account warning and reassess; never silently switch to
+  API billing.
 
-## Rules
+## Conversation boundary
 
-- One path only. Positive receipt over inference (timeouts → typed failure). Terse.
-- **No shims, no compatibility layers.** Ported code rewires to the new event contract in one pass.
-- **Agent runtimes behind adapters.** Nothing outside a concrete adapter imports `@anthropic-ai/claude-agent-sdk`, Codex SDK/app-server protocol types, or any future provider runtime. Versions pinned; upgrades deliberate. Core events, sessions, tools, and UI contain no provider-native vocabulary.
-- **Runtime selection is explicit and immutable per session.** Stamp runtime/account/model/native session id; resume through that exact adapter. Cross-runtime continuity is an explicit PC-SDK handoff, never fake native resume.
-- **Capabilities over assumptions.** Model discovery, MCP, approvals, structured output, usage telemetry, and stream granularity are declared per adapter; unsupported means typed degradation, never silent fallback.
-- **Isolation over task size.** Every write-capable agent runs in its recorded worktree, including "small" edits. Review depth may shrink; isolation never does. Merge/teardown are deterministic service operations with positive receipts, not model shell improvisation.
-- **Degrade, never block** on MCP outages (incl. AInativePM).
-- Every core invariant gets a guard test when built.
-- Plain-English explanations to the user — lead with the result.
+User, assistant, safe activity, tool, agent, control, telemetry, and system
+events are separate canonical families. Server sequence is authoritative;
+timestamps and socket arrival are not ordering mechanisms. User messages queued
+during a turn are durable FIFO state. Interruption requires a positive receipt.
+
+Always show honest orchestrator activity without exposing private
+chain-of-thought. Tool calls and agent communication have typed lifecycles.
+Replay after reconnect/restart must yield the same ordered projection without
+duplicate effects or orphan stream bubbles.
+
+Context and subscription quota are separate. Context reports exact,
+approximate, compacted, or unavailable. Quota UI always shows consumed/used,
+even when the provider reports remaining, while retaining native semantics and
+confidence.
+
+## Specialists, contracts, and delivery
+
+A specialist is a revisioned provider-neutral charter plus runtime/account/
+model/effort defaults, prompt policy, tools, MCP attachments, permissions,
+limits, and expected-output defaults. Orchestrator and specialists use the same
+runtime adapter contract.
+
+No run starts without a non-empty typed contract. The typed submitted
+deliverable—not final prose—is authoritative. Verification distinguishes pass,
+fail, and inconclusive; missing evidence never passes.
+
+Repository delivery is fixed plain code, not a workflow engine:
+
+```text
+Contract -> Provision -> Prepare -> Readiness -> Plan?
+-> Build -> Verify -> Review? -> Fix? -> Merge -> Teardown
+```
+
+Every tracked mutation, including code, docs, configuration, migrations, and
+generated files, occurs in a recorded run-owned worktree. The main checkout is
+read-only and stays on `main`. Parallel builders use separate worktrees;
+landing is serialized and revalidated against current base. Merge needs
+positive ancestry proof. Teardown needs proven landing or explicit approved
+abandonment. Conflict/failure/cancellation/stranding/uncertainty preserves work.
+
+Until a cross-process repository lease lands, never configure the working app
+and PC-SDK Next to perform write-capable runs against the same external
+repository at the same time; current landing locks are process-local.
+
+## MCP and AInativePM
+
+The global MCP registry is PC-SDK-owned: register once, vault-backed auth,
+health/tool cache, and explicit per-consumer attachment policy. Adapters compile
+that same policy into native delivery. Provider-native tools are opt-in.
+MCP failure degrades visibly and never blocks unrelated chat or execution.
+
+AInativePM is broader than software work. Its code, domain, UI, and MCP surface
+must be jointly inspected before deeper integration is designed. Contracts may
+carry external PM references; PC-SDK does not create an internal PM/work-item
+system. Both app instances currently share the same user-scope AInativePM remote
+and credentials, so new automated PM writes remain out of scope until discovery
+defines ownership and idempotency.
+
+## Fork operations
+
+- Checkout: `E:\Claude Code Projects\Personal\PC-SDK-Next`
+- GitHub: `emersonmccuin-pixel/pc-sdk-next` (`origin`)
+- Stable source: `emersonmccuin-pixel/pc-sdk` (`upstream`, fetch-only)
+- Default server/dev ports: 5124/5175
+- Data: repo-local `data`; logs: `%LOCALAPPDATA%\PC-SDK-Next\logs`
+- Launcher/shortcut/health identity: `PC-SDK Next` / `pc-sdk-next`
+
+Do not push to or mutate the stable repository from this fork. Do not point
+`PC_DATA_DIR` at the working app's data. The persisted display setting named
+`dataDir` is not the DB selector; launch-time `PC_DATA_DIR` is authoritative.
+
+## Working rules
+
+- One path only; no shims or compatibility layers.
+- Make the smallest coherent slice; do not silently widen it.
+- Use dynamic agents only for bounded work where parallelism, specialization,
+  or context hygiene materially helps. Read-heavy lanes parallelize freely;
+  shared contracts, migrations, integration, and landing serialize.
+- Root agent retains user intent, architecture synthesis, acceptance, and
+  landing responsibility.
+- Preserve unrelated user work. Never use destructive Git commands to recover.
+- Use positive receipts over inference and plain-English explanations to the
+  user, leading with the result.
+- Keep `pnpm ci:check` green. Run focused checks plus verification proportional
+  to risk; `pnpm smoke` is the live Claude check when explicitly required.
+- Close every slice by updating its receipt, `docs/current-state.md`, and
+  `docs/execution/current.md`, then leave a clean, known branch/worktree state.

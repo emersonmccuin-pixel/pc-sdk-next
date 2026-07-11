@@ -22,12 +22,26 @@ async function boot(): Promise<{ server: RunningServer; base: string; usage: Usa
   const server = await startServer({
     mintSession: () => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 }),
     port: 0,
+    instanceId: 'pc-sdk-next-test',
     runRecovery: false,
     accounts: new AccountRegistry(),
     usage,
   });
   return { server, base: `http://localhost:${server.port}`, usage };
 }
+
+test('health positively identifies the PC-SDK Next instance', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  try {
+    const health = await fetch(`${base}/health`).then(body);
+    assert.equal(health.ok, true);
+    assert.equal(health.name, '@pc-sdk/server');
+    assert.equal(health.instanceId, 'pc-sdk-next-test');
+  } finally {
+    await server.close();
+  }
+});
 
 test('settings: GET returns the singleton; PATCH round-trips', async () => {
   freshDb();

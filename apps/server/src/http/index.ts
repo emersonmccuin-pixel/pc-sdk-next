@@ -29,6 +29,7 @@ import type { UsageCache } from '../usage/cache.ts';
 export interface HttpDeps {
   registry: SessionRegistry;
   version?: string;
+  instanceId?: string;
   /** Account switcher registry (accounts + usage endpoints mount when set). */
   accounts?: AccountRegistry;
   usage?: UsageCache;
@@ -54,7 +55,13 @@ export function createHttpApp(deps: HttpDeps): Hono {
   const app = new Hono();
 
   app.get('/health', (c) =>
-    c.json({ ok: true, name: '@pc-sdk/server', version: deps.version ?? '0.0.0', uptimeMs: Date.now() - bootAt }),
+    c.json({
+      ok: true,
+      name: '@pc-sdk/server',
+      instanceId: deps.instanceId ?? 'pc-sdk-next',
+      version: deps.version ?? '0.0.0',
+      uptimeMs: Date.now() - bootAt,
+    }),
   );
 
   // ── Engine restart (Settings button) ────────────────────────────────────────

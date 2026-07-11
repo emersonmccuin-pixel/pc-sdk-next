@@ -1,5 +1,5 @@
 #requires -version 7
-# Creates a Start-Menu shortcut for PC-SDK that runs the launcher with no console flash.
+# Creates a Start-Menu shortcut for PC-SDK Next that runs the launcher with no console flash.
 # Right-click the created shortcut -> Pin to taskbar.
 
 $ErrorActionPreference = 'Stop'
@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot     = Split-Path -Parent $PSScriptRoot
 $LauncherPs1  = Join-Path $PSScriptRoot "pc-sdk-launcher.ps1"
 $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-$ShortcutPath = Join-Path $StartMenuDir "PC-SDK.lnk"
+$ShortcutPath = Join-Path $StartMenuDir "PC-SDK Next.lnk"
 
 if (-not (Test-Path $LauncherPs1)) {
     throw "Launcher script not found at $LauncherPs1"
@@ -32,8 +32,8 @@ $Shortcut.TargetPath = "wscript.exe"
 $Shortcut.Arguments  = "//B `"$wrapperVbs`""
 $Shortcut.WorkingDirectory = $RepoRoot
 $Shortcut.IconLocation = "$($pwsh.Source),0"
-$Shortcut.Description = "Launch PC-SDK"
+$Shortcut.Description = "Launch PC-SDK Next"
 $Shortcut.Save()
 
 Write-Host "Shortcut created: $ShortcutPath"
-Write-Host "Open the Start Menu, find PC-SDK, right-click -> Pin to taskbar."
+Write-Host "Open the Start Menu, find PC-SDK Next, right-click -> Pin to taskbar."

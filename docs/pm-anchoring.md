@@ -1,8 +1,14 @@
-# PM anchoring — scope
+# PM anchoring — provisional inherited hypothesis
+
+Status: deferred. This predates the decision to inspect AInativePM's code,
+domain, MCP surface, and UI jointly. Nothing below is approved for
+implementation until `docs/research/ainativepm-discovery.md` completes and the
+ownership seam is accepted. In particular, “no PM-side work needed” is an old
+assumption, not a fact.
 
 Goal: a PC-SDK project knows which AInativePM project it belongs to, so every PM action in chat lands in the right place without saying "in project X" each time.
 
-## What AInativePM already gives us (no PM-side work needed)
+## Previously observed AInativePM capabilities (must be revalidated)
 
 1. **Folder binding** — `get_started(cwd)` auto-resolves a registered folder to its PM project; `register_folder` creates the binding. Server-side, survives everything.
 2. **Token-per-project PATs** — a token can carry a default PM project; every tool call on that token defaults there. Strongest isolation, but per-project tokens = per-project MCP attachments (Phase 4 manager territory).

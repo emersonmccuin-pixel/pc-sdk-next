@@ -1,8 +1,10 @@
 # Git worktree lifecycle
 
-Status: **locked target architecture** (2026-07-10). This document defines how
-PC-SDK isolates, verifies, lands, and cleans up every repository mutation. It is
-the worktree counterpart to `docs/agent-runtime-architecture.md`.
+Status: **locked architecture with implemented v1 lifecycle** (updated
+2026-07-11). Isolation, readiness, sealed delivery, verification/review,
+guarded landing, teardown, and recovery have live evidence. Cross-process
+exclusion for two PC-SDK instances managing the same external repository remains
+a PC-SDK Next hardening requirement.
 
 ## Decision
 

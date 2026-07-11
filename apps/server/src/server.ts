@@ -24,6 +24,9 @@ import { attachSocket, type RouterSocket } from './ws/router.ts';
 export interface StartServerOptions {
   mintSession: RuntimeSessionFactory;
   port?: number;
+  /** Stable local-process identity returned by /health. Launchers must verify
+   *  this before treating an occupied port as their own instance. */
+  instanceId?: string;
   /** Absolute path to a built web app (apps/web/dist). Absent/missing tolerated. */
   webDist?: string | null;
   cwd?: string;
@@ -88,6 +91,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   const app = createHttpApp({
     registry,
     version: opts.version,
+    instanceId: opts.instanceId ?? process.env.PC_INSTANCE_ID ?? 'pc-sdk-next',
     accounts: opts.accounts,
     usage: opts.usage,
     dispatch: opts.dispatch,
@@ -106,7 +110,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     });
   }
 
-  const port = opts.port ?? Number(process.env.PC_PORT ?? 5123);
+  const port = opts.port ?? Number(process.env.PC_PORT ?? 5124);
 
   const server = await new Promise<Server>((resolveServer) => {
     const s = serve({ fetch: app.fetch, port }, () => resolveServer(s as unknown as Server));
