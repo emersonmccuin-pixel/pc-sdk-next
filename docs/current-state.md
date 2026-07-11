@@ -59,6 +59,9 @@ Isolation defaults in the planning slice:
 - Deterministic browser projection by authoritative sequence, including exact
   redelivery idempotency, gap buffering, and fail-closed sequence/item/stream/
   delta conflicts
+- Incremental immutable browser projection with separate received/checkpoint and
+  folded-sequence frontiers, indexed identity receipts, one replay normalization
+  path, and digest-only evidence after completed stream payload compaction
 - Adapter-local native message correlation; canonical terminal outcomes and
   stop reasons; historical private reasoning retained only as hidden migration
   evidence with no producer or render path
@@ -81,10 +84,6 @@ Isolation defaults in the planning slice:
 - Private reasoning no longer crosses the canonical runtime or browser seams,
   but a typed safe operational-activity taxonomy and continuous honest waiting
   feedback still need their own N2 slice.
-- The correct pure browser projector currently scans/copies/re-derives the full
-  accepted event history for each event. Long delta-heavy sessions therefore
-  need a measured ordered fast path and completed-stream compaction before the
-  Next daily-driver migration gate.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
 - Process identity is positive at `/health`, but a data-directory mutex and
@@ -96,9 +95,12 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`CF-001` is complete and its full `pnpm ci:check` gate passed. The slice replaces
-the Claude-first split chat/delta path with the canonical transactional
-conversation foundation described in `docs/event-contract.md`. Guarded merge,
-positive ancestry proof, and worktree teardown are complete. The next safe
-slice is a bounded projector scale/compaction pass before durable queue and
-interrupt state.
+`CF-002` completes the bounded projector scale/compaction pass on top of the
+landed `CF-001` canonical conversation foundation. A deterministic 4,160-event
+characterization proves zero live history scans/rebuilds and positive release of
+all 4,096 completed raw delta payloads. A separate 4,096-event stable-heavy case
+proves bounded 32-entry persistent history chunks with no projector history
+copies; shuffled live/replay equivalence, post-compaction conflicts, hidden
+replay gaps, and prior-state immutability have guard tests. The next safe
+conversation slice is durable queued-send state and positive interruption
+receipts.

@@ -10,6 +10,7 @@ import { buildRenderItems } from './chat-render';
 import { RenderItemView, AssistantBubble, UserBubble } from './Bubbles';
 import { AskCard } from './AskCard';
 import { applyReplay, initialChatState, type ChatState } from './chat-reducer';
+import { sequenceToArray } from './persistent-sequence';
 
 export function ChatTimeline({
   state,
@@ -21,7 +22,7 @@ export function ChatTimeline({
   readOnly?: boolean;
 }) {
   const items = useMemo(
-    () => buildRenderItems(state.projectedFrames),
+    () => buildRenderItems(sequenceToArray(state.projectedFrames)),
     [state.projectedFrames],
   );
   const liveBuffers = useMemo(() => Object.values(state.deltas).filter((b) => b.text), [state.deltas]);
@@ -30,11 +31,10 @@ export function ChatTimeline({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
 
-  const scrollSignal =
-    state.frames.length + liveBuffers.reduce((n, b) => n + b.text.length, 0) + state.optimistic.length;
+  const liveTextLength = liveBuffers.reduce((length, buffer) => length + buffer.text.length, 0);
   useEffect(() => {
     if (pinnedRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [scrollSignal]);
+  }, [state.highWaterSequence, state.projectedThroughSequence, liveTextLength, state.optimistic.length]);
 
   const empty = items.length === 0 && liveBuffers.length === 0 && state.optimistic.length === 0 && state.asks.length === 0;
 

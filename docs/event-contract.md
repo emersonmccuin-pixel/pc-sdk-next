@@ -1,6 +1,6 @@
 # Event contract — PC-SDK Next
 
-As built after `CF-001`, 2026-07-11. This document records the implemented
+As built after `CF-002`, 2026-07-11. This document records the implemented
 browser wire and its persistence/publication semantics. The executable source
 is `packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.
@@ -159,18 +159,35 @@ old provider-named identifier column, and retains prior `thinking` rows only as
 
 ### Browser projection
 
-The browser stores accepted canonical frames sorted by `sequence` and derives
-timeline aggregates and stream buffers from that ordered set.
+The browser's pure projector keeps received high-water separate from the
+contiguous sequence frontier that is safe to fold. Monotonic live delivery uses
+immutable key-ranked receipt indexes and incremental transitions; a higher live
+sequence is held until its lower gap closes instead of forcing a history rebuild.
+Stable presentation history uses immutable bounded append chunks and is
+materialized only at the render boundary, so stable events also avoid copying
+the full prior history inside the projector.
 
-- Exact event redelivery is a no-op.
+- Exact event redelivery is a no-op. SHA-256 frame receipts retain compact
+  identity evidence after presentation payload compaction.
 - A conflicting event identity or sequence preserves the first accepted value
-  and records an integrity conflict.
+  and records a sorted, stable integrity conflict.
 - Deltas are keyed by canonical stream and index. Gaps are held until a
-  contiguous prefix exists; exact duplicates are ignored and conflicting
+  contiguous prefix exists; exact payload duplicates are ignored and conflicting
   content at one index is recorded.
-- Stable completion clears its live stream. A late delta cannot resurrect it.
-- Shuffled live delivery, reconnect replay, and past-session replay converge
-  through the same pure projector.
+- Raw delta frames never enter stable presentation history. Only active,
+  coalesced stream buffers retain their payload; stable completion, retraction,
+  or a turn terminal releases that payload while stream/index digest receipts
+  continue to detect late duplicates and conflicts.
+- Reconnect and past-session replay sort/deduplicate through one explicit
+  normalization pass. The authoritative replay high-water checkpoint accounts
+  for invisible migrated rows, so the next live sequence can continue without
+  fabricating events for hidden gaps.
+- All indexes are immutable plain data. Previously returned states remain
+  branchable, and shuffled live delivery, reconnect replay, and past-session
+  replay converge through the same projector and render input.
+- Deterministic work receipts characterize accepted-event visits, history
+  visits, fallback rebuilds, and compacted payloads without timing-sensitive
+  performance assertions.
 
 ### Session replay
 
