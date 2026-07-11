@@ -18,6 +18,7 @@ const ALLOW_ANSWERS = new Set(['allow', 'approve', 'yes', 'allow-once', 'accept'
 interface Pending {
   resolve: (decision: AskDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  toolName: string;
 }
 
 export interface AskRegistryDeps {
@@ -62,7 +63,7 @@ export class AskRegistry {
         this.pending.delete(askId);
         resolve({ behavior: 'deny', message: 'permission request timed out' });
       }, this.timeoutMs);
-      this.pending.set(askId, { resolve, timer });
+      this.pending.set(askId, { resolve, timer, toolName: req.toolName });
       this.emit(frame);
     });
   };
@@ -74,6 +75,16 @@ export class AskRegistry {
     if (!p) return false;
     this.pending.delete(askId);
     clearTimeout(p.timer);
+    if (answer === '__cancelled__') {
+      p.resolve({ behavior: 'deny', message: 'declined by user' });
+      return true;
+    }
+    if (p.toolName === 'AskUserQuestion' || p.toolName === 'ExitPlanMode') {
+      // Answer-style tools: interpretation of the reply is Claude-specific
+      // (answers map / plan accept-reject), so defer to the adapter.
+      p.resolve({ behavior: 'allow', rawAnswer: answer });
+      return true;
+    }
     const allow = ALLOW_ANSWERS.has(answer.trim().toLowerCase());
     p.resolve(
       allow

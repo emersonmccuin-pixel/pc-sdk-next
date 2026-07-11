@@ -329,12 +329,54 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         sessionId: this.sdkSessionId,
       });
       if (decision.behavior === 'allow') {
+        if (decision.rawAnswer !== undefined) {
+          const answerDecision = resolveAnswerDecision(toolName, input, decision.rawAnswer);
+          if (answerDecision) return answerDecision;
+        }
         // CLI-side zod validation rejects an allow without updatedInput — always echo input back.
         return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
       }
       return { behavior: 'deny', message: decision.message ?? 'denied' };
     };
   }
+}
+
+/** Interpret a browser's `rawAnswer` for an answer-style tool (AskUserQuestion,
+ *  ExitPlanMode). Returns null for any other tool, or for an allow with no
+ *  rawAnswer — those fall through to the plain echo-input allow. Exported for
+ *  unit testing; production callers go through `makeCanUseTool`. */
+export function resolveAnswerDecision(
+  toolName: string,
+  input: Record<string, unknown>,
+  rawAnswer: string,
+): { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string } | null {
+  if (toolName === 'ExitPlanMode') {
+    if (rawAnswer === 'reject') {
+      return { behavior: 'deny', message: 'plan rejected' };
+    }
+    return { behavior: 'allow', updatedInput: input };
+  }
+  if (toolName === 'AskUserQuestion') {
+    const qs = (input.questions as Array<{ question: string }>) ?? [];
+    const answers: Record<string, string> = {};
+    let parsed = false;
+    if (rawAnswer.trim().startsWith('[')) {
+      // Multi-question JSON array from AskCard: [{question,answer},...]
+      try {
+        for (const { question, answer } of JSON.parse(rawAnswer)) {
+          answers[question] = answer;
+        }
+        parsed = true;
+      } catch {
+        // Malformed reply — fall back to treating it as a single label.
+      }
+    }
+    if (!parsed && qs[0]) {
+      answers[qs[0].question] = rawAnswer;
+    }
+    return { behavior: 'allow', updatedInput: { ...input, answers } };
+  }
+  return null;
 }
 
 /** The Claude Agent SDK adapter. Owns credential-directory selection (via the

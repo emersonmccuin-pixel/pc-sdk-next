@@ -105,6 +105,7 @@ export interface AskDecision {
   behavior: 'allow' | 'deny';
   message?: string;
   updatedInput?: Record<string, unknown>;
+  rawAnswer?: string; // literal browser reply, for answer-style tools
 }
 export type AskHandler = (req: AskRequest) => Promise<AskDecision>;
 
