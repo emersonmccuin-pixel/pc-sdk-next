@@ -74,10 +74,10 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | AGENT-002 | accepted | A run snapshots the specialist revision and runtime selection used to execute it. |
 | COMM-001 | accepted | Orchestrator-to-agent invoke, continue, answer, cancel, fix, and context messages are durable, ordered, correlated, and idempotent. |
 | COMM-002 | accepted | Agent-to-orchestrator asks, approvals, progress, failures, warnings, and deliverables use typed doors rather than unstructured chat scraping. |
-| COMM-003 | accepted | An ask that pauses work is durably recorded before the run pauses; answering is an atomic idempotent transition. |
+| COMM-003 | verified | An ask that pauses work is durably recorded before the run pauses; answering is an atomic idempotent transition. |
 | CONT-001 | implemented | No agent starts without a typed expected output and derived acceptance contract that cannot silently verify empty. |
 | CONT-002 | implemented | The submitted typed deliverable—not the final chat message—is the authoritative result. |
-| CONT-003 | accepted | Deterministic verification distinguishes passed, failed, and inconclusive; missing evidence never means pass. |
+| CONT-003 | verified | Deterministic verification distinguishes passed, failed, and inconclusive; missing evidence never means pass. |
 
 ## Repository delivery
 
@@ -85,7 +85,7 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | --- | --- | --- |
 | WT-001 | implemented | Every repository mutation occurs in a recorded run-owned worktree, regardless of task size. |
 | WT-002 | accepted | Git, preparation, and readiness receipts exist before a write-capable agent starts. |
-| WT-003 | accepted | Builders submit a clean sealed commit; PC-SDK independently derives changed paths and Git provenance. |
+| WT-003 | verified | Builders submit a clean sealed commit; PC-SDK independently derives changed paths and Git provenance. |
 | WT-004 | accepted | Parallel builds use isolated worktrees; landing is serialized per repository and revalidated against the current base. |
 | WT-005 | accepted | Merge success requires positive ancestry proof. Teardown requires proven landing or explicit approved abandonment. |
 | WT-006 | accepted | Conflict, failure, cancellation, stranding, and uncertainty preserve the branch and worktree. |
