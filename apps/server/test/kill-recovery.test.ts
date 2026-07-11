@@ -134,7 +134,7 @@ async function bootAll(dispatch: DispatchService): Promise<void> {
   await dispatch.recoverSealedRuns();
   await dispatch.recoverPendingLandings();
   await dispatch.recoverIncompleteTeardowns();
-  reconcileStrandedWorktreesAtBoot();
+  await reconcileStrandedWorktreesAtBoot();
 }
 
 /** Pre-attach, exactly like boot (recovery runs before dispatch.attach). */
@@ -242,7 +242,7 @@ test('guard 10: killed after seal, before verification — boot resumes to verif
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, true, 'positive ancestry proof');
     assert.equal(existsSync(wt.dir), false, 'worktree torn down');
     assert.equal(getActiveWorktreeByName(wt.branch), null, 'row destroyed');
-    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip, 'branch preserved');
+    assert.equal((await git(['rev-parse', '-q', '--verify', wt.branch], gp.dir)).ok, false, 'merged branch deleted after a confirmed land');
     assert.equal(listStrandedWorktrees().length, 0, 'nothing stranded');
 
     // Idempotent: a second boot changes nothing durable.
@@ -331,7 +331,7 @@ test('guard 10: killed after the receipt, before teardown — boot resumes teard
 
     assert.equal(existsSync(wt.dir), false, 'teardown resumed');
     assert.equal(getActiveWorktreeByName(wt.branch), null, 'row destroyed');
-    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip, 'branch preserved');
+    assert.equal((await git(['rev-parse', '-q', '--verify', wt.branch], gp.dir)).ok, false, 'merged branch deleted after a confirmed land');
     assert.equal(getAgentRunRow(runId)!.lifecycleState, 'completed');
     assert.equal(listStrandedWorktrees().length, 0, 'a landed worktree awaiting teardown never classifies stranded');
     // The receipt is untouched — teardown resume writes nothing to the contract.

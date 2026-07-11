@@ -75,6 +75,7 @@ import { AGENT_PC_TOOLS, buildPcToolDefs, mergePcTools } from './pc-bridge.ts';
 import { buildAskEnvelope, buildReviewBrief, buildSpecialistInstructions, buildTerminalEnvelope } from './prompt.ts';
 import { autoLandBlockers, verifyContract, type VerificationOutcome } from './verification.ts';
 import {
+  deleteMergedBranch,
   deriveDiffStat,
   git,
   landBranch,
@@ -84,6 +85,7 @@ import {
   removeReviewCheckout,
   reviewCheckoutName,
   runProfileCommands,
+  sweepOrphanedWorktreeDirs,
   teardownWorktree,
 } from './worktrees.ts';
 
@@ -1688,6 +1690,10 @@ export class DispatchService {
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
       if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
+      // Confirmed land ⇒ the branch is merged history now; delete it (branch
+      // survives for unlanded/abandoned work only — best-effort, never blocks).
+      await deleteMergedBranch(project.folderPath, branch);
+      this.sweepOrphansFor(project);
       return updated;
     }
     // Guard 7 — stale verification never silently lands: the target must still
@@ -1748,6 +1754,10 @@ export class DispatchService {
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
       if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
+      // Confirmed land ⇒ the branch is merged history now; delete it (branch
+      // survives for unlanded/abandoned work only — best-effort, never blocks).
+      await deleteMergedBranch(project.folderPath, branch);
+      this.sweepOrphansFor(project);
       return updated;
     }
     // conflict + stale-base both land on the lifecycle 'conflict' gate;
@@ -1767,6 +1777,17 @@ export class DispatchService {
   private cleanupCommandsFor(project: Project | null): string[] {
     const parsed = parseWorktreeProfile(project?.worktreeProfile ?? null);
     return parsed.ok ? parsed.profile?.cleanupCommands ?? [] : [];
+  }
+
+  /** Best-effort orphan GC after a land completes teardown — a locked
+   *  directory from THIS teardown, or an earlier one, gets a second chance
+   *  right away instead of waiting for the next boot sweep. Never blocks the
+   *  landing receipt on its result. */
+  private sweepOrphansFor(project: Project | null): void {
+    if (!project?.folderPath) return;
+    sweepOrphanedWorktreeDirs(project.folderPath).catch((err) =>
+      console.error(`[pc-sdk][worktree] orphan sweep failed for project ${project.id}:`, err),
+    );
   }
 
   /** Tool-call evidence for `tool_called` predicates — read from the durable
@@ -1947,6 +1968,11 @@ export class DispatchService {
         // A reclaim that finally succeeded resolves earlier preserved parks
         // (a previously 'stranded' run exits the feed here).
         if (ok) this.resolvePreservedRuns(contract.id as ULID);
+        // Confirmed land (this contract only re-enters here already landed)
+        // ⇒ delete the now-merged branch — best-effort, never blocks.
+        const branch = contract.landedBranch ?? contract.worktreePath.split(/[\\/]/).pop() ?? '';
+        if (branch) await deleteMergedBranch(project.folderPath, branch);
+        this.sweepOrphansFor(project);
       } catch (err) {
         console.error(`[pc-sdk][boot-recovery] teardown resume failed for contract ${contract.id} — continuing with the rest:`, err);
       }

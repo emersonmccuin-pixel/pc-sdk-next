@@ -244,18 +244,22 @@ test('teardown reclaims the directory but ALWAYS preserves the branch', async ()
   }
 });
 
-test('teardown removal failure never throws — row stays active for boot recovery', async () => {
+test('teardown: git remove fails but the filesystem fallback still removes the dir — converges true', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
     const wt = await provisionOk(gp.dir);
-    // A locked worktree survives a single --force: deterministic removal failure.
+    // git's own lock blocks `git worktree remove --force` deterministically,
+    // but it is administrative only — it never stops a plain filesystem
+    // delete, so the fallback (the Windows-locked-node_modules recovery path)
+    // removes the directory anyway and teardown converges to success.
     assert.equal((await git(['worktree', 'lock', wt.dir], gp.dir)).ok, true);
-    await teardownWorktree(gp.dir, wt.dir); // must not throw
-    assert.equal(existsSync(wt.dir), true, 'directory still present');
-    assert.notEqual(getActiveWorktreeByName(wt.branch), null, 'row stays active — stranded scan will surface it');
-    await git(['worktree', 'unlock', wt.dir], gp.dir);
+    const ok = await teardownWorktree(gp.dir, wt.dir); // must not throw
+    assert.equal(ok, true, 'teardown converges via the filesystem fallback');
+    assert.equal(existsSync(wt.dir), false, 'directory removed by the fallback');
+    assert.equal(getActiveWorktreeByName(wt.branch), null, 'row marked destroyed');
   } finally {
     gp.cleanup();
   }
 });
+
