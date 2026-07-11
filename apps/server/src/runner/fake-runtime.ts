@@ -65,7 +65,7 @@ export class FakeRuntime implements RuntimeSession {
     // where the first pull could clobber an interrupt that already arrived.
     this.aborted = false;
     const script: ScriptedTurn = this.turns[this.turnIndex] ?? [
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
     ];
     this.turnIndex += 1;
     return this.run(script);
@@ -96,6 +96,8 @@ export class FakeRuntime implements RuntimeSession {
             usage: null,
             durationMs: null,
             error: 'interrupted',
+            outcome: 'aborted',
+            numTurns: null,
           };
           return;
         }
@@ -115,6 +117,8 @@ export class FakeRuntime implements RuntimeSession {
         usage: null,
         durationMs: 0,
         error: null,
+        outcome: 'ok',
+        numTurns: null,
       };
     }
   }

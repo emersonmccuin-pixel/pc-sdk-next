@@ -111,7 +111,7 @@ test('a cleanly-idle session is not touched by boot recovery', async () => {
   freshDb();
   const project = newProject();
   const backend = new FakeRuntime({
-    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }]],
+    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();

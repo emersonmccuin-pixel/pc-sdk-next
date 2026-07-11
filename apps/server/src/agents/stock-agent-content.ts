@@ -369,7 +369,10 @@ export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
     tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch'],
     model: 'sonnet',
     effort: 'high',
-    maxTurns: 30,
+    // Raised from 30: code-writer runs (read/edit/typecheck/test/lint cycles)
+    // routinely burned the old budget on real work, not a runaway loop —
+    // durable so it survives a fresh boot/re-seed (see seed.ts reconcile).
+    maxTurns: 100,
     description:
       'Writes or edits code to meet a spec. Matches surrounding conventions, runs typecheck / tests / lint via Bash, only returns on green.',
     dispatchGuidance:

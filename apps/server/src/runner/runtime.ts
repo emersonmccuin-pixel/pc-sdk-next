@@ -71,6 +71,11 @@ export type RuntimeEvent =
       durationMs: number | null;
       /** Present when `ok === false`. */
       error: string | null;
+      /** Provider-neutral terminal classification — computed by the adapter so
+       *  no Claude subtype (e.g. 'error_max_turns') leaks past it. */
+      outcome: 'ok' | 'error' | 'aborted' | 'budget-exhausted';
+      /** SDK `num_turns` when the native result carries it, else null. */
+      numTurns: number | null;
     }
   // Session-state transitions.
   | { type: 'session-state'; state: 'idle' | 'running' | 'requires_action'; permissionMode: string | null }

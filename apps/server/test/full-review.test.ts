@@ -49,6 +49,8 @@ const OK_RESULT: RuntimeEvent = {
   usage: null,
   durationMs: 1,
   error: null,
+  outcome: 'ok',
+  numTurns: null,
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {

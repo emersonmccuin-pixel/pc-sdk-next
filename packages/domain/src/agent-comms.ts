@@ -115,6 +115,7 @@ export interface AgentFailedPayload extends AgentEventCommon {
     | 'cancelled'
     | 'unknown-agent'
     | 'spawn-failed'
+    | 'turn-budget-exhausted'
     | 'error'
     | null;
 }

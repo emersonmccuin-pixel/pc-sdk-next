@@ -68,3 +68,22 @@ test('resetAgentToSeed refuses non-seeded agents', () => {
   assert.equal(resetAgentToSeed({ ...orch, name: 'not-a-seed' }), null);
   assert.equal(resetAgentToSeed({ ...orch, origin: 'user-created' }), null);
 });
+
+test('code-writer stock content carries a durable 100-turn budget', () => {
+  const codeWriter = STOCK_AGENT_CONTENT.find((c) => c.name === 'code-writer')!;
+  assert.equal(codeWriter.maxTurns, 100);
+});
+
+test('an existing install with a stale code-writer maxTurns converges to 100 on reboot', () => {
+  freshDb();
+  seedStockAgents();
+  const codeWriter = getAgentByName({ name: 'code-writer', scope: 'global' })!;
+  // Simulate a pre-existing row seeded before the budget was raised (or a
+  // one-off runtime patch that a fresh reseed would otherwise stomp back down).
+  updateAgent(codeWriter.id, { maxTurns: 30 }, audit);
+
+  const summary = seedStockAgents();
+  assert.equal(summary.reseeded, 1, 'authoritative reseed heals the stale maxTurns');
+  const healed = getAgentByName({ name: 'code-writer', scope: 'global' })!;
+  assert.equal(healed.maxTurns, 100);
+});

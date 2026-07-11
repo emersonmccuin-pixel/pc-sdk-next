@@ -38,11 +38,11 @@ test('success turn maps blocks and ends in exactly one turn-end', async () => {
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'hi' } },
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'tool_use', toolUseId: 't1', name: 'Read', input: {} } },
       { type: 'tool-result', sdkUuid: 'u2', parentToolUseId: null, toolUseId: 't1', result: 'ok', isError: false },
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 2, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 5, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 2, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 5, error: null, outcome: 'ok', numTurns: 3 },
     ]),
     c.deps,
   );
-  assert.equal(term, 'turn-end');
+  assert.deepEqual(term, { terminal: 'turn-end', outcome: 'ok', numTurns: 3 });
   assert.equal(terminals(c.chat).length, 1);
   assert.equal(terminals(c.chat)[0].kind, 'turn-end');
   assert.ok(c.chat.some((e) => e.kind === 'usage'));
@@ -53,24 +53,36 @@ test('success turn maps blocks and ends in exactly one turn-end', async () => {
 test('error result ends in exactly one turn-failed (api)', async () => {
   const c = collector();
   const term = await runTurn(
-    stream([{ type: 'result', ok: false, subtype: 'error_max_turns', stopReason: null, usage: null, durationMs: null, error: 'boom' }]),
+    stream([{ type: 'result', ok: false, subtype: 'error_during_execution', stopReason: null, usage: null, durationMs: null, error: 'boom', outcome: 'error', numTurns: 4 }]),
     c.deps,
   );
-  assert.equal(term, 'turn-failed');
+  assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'error', numTurns: 4 });
   const t = terminals(c.chat);
   assert.equal(t.length, 1);
   assert.deepEqual(t[0], { kind: 'turn-failed', error: 'boom', source: 'api' });
 });
 
+test('error_max_turns/error_max_budget_usd map to outcome budget-exhausted (not a crash)', async () => {
+  for (const subtype of ['error_max_turns', 'error_max_budget_usd']) {
+    const c = collector();
+    const term = await runTurn(
+      stream([{ type: 'result', ok: false, subtype, stopReason: null, usage: null, durationMs: null, error: 'boom', outcome: 'budget-exhausted', numTurns: 100 }]),
+      c.deps,
+    );
+    assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'budget-exhausted', numTurns: 100 });
+  }
+});
+
 test('abort subtype maps to turn-failed source abort', async () => {
   const c = collector();
-  await runTurn(
-    stream([{ type: 'result', ok: false, subtype: 'aborted', stopReason: null, usage: null, durationMs: null, error: 'interrupted' }]),
+  const term = await runTurn(
+    stream([{ type: 'result', ok: false, subtype: 'aborted', stopReason: null, usage: null, durationMs: null, error: 'interrupted', outcome: 'aborted', numTurns: null }]),
     c.deps,
   );
   const t = terminals(c.chat);
   assert.equal(t.length, 1);
   assert.equal((t[0] as { source: string }).source, 'abort');
+  assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'aborted', numTurns: null });
 });
 
 test('stream ending with no result still terminates (internal) — rule 3', async () => {
@@ -79,7 +91,7 @@ test('stream ending with no result still terminates (internal) — rule 3', asyn
     stream([{ type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'orphan' } }]),
     c.deps,
   );
-  assert.equal(term, 'turn-failed');
+  assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'error', numTurns: null });
   const t = terminals(c.chat);
   assert.equal(t.length, 1);
   assert.equal((t[0] as { source: string }).source, 'internal');
@@ -91,7 +103,7 @@ test('subagent messages (parentToolUseId != null) are not forwarded', async () =
     stream([
       { type: 'assistant-block', sdkUuid: 'x', parentToolUseId: 'parent', block: { kind: 'text', text: 'sub' } },
       { type: 'delta', sdkUuid: 'x', parentToolUseId: 'parent', delta: { kind: 'text-delta', text: 'sub' } },
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
     ]),
     c.deps,
   );
@@ -105,11 +117,11 @@ test('unknown variant is dropped + logged, loop continues — rule 5', async () 
   const term = await runTurn(
     stream([
       { type: 'no-such-variant' } as unknown as RuntimeEvent,
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
     ]),
     c.deps,
   );
-  assert.equal(term, 'turn-end');
+  assert.deepEqual(term, { terminal: 'turn-end', outcome: 'ok', numTurns: null });
   assert.ok(c.dropped.some((r) => r.includes('unknown')));
 });
 
@@ -119,7 +131,7 @@ test('deltas ride the delta channel, not chat', async () => {
     stream([
       { type: 'delta', sdkUuid: 'u1', parentToolUseId: null, delta: { kind: 'message-start' } },
       { type: 'delta', sdkUuid: 'u1', parentToolUseId: null, delta: { kind: 'text-delta', text: 'yo' } },
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
     ]),
     c.deps,
   );

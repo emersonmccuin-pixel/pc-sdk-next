@@ -656,7 +656,7 @@ export class DispatchService {
     let lastText = '';
     let markedRunning = !opts.firstTurn;
 
-    const terminal = await runTurn(turn, {
+    const terminalResult = await runTurn(turn, {
       emitChat: (event) => {
         if (event.kind === 'assistant-text') lastText = event.text;
         this.persistAgentEvent(projectId, runId, liveRun, event);
@@ -681,8 +681,20 @@ export class DispatchService {
     if (row.status === 'paused') return;
     if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') return; // killed already
 
-    if (terminal === 'turn-end') {
+    if (terminalResult.terminal === 'turn-end') {
       this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null });
+    } else if (terminalResult.outcome === 'budget-exhausted') {
+      // A real terminal result (SDK error_max_turns/error_max_budget_usd), not
+      // a crash — distinct failureCause so the run reads as resumable.
+      this.settleTerminal(runId, {
+        status: 'failed',
+        result: lastText || null,
+        failureCause: 'turn-budget-exhausted',
+        failureReason:
+          terminalResult.numTurns !== null
+            ? `hit turn budget (${terminalResult.numTurns} turns) — resumable`
+            : 'hit turn budget — resumable',
+      });
     } else {
       this.settleTerminal(runId, {
         status: 'failed',

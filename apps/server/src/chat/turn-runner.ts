@@ -17,6 +17,17 @@ import type { RuntimeEvent } from '../runner/runtime.ts';
 
 export type TurnTerminal = 'turn-end' | 'turn-failed';
 
+/** Provider-neutral terminal classification, carried from the runtime's
+ *  `result` event through to the caller (dispatch service distinguishes a
+ *  genuine crash from turn-budget exhaustion). */
+export type TurnOutcome = 'ok' | 'error' | 'aborted' | 'budget-exhausted';
+
+export interface TurnResult {
+  terminal: TurnTerminal;
+  outcome: TurnOutcome;
+  numTurns: number | null;
+}
+
 export interface TurnRunnerDeps {
   /** Persist + broadcast one chat event. */
   emitChat: (event: ChatEvent, opts?: { sdkUuid?: string }) => void;
@@ -34,14 +45,17 @@ function isAbortSubtype(subtype: string): boolean {
   return /abort|interrupt|cancel/i.test(subtype);
 }
 
-/** Drive one turn to completion. Returns the single terminal kind emitted. */
+/** Drive one turn to completion. Returns the single terminal outcome emitted. */
 export async function runTurn(
   messages: AsyncIterable<RuntimeEvent>,
   deps: TurnRunnerDeps,
-): Promise<TurnTerminal> {
+): Promise<TurnResult> {
   let terminated = false;
   let sawToolCall = false;
   let lastAssistantText = '';
+  // Overwritten the moment a real terminal is emitted; the post-terminal-throw
+  // branch below relies on this holding the actual result, not a placeholder.
+  let terminalResult: TurnResult = { terminal: 'turn-failed', outcome: 'error', numTurns: null };
   const drop = (reason: string, msg: unknown): void => deps.onDropped?.(reason, msg);
 
   const emitUsage = (usage: NonNullable<RuntimeEvent & { type: 'result' }>['usage']): void => {
@@ -120,7 +134,8 @@ export async function runTurn(
             });
           }
           terminated = true;
-          return msg.ok ? 'turn-end' : 'turn-failed';
+          terminalResult = { terminal: msg.ok ? 'turn-end' : 'turn-failed', outcome: msg.outcome, numTurns: msg.numTurns };
+          return terminalResult;
         }
 
         case 'session-state':
@@ -175,17 +190,20 @@ export async function runTurn(
         error: message,
         source: abort ? 'abort' : 'internal',
       });
-      return 'turn-failed';
+      // A genuine stream break is a real failure, never turn-budget exhaustion
+      // (that classification only ever comes from a native `result` message).
+      return { terminal: 'turn-failed', outcome: abort ? 'aborted' : 'error', numTurns: null };
     }
-    // Post-terminal throw (backend teardown noise) — the turn already ended.
+    // Post-terminal throw (backend teardown noise) — the turn already ended;
+    // return the terminal it actually ended with.
     drop('post-terminal error', err);
-    return 'turn-end';
+    return terminalResult;
   }
 
   // Stream ended with no `result` — positive receipt, never silence (rule 3).
   if (!terminated) {
     deps.emitChat({ kind: 'turn-failed', error: 'stream ended without result', source: 'internal' });
-    return 'turn-failed';
+    return { terminal: 'turn-failed', outcome: 'error', numTurns: null };
   }
-  return 'turn-end';
+  return terminalResult;
 }

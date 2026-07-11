@@ -1,0 +1,59 @@
+// mapResult (via mapSdkMessage) — provider-neutral outcome/numTurns
+// classification. This is the ONLY place a Claude subtype (error_max_turns,
+// error_max_budget_usd, ...) is interpreted; downstream (turn-runner, dispatch
+// service) must never see the raw subtype, only `outcome`.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createSdkKeyContext, mapSdkMessage } from '../src/runner/claude-adapter.ts';
+import type { RuntimeEvent } from '../src/runner/runtime.ts';
+
+function resultMsg(fields: Record<string, unknown>): unknown {
+  return { type: 'result', uuid: 'u1', session_id: 's1', ...fields };
+}
+
+function mapResult(fields: Record<string, unknown>): RuntimeEvent {
+  const out = mapSdkMessage(resultMsg(fields) as never, 'acct-1', createSdkKeyContext());
+  assert.equal(out.length, 1);
+  return out[0];
+}
+
+test('subtype success -> outcome ok', () => {
+  const rm = mapResult({ subtype: 'success', num_turns: 7 }) as { ok: boolean; outcome: string; numTurns: number | null };
+  assert.equal(rm.ok, true);
+  assert.equal(rm.outcome, 'ok');
+  assert.equal(rm.numTurns, 7);
+});
+
+test('subtype error_max_turns -> outcome budget-exhausted, not a crash', () => {
+  const rm = mapResult({ subtype: 'error_max_turns', num_turns: 100, errors: ['hit max turns'] }) as {
+    ok: boolean;
+    outcome: string;
+    numTurns: number | null;
+  };
+  assert.equal(rm.ok, false);
+  assert.equal(rm.outcome, 'budget-exhausted');
+  assert.equal(rm.numTurns, 100);
+});
+
+test('subtype error_max_budget_usd -> outcome budget-exhausted', () => {
+  const rm = mapResult({ subtype: 'error_max_budget_usd', num_turns: 42 }) as { outcome: string; numTurns: number | null };
+  assert.equal(rm.outcome, 'budget-exhausted');
+  assert.equal(rm.numTurns, 42);
+});
+
+test('subtype error_during_execution -> outcome error', () => {
+  const rm = mapResult({ subtype: 'error_during_execution', num_turns: 3 }) as { outcome: string; numTurns: number | null };
+  assert.equal(rm.outcome, 'error');
+  assert.equal(rm.numTurns, 3);
+});
+
+test('an abort-ish subtype -> outcome aborted', () => {
+  const rm = mapResult({ subtype: 'aborted' }) as { outcome: string };
+  assert.equal(rm.outcome, 'aborted');
+});
+
+test('missing num_turns -> numTurns null', () => {
+  const rm = mapResult({ subtype: 'success' }) as { numTurns: number | null };
+  assert.equal(rm.numTurns, null);
+});
