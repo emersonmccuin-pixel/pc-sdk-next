@@ -32,7 +32,7 @@ import {
 import { AgentRunMutationGateway, ContractService } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
 import { canTransition, type RunLifecycleState, type ULID } from '@pc/domain';
-import { reconcileStrandedWorktrees } from './dispatch/worktrees.ts';
+import { reconcileStrandedWorktrees, sweepOrphanedWorktreeDirs } from './dispatch/worktrees.ts';
 
 const RESTART_ERROR = 'server restarted mid-turn';
 
@@ -179,15 +179,24 @@ function recoverAgentRuns(): string[] {
   return failed;
 }
 
-/** Surface + durably record stranded isolation. Called from index.ts AFTER
- *  recoverPendingLandings and BEFORE dispatch attaches (locked ordering) —
- *  re-driven landings tear their worktrees down first, and no dispatch can be
- *  mid-provision while the scan runs. After the boot sweep NO run is live, so
- *  a surviving active worktree goes durable 'stranded' — UNLESS its contract
- *  is awaiting review/landing (review-parked work is runless by design; its
- *  reclaim path is accept ⇒ land ⇒ teardown, or abandonment). Reclamation
- *  stays a human/orchestrator decision; the branch always survives. */
-export function reconcileStrandedWorktreesAtBoot(): string[] {
+/** Surface + durably record stranded isolation, then garbage-collect orphaned
+ *  worktree DIRECTORIES. Called from index.ts AFTER recoverPendingLandings and
+ *  BEFORE dispatch attaches (locked ordering) — re-driven landings tear their
+ *  worktrees down first, and no dispatch can be mid-provision while the scan
+ *  runs. After the boot sweep NO run is live, so a surviving active worktree
+ *  goes durable 'stranded' — UNLESS its contract is awaiting review/landing
+ *  (review-parked work is runless by design; its reclaim path is accept ⇒
+ *  land ⇒ teardown, or abandonment). Reclamation stays a human/orchestrator
+ *  decision; the branch is preserved for unlanded/abandoned work (deleted
+ *  after a successful land).
+ *
+ *  The orphan sweep runs per project, right after reconcile (so a row this
+ *  same pass just stranded is never mistaken for a keeper) — it deletes
+ *  directories teardown's own removal couldn't (locked Windows binaries under
+ *  a prior `pnpm install`'s node_modules), which the stranded scan above only
+ *  ever flags, never reclaims. Never throws. */
+export async function reconcileStrandedWorktreesAtBoot(): Promise<string[]> {
+  let strandedNames: string[] = [];
   try {
     const { stranded, revived } = reconcileStrandedWorktrees();
     for (const w of stranded) {
@@ -196,9 +205,22 @@ export function reconcileStrandedWorktreesAtBoot(): string[] {
     for (const name of revived) {
       console.warn(`[pc-sdk][boot-recovery] stranded worktree ${name} self-healed — back to active.`);
     }
-    return stranded.map((w) => w.name);
+    strandedNames = stranded.map((w) => w.name);
   } catch (err) {
     console.warn('[pc-sdk][boot-recovery] stranded-worktree scan failed:', err);
-    return [];
   }
+
+  for (const project of listProjects()) {
+    if (!project.folderPath) continue;
+    try {
+      const removed = await sweepOrphanedWorktreeDirs(project.folderPath);
+      for (const name of removed) {
+        console.warn(`[pc-sdk][boot-recovery] orphan sweep removed worktree dir ${name} (project ${project.id}).`);
+      }
+    } catch (err) {
+      console.warn(`[pc-sdk][boot-recovery] orphan sweep failed for project ${project.id}:`, err);
+    }
+  }
+
+  return strandedNames;
 }

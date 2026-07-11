@@ -7,21 +7,30 @@
 //  - an abandoned-contract branch is EXCLUDED (awaiting user-approved cleanup)
 //  - a false positive self-heals: dir back + live run ⇒ row flips to active
 //    with the stranded stamp cleared
+//  - sweepOrphanedWorktreeDirs (orphan GC): a registered git worktree, an
+//    active-row directory, and a stranded-but-awaiting-review directory are
+//    all KEPT; a directory with none of those backing it is REMOVED
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   createContract,
   getActiveWorktreeByName,
   getAgentRunRow,
   insertAgentRunRow,
   listStrandedWorktrees,
+  markWorktreeStranded,
   newId,
+  setContractDeliverable,
   setContractLanding,
+  setContractVerification,
+  setWorktreeContractId,
+  upsertWorktree,
 } from '@pc/db';
 import type { AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
-import { provisionWorktree, reconcileStrandedWorktrees } from '../src/dispatch/worktrees.ts';
+import { provisionWorktree, reconcileStrandedWorktrees, sweepOrphanedWorktreeDirs, worktreesRoot } from '../src/dispatch/worktrees.ts';
 import { freshDb, newGitProject, type GitProject } from './helpers.ts';
 
 async function provisionFor(gp: GitProject, runId: ULID) {
@@ -138,6 +147,55 @@ test('reconcile: legacy rows (no projectId) still classify by dir + live set', a
     // Not visible in the per-project surface (NULL projectId) — unfiltered only.
     assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === out.branch), false);
     assert.equal(listStrandedWorktrees().some((w) => w.name === out.branch), true);
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('sweepOrphanedWorktreeDirs: registered/active-row/awaiting-review dirs are KEPT, a true orphan is REMOVED', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const root = worktreesRoot(gp.dir);
+
+    // A — a currently registered git worktree (live run) — kept via the
+    // `git worktree list` check alone.
+    const runA = newId() as ULID;
+    const wtA = await provisionFor(gp, runA);
+    insertRun({ id: runA, projectId: gp.project.id, status: 'running', worktreeDir: wtA.dir, lifecycleState: 'building' });
+
+    // B — an ACTIVE worktree row backing a plain directory (not a real git
+    // worktree) — kept because the row itself is active.
+    const dirB = join(root, 'agent-activerow');
+    mkdirSync(dirB, { recursive: true });
+    upsertWorktree({ name: 'agent-activerow', path: dirB, projectId: gp.project.id });
+
+    // C — a STRANDED row whose contract is awaiting review/landing (verified,
+    // deliverable sealed, not yet landed/abandoned) — kept by the same
+    // runless-park guard the stranded scan itself uses.
+    const dirC = join(root, 'agent-awaitingreview');
+    mkdirSync(dirC, { recursive: true });
+    upsertWorktree({ name: 'agent-awaitingreview', path: dirC, projectId: gp.project.id });
+    const contractC = createContract({ projectId: gp.project.id, podName: 'builder' });
+    setContractDeliverable(contractC.id, { deliverable: { kind: 'repo', branch: 'agent-awaitingreview', commit: '0'.repeat(40) } });
+    setContractVerification(contractC.id, { verificationStatus: 'passed' });
+    setWorktreeContractId('agent-awaitingreview', contractC.id);
+    markWorktreeStranded('agent-awaitingreview', 'no-live-run');
+
+    // D — a true orphan: no git registration, no worktree row at all, no live
+    // run — exactly the leftover a locked `git worktree remove --force`
+    // (or a crash before registration) can strand.
+    const dirD = join(root, 'agent-trueorphan');
+    mkdirSync(join(dirD, 'nested'), { recursive: true });
+    writeFileSync(join(dirD, 'file.txt'), 'x');
+
+    const removed = await sweepOrphanedWorktreeDirs(gp.dir);
+
+    assert.deepEqual(removed, ['agent-trueorphan']);
+    assert.equal(existsSync(wtA.dir), true, 'registered/live worktree kept');
+    assert.equal(existsSync(dirB), true, 'active row directory kept');
+    assert.equal(existsSync(dirC), true, 'stranded-but-awaiting-review directory kept');
+    assert.equal(existsSync(dirD), false, 'true orphan removed');
   } finally {
     gp.cleanup();
   }

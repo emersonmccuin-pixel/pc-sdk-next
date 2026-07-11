@@ -8,11 +8,12 @@
 // Landing v1 (personal tool, no push): merge the agent branch into the base
 // branch IN THE PROJECT WORKING COPY, guarded — clean tree + HEAD still on the
 // base branch, else a typed non-landing outcome. Positive receipt: the branch
-// tip must be an ancestor of HEAD after the merge. The branch is ALWAYS
-// preserved; only the worktree directory is reclaimed.
+// tip must be an ancestor of HEAD after the merge. The branch is preserved for
+// unlanded/abandoned work (recoverable from the branch); it is deleted after
+// a successful land. The worktree directory is always reclaimed on teardown.
 
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentRunRow,
@@ -482,8 +483,21 @@ export async function probeAlreadyLanded(
   };
 }
 
+/** Force-delete a worktree directory on the filesystem — the fallback for
+ *  when `git worktree remove --force` unregisters the worktree but can't
+ *  actually delete it (Windows holds locked binaries inside node_modules
+ *  after an agent's `pnpm install`). Best-effort, never throws. */
+function forceRemoveDir(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch (err) {
+    console.warn(`[pc-sdk][worktree] filesystem force-delete failed for ${dir}:`, err);
+  }
+}
+
 /** Reclaim the worktree DIRECTORY. The branch is preserved on purpose —
- *  landed work is merged, unlanded work stays recoverable from the branch.
+ *  unlanded/abandoned work stays recoverable from the branch (a successful
+ *  land deletes the branch separately, once merged — see deleteMergedBranch).
  *  Profile `cleanupCommands` run first, IN the worktree, bounded and
  *  best-effort — a cleanup failure logs and defers to removal (never blocks
  *  settlement). Returns false when removal fails (worktree row stays active)
@@ -513,13 +527,40 @@ export async function teardownWorktree(
       markWorktreeDestroyed(basename(dir));
       return true;
     }
-    // Removal failure is logged and left to boot recovery (stranded scan);
-    // never block settlement on cleanup.
+    // FS fallback: locked files (Windows node_modules binaries) can make
+    // `git worktree remove --force` fail outright. Force the directory off
+    // the filesystem ourselves, then prune the now-stale registration
+    // (best-effort — a registration git won't prune, e.g. an explicit
+    // `worktree lock`, is harmless once the directory backing it is gone).
+    // Directory absence here is OUR OWN positive proof of removal — unlike
+    // the crash-window branch above, no registration re-check is needed.
+    if (existsSync(dir)) {
+      console.warn(`[pc-sdk][worktree] git remove failed for ${dir} (${removed.stderr}) — trying filesystem force-delete`);
+      forceRemoveDir(dir);
+      await git(['worktree', 'prune'], projectDir);
+      if (!existsSync(dir)) {
+        markWorktreeDestroyed(basename(dir));
+        return true;
+      }
+    }
+    // Removal failure is logged and left to boot recovery (stranded scan +
+    // orphan sweep); never block settlement on cleanup.
     console.warn(`[pc-sdk][worktree] remove failed for ${dir}: ${removed.stderr}`);
     return false;
   }
   markWorktreeDestroyed(basename(dir));
   return true;
+}
+
+/** Delete the branch AFTER a confirmed land — best-effort, never throws. The
+ *  merge already carried its history into the base branch, so the agent
+ *  branch ref itself is disposable; unlanded/abandoned work never reaches
+ *  this call (teardownWorktree keeps preserving those branches). */
+export async function deleteMergedBranch(projectDir: string, branch: string): Promise<void> {
+  const del = await git(['branch', '-D', branch], projectDir);
+  if (!del.ok) {
+    console.warn(`[pc-sdk][worktree] branch delete failed for ${branch} (best-effort, land receipt already durable): ${del.stderr}`);
+  }
 }
 
 /** True when git still lists `dir` as a registered worktree of the repo.
@@ -632,6 +673,78 @@ function awaitingReviewOrLanding(contractId: ULID | null): boolean {
     (contract.verificationStatus === 'pending' || contract.verificationStatus === 'failed') &&
     contract.deliverable != null
   );
+}
+
+/** Orphan directory GC (docs/worktree-lifecycle.md 'Recovery'): the stranded
+ *  scan above only FLAGS leftover directories — it never deletes them, and
+ *  teardown's own removal can fail outright (locked Windows binaries under a
+ *  prior `pnpm install`'s node_modules), leaving a full worktree directory
+ *  behind with its `.git` link already gone. This sweep does the actual
+ *  deletion, scanning the filesystem directly (not the DB) so it also catches
+ *  directories that never made it into a row (a crash before upsertWorktree).
+ *
+ *  A subdirectory of `<projectDir>-worktrees` is deleted ONLY when it is
+ *  provably orphaned — ALL of:
+ *   - not a currently registered git worktree (`git worktree list`) — this
+ *     alone protects live review checkouts, which are never rows in the
+ *     `worktrees` table but stay registered with git until reclaimed;
+ *   - not the path of an active worktree row, nor a stranded row whose
+ *     contract is awaiting review/landing (the same runless-park guard the
+ *     stranded scan uses — such a row can be 'stranded' from an earlier pass
+ *     that predates the contract entering that state);
+ *   - not a live (non-terminal) run's worktreeDir.
+ *
+ *  Force-deletes survivors with the same filesystem fallback as teardown,
+ *  then prunes git's registration. Never throws; returns the removed
+ *  directory names (each logged as it goes). */
+export async function sweepOrphanedWorktreeDirs(projectDir: string): Promise<string[]> {
+  const root = worktreesRoot(projectDir);
+  let names: string[];
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+
+  const registered = new Set<string>();
+  try {
+    const list = await git(['worktree', 'list', '--porcelain'], projectDir);
+    if (list.ok) {
+      for (const line of list.stdout.split('\n')) {
+        if (line.startsWith('worktree ')) registered.add(normalizePathKey(line.slice('worktree '.length)));
+      }
+    }
+  } catch {
+    /* best-effort — an unreadable list just means nothing is confirmed registered */
+  }
+
+  const keep = new Set<string>();
+  for (const row of listActiveWorktrees()) keep.add(normalizePathKey(row.path));
+  for (const row of listStrandedWorktrees()) {
+    if (awaitingReviewOrLanding(row.contractId)) keep.add(normalizePathKey(row.path));
+  }
+  for (const run of listNonTerminalAgentRuns()) {
+    if (run.worktreeDir) keep.add(normalizePathKey(run.worktreeDir));
+  }
+
+  const removed: string[] = [];
+  for (const name of names) {
+    const dir = join(root, name);
+    const key = normalizePathKey(dir);
+    if (registered.has(key) || keep.has(key)) continue;
+    forceRemoveDir(dir);
+    if (existsSync(dir)) {
+      console.warn(`[pc-sdk][worktree] orphan sweep could not remove ${dir}`);
+      continue;
+    }
+    markWorktreeDestroyed(name);
+    removed.push(name);
+    console.warn(`[pc-sdk][worktree] orphan sweep removed ${dir}`);
+  }
+  await git(['worktree', 'prune'], projectDir);
+  return removed;
 }
 
 /** Stamp lifecycle 'stranded' on the bound run — same guarded-write idiom as

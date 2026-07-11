@@ -5,7 +5,7 @@
 //  - unreadable worktree (git status itself fails) is the same retryable 409
 //    refusal — the seal is never silently skipped
 //  - guard 9: the landing receipt is durable BEFORE teardown (teardown failure
-//    cannot lose it) and the branch survives teardown
+//    cannot lose it); a confirmed land deletes the now-merged branch
 //  - guard 6: concurrent accepts on one repository land serialized — one
 //    merges; guard 7 parks the second (its verified base is stale)
 //  - guard 7: base advancement after verification parks 'stale-base' (never
@@ -271,7 +271,7 @@ test('submit seal: a builder-supplied commit that is not the worktree HEAD is re
   }
 });
 
-test('guard 9: landing receipt recorded, teardown done, branch preserved', async () => {
+test('guard 9: landing receipt recorded, teardown done, merged branch deleted', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
@@ -289,7 +289,11 @@ test('guard 9: landing receipt recorded, teardown done, branch preserved', async
     assert.ok(typeof landed.landedAt === 'number');
 
     assert.equal(existsSync(wt.dir), false, 'worktree torn down after landing');
-    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip, 'branch preserved after teardown');
+    assert.equal(
+      (await git(['rev-parse', '-q', '--verify', wt.branch], gp.dir)).ok,
+      false,
+      'merged branch deleted after a confirmed land — history lives on in the merge',
+    );
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'HEAD'], gp.dir)).ok, true, 'ancestry receipt holds');
   } finally {
     gp.cleanup();
@@ -305,17 +309,18 @@ test('guard 9: teardown failure cannot lose the landing receipt', async () => {
     const wt = await provisionOk(gp.dir, newId());
     const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
     const contract = deliveredContract(contracts, gp, wt, tip);
-    // Locked worktree ⇒ `worktree remove --force` fails ⇒ teardown is a no-op.
+    // git's own lock makes `git worktree remove --force` fail deterministically
+    // — the receipt must already be durable BEFORE that call runs, regardless
+    // of how teardown itself resolves (the FS fallback still reclaims the dir).
     assert.equal((await git(['worktree', 'lock', wt.dir], gp.dir)).ok, true);
 
     const landed = await dispatch.landAcceptedContract(contract);
     assert.ok(landed);
-    assert.equal(landed.landingStatus, 'landed', 'receipt recorded despite failed teardown');
+    assert.equal(landed.landingStatus, 'landed', 'receipt recorded regardless of how teardown resolves');
     assert.equal(landed.landedSha, tip);
-    assert.equal(existsSync(wt.dir), true, 'teardown really did fail');
+    assert.equal(existsSync(wt.dir), false, 'the FS fallback reclaimed the directory despite the git-level lock');
     // Durable, not just the in-memory return value.
     assert.equal(getContract(landed.id as ULID)?.landingStatus, 'landed');
-    await git(['worktree', 'unlock', wt.dir], gp.dir);
   } finally {
     gp.cleanup();
   }
