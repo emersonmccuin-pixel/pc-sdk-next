@@ -79,6 +79,9 @@ type ChatEvent =
                                postTokens: number | null }
   | { kind: 'sidechain';       role: 'user' | 'assistant' | 'tool'; text: string }  // pre-shaped server-side; no raw transcript rows on the wire
   | { kind: 'agent-dispatch';  runId: Ulid; agentName: string }   // anchor only — the bubble hydrates status from agent-run/contract resource events by runId
+  | { kind: 'agent-envelope';  runId: Ulid; agentName: string; pendingAskId?: Ulid
+                               status: 'waiting' | 'done' | 'failed'; summary: string
+                               detail: string; envelope: string }  // agent→orchestrator ask/terminal envelope; collapsed per-run card, coalesces by runId
   | { kind: 'retract';         uuids: string[] }                  // model-refusal fallback: evict already-delivered events by sdkUuid
 ```
 

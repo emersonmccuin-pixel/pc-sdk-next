@@ -151,3 +151,51 @@ test('queued sends drain FIFO and reconcile via the user frame', async () => {
   assert.deepEqual(acks, ['cm1', 'cm2']);
   assert.deepEqual(backend.sentTexts, ['first', 'second']);
 });
+
+test('injectAgentEnvelope persists a typed agent-envelope event (not a bare user bubble) and still starts the turn', async () => {
+  freshDb();
+  const project = newProject();
+  const backend = new FakeRuntime({
+    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+  });
+  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
+  const session = svc.ensureActiveSession();
+  assert.equal(
+    svc.injectAgentEnvelope({
+      runId: 'run-1',
+      agentName: 'researcher',
+      pendingAskId: 'ask-1',
+      status: 'waiting',
+      summary: 'Question: which approach?',
+      detail: '[agent-asks] agent=researcher runId=run-1 pendingAskId=ask-1\nQuestion: which approach?',
+      envelope: '[agent-asks] agent=researcher runId=run-1 pendingAskId=ask-1\nQuestion: which approach?',
+      clientMessageId: 'agent-ask:ask-1',
+    }),
+    'received',
+  );
+  await until(() => terminals(session.id).length === 1);
+
+  const rows = listConversationEvents(session.id);
+  assert.equal(rows.some((r) => r.kind === 'user'), false, 'agent envelope must not persist as a plain user bubble');
+  const envelopeRow = rows.find((r) => r.kind === 'agent-envelope');
+  assert.ok(envelopeRow, 'expected a persisted agent-envelope event');
+  const event = envelopeRow!.event as ChatEvent;
+  assert.equal(event.kind, 'agent-envelope');
+  assert.deepEqual(event, {
+    kind: 'agent-envelope',
+    runId: 'run-1',
+    agentName: 'researcher',
+    pendingAskId: 'ask-1',
+    status: 'waiting',
+    summary: 'Question: which approach?',
+    detail: '[agent-asks] agent=researcher runId=run-1 pendingAskId=ask-1\nQuestion: which approach?',
+    envelope: '[agent-asks] agent=researcher runId=run-1 pendingAskId=ask-1\nQuestion: which approach?',
+  });
+  assert.equal(envelopeRow!.clientMessageId, 'agent-ask:ask-1');
+
+  // Turn still fires exactly as a plain send would — the envelope text is
+  // what reaches the runtime.
+  assert.deepEqual(backend.sentTexts, [
+    '[agent-asks] agent=researcher runId=run-1 pendingAskId=ask-1\nQuestion: which approach?',
+  ]);
+});

@@ -192,6 +192,52 @@ export function DispatchBubble({ agentName, runId }: { agentName: string; runId:
   );
 }
 
+const AGENT_RUN_STATUS_TONE: Record<'waiting' | 'done' | 'failed', string> = {
+  waiting: 'border-warning/50 bg-warning/10 text-warning',
+  done: 'border-success/50 bg-success/10 text-success',
+  failed: 'border-destructive/50 bg-destructive/10 text-destructive',
+};
+
+export function AgentRunCard({
+  agentName,
+  status,
+  summary,
+  detail,
+  pendingAskId,
+}: {
+  agentName: string;
+  status: 'waiting' | 'done' | 'failed';
+  summary: string;
+  detail: string;
+  pendingAskId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-accent/40 bg-accent/5 px-3 py-1.5 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 text-left hover:text-foreground"
+      >
+        <span className="text-[10px]">{open ? '▾' : '▸'}</span>
+        <span className="font-semibold text-foreground">{agentName}</span>
+        <span className={`border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${AGENT_RUN_STATUS_TONE[status]}`}>
+          {status}
+        </span>
+        {!open && <span className="truncate text-muted-foreground">{summary}</span>}
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1 pl-4">
+          <div className="whitespace-pre-wrap break-words text-muted-foreground">{detail}</div>
+          {pendingAskId && (
+            <div className="font-mono text-[10px] text-muted-foreground">pendingAskId: {pendingAskId}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CompactionDivider({ trigger, preTokens, postTokens }: { trigger: string; preTokens: number; postTokens: number | null }) {
   return (
     <div className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -277,6 +323,16 @@ export function RenderItemView({ item }: { item: RenderItem }) {
       return <DeniedBubble name={item.name} reason={item.reason} />;
     case 'dispatch':
       return <DispatchBubble agentName={item.agentName} runId={item.runId} />;
+    case 'agent-run':
+      return (
+        <AgentRunCard
+          agentName={item.agentName}
+          status={item.status}
+          summary={item.summary}
+          detail={item.detail}
+          pendingAskId={item.pendingAskId}
+        />
+      );
     case 'sidechain-group':
       return <SidechainGroup steps={item.steps} />;
     case 'compaction':
