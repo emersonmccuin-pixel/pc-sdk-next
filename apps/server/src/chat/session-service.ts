@@ -41,8 +41,20 @@ import type { ULID } from '@pc/domain';
 import type { RuntimeSession, RuntimeSessionFactory } from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
 import { replayFrames } from './replay.ts';
-import { SendQueue } from './send-queue.ts';
+import { SendQueue, type AgentEnvelopeMeta } from './send-queue.ts';
 import { runTurn, type TurnRunnerDeps } from './turn-runner.ts';
+
+export interface InjectAgentEnvelopeInput {
+  runId: string;
+  agentName: string;
+  pendingAskId?: string;
+  status: 'waiting' | 'done' | 'failed';
+  summary: string;
+  detail: string;
+  /** Verbatim envelope text — also the turn text sent to the runtime. */
+  envelope: string;
+  clientMessageId: string;
+}
 
 export interface SessionServiceDeps {
   projectId: ULID;
@@ -129,6 +141,23 @@ export class SessionService {
     if (typeof text !== 'string' || text.trim().length === 0) return 'invalid';
     this.ensureActiveSession();
     const { ranImmediately } = this.sendQueue.enqueue(text, clientMessageId);
+    return ranImmediately ? 'received' : 'queued';
+  }
+
+  /** Agent → orchestrator door (dispatch service): enqueues the envelope text
+   *  as a turn exactly like `handleSend`, but persists it as a typed
+   *  `agent-envelope` chat event (collapsed per-run card) instead of a bare
+   *  `user` bubble. */
+  injectAgentEnvelope(input: InjectAgentEnvelopeInput): SendAckStatus {
+    this.ensureActiveSession();
+    const { ranImmediately } = this.sendQueue.enqueue(input.envelope, input.clientMessageId, {
+      runId: input.runId,
+      agentName: input.agentName,
+      pendingAskId: input.pendingAskId,
+      status: input.status,
+      summary: input.summary,
+      detail: input.detail,
+    });
     return ranImmediately ? 'received' : 'queued';
   }
 
@@ -228,18 +257,37 @@ export class SessionService {
     return runtime;
   }
 
-  private async deliver(item: { clientMessageId: string; text: string }): Promise<void> {
+  private async deliver(item: { clientMessageId: string; text: string; agentEnvelope?: AgentEnvelopeMeta }): Promise<void> {
     const session = this.ensureActiveSession();
-    // Title from the first user message.
-    if (!session.title) {
+    // Title from the first user message — an agent envelope never seeds it.
+    if (!session.title && !item.agentEnvelope) {
       const title = deriveTitle(item.text);
       if (title) {
         setOrchestratorSessionTitle(session.id, title);
         session.title = title;
       }
     }
-    // User bubble (canonical optimistic reconcile) — persisted before broadcast.
-    this.persistAndBroadcast({ kind: 'user', text: item.text }, { clientMessageId: item.clientMessageId });
+    // Canonical optimistic reconcile — persisted before broadcast. A plain
+    // send is a `user` bubble; an agent envelope persists as its typed,
+    // collapsed per-run card instead (same turn text either way, below).
+    if (item.agentEnvelope) {
+      const meta = item.agentEnvelope;
+      this.persistAndBroadcast(
+        {
+          kind: 'agent-envelope',
+          runId: meta.runId as ULID,
+          agentName: meta.agentName,
+          pendingAskId: meta.pendingAskId as ULID | undefined,
+          status: meta.status,
+          summary: meta.summary,
+          detail: meta.detail,
+          envelope: item.text,
+        },
+        { clientMessageId: item.clientMessageId },
+      );
+    } else {
+      this.persistAndBroadcast({ kind: 'user', text: item.text }, { clientMessageId: item.clientMessageId });
+    }
     this.persistAndBroadcast({ kind: 'session-state', state: 'running', permissionMode: null });
     this.broadcast(this.orchestratorStateFrame());
     try {

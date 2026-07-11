@@ -37,7 +37,7 @@ test('isChatFrame accepts a well-formed frame and rejects junk', () => {
 });
 
 test('every ChatEvent kind is registered', () => {
-  assert.equal(CHAT_EVENT_KINDS.length, 16);
+  assert.equal(CHAT_EVENT_KINDS.length, 17);
   for (const k of CHAT_EVENT_KINDS) assert.equal(isChatEventKind(k), true);
   assert.equal(isChatEventKind('jsonl-user'), false); // old wire kind is dead
 });

@@ -30,6 +30,16 @@ export type RenderItem =
   | { kind: 'edit'; key: string; call: ToolCall }
   | { kind: 'denied'; key: string; name: string; reason: string }
   | { kind: 'dispatch'; key: string; runId: string; agentName: string }
+  | {
+      kind: 'agent-run';
+      key: string;
+      runId: string;
+      agentName: string;
+      pendingAskId?: string;
+      status: 'waiting' | 'done' | 'failed';
+      summary: string;
+      detail: string;
+    }
   | { kind: 'sidechain-group'; key: string; steps: SidechainStep[] }
   | { kind: 'compaction'; key: string; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
   | { kind: 'system'; key: string; subtype: string; level: 'info' | 'notice' | 'warning' | 'error'; message: string }
@@ -39,6 +49,9 @@ export type RenderItem =
 export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
   const items: RenderItem[] = [];
   const callById = new Map<string, ToolCall>();
+  // Same-runId agent-envelope events coalesce into one card (latest wins),
+  // in the position of the run's first envelope.
+  const agentRunIndex = new Map<string, number>();
   let toolBuffer: ToolCall[] = [];
   let sidechain: SidechainStep[] = [];
   let sidechainKey: string | null = null;
@@ -132,6 +145,27 @@ export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
         flushTools();
         items.push({ kind: 'dispatch', key, runId: ev.runId, agentName: ev.agentName });
         break;
+      case 'agent-envelope': {
+        flushTools();
+        const existingIdx = agentRunIndex.get(ev.runId);
+        const item: RenderItem = {
+          kind: 'agent-run',
+          key: existingIdx !== undefined ? items[existingIdx]!.key : key,
+          runId: ev.runId,
+          agentName: ev.agentName,
+          pendingAskId: ev.pendingAskId,
+          status: ev.status,
+          summary: ev.summary,
+          detail: ev.detail,
+        };
+        if (existingIdx !== undefined) {
+          items[existingIdx] = item;
+        } else {
+          agentRunIndex.set(ev.runId, items.length);
+          items.push(item);
+        }
+        break;
+      }
       case 'compaction':
         flushTools();
         items.push({ kind: 'compaction', key, trigger: ev.trigger, preTokens: ev.preTokens, postTokens: ev.postTokens });

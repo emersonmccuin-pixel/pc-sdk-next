@@ -824,15 +824,25 @@ export class DispatchService {
     });
     this.deliverToOrchestrator(
       input.projectId,
-      buildAskEnvelope({
+      {
+        text: buildAskEnvelope({
+          runId: input.agentRunId,
+          podName: row.podName,
+          pendingAskId: askId,
+          kind: input.kind,
+          promptBody: input.promptBody,
+          context: input.context,
+          options: input.options,
+        }),
         runId: input.agentRunId,
-        podName: row.podName,
+        agentName: row.podName,
         pendingAskId: askId,
-        kind: input.kind,
-        promptBody: input.promptBody,
-        context: input.context,
-        options: input.options,
-      }),
+        status: 'waiting',
+        summary:
+          input.kind === 'approval'
+            ? `Approval requested: ${input.promptBody}`
+            : `Question: ${input.promptBody}`,
+      },
       `agent-ask:${askId}`,
     );
     return { ok: true, pendingAskId: askId };
@@ -1379,22 +1389,32 @@ export class DispatchService {
 
     const freshRow = getAgentRunRow(runId) ?? row;
     const kind = freshRow.status === 'completed' ? 'agent-completed' : 'agent-failed';
+    const deliverableSummary = summarizeDeliverable(contract?.deliverable as Deliverable | null);
     this.deliverToOrchestrator(
       row.projectId,
-      buildTerminalEnvelope({
-        kind,
+      {
+        text: buildTerminalEnvelope({
+          kind,
+          runId,
+          podName: row.podName,
+          result: freshRow.result,
+          failureCause: freshRow.failureCause,
+          failureReason: freshRow.failureReason,
+          contractId: contract?.id ?? null,
+          verificationStatus: contract?.verificationStatus ?? null,
+          verificationNotes: contract?.verificationNotes ?? null,
+          landingStatus: contract?.landingStatus ?? null,
+          reviewInFlight: contract?.reviewRunId != null,
+          deliverableSummary,
+        }),
         runId,
-        podName: row.podName,
-        result: freshRow.result,
-        failureCause: freshRow.failureCause,
-        failureReason: freshRow.failureReason,
-        contractId: contract?.id ?? null,
-        verificationStatus: contract?.verificationStatus ?? null,
-        verificationNotes: contract?.verificationNotes ?? null,
-        landingStatus: contract?.landingStatus ?? null,
-        reviewInFlight: contract?.reviewRunId != null,
-        deliverableSummary: summarizeDeliverable(contract?.deliverable as Deliverable | null),
-      }),
+        agentName: row.podName,
+        status: kind === 'agent-completed' ? 'done' : 'failed',
+        summary:
+          kind === 'agent-completed'
+            ? (deliverableSummary ?? freshRow.result ?? 'Completed')
+            : `Failed${freshRow.failureCause ? ` (${freshRow.failureCause})` : ''}${freshRow.failureReason ? `: ${freshRow.failureReason}` : ''}`,
+      },
       `agent-terminal:${runId}`,
     );
 
@@ -1938,9 +1958,29 @@ export class DispatchService {
     }
   }
 
-  private deliverToOrchestrator(projectId: ULID, text: string, clientMessageId: string): void {
+  private deliverToOrchestrator(
+    projectId: ULID,
+    envelope: {
+      text: string;
+      runId: ULID;
+      agentName: string;
+      pendingAskId?: ULID;
+      status: 'waiting' | 'done' | 'failed';
+      summary: string;
+    },
+    clientMessageId: string,
+  ): void {
     try {
-      this.ctx?.registry.get(projectId).handleSend(text, clientMessageId);
+      this.ctx?.registry.get(projectId).injectAgentEnvelope({
+        runId: envelope.runId,
+        agentName: envelope.agentName,
+        pendingAskId: envelope.pendingAskId,
+        status: envelope.status,
+        summary: envelope.summary,
+        detail: envelope.text,
+        envelope: envelope.text,
+        clientMessageId,
+      });
     } catch (err) {
       console.error(`[pc-sdk][dispatch] envelope delivery failed for ${projectId}:`, err);
     }

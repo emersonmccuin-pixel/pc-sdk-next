@@ -9,10 +9,24 @@
 import { newId } from '@pc/db';
 import type { SendQueueItem, SendQueueItemStatus, ULID } from '@pc/contracts';
 
+/** Carried alongside an enqueued turn whose text is an agent envelope (ask or
+ *  terminal), not a plain user message — lets `deliver()` persist the typed
+ *  `agent-envelope` chat event instead of a bare `user` bubble, without
+ *  changing what text is sent to the runtime as the turn. */
+export interface AgentEnvelopeMeta {
+  runId: string;
+  agentName: string;
+  pendingAskId?: string;
+  status: 'waiting' | 'done' | 'failed';
+  summary: string;
+  detail: string;
+}
+
 interface QueueItem {
   id: ULID;
   clientMessageId: string;
   text: string;
+  agentEnvelope?: AgentEnvelopeMeta;
   status: SendQueueItemStatus;
   failureReason: string | null;
   createdAt: number;
@@ -24,7 +38,7 @@ export interface SendQueueDeps {
   /** Deliver one turn. Resolves when the turn reached the model + ran to its
    *  terminal; rejects only on a delivery-infrastructure failure (backend won't
    *  start) — a model-side turn error is still a successful delivery. */
-  deliver: (item: { id: ULID; clientMessageId: string; text: string }) => Promise<void>;
+  deliver: (item: { id: ULID; clientMessageId: string; text: string; agentEnvelope?: AgentEnvelopeMeta }) => Promise<void>;
   /** Broadcast the current snapshot to the room. */
   onSnapshot: (items: SendQueueItem[]) => void;
   // Clock override for tests; defaults to Date.now.
@@ -48,13 +62,14 @@ export class SendQueue {
 
   /** Enqueue a send. Returns whether it will run immediately (queue was idle) —
    *  the caller maps that to the `received` vs `queued` send-ack status. */
-  enqueue(text: string, clientMessageId: string): { id: ULID; ranImmediately: boolean } {
+  enqueue(text: string, clientMessageId: string, agentEnvelope?: AgentEnvelopeMeta): { id: ULID; ranImmediately: boolean } {
     const ranImmediately = !this.busy && this.pendingCount === 0;
     const t = this.now();
     const item: QueueItem = {
       id: newId(),
       clientMessageId,
       text,
+      agentEnvelope,
       status: 'queued',
       failureReason: null,
       createdAt: t,
@@ -128,7 +143,7 @@ export class SendQueue {
     next.updatedAt = this.now();
     this.emit();
     try {
-      await this.deliver({ id: next.id, clientMessageId: next.clientMessageId, text: next.text });
+      await this.deliver({ id: next.id, clientMessageId: next.clientMessageId, text: next.text, agentEnvelope: next.agentEnvelope });
       next.status = 'delivered';
       next.failureReason = null;
     } catch (err) {

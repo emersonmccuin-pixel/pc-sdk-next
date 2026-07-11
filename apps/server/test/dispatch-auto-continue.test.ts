@@ -113,7 +113,7 @@ function chainSettled(contractId: ULID): boolean {
 }
 
 /** Did the orchestrator receive the terminal envelope for this run? Envelope
- *  delivery rides a durable 'user' conversation event keyed by
+ *  delivery rides a durable 'agent-envelope' conversation event keyed by
  *  `agent-terminal:<runId>` (DispatchService.deliverToOrchestrator). */
 function envelopeDelivered(projectId: ULID, runId: string): boolean {
   const session = getActiveOrchestratorSession(projectId);

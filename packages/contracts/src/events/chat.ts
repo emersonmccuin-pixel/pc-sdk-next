@@ -44,6 +44,24 @@ export type ChatEvent =
   // anchor only — the bubble hydrates status from agent-run/contract resource
   // events by runId
   | { kind: 'agent-dispatch'; runId: ULID; agentName: string }
+  // Agent → orchestrator envelope (ask + terminal), injected by
+  // SessionService.injectAgentEnvelope. Collapsed per-run card in chat;
+  // repeated events for the same runId coalesce into one card (latest wins).
+  | {
+      kind: 'agent-envelope';
+      runId: ULID;
+      agentName: string;
+      /** Set only while this envelope is an open ask — the durable
+       *  pending-ask row the orchestrator answers via pc_answer_pending. */
+      pendingAskId?: ULID;
+      status: 'waiting' | 'done' | 'failed';
+      /** One-line label for the collapsed card. */
+      summary: string;
+      /** Shown when the card expands. */
+      detail: string;
+      /** Verbatim envelope text — also the turn text sent to the runtime. */
+      envelope: string;
+    }
   // model-refusal fallback: evict already-delivered events by sdkUuid
   | { kind: 'retract'; uuids: string[] };
 
@@ -65,6 +83,7 @@ export const CHAT_EVENT_KINDS = [
   'compaction',
   'sidechain',
   'agent-dispatch',
+  'agent-envelope',
   'retract',
 ] as const satisfies readonly ChatEventKind[];
 
