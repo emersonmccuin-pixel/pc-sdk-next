@@ -19,6 +19,7 @@ interface QueueItem {
   updatedAt: number;
 }
 
+// Dependencies injected into the queue: delivery, broadcast, clock.
 export interface SendQueueDeps {
   /** Deliver one turn. Resolves when the turn reached the model + ran to its
    *  terminal; rejects only on a delivery-infrastructure failure (backend won't
@@ -26,9 +27,11 @@ export interface SendQueueDeps {
   deliver: (item: { id: ULID; clientMessageId: string; text: string }) => Promise<void>;
   /** Broadcast the current snapshot to the room. */
   onSnapshot: (items: SendQueueItem[]) => void;
+  // Clock override for tests; defaults to Date.now.
   now?: () => number;
 }
 
+// FIFO queue that delivers one turn at a time.
 export class SendQueue {
   private readonly items: QueueItem[] = [];
   private readonly deliver: SendQueueDeps['deliver'];
@@ -36,6 +39,7 @@ export class SendQueue {
   private readonly now: () => number;
   private busy = false;
 
+  // Wires in delivery, snapshot, and clock dependencies.
   constructor(deps: SendQueueDeps) {
     this.deliver = deps.deliver;
     this.onSnapshot = deps.onSnapshot;
@@ -62,14 +66,17 @@ export class SendQueue {
     return { id: item.id, ranImmediately };
   }
 
+  // Count of items still waiting to be delivered.
   get queueDepth(): number {
     return this.items.filter((i) => i.status === 'queued').length;
   }
 
+  // Whether a turn is currently being delivered.
   get isBusy(): boolean {
     return this.busy;
   }
 
+  // Count of items not yet resolved (queued or delivering).
   private get pendingCount(): number {
     return this.items.filter((i) => i.status === 'queued' || i.status === 'delivering').length;
   }
@@ -88,6 +95,7 @@ export class SendQueue {
     if (changed) this.emit();
   }
 
+  // Returns a plain-object copy of the current queue.
   snapshot(): SendQueueItem[] {
     return this.items.map((i) => ({
       id: i.id,
@@ -100,6 +108,7 @@ export class SendQueue {
     }));
   }
 
+  // Broadcasts the snapshot, then prunes finished items.
   private emit(): void {
     this.onSnapshot(this.snapshot());
     // Terminal items ride exactly one snapshot, then drop out.
@@ -109,6 +118,7 @@ export class SendQueue {
     }
   }
 
+  // Delivers the next queued item, then loops until empty.
   private async drainSoon(): Promise<void> {
     if (this.busy) return;
     const next = this.items.find((i) => i.status === 'queued');
