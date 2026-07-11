@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11.
+Last updated: 2026-07-11 after BC-001 baseline characterization.
 
 ## Preserved baseline
 
@@ -74,5 +74,8 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`PF-001` is complete. `BC-001` is the next read-only baseline-characterization
-slice. See `docs/execution/current.md` for the exact next action.
+`BC-001` is complete. Its evidence-backed as-built map, test gaps, migration
+dependencies, and user decisions are in
+`docs/research/baseline-characterization.md`. No behavior-changing slice is
+approved yet; the next action is user review of that evidence and selection of
+the first N2 slice.
