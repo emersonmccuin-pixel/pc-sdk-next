@@ -1,8 +1,9 @@
 # Agent runtime architecture
 
-Status: **locked target architecture** (2026-07-10). This document defines the
-provider boundary for Phase 3 and later. `docs/master-plan.md` still wins on
-product scope; `AGENTS.md` holds the short-form non-negotiable rules.
+Status: **locked target boundary; Claude adapter partially implemented**
+(updated 2026-07-11). `docs/current-state.md` records the as-built gaps.
+`docs/master-plan.md` wins on product scope; `AGENTS.md` holds the short-form
+non-negotiable rules.
 
 ## Decision
 
@@ -73,6 +74,12 @@ Every app session snapshots its runtime selection. Defaults may live on a
 project or specialist, and a dispatch may override them, but a running session
 never silently changes runtime, account, or native session identity.
 
+The durable stamp includes `runtimeId`, `accountId`, `model`, `effort` (including
+an explicit unavailable/none state where appropriate), and the adapter-native
+session ID. A display-only provider label is not a substitute. Model identifiers
+and allowed effort values come from the selected adapter/account's capability
+result and are validated again when a session is created.
+
 For repo-mutating work, runtime selection never chooses the working directory:
 the worktree lifecycle supplies the recorded worktree cwd. Write-capable
 sessions cannot point at the main project checkout.
@@ -107,8 +114,10 @@ native rate-limit envelopes stay inside their adapters.
 The contract is capability-based, not a lowest-common-denominator fiction.
 Capabilities include native resume, model discovery, native MCP, approval
 round-trips, structured output, reasoning/effort controls, usage telemetry, and
-stream granularity. Missing capabilities produce typed, visible degradation;
-they never cause silent fallback.
+stream granularity. They also describe whether the runtime provides context
+window size, exact/approximate current context use, and compaction observations.
+Missing capabilities produce typed, visible degradation; they never cause
+silent fallback or invented context/usage precision.
 
 ## First adapters
 
@@ -119,8 +128,9 @@ they never cause silent fallback.
   cannot shadow the selected subscription login.
 - Native session: Claude SDK session id and `resume`.
 - Instructions/tools: SDK system prompt plus the app-owned MCP/tool bridge.
-- Current state: Phase 2 is implemented directly through `SdkBackend`; Phase 3
-  extracts and renames this as the Claude adapter without changing behavior.
+- Current state: `ClaudeRuntimeAdapter` is the only Claude SDK importer and the
+  orchestrator/dispatch paths use the canonical session seam. Capability/model
+  discovery and full orchestrator selection persistence remain unimplemented.
 
 ### OpenAI Codex
 
@@ -146,6 +156,12 @@ Runtime/account/model changes are session boundaries:
 3. retain its native runtime session id for same-runtime resume;
 4. create a new app session stamped with the new runtime selection;
 5. start a new native runtime session.
+
+An adapter may declare that a same-runtime, same-account native thread can
+change model or effort safely. PC-SDK may use that optimization only after a
+positive capability result and receipt; it still creates a new PC-SDK app
+session so the new immutable selection and provenance are explicit. Otherwise
+the new app session starts a new native session with a handoff.
 
 A Claude session is never resumed as a Codex thread or vice versa. Returning to
 an older app session resumes it through its original adapter and account.
@@ -196,14 +212,21 @@ each record identifies a runtime and its credential home. Runtime-specific
 secrets and tokens never enter project settings or transcripts.
 
 Usage is normalized without inventing parity. Claude and Codex may expose
-different quota windows or incomplete subscription telemetry. Persist what was
-positively observed, include runtime/account attribution, and represent missing
-data as unavailable. Billing remains subscription-first; any API-billed adapter
-requires an explicit product decision and visibly separate usage semantics.
+different quota windows or incomplete subscription telemetry. Persist the
+provider-native source semantics (`used` or `remaining`), normalized used
+fraction when derivable, window, observation time, confidence, and
+runtime/account attribution. The UI always presents consumed/used; unavailable
+or stale data stays explicit. Billing remains subscription-first; any API-billed
+adapter requires an explicit product decision and visibly separate semantics.
+
+Session context is a separate observation family. An adapter reports exact,
+approximate, compacted, or unavailable context state. Per-turn token usage is
+not sufficient evidence to manufacture cumulative context fullness.
 
 ## Migration and gates
 
-Phase 3 begins with a behavior-preserving boundary extraction:
+The inherited Phase 3 began with a behavior-preserving boundary extraction.
+PC-SDK Next continues the remaining migration under master-plan phases N3/N5:
 
 1. define canonical runtime types and capabilities;
 2. move every Claude-native type and mapping into `ClaudeRuntimeAdapter`;

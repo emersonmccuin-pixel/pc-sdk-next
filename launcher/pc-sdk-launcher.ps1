@@ -1,22 +1,29 @@
 #requires -version 7
-# One-click PC-SDK launcher: ensure server is up, then open the app window.
+# One-click PC-SDK Next launcher: ensure its isolated server is up, then open
+# the app window. Defaults intentionally differ from the working PC-SDK install.
 # Never fails silently — any fatal problem shows a popup.
 
 $ErrorActionPreference = 'Stop'
 
-$RepoRoot   = Split-Path -Parent $PSScriptRoot
-$Port       = if ($env:PC_PORT) { $env:PC_PORT } else { 5123 }
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $env:PC_PORT) { $env:PC_PORT = '5124' }
+if (-not $env:PC_DATA_DIR) { $env:PC_DATA_DIR = Join-Path $RepoRoot 'data' }
+if (-not $env:PC_LOG_DIR) { $env:PC_LOG_DIR = Join-Path $env:LOCALAPPDATA 'PC-SDK-Next\logs' }
+if (-not $env:PC_INSTANCE_ID) { $env:PC_INSTANCE_ID = 'pc-sdk-next' }
+
+$Port       = $env:PC_PORT
+$InstanceId = $env:PC_INSTANCE_ID
 $HealthUrl  = "http://localhost:$Port/health"
 $AppUrl     = "http://localhost:$Port"
 $ServerDist = Join-Path $RepoRoot "apps\server\dist\index.js"
-$LogDir     = Join-Path $env:LOCALAPPDATA "PC-SDK\logs"
+$LogDir     = $env:PC_LOG_DIR
 $LogFile    = Join-Path $LogDir "server.log"
 $ErrFile    = Join-Path $LogDir "server.err.log"
 
 function Show-FatalError([string]$Message) {
     Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
     try {
-        [System.Windows.MessageBox]::Show($Message, "PC-SDK Launcher", 'OK', 'Error') | Out-Null
+        [System.Windows.MessageBox]::Show($Message, "PC-SDK Next Launcher", 'OK', 'Error') | Out-Null
     } catch {
         # Fallback if WPF isn't available for some reason — still don't fail silently.
         msg.exe * $Message 2>$null
@@ -26,8 +33,8 @@ function Show-FatalError([string]$Message) {
 
 function Test-Health {
     try {
-        $resp = Invoke-WebRequest -Uri $HealthUrl -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        return $resp.StatusCode -eq 200
+        $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2 -ErrorAction Stop
+        return $health.ok -eq $true -and $health.instanceId -eq $InstanceId
     } catch {
         return $false
     }
@@ -56,7 +63,7 @@ if (-not (Test-Health)) {
             -RedirectStandardError $ErrFile `
             | Out-Null
     } catch {
-        Show-FatalError "PC-SDK server failed to start.`n`n$($_.Exception.Message)"
+        Show-FatalError "PC-SDK Next server failed to start.`n`n$($_.Exception.Message)"
     }
 
     # 2. Wait for health, with a hard timeout.
@@ -70,7 +77,7 @@ if (-not (Test-Health)) {
     }
 
     if (-not $healthy) {
-        Show-FatalError "PC-SDK server did not become healthy within $timeoutSec seconds.`n`nCheck the log:`n$LogFile"
+        Show-FatalError "PC-SDK Next server did not become healthy within $timeoutSec seconds.`n`nCheck the log:`n$LogFile"
     }
 }
 
@@ -92,6 +99,6 @@ if (-not $launched) {
         Start-Process $AppUrl
         $launched = $true
     } catch {
-        Show-FatalError "Could not launch a browser for PC-SDK.`n`n$($_.Exception.Message)"
+        Show-FatalError "Could not launch a browser for PC-SDK Next.`n`n$($_.Exception.Message)"
     }
 }

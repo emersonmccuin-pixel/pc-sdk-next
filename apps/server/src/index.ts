@@ -1,5 +1,5 @@
 // Boot: migrate → boot-recovery (inside startServer) → seed+probe MCP registry →
-// HTTP + WS on PC_PORT (default 5123), serving apps/web/dist when built
+// HTTP + WS on PC_PORT (PC-SDK Next default 5124), serving apps/web/dist when built
 // (tolerated absent in dev).
 //
 // This is the COMPOSITION ROOT — the only place (with the runtime registry)
@@ -203,13 +203,15 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 }
 
-/** Respawn stdio: append to the launcher's log files (%LOCALAPPDATA%\PC-SDK\logs)
- *  so a failed respawn leaves evidence; fall back to ignore if that fails. */
+/** Respawn stdio: append to the launcher's log directory so a failed respawn
+ *  leaves evidence. PC_LOG_DIR lets side-by-side instances stay isolated; the
+ *  working PC-SDK location remains the compatibility default. */
 function respawnStdio(): StdioOptions {
   try {
     const base = process.env.LOCALAPPDATA;
-    if (!base) return 'ignore';
-    const dir = join(base, 'PC-SDK', 'logs');
+    const configured = process.env.PC_LOG_DIR?.trim();
+    if (!configured && !base) return 'ignore';
+    const dir = configured || join(base!, 'PC-SDK', 'logs');
     mkdirSync(dir, { recursive: true });
     return ['ignore', openSync(join(dir, 'server.log'), 'a'), openSync(join(dir, 'server.err.log'), 'a')];
   } catch {

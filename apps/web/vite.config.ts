@@ -4,11 +4,10 @@ import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
 import type { ServerResponse } from 'node:http';
 
-// Dev server proxies /api + /ws to the single local server process (port 5123,
-// PC_PORT override). PC_DEV_WEB_PORT / PC_DEV_API_PORT let an isolated test
-// instance run on alternate ports without editing this file.
-const WEB_PORT = Number(process.env.PC_DEV_WEB_PORT ?? 5173);
-const API_PORT = Number(process.env.PC_DEV_API_PORT ?? 5123);
+// PC-SDK Next defaults stay separate from the working PC-SDK instance. The
+// environment overrides still support additional isolated test instances.
+const WEB_PORT = Number(process.env.PC_DEV_WEB_PORT ?? 5175);
+const API_PORT = Number(process.env.PC_DEV_API_PORT ?? 5124);
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
