@@ -133,6 +133,58 @@ test('reconcile: a false positive self-heals — dir back + live run flips the r
   }
 });
 
+test('reconcile: a stranded row whose contract landed (dir gone) resolves to destroyed, not left stranded forever', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    // Stranded first (dir gone, no live run) — the genuine stranded case.
+    const wt = await provisionFor(gp, newId() as ULID);
+    const contract = createContract({ projectId: gp.project.id, podName: 'builder' });
+    setWorktreeContractId(wt.branch, contract.id);
+    rmSync(wt.dir, { recursive: true, force: true });
+
+    const first = reconcileStrandedWorktrees();
+    assert.equal(first.stranded[0]?.reason, 'dir-missing');
+    assert.deepEqual(first.resolved, []);
+    assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch), true);
+
+    // The contract lands — the row is still stamped 'stranded' from the prior
+    // pass, but nothing has flipped it yet.
+    setContractLanding(contract.id, { landingStatus: 'landed', landedBranch: wt.branch });
+
+    const second = reconcileStrandedWorktrees();
+    assert.deepEqual(second.stranded, []);
+    assert.deepEqual(second.revived, []);
+    assert.deepEqual(second.resolved, [wt.branch]);
+    assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch), false, 'no longer surfaced as stranded');
+
+    // Boot-time reconcile must heal pre-existing stuck rows the same way —
+    // re-scanning a row already resolved to destroyed is a no-op, not an error.
+    const third = reconcileStrandedWorktrees();
+    assert.deepEqual(third.resolved, []);
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('reconcile: a stranded row whose contract is NOT landed (dir gone) stays surfaced as stranded', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const wt = await provisionFor(gp, newId() as ULID);
+    const contract = createContract({ projectId: gp.project.id, podName: 'builder' });
+    setWorktreeContractId(wt.branch, contract.id);
+    rmSync(wt.dir, { recursive: true, force: true });
+
+    reconcileStrandedWorktrees();
+    const second = reconcileStrandedWorktrees();
+    assert.deepEqual(second.resolved, []);
+    assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch), true, 'genuine stranded case stays surfaced');
+  } finally {
+    gp.cleanup();
+  }
+});
+
 test('reconcile: legacy rows (no projectId) still classify by dir + live set', async () => {
   freshDb();
   const gp = await newGitProject();
