@@ -322,3 +322,5 @@ status.
 - deleting a worktree because its process disappeared or a timeout elapsed;
 - copying ignored files or secrets into worktrees without explicit policy;
 - calling a stale-base verification result good enough after another merge.
+
+> v1 shipped 2026-07-11 — live-app worktree-lifecycle smoke test.
