@@ -16,14 +16,18 @@ const {
   closeDb,
   createContract,
   createProject,
+  findContractByReviewRun,
   getContract,
   getRawDb,
   insertAgentRunRow,
+  listContractsAwaitingIndependentReview,
   listContractsForRun,
   newId,
   runMigrations,
   setAgentRunContractId,
   setContractDeliverable,
+  setContractLanding,
+  setContractReviewState,
   setContractRun,
   setContractVerification,
 } = await import('../src/index.ts');
@@ -48,6 +52,9 @@ test('agent_contracts carries pm_ref (not work_item_id)', () => {
     'pod_name', 'expected_output', 'acceptance_criteria', 'verification_tier',
     'verification_status', 'verification_notes', 'report', 'deliverable',
     'worktree_path', 'worktree_base_branch', 'worktree_base_sha',
+    'target_sha_before', 'target_sha_after', 'merge_sha',
+    'landing_authorizer', 'verified_base_sha', 'landing_policy',
+    'review_round', 'review_run_id',
     'status', 'version', 'created_at', 'updated_at',
   ]) {
     assert.ok(cols.includes(col), `agent_contracts.${col} should exist`);
@@ -111,6 +118,89 @@ test('contracts repo: create / setRun / setDeliverable / setVerification + versi
   // missing-id mutations return null
   assert.equal(setContractDeliverable('nope', { deliverable: null }), null);
   assert.equal(setContractVerification('nope', { verificationStatus: 'failed' }), null);
+});
+
+test('merge receipt + landing policy round-trip; legacy fields keep their meaning', () => {
+  const p = seedProject('receipt');
+  const c0 = createContract({
+    projectId: p.id,
+    podName: 'code-writer',
+    expectedOutput: { kind: 'repo', auto_land: true },
+    landingPolicy: 'auto-merge',
+    worktreeBaseSha: 'base'.padEnd(40, '0'),
+  });
+  assert.equal(c0.landingPolicy, 'auto-merge');
+  // Receipt columns start NULL (legacy-row shape).
+  assert.equal(c0.targetShaBefore, null);
+  assert.equal(c0.targetShaAfter, null);
+  assert.equal(c0.mergeSha, null);
+  assert.equal(c0.landingAuthorizer, null);
+  assert.equal(c0.verifiedBaseSha, null);
+
+  const branchTip = 'a'.repeat(40);
+  const before = 'b'.repeat(40);
+  const merge = 'c'.repeat(40);
+  const landed = setContractLanding(c0.id, {
+    landingStatus: 'landed',
+    landedBranch: 'agent-xyz',
+    landedSha: branchTip,
+    targetShaBefore: before,
+    targetShaAfter: merge,
+    mergeSha: merge,
+    landingAuthorizer: 'auto',
+    verifiedBaseSha: c0.worktreeBaseSha,
+    landedAt: Date.now(),
+    landingError: null,
+  });
+  assert.ok(landed);
+  // landedSha keeps its branch-tip meaning; the merge commit is NEW columns.
+  assert.equal(landed!.landedSha, branchTip);
+  assert.equal(landed!.mergeSha, merge);
+  assert.equal(landed!.targetShaBefore, before);
+  assert.equal(landed!.targetShaAfter, merge);
+  assert.equal(landed!.landingAuthorizer, 'auto');
+  assert.equal(landed!.verifiedBaseSha, c0.worktreeBaseSha);
+  assert.deepEqual(getContract(c0.id), landed);
+
+  // A contract created without a policy stays NULL (legacy read-through).
+  const legacy = createContract({ projectId: p.id, podName: 'code-writer' });
+  assert.equal(legacy.landingPolicy, null);
+});
+
+test('full-review markers round-trip; awaiting-review list keys on policy + passed + unlanded', () => {
+  const p = seedProject('fullreview');
+  const c0 = createContract({
+    projectId: p.id,
+    podName: 'code-writer',
+    expectedOutput: { kind: 'repo', review: 'full' },
+    landingPolicy: 'full-review',
+  });
+  assert.equal(c0.reviewRound, null);
+  assert.equal(c0.reviewRunId, null);
+  // Not listed until verification passes.
+  assert.equal(listContractsAwaitingIndependentReview().some((c) => c.id === c0.id), false);
+  setContractVerification(c0.id, { verificationStatus: 'passed' });
+  assert.equal(listContractsAwaitingIndependentReview().some((c) => c.id === c0.id), true);
+
+  const reviewRunId = newId();
+  const briefedSeal = 'a'.repeat(40);
+  const marked = setContractReviewState(c0.id, { reviewRound: 1, reviewRunId, reviewSealedCommit: briefedSeal });
+  assert.ok(marked);
+  assert.equal(marked!.reviewRound, 1);
+  assert.equal(marked!.reviewRunId, reviewRunId);
+  assert.equal(marked!.reviewSealedCommit, briefedSeal, 'briefed seal rides the marker');
+  assert.equal(findContractByReviewRun(reviewRunId)?.id, c0.id);
+
+  // Clearing the marker keeps the round; the reverse lookup empties.
+  const cleared = setContractReviewState(c0.id, { reviewRunId: null, reviewSealedCommit: null });
+  assert.equal(cleared!.reviewRound, 1);
+  assert.equal(cleared!.reviewRunId, null);
+  assert.equal(cleared!.reviewSealedCommit, null);
+  assert.equal(findContractByReviewRun(reviewRunId), null);
+
+  // A landed full-review contract leaves the awaiting list.
+  setContractLanding(c0.id, { landingStatus: 'landed' });
+  assert.equal(listContractsAwaitingIndependentReview().some((c) => c.id === c0.id), false);
 });
 
 test('contracts carry an external pm_ref and list by run, newest first', () => {

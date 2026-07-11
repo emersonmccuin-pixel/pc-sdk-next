@@ -6,9 +6,11 @@
 // Optionally carries an external PM item ref (`pmRef`). The deliverable lives
 // here. Keyed by contract id / agent_run_id.
 
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type {
   AcceptanceCriteria,
+  ContractLandingAuthorizer,
+  ContractLandingPolicy,
   ContractLandingStatus,
   ContractStatus,
   ContractV2,
@@ -20,7 +22,7 @@ import type {
 import { getDb } from '../connection.ts';
 import type { DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentContracts } from '../schema.ts';
+import { agentContracts, worktrees } from '../schema.ts';
 
 export interface ContractRow {
   id: ULID;
@@ -44,6 +46,23 @@ export interface ContractRow {
   landedSha: string | null;
   landingError: string | null;
   landedAt: number | null;
+  /** worktree-lifecycle merge receipt — `landedSha` stays the branch tip; the
+   *  merge commit lives here. NULL for rows predating migration 0002. */
+  targetShaBefore: string | null;
+  targetShaAfter: string | null;
+  mergeSha: string | null;
+  landingAuthorizer: ContractLandingAuthorizer | null;
+  verifiedBaseSha: string | null;
+  /** NULL = legacy row; read via effectiveLandingPolicy() (@pc/domain). */
+  landingPolicy: ContractLandingPolicy | null;
+  /** Full-review loop (migration 0006): reviewer dispatches consumed +
+   *  in-flight review run (NULL = none in flight / verdict recorded). */
+  reviewRound: number | null;
+  reviewRunId: ULID | null;
+  /** Migration 0007 — the sealed deliverable commit the in-flight reviewer
+   *  was briefed on; approve settlement re-checks it so a mid-review reseal
+   *  voids the verdict. Cleared together with reviewRunId. */
+  reviewSealedCommit: string | null;
   status: ContractStatus;
   version: number;
   createdAt: number;
@@ -63,6 +82,7 @@ export interface CreateContractInput {
   worktreePath?: string | null;
   worktreeBaseBranch?: string | null;
   worktreeBaseSha?: string | null;
+  landingPolicy?: ContractLandingPolicy | null;
   status?: ContractStatus;
 }
 
@@ -139,6 +159,15 @@ export function createContractInDb(db: DbExecutor, input: CreateContractInput): 
     landedSha: null,
     landingError: null,
     landedAt: null,
+    targetShaBefore: null,
+    targetShaAfter: null,
+    mergeSha: null,
+    landingAuthorizer: null,
+    verifiedBaseSha: null,
+    landingPolicy: input.landingPolicy ?? null,
+    reviewRound: null,
+    reviewRunId: null,
+    reviewSealedCommit: null,
     status: input.status ?? 'issued',
     version: 1,
     createdAt: now,
@@ -200,15 +229,24 @@ export interface SetVerificationInput {
   verificationStatus: VerificationStatus;
   verificationNotes?: string | null;
   verificationTier?: VerificationTier;
+  /** The target tip this verification covered. Orchestrator accept stamps the
+   *  CURRENT tip here — the stale-base recovery door guard 7 advertises. */
+  verifiedBaseSha?: string | null;
   status?: ContractStatus;
 }
 
 export interface SetLandingInput {
   landingStatus: ContractLandingStatus;
   landedBranch?: string | null;
+  /** The agent BRANCH TIP — never the merge commit (that's `mergeSha`). */
   landedSha?: string | null;
   landingError?: string | null;
   landedAt?: number | null;
+  targetShaBefore?: string | null;
+  targetShaAfter?: string | null;
+  mergeSha?: string | null;
+  landingAuthorizer?: ContractLandingAuthorizer | null;
+  verifiedBaseSha?: string | null;
 }
 
 /** pc-pty-chat-415 (R5) — record the landing state/receipts onto the contract.
@@ -229,6 +267,11 @@ export function setContractLanding(
   if (input.landedSha !== undefined) patch.landedSha = input.landedSha;
   if (input.landingError !== undefined) patch.landingError = input.landingError;
   if (input.landedAt !== undefined) patch.landedAt = input.landedAt;
+  if (input.targetShaBefore !== undefined) patch.targetShaBefore = input.targetShaBefore;
+  if (input.targetShaAfter !== undefined) patch.targetShaAfter = input.targetShaAfter;
+  if (input.mergeSha !== undefined) patch.mergeSha = input.mergeSha;
+  if (input.landingAuthorizer !== undefined) patch.landingAuthorizer = input.landingAuthorizer;
+  if (input.verifiedBaseSha !== undefined) patch.verifiedBaseSha = input.verifiedBaseSha;
   db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
   return getContractInDb(db, id);
 }
@@ -257,6 +300,102 @@ export function listContractsPendingLanding(db: DbExecutor = getDb()): ContractR
     .all() as ContractRow[];
 }
 
+/** docs/worktree-lifecycle.md Recovery — 'merge positively complete but
+ *  teardown incomplete → resume teardown': landed contracts whose bound
+ *  worktree row is still ACTIVE. The landing receipt is durable BEFORE
+ *  teardown (guard 9), so a crash in between leaves exactly this shape. Boot
+ *  resumes their teardown BEFORE the stranded scan. */
+export function listContractsLandedTeardownIncomplete(db: DbExecutor = getDb()): ContractRow[] {
+  const activeBoundContracts = db
+    .select({ contractId: worktrees.contractId })
+    .from(worktrees)
+    .where(and(eq(worktrees.status, 'active'), isNotNull(worktrees.contractId)));
+  return db
+    .select()
+    .from(agentContracts)
+    .where(and(eq(agentContracts.landingStatus, 'landed'), inArray(agentContracts.id, activeBoundContracts)))
+    .orderBy(asc(agentContracts.updatedAt))
+    .all() as ContractRow[];
+}
+
+/** Recovery — sealed deliverable but NO verification outcome ever recorded: a
+ *  crash between a run's terminal commit and the verification write leaves
+ *  exactly this shape (the run is terminal, so the non-terminal boot scans
+ *  never see it). Boot re-fires verification for these; without it the
+ *  stranded scan would durably strand a worktree one write away from
+ *  converging. */
+export function listContractsSealedUnverified(db: DbExecutor = getDb()): ContractRow[] {
+  return db
+    .select()
+    .from(agentContracts)
+    .where(and(isNotNull(agentContracts.deliverable), isNull(agentContracts.verificationStatus)))
+    .orderBy(asc(agentContracts.updatedAt))
+    .all() as ContractRow[];
+}
+
+export interface SetReviewStateInput {
+  /** Reviewer dispatches consumed. Omit to leave unchanged. */
+  reviewRound?: number;
+  /** In-flight review run; null clears the marker (verdict recorded / dead
+   *  reviewer). Omit to leave unchanged. */
+  reviewRunId?: ULID | null;
+  /** Sealed commit the in-flight reviewer was briefed on; null clears (set
+   *  and cleared together with reviewRunId). Omit to leave unchanged. */
+  reviewSealedCommit?: string | null;
+}
+
+/** Full-review loop markers (round counter + in-flight review run). Bumps
+ *  version. Returns the updated row, or null if the contract is gone. */
+export function setContractReviewState(
+  id: ULID,
+  input: SetReviewStateInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const existing = getContractInDb(db, id);
+  if (!existing) return null;
+  const patch: Partial<ContractRow> = {
+    version: existing.version + 1,
+    updatedAt: Date.now(),
+  };
+  if (input.reviewRound !== undefined) patch.reviewRound = input.reviewRound;
+  if (input.reviewRunId !== undefined) patch.reviewRunId = input.reviewRunId;
+  if (input.reviewSealedCommit !== undefined) patch.reviewSealedCommit = input.reviewSealedCommit;
+  db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
+  return getContractInDb(db, id);
+}
+
+/** The full-review target a review run was dispatched against (reviewRunId
+ *  marker) — how verdict settlement finds the contract under review. */
+export function findContractByReviewRun(reviewRunId: ULID, db: DbExecutor = getDb()): ContractRow | null {
+  const row = db
+    .select()
+    .from(agentContracts)
+    .where(eq(agentContracts.reviewRunId, reviewRunId))
+    .get() as ContractRow | undefined;
+  return row ?? null;
+}
+
+/** Full-review contracts whose verified pass has NOT landed and is not mid-
+ *  landing: review in flight, crashed, or never dispatched (ctx-less boot
+ *  verification). Boot re-drives these through ensureIndependentReview AFTER
+ *  attach — a crashed reviewer must leave the contract re-dispatchable, never
+ *  wedged. Failed/conflict/stale-base landings are orchestrator doors, not
+ *  review; 'pending' belongs to the landing re-drive. */
+export function listContractsAwaitingIndependentReview(db: DbExecutor = getDb()): ContractRow[] {
+  return db
+    .select()
+    .from(agentContracts)
+    .where(
+      and(
+        eq(agentContracts.landingPolicy, 'full-review'),
+        eq(agentContracts.verificationStatus, 'passed'),
+        isNull(agentContracts.landingStatus),
+      ),
+    )
+    .orderBy(asc(agentContracts.updatedAt))
+    .all() as ContractRow[];
+}
+
 /** Record the verification outcome onto the contract. Bumps version. Returns
  *  the updated row, or null if the contract is gone. */
 export function setContractVerification(
@@ -273,6 +412,7 @@ export function setContractVerification(
   };
   if (input.verificationNotes !== undefined) patch.verificationNotes = input.verificationNotes;
   if (input.verificationTier !== undefined) patch.verificationTier = input.verificationTier;
+  if (input.verifiedBaseSha !== undefined) patch.verifiedBaseSha = input.verifiedBaseSha;
   patch.status =
     input.status ??
     (input.verificationStatus === 'passed'

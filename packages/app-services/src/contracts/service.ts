@@ -26,12 +26,14 @@ import {
   listContractsForRunInDb,
   setContractDeliverable as setContractDeliverableInDb,
   setContractLanding as setContractLandingInDb,
+  setContractReviewState as setContractReviewStateInDb,
   setContractRun as setContractRunInDb,
   setContractVerification as setContractVerificationInDb,
   type ContractRow,
   type DbExecutor,
   type InsertLiveEventDraft,
   type SetLandingInput,
+  type SetReviewStateInput,
 } from '@pc/db';
 import type { AcceptanceCriteria, ContractV2, ULID as DomainULID } from '@pc/domain';
 
@@ -58,6 +60,15 @@ export function toContractDto(row: ContractRow): Contract {
     landedSha: row.landedSha,
     landingError: row.landingError,
     landedAt: row.landedAt,
+    targetShaBefore: row.targetShaBefore,
+    targetShaAfter: row.targetShaAfter,
+    mergeSha: row.mergeSha,
+    landingAuthorizer: row.landingAuthorizer,
+    verifiedBaseSha: row.verifiedBaseSha,
+    landingPolicy: row.landingPolicy,
+    reviewRound: row.reviewRound,
+    reviewRunId: row.reviewRunId,
+    reviewSealedCommit: row.reviewSealedCommit,
     status: row.status,
     version: row.version,
     createdAt: row.createdAt,
@@ -100,6 +111,8 @@ export interface CreateContractServiceInput {
   worktreePath?: string | null;
   worktreeBaseBranch?: string | null;
   worktreeBaseSha?: string | null;
+  /** Stamped at creation from the repo spec's auto_land. Null = legacy. */
+  landingPolicy?: Contract['landingPolicy'];
 }
 
 export class ContractService {
@@ -146,6 +159,7 @@ export class ContractService {
           ? { worktreeBaseBranch: input.worktreeBaseBranch }
           : {}),
         ...(input.worktreeBaseSha !== undefined ? { worktreeBaseSha: input.worktreeBaseSha } : {}),
+        ...(input.landingPolicy !== undefined ? { landingPolicy: input.landingPolicy } : {}),
       });
       const contract = toContractDto(row);
       this.insert(tx, buildContractChangedDraft({ reason: 'created', contract }));
@@ -200,12 +214,28 @@ export class ContractService {
     });
   }
 
+  /** Full-review loop markers — round counter + in-flight review run
+   *  (docs/worktree-lifecycle.md 'Full independent review'). */
+  setReviewState(input: { id: ULID } & SetReviewStateInput): Contract | null {
+    return this.tx((tx) => {
+      const { id, ...fields } = input;
+      const row = setContractReviewStateInDb(id as DomainULID, fields, tx);
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'patched', contract }));
+      return contract;
+    });
+  }
+
   /** Record the verification outcome onto the contract. */
   setVerification(input: {
     id: ULID;
     verificationStatus: VerificationStatus;
     verificationNotes?: string | null;
     verificationTier?: VerificationTier;
+    /** Target tip this verification covered — orchestrator accept revalidates
+     *  against the CURRENT tip (stale-base recovery, worktree-lifecycle g7). */
+    verifiedBaseSha?: string | null;
   }): Contract | null {
     return this.tx((tx) => {
       const row = setContractVerificationInDb(
@@ -217,6 +247,9 @@ export class ContractService {
             : {}),
           ...(input.verificationTier !== undefined
             ? { verificationTier: input.verificationTier }
+            : {}),
+          ...(input.verifiedBaseSha !== undefined
+            ? { verifiedBaseSha: input.verifiedBaseSha }
             : {}),
         },
         tx,

@@ -67,8 +67,8 @@ export type PayloadSemantic =
   | 'decomposition'
   | 'score';
 export type RepoCheck =
-  | { preset: 'build' | 'test' | 'lint' }
-  | { command: string; cwd?: 'worktree' | 'project' };
+  | { preset: 'build' | 'test' | 'lint'; timeout_ms?: number }
+  | { command: string; cwd?: 'worktree' | 'project'; timeout_ms?: number };
 export type BinaryArtifactType = 'diagram' | 'screenshot' | 'export' | 'dataset' | 'build';
 export const EXTERNAL_SYSTEMS = ['email', 'calendar', 'chat', 'ticket', 'crm', 'api'] as const;
 export type ExternalSystem = (typeof EXTERNAL_SYSTEMS)[number];
@@ -94,6 +94,12 @@ export type ExpectedOutput =
       paths_touched?: string[];
       checks?: RepoCheck[];
       require_diff?: boolean;
+      /** docs/worktree-lifecycle.md — opt-in auto-merge on verified pass.
+       *  Default: park merge-ready for orchestrator accept. */
+      auto_land?: boolean;
+      /** 'full' = independent review phase (mirror of @pc/domain). Issuer-owned
+       *  like auto_land; wins over it. */
+      review?: 'full';
     }
   | {
       kind: 'external';
@@ -154,17 +160,19 @@ export type AcceptancePredicate =
   | { kind: 'files_exist'; paths: string[]; min_size_bytes?: number }
   | { kind: 'fields_populated'; keys: string[] }
   | { kind: 'field_matches'; key: string; pattern: string }
-  | { kind: 'bash_exit_zero'; command: string; cwd?: 'worktree' | 'project' }
+  | { kind: 'bash_exit_zero'; command: string; cwd?: 'worktree' | 'project'; timeout_ms?: number }
   | { kind: 'attachments_present'; names: string[] }
   | { kind: 'body_contains'; pattern: string; regex?: boolean }
-  | { kind: 'child_work_items_done'; count?: number; all?: boolean }
   | { kind: 'schema_valid'; schema: JsonSchema }
   | { kind: 'git_diff_nonempty'; cwd?: 'worktree' | 'project' }
   | { kind: 'external_handle_present' }
   | { kind: 'tool_called'; name: string; min_count?: number }
   | { kind: 'pending_ask_created' }
   | { kind: 'report_contains'; pattern: string; regex?: boolean }
-  | { kind: 'min_length'; min: number };
+  | { kind: 'min_length'; min: number }
+  // guard 3 mirror — derived changed paths vs declared scope (see @pc/domain
+  // contract.ts for the pattern semantics; forbidden defaults to ['.git/**']).
+  | { kind: 'changed_paths_within'; allowed: string[]; forbidden?: string[] };
 
 export type AcceptanceCriteria = AcceptancePredicate[];
 
@@ -210,12 +218,34 @@ export interface Contract {
   worktreeBaseSha: string | null;
   /** pc-pty-chat-415 (R5/R12) — accept ⇒ land. Null = not applicable
    *  (non-repo, pre-415). The receipts outlive the worktree; 'abandoned'
-   *  preserves the branch + records its tip before reclaim. */
-  landingStatus: 'pending' | 'landed' | 'conflict' | 'failed' | 'abandoned' | null;
+   *  preserves the branch + records its tip before reclaim; 'stale-base'
+   *  parks work whose verified base the target advanced past (guard 7). */
+  landingStatus: 'pending' | 'landed' | 'conflict' | 'failed' | 'abandoned' | 'stale-base' | null;
   landedBranch: string | null;
+  /** The agent BRANCH TIP — never the merge commit (that's `mergeSha`). */
   landedSha: string | null;
   landingError: string | null;
   landedAt: number | null;
+  /** worktree-lifecycle merge receipt (mirror of @pc/domain) — target branch
+   *  SHA before/after the merge, the merge commit, who authorized, and the
+   *  base SHA verification covered. Null = pre-receipt row. */
+  targetShaBefore: string | null;
+  targetShaAfter: string | null;
+  mergeSha: string | null;
+  landingAuthorizer: 'auto' | 'orchestrator' | 'user' | 'reviewer' | null;
+  verifiedBaseSha: string | null;
+  /** Landing policy stamped at creation from the repo spec's auto_land /
+   *  review flags. Null = legacy row — readers fall back through the spec. */
+  landingPolicy: 'default-review' | 'auto-merge' | 'full-review' | null;
+  /** Full-review loop (mirror of @pc/domain): reviewer dispatches consumed so
+   *  far (bounded), and the in-flight review run — null = none dispatched /
+   *  verdict recorded. Null on non-full-review and legacy rows. */
+  reviewRound: number | null;
+  reviewRunId: ULID | null;
+  /** Sealed deliverable commit the in-flight reviewer was briefed on —
+   *  approve settlement re-checks it against the CURRENT deliverable commit
+   *  so a mid-review reseal voids the verdict. Cleared with reviewRunId. */
+  reviewSealedCommit: string | null;
   status: ContractStatus;
   /** Optimistic-concurrency counter. */
   version: number;
@@ -308,6 +338,22 @@ export function isContract(value: unknown): value is Contract {
     (value.worktreePath === null || typeof value.worktreePath === 'string') &&
     (value.worktreeBaseBranch === null || typeof value.worktreeBaseBranch === 'string') &&
     (value.worktreeBaseSha === null || typeof value.worktreeBaseSha === 'string') &&
+    (value.targetShaBefore === null || typeof value.targetShaBefore === 'string') &&
+    (value.targetShaAfter === null || typeof value.targetShaAfter === 'string') &&
+    (value.mergeSha === null || typeof value.mergeSha === 'string') &&
+    (value.landingAuthorizer === null ||
+      value.landingAuthorizer === 'auto' ||
+      value.landingAuthorizer === 'orchestrator' ||
+      value.landingAuthorizer === 'user' ||
+      value.landingAuthorizer === 'reviewer') &&
+    (value.verifiedBaseSha === null || typeof value.verifiedBaseSha === 'string') &&
+    (value.landingPolicy === null ||
+      value.landingPolicy === 'default-review' ||
+      value.landingPolicy === 'auto-merge' ||
+      value.landingPolicy === 'full-review') &&
+    (value.reviewRound === null || typeof value.reviewRound === 'number') &&
+    (value.reviewRunId === null || typeof value.reviewRunId === 'string') &&
+    (value.reviewSealedCommit === null || typeof value.reviewSealedCommit === 'string') &&
     isContractStatus(value.status) &&
     typeof value.version === 'number' &&
     typeof value.createdAt === 'number' &&

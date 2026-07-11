@@ -85,6 +85,17 @@ export interface PredicateExecutors {
    *  Powers `git_diff_nonempty`. Optional — absent ⇒ the predicate fails with
    *  a clear "no git executor" reason. */
   hasGitDiff?: (cwd: 'worktree' | 'project') => Promise<boolean | null>;
+  /** Repo-relative '/'-separated paths actually changed between the run's
+   *  validated base and the sealed deliverable commit (PC-SDK derives them via
+   *  `git diff --name-only`; the builder's prose is never consulted).
+   *
+   *  Returns **null** when the evidence is unreadable (git repo unreachable,
+   *  base/deliverable SHAs unknown) — the evaluator routes null to
+   *  INCONCLUSIVE, never false, per verification-soundness Principle 1.
+   *
+   *  Powers `changed_paths_within`. Optional — absent ⇒ the predicate fails
+   *  with a clear "no executor" reason. */
+  changedPaths?: () => Promise<string[] | null>;
 }
 
 export interface PredicateFailure {
@@ -155,6 +166,8 @@ export async function evaluatePredicate(
       return evalExternalHandlePresent(ctx);
     case 'git_diff_nonempty':
       return await evalGitDiffNonempty(pred, executors);
+    case 'changed_paths_within':
+      return await evalChangedPathsWithin(pred, executors);
     case 'min_length':
       return evalMinLength(pred, ctx);
   }
@@ -450,6 +463,85 @@ async function evalGitDiffNonempty(
   }
   if (has) return { pass: true };
   return { pass: false, reason: 'git tree has no changes' };
+}
+
+// ── changed_paths_within (guard 3) ─────────────────────────────────────────
+
+/** v1 forbidden default. Minimal and additive on purpose — git never reports
+ *  `.git/**` in a diff, so this only catches a hostile/exotic path today; the
+ *  field exists so contracts can declare real forbidden zones. */
+export const DEFAULT_FORBIDDEN_CHANGED_PATHS: readonly string[] = ['.git/**'];
+
+async function evalChangedPathsWithin(
+  pred: Extract<AcceptancePredicate, { kind: 'changed_paths_within' }>,
+  executors: PredicateExecutors,
+): Promise<{ pass: boolean; reason?: string; inconclusive?: boolean }> {
+  if (!executors.changedPaths) {
+    return { pass: false, reason: 'no changed-paths executor available to derive the diff' };
+  }
+  const paths = await executors.changedPaths();
+  if (paths === null) {
+    // Same decidability rule as git_diff_nonempty: unreadable git state is NOT
+    // proof of out-of-scope work — park inconclusive, never a false fail.
+    return {
+      pass: false,
+      inconclusive: true,
+      reason: 'changed-path evidence inaccessible (git state unreadable) — inconclusive',
+    };
+  }
+  const forbidden = pred.forbidden ?? DEFAULT_FORBIDDEN_CHANGED_PATHS;
+  const forbiddenHits = paths.filter((p) => forbidden.some((g) => pathMatchesPattern(p, g)));
+  if (forbiddenHits.length > 0) {
+    return { pass: false, reason: `forbidden path(s) changed: ${listPaths(forbiddenHits)}` };
+  }
+  const outOfScope = paths.filter((p) => !pred.allowed.some((g) => pathMatchesPattern(p, g)));
+  if (outOfScope.length > 0) {
+    return { pass: false, reason: `changed path(s) outside declared scope: ${listPaths(outOfScope)}` };
+  }
+  return { pass: true };
+}
+
+function listPaths(paths: string[]): string {
+  const shown = paths.slice(0, 10);
+  const more = paths.length - shown.length;
+  return shown.join(', ') + (more > 0 ? ` (+${more} more)` : '');
+}
+
+/** Pattern semantics documented on the predicate (contract.ts): minimatch-style
+ *  subset — '**' spans segments, '*'/'?' stay within one segment, and a pattern
+ *  with no glob characters matches the exact path or as a directory prefix. */
+export function pathMatchesPattern(path: string, pattern: string): boolean {
+  const norm = (s: string): string =>
+    s.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const p = norm(path);
+  const g = norm(pattern);
+  if (!/[*?]/.test(g)) return p === g || p.startsWith(`${g}/`);
+  return globToRegExp(g).test(p);
+}
+
+function globToRegExp(glob: string): RegExp {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        i++;
+        if (glob[i + 1] === '/') {
+          i++;
+          re += '(?:[^/]+/)*'; // '**/' — zero or more whole segments
+        } else {
+          re += '.*'; // trailing/bare '**'
+        }
+      } else {
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${re}$`);
 }
 
 // ── Minimal JsonSchema validator (zero-dep) ─────────────────────────────────

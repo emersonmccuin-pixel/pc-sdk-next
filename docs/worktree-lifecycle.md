@@ -119,6 +119,12 @@ interface WorktreeProfile {
 
 Rules:
 
+- the main working copy always sits on the project's base branch (default
+  `main`) — never a feature branch. Feature branches exist only inside run
+  worktrees. Every run branches from the base branch tip; provisioning refuses
+  when the main copy is checked out elsewhere, and landing already guards it.
+  This is how parallel work stays findable and never silently lands into a
+  side branch;
 - setup is deterministic and project-configured; an agent does not improvise
   hidden provisioning outside the recorded profile;
 - package/download caches may be shared, but mutable dependency/build state is
@@ -257,7 +263,8 @@ A successful landing records:
 - merge commit or fast-forward receipt as policy specifies;
 - verification version and base SHA it covered;
 - positive `merge-base --is-ancestor` result;
-- timestamp and authorizer (`auto`, `orchestrator`, or `user`).
+- timestamp and authorizer (`auto`, `orchestrator`, `user`, or `reviewer` —
+  the full-review policy's independent approval).
 
 Timeout, ambiguous process exit, changed base/HEAD, dirty main copy, or missing
 ancestry proof is not success. It becomes a typed blocked/conflict/failed state

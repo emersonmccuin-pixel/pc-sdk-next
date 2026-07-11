@@ -36,7 +36,7 @@ import {
   type MarkAgentRunTerminalInput,
   type UpdateAgentRunStatusInput,
 } from '@pc/db';
-import type { AgentRunFailureCause, AgentRunRow, AgentRunStatus, ULID } from '@pc/domain';
+import type { AgentRunFailureCause, AgentRunRow, AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
 import { toAgentRunDto } from './adapters.ts';
 
 export interface AgentRunChangedPublication {
@@ -203,6 +203,8 @@ export class AgentRunMutationGateway {
     failureCause?: AgentRunFailureCause | null;
     failureReason?: string | null;
     cancelOpenAsk?: ULID | null;
+    /** Worktree-pipeline stamp (guarded in @pc/db). Omit for null-lifecycle rows. */
+    lifecycleState?: RunLifecycleState;
     worktreeDir?: string;
     startedAt?: number;
   }): AgentRunChangedPublication | null {
@@ -222,6 +224,7 @@ export class AgentRunMutationGateway {
           failureCause: input.failureCause ?? 'cancelled',
           failureReason: input.failureReason ?? 'run cancelled',
           completedAt: input.now,
+          ...(input.lifecycleState !== undefined ? { lifecycleState: input.lifecycleState } : {}),
         });
         return this.getRun(input.runId);
       },
@@ -238,6 +241,9 @@ export class AgentRunMutationGateway {
     failureCause: AgentRunFailureCause | null;
     failureReason: string | null;
     completedAt: number;
+    /** Worktree-pipeline stamp (guarded in @pc/db). Omit for null-lifecycle
+     *  rows and for repo completions (verify/land continue past terminal). */
+    lifecycleState?: RunLifecycleState;
     worktreeDir?: string;
     startedAt?: number;
   }): AgentRunChangedPublication | null {
@@ -256,6 +262,7 @@ export class AgentRunMutationGateway {
           failureCause: input.failureCause,
           failureReason: input.failureReason,
           completedAt: input.completedAt,
+          ...(input.lifecycleState !== undefined ? { lifecycleState: input.lifecycleState } : {}),
         });
         return this.getRun(input.runId);
       },

@@ -1,6 +1,7 @@
 // Project domain type + per-project settings.
 
 import type { ULID } from './ulid.ts';
+import type { WorktreeProfile } from './worktree.ts';
 
 /** Section 27 — per-project setting overlay. Stored in the `projects.settings`
  *  JSON column; defaults fill in missing keys via `withProjectSettingsDefaults`. */
@@ -111,4 +112,8 @@ export interface Project {
   /** Command focus — epoch-ms the planner starred this project; null = not in
    *  focus. Drives the gold star in the LeftRail. */
   focusedAt: number | null;
+  /** Worktree provisioning profile (docs/worktree-lifecycle.md). Stored raw in
+   *  `projects.worktree_profile`; readers validate via parseWorktreeProfile.
+   *  Null = no profile — exactly the profile-less provisioning behavior. */
+  worktreeProfile: WorktreeProfile | null;
 }

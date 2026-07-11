@@ -72,6 +72,58 @@ You are running inside an isolated git worktree: \`${input.worktreeDir}\`
   return parts.join('\n');
 }
 
+/** First message for a full-review dispatch: ties the reviewer to the target
+ *  contract + SEALED commit (guard 4 — review consumes a sealed commit) and
+ *  restates the read-only boundary. The charter carries the craft; this
+ *  carries the facts. */
+export function buildReviewBrief(input: {
+  contractId: string;
+  podName: string | null;
+  worktreeDir: string;
+  branch: string | null;
+  sealedCommit: string;
+  baseBranch: string | null;
+  baseSha: string | null;
+  expectedOutput: ExpectedOutput;
+  report: string | null;
+  reviewRound: number;
+}): string {
+  const lines: string[] = [];
+  lines.push(
+    `Independent review (round ${input.reviewRound}) of contract ${input.contractId}` +
+      (input.podName ? ` (built by agent '${input.podName}')` : '') +
+      '.',
+  );
+  lines.push('');
+  lines.push(
+    `Review checkout (your cwd — a disposable detached checkout of the sealed commit, READ-ONLY): ${input.worktreeDir}`,
+  );
+  if (input.branch) lines.push(`Branch: ${input.branch}`);
+  lines.push(`Sealed commit under review: ${input.sealedCommit}`);
+  if (input.baseBranch || input.baseSha) {
+    lines.push(`Base: ${input.baseBranch ?? '?'}${input.baseSha ? ` @ ${input.baseSha}` : ''}`);
+  }
+  if (input.baseSha) {
+    lines.push(`Review exactly this range: git diff ${input.baseSha}..${input.sealedCommit}`);
+  }
+  lines.push('');
+  lines.push("The contract's expected output (what the sealed work must satisfy):");
+  lines.push('```json');
+  lines.push(JSON.stringify(input.expectedOutput, null, 2));
+  lines.push('```');
+  if (input.report) {
+    lines.push('');
+    lines.push(`Builder's report: ${input.report}`);
+  }
+  lines.push('');
+  lines.push(
+    'Judge the sealed commit against the contract, then submit your verdict via pc_submit_deliverable ' +
+      '{ kind: "payload", data: { verdict: "approve" | "reject", findings: [{ file, line?, summary, severity }] } }. ' +
+      'Approve lands the commit with no further human look; reject sends it to a Fix cycle carrying your findings.',
+  );
+  return lines.join('\n');
+}
+
 /** The `[agent-…]` terminal envelope injected into the orchestrator chat. */
 export function buildTerminalEnvelope(input: {
   kind: 'agent-completed' | 'agent-failed';
@@ -84,6 +136,8 @@ export function buildTerminalEnvelope(input: {
   verificationStatus?: string | null;
   verificationNotes?: string | null;
   landingStatus?: string | null;
+  /** Full-review policy: an independent review run is in flight. */
+  reviewInFlight?: boolean;
   deliverableSummary?: string | null;
 }): string {
   const lines: string[] = [];
@@ -98,7 +152,9 @@ export function buildTerminalEnvelope(input: {
     lines.push(`Verification: ${verdict}${input.verificationNotes ? ` — ${input.verificationNotes}` : ''} (contract ${input.contractId})`);
   }
   if (input.landingStatus) lines.push(`Landing: ${input.landingStatus}`);
-  else if (input.kind === 'agent-completed' && input.verificationStatus === 'passed' && input.deliverableSummary?.startsWith('repo ')) {
+  else if (input.reviewInFlight) {
+    lines.push('Landing: independent review in flight (full-review policy) — the verdict lands or opens a Fix cycle; no action needed unless you want to override via pc_review_contract.');
+  } else if (input.kind === 'agent-completed' && input.verificationStatus === 'passed' && input.deliverableSummary?.startsWith('repo ')) {
     lines.push('Landing: merge-ready — review the diff, then pc_review_contract accept to merge into the base branch.');
   }
   lines.push(

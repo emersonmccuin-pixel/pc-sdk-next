@@ -28,6 +28,7 @@ import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch
 import { McpManager } from './mcp/manager.ts';
 import { UsageCache } from './usage/cache.ts';
 import { UsagePoller } from './usage/poller.ts';
+import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
 import { startServer } from './server.ts';
 
 async function main(): Promise<void> {
@@ -133,11 +134,39 @@ async function main(): Promise<void> {
     },
   });
   portRef.port = server.port;
+  // Recovery order (docs/worktree-lifecycle.md 'Recovery' — locked):
+  // 1. sealed-run recovery — non-terminal runs with a sealed deliverable
+  //    (skipped by the boot sweep inside startServer) settle completed and
+  //    re-verify/land from durable evidence; shares the per-repo landing lock
+  //    with step 2;
+  // 2. pending-landing re-drive (idempotent — ancestry probe first, full
+  //    guard stack incl. base advancement when not yet merged);
+  // 3. teardown resume — landed contracts whose worktree survived the crash;
+  // 4. stranded scan — must see 1-3's FINAL state (a landed worktree awaiting
+  //    teardown must never classify stranded; re-driven landings finish
+  //    tearing down first);
+  // 5. attach — only now can a dispatch start. A dispatch mid-flight during
+  //    the scan has an async window between its worktree row (active) and its
+  //    run row (live) that the scan would misclassify 'no-live-run' — until
+  //    attach, dispatch verbs refuse 503 'server still booting'; chat itself
+  //    is unaffected.
+  await dispatch
+    .recoverSealedRuns()
+    .catch((err) => console.warn('[pc-sdk][dispatch] sealed-run recovery failed:', err));
+  await dispatch
+    .recoverPendingLandings()
+    .catch((err) => console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err));
+  await dispatch
+    .recoverIncompleteTeardowns()
+    .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
+  reconcileStrandedWorktreesAtBoot();
   dispatch.attach({ registry: server.registry, hub: server.hub, serverPort: server.port });
-  // Re-drive landings interrupted mid-flight (idempotent; degrade-never-block).
-  void dispatch.recoverPendingLandings().catch((err) =>
-    console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err),
-  );
+  // 6. review re-entry — AFTER attach (a review dispatch needs the live
+  //    context): full-review contracts whose reviewer died (or was never
+  //    dispatched pre-attach) re-enter the review gate re-dispatchable.
+  await dispatch
+    .recoverPendingReviews()
+    .catch((err) => console.warn('[pc-sdk][dispatch] review re-entry failed:', err));
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 

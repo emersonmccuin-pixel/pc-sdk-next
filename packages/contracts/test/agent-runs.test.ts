@@ -21,6 +21,7 @@ function makeDto(over: Partial<AgentRunDto> = {}): AgentRunDto {
     worktreeDir: '/tmp/wt',
     startedAt: 100,
     status: 'running',
+    lifecycleState: null,
     result: '',
     failureReason: null,
     failureCause: null,

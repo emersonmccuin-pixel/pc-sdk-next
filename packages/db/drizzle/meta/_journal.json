@@ -15,6 +15,48 @@
       "when": 1783741200000,
       "tag": "0001_agent_run_selection",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783742400000,
+      "tag": "0002_landing_receipt",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783743600000,
+      "tag": "0003_lifecycle_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1783744800000,
+      "tag": "0004_worktree_profile",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783746000000,
+      "tag": "0005_worktree_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783747200000,
+      "tag": "0006_full_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783748400000,
+      "tag": "0007_review_seal_binding",
+      "breakpoints": true
     }
   ]
 }

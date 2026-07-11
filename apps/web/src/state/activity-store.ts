@@ -12,9 +12,12 @@ import { useProjectAgentRuns, type AgentRunView } from '@/features/agent-runs/us
 export interface ActivitySummary {
   runningCount: number;
   runs: AgentRunView[];
+  /** Terminal runs parked in a preserved lifecycle state (merge-ready,
+   *  conflict, stranded, review-rejected, failed) — visible until resolved. */
+  preserved: AgentRunView[];
 }
 
 export function useProjectActivity(project: Project | null): ActivitySummary {
-  const { runs } = useProjectAgentRuns(project);
-  return useMemo(() => ({ runningCount: runs.length, runs }), [runs]);
+  const { runs, preserved } = useProjectAgentRuns(project);
+  return useMemo(() => ({ runningCount: runs.length, runs, preserved }), [runs, preserved]);
 }

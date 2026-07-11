@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import type { Project, ProjectSettings, ULID } from '@pc/domain';
+import type { Project, ProjectSettings, ULID, WorktreeProfile } from '@pc/domain';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import type { DbExecutor } from '../connection.ts';
@@ -32,6 +32,7 @@ interface ProjectRow {
   callsignSeq: number;
   notes: string | null;
   focusedAt: number | null;
+  worktreeProfile: WorktreeProfile | null;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -48,6 +49,8 @@ function toDomain(row: ProjectRow): Project {
     callsignSeq: row.callsignSeq ?? 0,
     notes: row.notes ?? null,
     focusedAt: row.focusedAt ?? null,
+    // Stored raw — readers validate via parseWorktreeProfile (fail closed).
+    worktreeProfile: row.worktreeProfile ?? null,
   };
 }
 
@@ -147,7 +150,30 @@ export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Pr
     callsignSeq: 0,
     notes: null,
     focusedAt: null,
+    worktreeProfile: null,
   };
+}
+
+/** Save/clear a project's worktree provisioning profile. Callers validate via
+ *  parseWorktreeProfile BEFORE writing; this repo just persists. Returns the
+ *  updated Project, or null if no such (live) project. */
+export function updateProjectWorktreeProfile(id: ULID, profile: WorktreeProfile | null): Project | null {
+  return updateProjectWorktreeProfileInDb(getDb(), id, profile);
+}
+
+export function updateProjectWorktreeProfileInDb(
+  db: DbExecutor,
+  id: ULID,
+  profile: WorktreeProfile | null,
+): Project | null {
+  const existing = getProjectByIdInDb(db, id);
+  if (!existing) return null;
+  db
+    .update(projects)
+    .set({ worktreeProfile: profile, updatedAt: Date.now() })
+    .where(and(eq(projects.id, id), isNull(projects.deletedAt)))
+    .run();
+  return getProjectByIdInDb(db, id);
 }
 
 /** 5+.4 (D87) — drag-reorder. Rewrites the `position` column for the given

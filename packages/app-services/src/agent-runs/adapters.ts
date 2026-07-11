@@ -39,11 +39,16 @@ export function toAgentRunDto(
     worktreeDir: opts.worktreeDir ?? row.worktreeDir ?? '',
     startedAt: opts.startedAt ?? row.queuedAt,
     status: row.status,
+    lifecycleState: row.lifecycleState ?? null,
     result: row.result ?? '',
     failureReason: row.failureReason,
     failureCause: row.failureCause,
     endedAt: row.completedAt,
     rev: row.rev,
+    // Provisioning receipts ride additively (docs/worktree-lifecycle.md).
+    gitReceipt: row.gitReceipt ?? null,
+    preparationReceipt: row.preparationReceipt ?? null,
+    readinessReceipt: row.readinessReceipt ?? null,
   };
 }
 

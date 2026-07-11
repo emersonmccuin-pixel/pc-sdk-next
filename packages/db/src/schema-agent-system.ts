@@ -13,6 +13,8 @@ import type {
   AcceptanceCriteria,
   AgentRunFailureCause,
   AgentRunStatus,
+  ContractLandingAuthorizer,
+  ContractLandingPolicy,
   ContractLandingStatus,
   ContractStatus,
   ContractV2,
@@ -20,9 +22,12 @@ import type {
   PendingAskKind,
   PendingAskOption,
   PendingAskStatus,
+  RunLifecycleState,
   ULID,
   VerificationStatus,
   VerificationTier,
+  WorktreeGitReceipt,
+  WorktreePhaseReceipt,
 } from '@pc/domain';
 
 import { projects } from './schema.ts';
@@ -58,6 +63,11 @@ export const agentRuns = sqliteTable(
     /** Updated-at hash at resume time. NULL until resumed. */
     podRevisionAtResume: text('pod_revision_at_resume'),
     status: text('status').notNull().$type<AgentRunStatus>(),
+    /** Worktree-pipeline state (docs/worktree-lifecycle.md, migration 0003) —
+     *  layered beside `status`, which stays authoritative for dispatch.
+     *  NULL = legacy/non-repo run. Transitions are gateway-guarded against
+     *  ALLOWED_LIFECYCLE_TRANSITIONS. */
+    lifecycleState: text('lifecycle_state').$type<RunLifecycleState | null>(),
     /** Self-FK to parent run id for continuations. NULL for original
      *  dispatches. */
     continues: text('continues').$type<ULID | null>(),
@@ -103,6 +113,11 @@ export const agentRuns = sqliteTable(
      *  worktree branch forked from. NULL for non-repo/legacy rows. */
     worktreeBaseBranch: text('worktree_base_branch'),
     worktreeBaseSha: text('worktree_base_sha'),
+    /** Provisioning receipts (docs/worktree-lifecycle.md, migration 0004).
+     *  NULL = non-repo run / profile-less phase / pre-receipt row. */
+    gitReceipt: text('git_receipt', { mode: 'json' }).$type<WorktreeGitReceipt | null>(),
+    preparationReceipt: text('preparation_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
+    readinessReceipt: text('readiness_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
     /** Runtime-selection stamp (architecture guard rule 2): the adapter id,
      *  account, and model this run executed under. NULL = pre-Phase-3 row. */
     runtimeId: text('runtime_id'),
@@ -165,6 +180,31 @@ export const agentContracts = sqliteTable(
     landedSha: text('landed_sha'),
     landingError: text('landing_error'),
     landedAt: integer('landed_at'),
+    /** worktree-lifecycle 'Merge receipt' (migration 0002) — target branch SHA
+     *  before/after the merge, the merge commit, who authorized, and the base
+     *  SHA verification covered. `landedSha` above keeps its original meaning
+     *  (the agent BRANCH TIP). NULL for rows predating these columns. */
+    targetShaBefore: text('target_sha_before'),
+    targetShaAfter: text('target_sha_after'),
+    mergeSha: text('merge_sha'),
+    landingAuthorizer: text('landing_authorizer').$type<ContractLandingAuthorizer | null>(),
+    verifiedBaseSha: text('verified_base_sha'),
+    /** Landing policy stamped at contract creation from the repo spec's
+     *  auto_land / review flags. NULL = legacy row; read via
+     *  effectiveLandingPolicy(). */
+    landingPolicy: text('landing_policy').$type<ContractLandingPolicy | null>(),
+    /** Full-review loop (migration 0006, docs/worktree-lifecycle.md 'Full
+     *  independent review'): review dispatches consumed (bounded) + the
+     *  in-flight review run — the durable marker crash recovery reads to
+     *  re-dispatch a died reviewer instead of wedging. NULL = non-full-review
+     *  / legacy row. */
+    reviewRound: integer('review_round'),
+    reviewRunId: text('review_run_id').$type<ULID | null>(),
+    /** Migration 0007 — the sealed deliverable commit the in-flight reviewer
+     *  was briefed on. Approve settlement re-checks it against the contract's
+     *  CURRENT deliverable.commit: a mid-review reseal voids the verdict (the
+     *  approval covers a commit nobody reviewed). Cleared with reviewRunId. */
+    reviewSealedCommit: text('review_sealed_commit'),
     status: text('status').notNull().default('issued').$type<ContractStatus>(),
     /** Optimistic-concurrency counter. */
     version: integer('version').notNull().default(1),

@@ -127,6 +127,11 @@ function deriveRepoV2(
   if (spec.require_diff !== false) {
     preds.push({ kind: 'git_diff_nonempty', cwd });
   }
+  // Guard 3 (docs/worktree-lifecycle.md): declared scope compiles to a derived
+  // changed-paths check — PC-SDK reads the real diff, never builder prose.
+  if (spec.paths_touched && spec.paths_touched.length > 0) {
+    preds.push({ kind: 'changed_paths_within', allowed: [...spec.paths_touched] });
+  }
   for (const rawCheck of spec.checks ?? []) {
     if (typeof rawCheck === 'string') {
       // Bare string: coerce known preset names (build/test/lint/typecheck) to

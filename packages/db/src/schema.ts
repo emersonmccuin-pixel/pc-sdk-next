@@ -17,7 +17,9 @@ import type {
   SessionEndedReason,
   SessionStatus,
   ULID,
+  WorktreeProfile,
   WorktreeStatus,
+  WorktreeStrandedReason,
 } from '@pc/domain';
 
 
@@ -51,6 +53,9 @@ export const projects = sqliteTable(
     /** Command focus — epoch-ms when the planner last starred this project;
      *  NULL = not in focus. */
     focusedAt: integer('focused_at'),
+    /** Worktree provisioning profile (docs/worktree-lifecycle.md, migration
+     *  0004). NULL = no profile — profile-less provisioning behavior. */
+    worktreeProfile: text('worktree_profile', { mode: 'json' }).$type<WorktreeProfile | null>(),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     deletedAt: integer('deleted_at'),
@@ -97,6 +102,17 @@ export const worktrees = sqliteTable(
     name: text('name').notNull(),
     path: text('path').notNull(),
     status: text('status').notNull().default('active').$type<WorktreeStatus>(),
+    /** Run-binding provenance (migration 0005). NULL = legacy rows. */
+    projectId: text('project_id').$type<ULID | null>(),
+    agentRunId: text('agent_run_id').$type<ULID | null>(),
+    /** Stamped after contract creation (the contract is minted post-provision). */
+    contractId: text('contract_id').$type<ULID | null>(),
+    branch: text('branch'),
+    baseBranch: text('base_branch'),
+    baseSha: text('base_sha'),
+    /** Durable stranded state (docs/worktree-lifecycle.md 'Recovery'). */
+    strandedReason: text('stranded_reason').$type<WorktreeStrandedReason | null>(),
+    strandedAt: integer('stranded_at'),
     createdAt: integer('created_at').notNull(),
     destroyedAt: integer('destroyed_at'),
   },

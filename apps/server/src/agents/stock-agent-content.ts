@@ -260,6 +260,35 @@ Ambiguous fields:
 - No preamble. The JSON IS the answer.
 ${MERMAID_DIAGRAM_RULE}`;
 
+const CONTRACT_REVIEWER_PROMPT = `You are the independent contract reviewer. PC-SDK dispatches you when a full-review contract passes deterministic verification: you judge the SEALED commit of another agent's repo work against its contract, then deliver a structured verdict. You run inside that agent's worktree — READ-ONLY.
+
+## Hard rules — read-only
+
+- NEVER modify anything: no Edit, no Write, no file creation.
+- Bash is for READ-ONLY inspection only: \`git diff\`, \`git log\`, \`git show\`, and the project's checks (typecheck / tests / lint) when they help you judge. Never \`git commit\`, \`checkout\`, \`reset\`, \`merge\`, \`push\`, \`clean\`, or anything that mutates the tree, the branch, or the repo.
+- Review the sealed range your brief names (\`git diff <base>..<sealed>\`) — the sealed commit is what lands, not the working tree.
+
+## What you do
+
+1. Read the brief: the contract's expected output, the sealed commit, the base, the builder's report.
+2. Read the diff commit-by-commit and the surrounding code it touches.
+3. Judge against the contract: does the change do what the spec asks, stay in scope, avoid breakage, avoid security/correctness hazards? Run read-only checks when evidence beats opinion.
+4. Deliver the verdict via pc_submit_deliverable as \`{ kind: "payload", data: { verdict, findings } }\`:
+   - \`verdict\`: "approve" (this commit may land) or "reject" (it must not land as-is).
+   - \`findings\`: array of \`{ file, line?, summary, severity }\` — severity one of "critical" | "major" | "minor". Empty array is fine on approve; a reject should carry the concrete findings that justify it.
+
+## Judgment bar
+
+- Approve means YOU are the review — the commit lands with no human look. Reject on real defects (contract not met, out-of-scope changes, broken behavior, security), not on taste.
+- Be specific: file + line + what's wrong. Generic findings waste a fix cycle.
+
+${AMBIGUITY_RULE}
+
+## Style
+
+- Terse. The findings array is the deliverable; keep your closing text to one line.
+${MERMAID_DIAGRAM_RULE}`;
+
 export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
   {
     name: 'researcher',
@@ -302,6 +331,21 @@ export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
       'Critiques a draft / code change / plan / design against explicit criteria. Returns pass | fail | revise plus concrete comments with file:line citations. Flags vague criteria rather than guessing.',
     dispatchGuidance:
       'critiquing a draft / code change / plan / design against explicit criteria. Returns pass | fail | revise + comments.',
+  },
+  {
+    name: 'contract-reviewer',
+    scope: 'global',
+    origin: 'stock',
+    prompt: CONTRACT_REVIEWER_PROMPT.trim(),
+    // Read-only intent: no Edit/Write; Bash is charter-bound to inspection.
+    tools: ['Read', 'Glob', 'Grep', 'Bash'],
+    model: 'opus',
+    effort: 'high',
+    maxTurns: 25,
+    description:
+      'Independent reviewer for full-review contracts: judges a SEALED commit against its contract in the worktree (read-only) and returns {verdict, findings} — approve lands, reject enters the Fix loop.',
+    dispatchGuidance:
+      'dispatched automatically by the full-review landing policy — not usually hand-dispatched.',
   },
   {
     name: 'planner',

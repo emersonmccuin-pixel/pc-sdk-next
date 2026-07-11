@@ -22,6 +22,8 @@ export {
   updateProjectMetaInDb,
   updateProjectNotes,
   updateProjectNotesInDb,
+  updateProjectWorktreeProfile,
+  updateProjectWorktreeProfileInDb,
 } from './repos/projects.ts';
 export type {
   CreateProjectInput,
@@ -56,6 +58,7 @@ export type {
 export {
   createContract,
   createContractInDb,
+  findContractByReviewRun,
   getContract,
   getContractInDb,
   listContractsForProject,
@@ -63,9 +66,13 @@ export {
   listContractsForRun,
   listContractsForRunInDb,
   listAbandonedContractBranches,
+  listContractsAwaitingIndependentReview,
+  listContractsLandedTeardownIncomplete,
   listContractsPendingLanding,
+  listContractsSealedUnverified,
   setContractDeliverable,
   setContractLanding,
+  setContractReviewState,
   setContractRun,
   setContractVerification,
 } from './repos/contracts.ts';
@@ -74,13 +81,18 @@ export type {
   CreateContractInput,
   SetDeliverableInput,
   SetLandingInput,
+  SetReviewStateInput,
   SetVerificationInput,
 } from './repos/contracts.ts';
 
 export {
   getActiveWorktreeByName,
   listActiveWorktrees,
+  listStrandedWorktrees,
   markWorktreeDestroyed,
+  markWorktreeStranded,
+  reviveStrandedWorktree,
+  setWorktreeContractId,
   upsertWorktree,
 } from './repos/worktrees.ts';
 export type { UpsertWorktreeInput, WorktreeRow } from './repos/worktrees.ts';
@@ -173,13 +185,16 @@ export {
   getAgentRunRow,
   insertAgentRunRow,
   listActiveAgentRunsForProject,
+  listAgentRunsForContract,
   listAgentRunsForSession,
   listNonTerminalAgentRuns,
+  listPreservedTerminalAgentRuns,
   listRecentTerminalAgentRuns,
   markAgentRunDelivered,
   markAgentRunTerminal,
   setAgentRunCcSession,
   setAgentRunContractId,
+  setAgentRunPhaseReceipt,
   touchAgentRunActivity,
   updateAgentRunPid,
   updateAgentRunStatus,

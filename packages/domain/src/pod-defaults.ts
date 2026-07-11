@@ -8,7 +8,7 @@
 // Stock-only for v1. User-customised pods that want defaults must pass
 // `expected_output` explicitly until a default column lands on the agents row.
 
-import type { ExpectedOutput } from './contract.ts';
+import { reviewVerdictExpectedOutput, type ExpectedOutput } from './contract.ts';
 
 /** A stock pod's default contract output. */
 export interface PodDefault {
@@ -49,6 +49,10 @@ const POD_DEFAULTS: Record<string, PodDefault> = {
       required: ['verdict'],
     },
   }),
+
+  // contract-reviewer is the full-review independent reviewer: a structured
+  // verdict payload tied to the contract + sealed commit (schema_valid-gated).
+  'contract-reviewer': podDefault(reviewVerdictExpectedOutput()),
 
   // Planner returns an ordered plan as an answer. Substance check (non-trivial
   // plan passes); no literal-token dependency so different phrasings of a

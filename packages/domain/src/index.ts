@@ -26,16 +26,36 @@ export * as ContractV2 from './contract.ts';
 export type {
   Deliverable,
   DeliverableKind,
+  ContractLandingAuthorizer,
+  ContractLandingPolicy,
   ContractLandingStatus,
   ContractStatus,
   JsonSchema,
 } from './contract.ts';
 export {
+  CONTRACT_LANDING_AUTHORIZERS,
+  CONTRACT_LANDING_POLICIES,
   CONTRACT_LANDING_STATUSES,
   CONTRACT_STATUSES,
   DELIVERABLE_KINDS,
+  effectiveLandingPolicy,
   isContractStatus,
   isDeliverableKind,
+} from './contract.ts';
+// Independent-review verdict (full-review landing policy) — the reviewer's
+// payload-deliverable vocabulary.
+export type {
+  ReviewFinding,
+  ReviewFindingSeverity,
+  ReviewVerdict,
+  ReviewVerdictPayload,
+} from './contract.ts';
+export {
+  REVIEW_FINDING_SEVERITIES,
+  REVIEW_VERDICT_SCHEMA,
+  REVIEW_VERDICTS,
+  parseReviewVerdictPayload,
+  reviewVerdictExpectedOutput,
 } from './contract.ts';
 export {
   deriveAcceptanceCriteriaV2,
@@ -55,7 +75,12 @@ export type {
   PredicateExecutors,
   PredicateFailure,
 } from './ac-evaluator.ts';
-export { evaluateAcceptance, evaluatePredicate } from './ac-evaluator.ts';
+export {
+  DEFAULT_FORBIDDEN_CHANGED_PATHS,
+  evaluateAcceptance,
+  evaluatePredicate,
+  pathMatchesPattern,
+} from './ac-evaluator.ts';
 export type { Project, ProjectSettings } from './project.ts';
 export {
   defaultProjectSettings,
@@ -103,7 +128,22 @@ export {
   resolveClaudeConfigDirEnv,
   withSettingsDefaults,
 } from './settings.ts';
-export type { Worktree, WorktreeStatus } from './worktree.ts';
+export type {
+  Worktree,
+  WorktreeCommandStep,
+  WorktreeGitReceipt,
+  WorktreePhaseReceipt,
+  WorktreeProfile,
+  WorktreeProfileParse,
+  WorktreeStatus,
+  WorktreeStrandedReason,
+} from './worktree.ts';
+export {
+  parseWorktreeProfile,
+  WORKTREE_BASE_BRANCH_RE,
+  WORKTREE_PROFILE_MAX_COMMANDS,
+  WORKTREE_PROFILE_MAX_COMMAND_CHARS,
+} from './worktree.ts';
 export type {
   AgentColor,
   AgentDef,
@@ -225,3 +265,12 @@ export {
   PENDING_ASK_KINDS,
   PENDING_ASK_STATUSES,
 } from './agent-system.ts';
+export type { RunLifecycleState } from './run-lifecycle.ts';
+export {
+  ALLOWED_LIFECYCLE_TRANSITIONS,
+  IllegalLifecycleTransitionError,
+  PRESERVED_LIFECYCLE_STATES,
+  RUN_LIFECYCLE_STATES,
+  canTransition,
+  isRunLifecycleState,
+} from './run-lifecycle.ts';

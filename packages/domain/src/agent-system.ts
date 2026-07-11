@@ -7,6 +7,8 @@
 
 import type { ULID } from './ulid.ts';
 import type { PendingAskOption } from './agent-comms.ts';
+import type { RunLifecycleState } from './run-lifecycle.ts';
+import type { WorktreeGitReceipt, WorktreePhaseReceipt } from './worktree.ts';
 
 /** Full in-memory state machine, persisted 1:1. */
 export type AgentRunStatus =
@@ -110,6 +112,10 @@ export interface AgentRunRow {
    *  resume. NULL for non-resumed runs. */
   podRevisionAtResume: string | null;
   status: AgentRunStatus;
+  /** Worktree-pipeline state (docs/worktree-lifecycle.md 'Lifecycle states'),
+   *  layered beside `status` (which stays authoritative for dispatch).
+   *  NULL = legacy/non-repo run — no lifecycle vocabulary applies. */
+  lifecycleState: RunLifecycleState | null;
   /** Self-FK to parent run for continuations. */
   continues: ULID | null;
   parentInvokeDepth: number;
@@ -153,6 +159,12 @@ export interface AgentRunRow {
   /** Repo dispatch provenance. NULL for non-repo and legacy rows. */
   worktreeBaseBranch: string | null;
   worktreeBaseSha: string | null;
+  /** Provisioning receipts (docs/worktree-lifecycle.md 'Provisioning and
+   *  readiness'). NULL for non-repo runs, profile-less runs (preparation/
+   *  readiness), and rows predating the columns. */
+  gitReceipt: WorktreeGitReceipt | null;
+  preparationReceipt: WorktreePhaseReceipt | null;
+  readinessReceipt: WorktreePhaseReceipt | null;
   /** Runtime-selection stamp (agent-runtime architecture guard rule 2): the
    *  adapter id, account, and model this run executed under. NULL = legacy. */
   runtimeId: string | null;

@@ -14,8 +14,10 @@ import {
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   listConversationEvents,
+  listPreservedTerminalAgentRuns,
   listProjectVisibleAgents,
   listRecentTerminalAgentRuns,
+  listStrandedWorktrees,
 } from '@pc/db';
 import { ContractService, toAgentRunDto, toPendingAskDto } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
@@ -82,15 +84,24 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
 
   // ── run reads ───────────────────────────────────────────────────────────────
 
-  /** Activity-rail feeder: non-terminal runs + a recent terminal window. */
+  /** Activity-rail feeder: non-terminal runs + state-based retention
+   *  (docs/worktree-lifecycle.md 'Teardown and retention') — runs parked in a
+   *  preserved lifecycle state (merge-ready, conflict, stranded,
+   *  review-rejected, failed) stay listed until resolved; the 24h window
+   *  applies only to uneventful terminal runs. */
   app.get('/api/projects/:id/agent-runs', (c) => {
     const projectId = project(c);
     if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
     const active = listActiveAgentRunsForProject(projectId);
+    const preserved = listPreservedTerminalAgentRuns(projectId);
     const recent = listRecentTerminalAgentRuns(Date.now() - TERMINAL_LIST_WINDOW_MS).filter(
       (r) => r.projectId === projectId,
     );
-    return c.json({ ok: true, runs: [...active, ...recent].map((r) => toAgentRunDto(r)) });
+    const seen = new Set<string>();
+    const rows = [...active, ...preserved, ...recent].filter((r) =>
+      seen.has(r.id) ? false : (seen.add(r.id), true),
+    );
+    return c.json({ ok: true, runs: rows.map((r) => toAgentRunDto(r)) });
   });
 
   /** pc_list_my_runs — scoped to the dispatcher session. */
@@ -172,7 +183,44 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     });
   });
 
+  /** Stranded isolation read (docs/worktree-lifecycle.md 'Recovery') — the
+   *  boot scan's durable output. Read-only; recovery/UI are later slices. */
+  app.get('/api/projects/:id/worktrees/stranded', (c) => {
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    return c.json({
+      ok: true,
+      worktrees: listStrandedWorktrees(projectId).map((w) => ({
+        id: w.id,
+        name: w.name,
+        path: w.path,
+        branch: w.branch,
+        baseBranch: w.baseBranch,
+        agentRunId: w.agentRunId,
+        contractId: w.contractId,
+        strandedReason: w.strandedReason,
+        strandedAt: w.strandedAt,
+      })),
+    });
+  });
+
   // ── contract doors ──────────────────────────────────────────────────────────
+
+  /** Contract list (contractRoutes.forProject) — the web read. Full DTOs:
+   *  merge receipt, landingPolicy, verificationNotes ride along. Newest
+   *  first. Shape: ListContractsResponse. */
+  app.get('/api/projects/:id/contracts', (c) => {
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    return c.json({ ok: true, contracts: contracts.listByProject(projectId) });
+  });
+
+  /** Contract detail (contractRoutes.detail). Shape: ContractDetailResponse. */
+  app.get('/api/contracts/:contractId', (c) => {
+    const contract = contracts.get(c.req.param('contractId') as ULID);
+    if (!contract) return c.json({ ok: false, error: 'contract not found' }, 404);
+    return c.json({ ok: true, contract });
+  });
 
   /** pc_get_contract — the worker reads its OWN contract. */
   app.get('/api/projects/:id/agent-runs/:runId/contract', (c) => {

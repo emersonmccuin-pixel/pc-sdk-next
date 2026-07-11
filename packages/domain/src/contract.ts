@@ -28,10 +28,43 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 // contract), 'conflict' (durable gate — a human/orchestrator resolves, then
 // re-lands), 'failed' (mechanics error; retryable through the same door),
 // 'abandoned' (explicit decision to discard unlanded work — the branch is
-// PRESERVED and its tip recorded before the worktree dir is reclaimed).
+// PRESERVED and its tip recorded before the worktree dir is reclaimed),
+// 'stale-base' (guard 7 — the target branch advanced past the base the run's
+// verification covered; parked for orchestrator revalidation, worktree +
+// branch preserved, never auto-rebased).
 // NULL = not applicable (non-repo kinds and pre-415 history).
-export const CONTRACT_LANDING_STATUSES = ['pending', 'landed', 'conflict', 'failed', 'abandoned'] as const;
+export const CONTRACT_LANDING_STATUSES = ['pending', 'landed', 'conflict', 'failed', 'abandoned', 'stale-base'] as const;
 export type ContractLandingStatus = (typeof CONTRACT_LANDING_STATUSES)[number];
+
+// docs/worktree-lifecycle.md 'Merge receipt' — who authorized the landing.
+// 'auto' = policy auto-merge on a verified pass; 'orchestrator' =
+// pc_review_contract accept; 'user' = explicit human action; 'reviewer' =
+// full-review policy — an independent review specialist approved the sealed
+// commit, and PC-SDK landed through the same guarded path.
+export const CONTRACT_LANDING_AUTHORIZERS = ['auto', 'orchestrator', 'user', 'reviewer'] as const;
+export type ContractLandingAuthorizer = (typeof CONTRACT_LANDING_AUTHORIZERS)[number];
+
+// docs/worktree-lifecycle.md 'Delivery policies' — per-contract landing path.
+// 'default-review' = park merge-ready for orchestrator accept; 'auto-merge' =
+// opt-in auto-land on a verified pass; 'full-review' = independent review
+// phase — a review specialist run consumes the sealed commit; approve lands,
+// reject enters the bounded Fix ↺ Review loop.
+// NULL on the row = legacy contract; read through effectiveLandingPolicy().
+export const CONTRACT_LANDING_POLICIES = ['default-review', 'auto-merge', 'full-review'] as const;
+export type ContractLandingPolicy = (typeof CONTRACT_LANDING_POLICIES)[number];
+
+/** Nullable-with-fallback read for `landingPolicy`: legacy rows (NULL) map
+ *  through the spec's flags, exactly as pre-policy code behaved. `review:
+ *  'full'` wins over `auto_land` — the stricter path is never downgraded. */
+export function effectiveLandingPolicy(
+  policy: ContractLandingPolicy | null | undefined,
+  spec: ExpectedOutput | null | undefined,
+): ContractLandingPolicy {
+  if (policy) return policy;
+  if (spec?.kind !== 'repo') return 'default-review';
+  if (spec.review === 'full') return 'full-review';
+  return spec.auto_land === true ? 'auto-merge' : 'default-review';
+}
 
 export const DELIVERABLE_KINDS = [
   'answer',
@@ -87,6 +120,13 @@ export type ExpectedOutput =
        *  True: PC-SDK lands automatically when verification passed with
        *  positive receipts. The builder can never set this. */
       auto_land?: boolean;
+      /** docs/worktree-lifecycle.md 'Full independent review' — 'full'
+       *  requests the independent Review phase: on a verified pass PC-SDK
+       *  dispatches a review specialist against the SEALED commit instead of
+       *  parking merge-ready. Wins over auto_land. Issuer-owned like auto_land
+       *  — the spec is authored by the orchestrator only; no builder-writable
+       *  path (pc_submit_deliverable) can touch it. */
+      review?: 'full';
     }
   | {
       kind: 'external';
@@ -173,7 +213,16 @@ export type AcceptancePredicate =
   | { kind: 'tool_called'; name: string; min_count?: number } // action — reads the run transcript
   | { kind: 'pending_ask_created' } // action — durable side-effect of the ask tools
   | { kind: 'report_contains'; pattern: string; regex?: boolean } // answer (report text, not WI body)
-  | { kind: 'min_length'; min: number }; // deliverable length check (measures deliverable, not report)
+  | { kind: 'min_length'; min: number } // deliverable length check (measures deliverable, not report)
+  // repo — guard 3 (docs/worktree-lifecycle.md): PC-SDK derives the ACTUAL
+  // changed paths (`git diff --name-only <base>..<deliverable>`) and requires
+  // every one to match `allowed` (the contract's declared scope) and none to
+  // match `forbidden` (default: ['.git/**']). Never trusts builder prose.
+  // Pattern rules (minimatch-style subset, '/'-separated repo-relative paths):
+  //   '**' spans path segments, '*'/'?' match within one segment, and a
+  //   pattern with no glob characters matches the exact path or anything
+  //   beneath it as a directory prefix ('src/api' covers 'src/api/x.ts').
+  | { kind: 'changed_paths_within'; allowed: string[]; forbidden?: string[] };
 
 export const ACCEPTANCE_PREDICATE_KINDS = [
   'files_exist',
@@ -189,6 +238,7 @@ export const ACCEPTANCE_PREDICATE_KINDS = [
   'pending_ask_created',
   'report_contains',
   'min_length',
+  'changed_paths_within',
 ] as const;
 export type AcceptancePredicateKind = (typeof ACCEPTANCE_PREDICATE_KINDS)[number];
 
@@ -217,6 +267,7 @@ export const PREDICATE_DECIDABILITY: Record<AcceptancePredicateKind, 'decidable'
   pending_ask_created: 'decidable',
   report_contains: 'decidable',
   min_length: 'decidable',
+  changed_paths_within: 'decidable',
 };
 
 export function isDecidablePredicate(kind: AcceptancePredicateKind): boolean {
@@ -232,6 +283,83 @@ export const CONTRACT_STATUSES = [
   'rejected',
 ] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
+
+// ── Independent-review verdict (docs/worktree-lifecycle.md 'Full independent
+//    review': "Review produces structured findings tied to the contract and
+//    sealed commit") ──────────────────────────────────────────────────────────
+// The reviewer's deliverable is NOT a new mechanism — it rides the existing
+// `payload` kind: `{ kind: 'payload', semantic: 'verdict', schema:
+// REVIEW_VERDICT_SCHEMA }` with `data` matching ReviewVerdictPayload. This is
+// the smallest coherent surface: no new deliverable renderer, no union change.
+
+export const REVIEW_VERDICTS = ['approve', 'reject'] as const;
+export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+
+export const REVIEW_FINDING_SEVERITIES = ['critical', 'major', 'minor'] as const;
+export type ReviewFindingSeverity = (typeof REVIEW_FINDING_SEVERITIES)[number];
+
+export interface ReviewFinding {
+  file: string;
+  line?: number;
+  summary: string;
+  severity: ReviewFindingSeverity;
+}
+
+export interface ReviewVerdictPayload {
+  verdict: ReviewVerdict;
+  findings: ReviewFinding[];
+}
+
+/** The payload schema a review dispatch's contract carries (schema_valid). */
+export const REVIEW_VERDICT_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: [...REVIEW_VERDICTS] },
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          file: { type: 'string' },
+          line: { type: 'number' },
+          summary: { type: 'string' },
+          severity: { type: 'string', enum: [...REVIEW_FINDING_SEVERITIES] },
+        },
+        required: ['file', 'summary', 'severity'],
+      },
+    },
+  },
+  required: ['verdict', 'findings'],
+};
+
+/** The full expected-output spec for a review dispatch. */
+export function reviewVerdictExpectedOutput(): Extract<ExpectedOutput, { kind: 'payload' }> {
+  return { kind: 'payload', semantic: 'verdict', schema: REVIEW_VERDICT_SCHEMA };
+}
+
+/** Strict parse of a submitted review payload. Null = no usable verdict —
+ *  callers treat that like a crashed review (re-dispatchable), never a pass. */
+export function parseReviewVerdictPayload(data: unknown): ReviewVerdictPayload | null {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  const verdict = record.verdict;
+  if (verdict !== 'approve' && verdict !== 'reject') return null;
+  if (!Array.isArray(record.findings)) return null;
+  const findings: ReviewFinding[] = [];
+  for (const raw of record.findings) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const f = raw as Record<string, unknown>;
+    if (typeof f.file !== 'string' || typeof f.summary !== 'string') return null;
+    if (!(REVIEW_FINDING_SEVERITIES as readonly string[]).includes(String(f.severity))) return null;
+    findings.push({
+      file: f.file,
+      summary: f.summary,
+      severity: f.severity as ReviewFindingSeverity,
+      ...(typeof f.line === 'number' ? { line: f.line } : {}),
+    });
+  }
+  return { verdict, findings };
+}
 
 // ── Guards ──────────────────────────────────────────────────────────────────
 

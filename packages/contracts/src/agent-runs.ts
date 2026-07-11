@@ -19,6 +19,74 @@ export const AGENT_RUN_STATUSES = [
 ] as const;
 export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 
+/** Browser-safe mirror of @pc/domain RUN_LIFECYCLE_STATES (worktree pipeline,
+ *  docs/worktree-lifecycle.md). Keep in lockstep. */
+export const RUN_LIFECYCLE_STATES = [
+  'queued',
+  'provisioning',
+  'preparing',
+  'ready',
+  'planning',
+  'building',
+  'verifying',
+  'reviewing',
+  'fixing',
+  'merge-ready',
+  'merging',
+  'merged',
+  'tearing-down',
+  'completed',
+  'provisioning-failed',
+  'verification-failed',
+  'review-rejected',
+  'conflict',
+  'failed',
+  'cancelled',
+  'stranded',
+] as const;
+export type RunLifecycleState = (typeof RUN_LIFECYCLE_STATES)[number];
+
+/** Browser-safe mirror of @pc/domain PRESERVED_LIFECYCLE_STATES — runs in
+ *  these states stay visible until resolved (no recent-terminal window).
+ *  Keep in lockstep. */
+export const PRESERVED_LIFECYCLE_STATES = [
+  'merge-ready',
+  'conflict',
+  'stranded',
+  'review-rejected',
+  'failed',
+] as const satisfies readonly RunLifecycleState[];
+
+export function isPreservedLifecycleState(value: RunLifecycleState | null): boolean {
+  return value !== null && (PRESERVED_LIFECYCLE_STATES as readonly string[]).includes(value);
+}
+
+// ── Provisioning receipts (browser-safe mirrors of @pc/domain worktree.ts) ──
+
+export interface WorktreeGitReceiptDto {
+  worktreePath: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  cleanStatus: boolean;
+}
+
+export interface WorktreeCommandStepDto {
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  stdoutTail: string;
+  stderrTail: string;
+  timedOut: boolean;
+}
+
+export interface WorktreePhaseReceiptDto {
+  phase: 'preparation' | 'readiness';
+  ok: boolean;
+  steps: WorktreeCommandStepDto[];
+  finishedAt: number;
+}
+
 /** Browser-safe mirror of the agent-run row. */
 export interface AgentRunDto {
   runId: ULID;
@@ -31,12 +99,21 @@ export interface AgentRunDto {
   worktreeDir: string;
   startedAt: number;
   status: AgentRunStatus;
+  /** Worktree-pipeline state (docs/worktree-lifecycle.md). Additive surface —
+   *  the UI still keys terminal/non-terminal off `status`. null = non-repo/
+   *  legacy run. */
+  lifecycleState: RunLifecycleState | null;
   result: string;
   failureReason: string | null;
   failureCause: string | null;
   endedAt: number | null;
   /** Monotonic write counter (agent_runs.rev). */
   rev: number;
+  /** Provisioning receipts (docs/worktree-lifecycle.md). Additive surface —
+   *  absent/null on non-repo, profile-less, and legacy rows. */
+  gitReceipt?: WorktreeGitReceiptDto | null;
+  preparationReceipt?: WorktreePhaseReceiptDto | null;
+  readinessReceipt?: WorktreePhaseReceiptDto | null;
 }
 
 // ── Canonical resource payload (agent-run entity, full snapshot) ─────────────
@@ -82,6 +159,10 @@ export function isAgentRunStatus(value: unknown): value is AgentRunStatus {
   return typeof value === 'string' && (AGENT_RUN_STATUSES as readonly string[]).includes(value);
 }
 
+export function isRunLifecycleState(value: unknown): value is RunLifecycleState {
+  return typeof value === 'string' && (RUN_LIFECYCLE_STATES as readonly string[]).includes(value);
+}
+
 export function isAgentRunChangedReason(value: unknown): value is AgentRunChangedReason {
   return (
     typeof value === 'string' &&
@@ -101,12 +182,21 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
     typeof value.worktreeDir === 'string' &&
     typeof value.startedAt === 'number' &&
     isAgentRunStatus(value.status) &&
+    (value.lifecycleState === null || isRunLifecycleState(value.lifecycleState)) &&
     typeof value.result === 'string' &&
     (value.failureReason === null || typeof value.failureReason === 'string') &&
     (value.failureCause === null || typeof value.failureCause === 'string') &&
     (value.endedAt === null || typeof value.endedAt === 'number') &&
-    typeof value.rev === 'number'
+    typeof value.rev === 'number' &&
+    isOptionalRecord(value.gitReceipt) &&
+    isOptionalRecord(value.preparationReceipt) &&
+    isOptionalRecord(value.readinessReceipt)
   );
+}
+
+/** Receipts are additive + shape-owned by the server; presence-checked only. */
+function isOptionalRecord(value: unknown): boolean {
+  return value === undefined || value === null || isRecord(value);
 }
 
 export function isAgentRunChangedLivePayload(

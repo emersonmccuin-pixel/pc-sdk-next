@@ -9,6 +9,7 @@ import {
   isContractStatus,
   isDeliverableKind,
   isExpectedOutputKind,
+  type AcceptancePredicate,
   type Contract,
   type Deliverable,
   type ExpectedOutput,
@@ -35,6 +36,15 @@ const baseContract: Contract = {
   landedSha: null,
   landingError: null,
   landedAt: null,
+  targetShaBefore: null,
+  targetShaAfter: null,
+  mergeSha: null,
+  landingAuthorizer: null,
+  verifiedBaseSha: null,
+  landingPolicy: null,
+  reviewRound: null,
+  reviewRunId: null,
+  reviewSealedCommit: null,
   status: 'issued',
   version: 1,
   createdAt: 1,
@@ -47,6 +57,30 @@ test('Contract guard accepts a full row and rejects drift', () => {
   assert.equal(isContract({ ...baseContract, version: null }), false);
   // nullable pmRef + agentRunId are allowed
   assert.equal(isContract({ ...baseContract, pmRef: null, agentRunId: 'r1' }), true);
+  // merge receipt + landing policy: enum'd fields reject drift, nulls pass
+  assert.equal(
+    isContract({
+      ...baseContract,
+      targetShaBefore: 'a'.repeat(40),
+      targetShaAfter: 'b'.repeat(40),
+      mergeSha: 'b'.repeat(40),
+      landingAuthorizer: 'auto',
+      verifiedBaseSha: 'c'.repeat(40),
+      landingPolicy: 'auto-merge',
+    }),
+    true,
+  );
+  assert.equal(isContract({ ...baseContract, landingAuthorizer: 'builder' }), false);
+  assert.equal(isContract({ ...baseContract, landingPolicy: 'yolo' }), false);
+  // Full-review loop fields: 'reviewer' authorizer + round/run markers.
+  assert.equal(
+    isContract({ ...baseContract, landingAuthorizer: 'reviewer', reviewRound: 1, reviewRunId: 'r9' }),
+    true,
+  );
+  assert.equal(isContract({ ...baseContract, reviewRound: 'two' }), false);
+  assert.equal(isContract({ ...baseContract, reviewRunId: 42 }), false);
+  assert.equal(isContract({ ...baseContract, reviewSealedCommit: 'a'.repeat(40) }), true);
+  assert.equal(isContract({ ...baseContract, reviewSealedCommit: 42 }), false);
 });
 
 // ── Every ExpectedOutput kind round-trips through the Contract DTO ──
@@ -54,7 +88,18 @@ const expectedOutputs: ExpectedOutput[] = [
   { kind: 'answer', must_address: ['why', 'how'], min_chars: 50 },
   { kind: 'prose', doc_type: 'prd', sections: ['Goals'], store: 'attachment' },
   { kind: 'payload', schema: { type: 'object', required: ['x'] }, semantic: 'decision' },
-  { kind: 'repo', isolation: 'worktree', paths_touched: ['a.ts'], checks: [{ preset: 'build' }], require_diff: true },
+  {
+    kind: 'repo',
+    isolation: 'worktree',
+    paths_touched: ['a.ts'],
+    checks: [
+      { preset: 'build', timeout_ms: 60_000 },
+      { command: 'pnpm test', cwd: 'worktree', timeout_ms: 120_000 },
+    ],
+    require_diff: true,
+    auto_land: true,
+  },
+  { kind: 'repo', paths_touched: ['b.ts'], review: 'full' },
   {
     kind: 'external',
     system: 'email',
@@ -92,6 +137,36 @@ test('every Deliverable kind round-trips on the Contract DTO', () => {
     const c = { ...baseContract, deliverable: d, status: 'submitted' as const };
     assert.equal(isContract(c), true);
   }
+});
+
+// ── Acceptance-predicate union stays in lockstep with @pc/domain ──
+// Typed literals compile-check the mirror; the guard accepts them on the DTO.
+const acceptancePredicates: AcceptancePredicate[] = [
+  { kind: 'files_exist', paths: ['a.ts'], min_size_bytes: 1 },
+  { kind: 'fields_populated', keys: ['x'] },
+  { kind: 'field_matches', key: 'x', pattern: '^y$' },
+  { kind: 'bash_exit_zero', command: 'pnpm test', cwd: 'worktree', timeout_ms: 120_000 },
+  { kind: 'attachments_present', names: ['out.png'] },
+  { kind: 'body_contains', pattern: 'done', regex: false },
+  { kind: 'schema_valid', schema: { type: 'object' } },
+  { kind: 'git_diff_nonempty', cwd: 'worktree' },
+  { kind: 'external_handle_present' },
+  { kind: 'tool_called', name: 'pc_x', min_count: 1 },
+  { kind: 'pending_ask_created' },
+  { kind: 'report_contains', pattern: 'ok', regex: true },
+  { kind: 'min_length', min: 10 },
+  { kind: 'changed_paths_within', allowed: ['src/**'], forbidden: ['.git/**'] },
+];
+
+test('every acceptance-predicate kind rides the Contract DTO', () => {
+  const c = { ...baseContract, acceptanceCriteria: acceptancePredicates };
+  assert.equal(isContract(c), true);
+});
+
+test('child_work_items_done is not a predicate kind (removed with work items)', () => {
+  // @ts-expect-error — stale v1 predicate; reintroducing it makes this line error.
+  const stale: AcceptancePredicate = { kind: 'child_work_items_done', all: true };
+  void stale;
 });
 
 test('contract status + mutation-reason guards', () => {

@@ -6,9 +6,17 @@
 //    cause 'server-restart' (in-process runtime sessions do not survive a
 //    restart), its open asks are cancelled, and its contract's verification is
 //    parked 'pending' (the agent never finished — re-dispatch, don't reject).
-//  - worktrees: active rows with no live run are logged as stranded, never
-//    silently reclaimed. Pending landings are re-driven post-attach by the
-//    dispatch service (the git mechanics live there).
+//    EXCEPTION (doc Recovery: 'sealed commit present after process loss →
+//    recover to verification/review'): a run that ITSELF delivered (its
+//    deliveredAt stamp — not merely a contract deliverable, which a
+//    continuation inherits from its parent) is SKIPPED here —
+//    DispatchService.recoverSealedRuns (index.ts, before the pending-landing
+//    re-drive) settles it completed and re-fires verification from that
+//    durable evidence.
+//  - worktrees: classified AFTER the pending-landing re-drive (locked ordering
+//    — re-driven landings must finish tearing down before classification), via
+//    reconcileStrandedWorktreesAtBoot below. Stranded is durable on the row;
+//    nothing is silently reclaimed.
 // Never silently resume, never fake success. Idempotent.
 
 import {
@@ -23,8 +31,8 @@ import {
 } from '@pc/db';
 import { AgentRunMutationGateway, ContractService } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
-import type { ULID } from '@pc/domain';
-import { scanStrandedWorktrees } from './dispatch/worktrees.ts';
+import { canTransition, type RunLifecycleState, type ULID } from '@pc/domain';
+import { reconcileStrandedWorktrees } from './dispatch/worktrees.ts';
 
 const RESTART_ERROR = 'server restarted mid-turn';
 
@@ -62,7 +70,6 @@ export interface BootRecoveryResult {
   scanned: number;
   recovered: string[];
   failedRuns: string[];
-  strandedWorktrees: string[];
 }
 
 /** Scan every project's active session; close out crashed turns. Returns the
@@ -92,14 +99,19 @@ export function runBootRecovery(): BootRecoveryResult {
   }
 
   const failedRuns = recoverAgentRuns();
-  const strandedWorktrees = reportStrandedWorktrees();
-  return { scanned, recovered, failedRuns, strandedWorktrees };
+  return { scanned, recovered, failedRuns };
 }
 
-/** Fail every non-terminal agent run loudly (`server-restart`) — the live
- *  runtime session died with the process; a silent 'running' row would be a
- *  phantom. Open asks are cancelled; the contract parks at verification
- *  'pending' (agent never finished ⇒ re-dispatchable, not rejected). */
+/** Fail every non-terminal agent run that did NOT itself deliver loudly
+ *  (`server-restart`) — the live runtime session died with the process; a
+ *  silent 'running' row would be a phantom. Open asks are cancelled; the
+ *  contract parks at verification 'pending' (agent never finished ⇒
+ *  re-dispatchable, not rejected — with a deliverable already on the contract
+ *  the stranded scan treats the park as awaiting review, so nothing is
+ *  misclassified). Runs whose OWN deliveredAt is stamped are left
+ *  non-terminal for DispatchService.recoverSealedRuns (evidence-aware CASE 4:
+ *  the process is gone but delivery is the done-signal — those runs settle
+ *  completed and resume verification, never a blanket 'failed'). */
 function recoverAgentRuns(): string[] {
   const gateway = new AgentRunMutationGateway();
   const contracts = new ContractService();
@@ -114,38 +126,75 @@ function recoverAgentRuns(): string[] {
     }
   }
   for (const run of listNonTerminalAgentRuns()) {
-    for (const askId of openAsksByRun.get(run.id) ?? []) markPendingAskCancelled(askId, now);
-    const publication = gateway.commitTerminal({
-      runId: run.id,
-      status: 'failed',
-      result: null,
-      failureCause: 'server-restart',
-      failureReason: 'server restarted while the run was live',
-      completedAt: now,
-    });
-    if (!publication) continue;
-    failed.push(run.id);
-    if (run.contractId) {
-      contracts.setVerification({
-        id: run.contractId,
-        verificationStatus: 'pending',
-        verificationNotes: 'run lost to a server restart before finishing — re-dispatch or continue',
+    // Per-run isolation: one bad row must never abort the sweep (or boot).
+    try {
+      // Evidence-aware CASE 4: a sealed deliverable survives the process.
+      // Keyed on THE RUN's own deliveredAt stamp, never the contract's
+      // deliverable alone — a continuation carries its parent's contract
+      // (deliverable included) forward, so a continuation that died
+      // undelivered would otherwise hide behind the PARENT's seal and be
+      // falsely settled 'completed' by sealed-run recovery. Defer the whole
+      // run — settlement, verification, and even its open asks (an unresolved
+      // ask must still block auto-land, guard 5) — to
+      // DispatchService.recoverSealedRuns.
+      if (run.deliveredAt !== null && run.contractId && contracts.get(run.contractId)?.deliverable != null) {
+        console.warn(
+          `[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) was live with a SEALED deliverable — deferred to sealed-run recovery.`,
+        );
+        continue;
+      }
+      for (const askId of openAsksByRun.get(run.id) ?? []) markPendingAskCancelled(askId, now);
+      // Lifecycle (worktree pipeline): no sealed evidence — the pipeline dies
+      // with the process. 'failed' can be illegal from review/land states
+      // stamped onto a still-live run (review-rejected/conflict/merged/
+      // completed) — keep those as-is instead of throwing (mirrors killRun's
+      // canTransition guard).
+      let lifecycleState: RunLifecycleState | undefined;
+      if (run.lifecycleState !== null && canTransition(run.lifecycleState, 'failed')) {
+        lifecycleState = 'failed';
+      }
+      const publication = gateway.commitTerminal({
+        runId: run.id,
+        status: 'failed',
+        result: null,
+        failureCause: 'server-restart',
+        failureReason: 'server restarted while the run was live',
+        completedAt: now,
+        ...(lifecycleState !== undefined ? { lifecycleState } : {}),
       });
+      if (!publication) continue;
+      failed.push(run.id);
+      if (run.contractId) {
+        contracts.setVerification({
+          id: run.contractId,
+          verificationStatus: 'pending',
+          verificationNotes: 'run lost to a server restart before finishing — re-dispatch or continue',
+        });
+      }
+      console.warn(`[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) was live — failed loudly (server-restart).`);
+    } catch (err) {
+      console.error(`[pc-sdk][boot-recovery] recovery failed for agent run ${run.id} — continuing with the rest:`, err);
     }
-    console.warn(`[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) was live — failed loudly (server-restart).`);
   }
   return failed;
 }
 
-/** Surface stranded isolation (active worktree rows with no live run). After
- *  the boot sweep above, NO run is live — so any active worktree belonging to
- *  an unlanded contract is reported. Reclamation stays a human/orchestrator
- *  decision; the branch always survives. */
-function reportStrandedWorktrees(): string[] {
+/** Surface + durably record stranded isolation. Called from index.ts AFTER
+ *  recoverPendingLandings and BEFORE dispatch attaches (locked ordering) —
+ *  re-driven landings tear their worktrees down first, and no dispatch can be
+ *  mid-provision while the scan runs. After the boot sweep NO run is live, so
+ *  a surviving active worktree goes durable 'stranded' — UNLESS its contract
+ *  is awaiting review/landing (review-parked work is runless by design; its
+ *  reclaim path is accept ⇒ land ⇒ teardown, or abandonment). Reclamation
+ *  stays a human/orchestrator decision; the branch always survives. */
+export function reconcileStrandedWorktreesAtBoot(): string[] {
   try {
-    const stranded = scanStrandedWorktrees(new Set());
+    const { stranded, revived } = reconcileStrandedWorktrees();
     for (const w of stranded) {
-      console.warn(`[pc-sdk][boot-recovery] stranded worktree ${w.name} at ${w.path} (${w.reason}).`);
+      console.warn(`[pc-sdk][boot-recovery] stranded worktree ${w.name} at ${w.path} (${w.reason}) — row marked stranded.`);
+    }
+    for (const name of revived) {
+      console.warn(`[pc-sdk][boot-recovery] stranded worktree ${name} self-healed — back to active.`);
     }
     return stranded.map((w) => w.name);
   } catch (err) {

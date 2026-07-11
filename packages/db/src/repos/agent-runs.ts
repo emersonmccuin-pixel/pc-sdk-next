@@ -8,13 +8,20 @@
 // Continuation lineage via `continues` self-FK. `findActiveContinuation`
 // guards `pc_continue_agent` against double-continuation of the same parent.
 
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 
-import type {
-  AgentRunFailureCause,
-  AgentRunRow,
-  AgentRunStatus,
-  ULID,
+import {
+  IllegalLifecycleTransitionError,
+  PRESERVED_LIFECYCLE_STATES,
+  RUN_LIFECYCLE_STATES,
+  canTransition,
+  type AgentRunFailureCause,
+  type AgentRunRow,
+  type AgentRunStatus,
+  type RunLifecycleState,
+  type ULID,
+  type WorktreeGitReceipt,
+  type WorktreePhaseReceipt,
 } from '@pc/domain';
 
 import { getDb } from '../connection.ts';
@@ -48,10 +55,17 @@ export interface InsertAgentRunRowInput {
   /** Repo dispatch provenance. NULL for non-repo/legacy rows. */
   worktreeBaseBranch?: string | null;
   worktreeBaseSha?: string | null;
+  /** Git provisioning receipt (docs/worktree-lifecycle.md). Known at insert
+   *  time (provision precedes the row); preparation/readiness receipts land
+   *  later via setAgentRunPhaseReceipt. */
+  gitReceipt?: WorktreeGitReceipt | null;
   /** Runtime-selection stamp: adapter id / account / model for this run. */
   runtimeId?: string | null;
   accountId?: string | null;
   model?: string | null;
+  /** Initial worktree-pipeline state. NULL (default) = non-repo/legacy run —
+   *  no lifecycle vocabulary applies to the row, ever. */
+  lifecycleState?: RunLifecycleState | null;
   queuedAt: number;
 }
 
@@ -68,6 +82,7 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     podRevisionAtDispatch: input.podRevisionAtDispatch ?? null,
     podRevisionAtResume: null,
     status: input.status,
+    lifecycleState: input.lifecycleState ?? null,
     continues: input.continues ?? null,
     parentInvokeDepth: input.parentInvokeDepth ?? 0,
     pmRef: input.pmRef ?? null,
@@ -87,6 +102,9 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     worktreeDir: input.worktreeDir ?? null,
     worktreeBaseBranch: input.worktreeBaseBranch ?? null,
     worktreeBaseSha: input.worktreeBaseSha ?? null,
+    gitReceipt: input.gitReceipt ?? null,
+    preparationReceipt: null,
+    readinessReceipt: null,
     runtimeId: input.runtimeId ?? null,
     accountId: input.accountId ?? null,
     model: input.model ?? null,
@@ -110,12 +128,32 @@ export interface UpdateAgentRunStatusInput {
   /** Set on the resume path (paused → spawning). Captures pod-row revision
    *  at resume time for drift detection. */
   podRevisionAtResume?: string | null;
+  /** Worktree-pipeline transition to stamp alongside. Guarded: an illegal
+   *  move (per ALLOWED_LIFECYCLE_TRANSITIONS) rejects the WHOLE update with
+   *  a typed IllegalLifecycleTransitionError. Omit = leave untouched. */
+  lifecycleState?: RunLifecycleState;
 }
 
 const REV_INC = sql`rev + 1` as unknown as number;
 
+/** WHERE guard for a lifecycle stamp: the current value must be a legal
+ *  source for `to` (NULL adoption + same-state always legal). Enforced in the
+ *  SAME statement as the write — no read-then-write window. */
+function legalLifecycleSources(to: RunLifecycleState) {
+  const sources = RUN_LIFECYCLE_STATES.filter((s) => canTransition(s, to));
+  return or(isNull(agentRuns.lifecycleState), inArray(agentRuns.lifecycleState, sources));
+}
+
+/** Zero-row lifecycle write: missing row keeps the historical silent no-op;
+ *  an existing row means the transition was illegal — typed rejection. */
+function throwIfIllegalTransition(id: ULID, to: RunLifecycleState): void {
+  const row = getAgentRunRow(id);
+  if (row) throw new IllegalLifecycleTransitionError(id, row.lifecycleState, to);
+}
+
 /** Non-terminal status transition. Idempotent at the row level — caller is
- *  responsible for ordering. */
+ *  responsible for ordering. A supplied `lifecycleState` is rejected (typed
+ *  error, nothing written) when the move is illegal. */
 export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): void {
   const patch: Partial<AgentRunRow> = { status: input.status, rev: REV_INC };
   if (input.spawnedAt !== undefined) patch.spawnedAt = input.spawnedAt;
@@ -124,7 +162,17 @@ export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): void {
   if (input.podRevisionAtResume !== undefined) {
     patch.podRevisionAtResume = input.podRevisionAtResume;
   }
-  getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
+  if (input.lifecycleState === undefined) {
+    getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
+    return;
+  }
+  patch.lifecycleState = input.lifecycleState;
+  const result = getDb()
+    .update(agentRuns)
+    .set(patch)
+    .where(and(eq(agentRuns.id, input.id), legalLifecycleSources(input.lifecycleState)))
+    .run();
+  if (result.changes === 0) throwIfIllegalTransition(input.id, input.lifecycleState);
 }
 
 /** Persist the spawned OS pid for an in-process run. Called once right after
@@ -158,23 +206,35 @@ export interface MarkAgentRunTerminalInput {
   failureCause: AgentRunFailureCause | null;
   failureReason: string | null;
   completedAt: number;
+  /** Worktree-pipeline transition to stamp alongside (same guard as
+   *  updateAgentRunStatus). Omit = leave untouched — a repo run's lifecycle
+   *  outlives its dispatch terminal (verify/land continue past 'completed'). */
+  lifecycleState?: RunLifecycleState;
 }
 
 /** Flip to a terminal status. Idempotent at the row level — repeated calls
- *  with the same terminal status are no-ops. */
+ *  with the same terminal status are no-ops. A supplied `lifecycleState` is
+ *  rejected (typed error, nothing written) when the move is illegal. */
 export function markAgentRunTerminal(input: MarkAgentRunTerminalInput): void {
-  getDb()
+  const patch: Partial<AgentRunRow> = {
+    status: input.status,
+    result: input.result,
+    failureCause: input.failureCause,
+    failureReason: input.failureReason,
+    completedAt: input.completedAt,
+    rev: REV_INC,
+  };
+  if (input.lifecycleState === undefined) {
+    getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
+    return;
+  }
+  patch.lifecycleState = input.lifecycleState;
+  const result = getDb()
     .update(agentRuns)
-    .set({
-      status: input.status,
-      result: input.result,
-      failureCause: input.failureCause,
-      failureReason: input.failureReason,
-      completedAt: input.completedAt,
-      rev: REV_INC,
-    })
-    .where(eq(agentRuns.id, input.id))
+    .set(patch)
+    .where(and(eq(agentRuns.id, input.id), legalLifecycleSources(input.lifecycleState)))
     .run();
+  if (result.changes === 0) throwIfIllegalTransition(input.id, input.lifecycleState);
 }
 
 /** Workflow-engine redesign — stamp the delivery receipt when the worker
@@ -188,6 +248,19 @@ export function markAgentRunDelivered(id: ULID, at: number): void {
     .set({ deliveredAt: at })
     .where(and(eq(agentRuns.id, id), sql`${agentRuns.deliveredAt} IS NULL`))
     .run();
+}
+
+/** Persist a preparation/readiness receipt (docs/worktree-lifecycle.md).
+ *  Bumps rev — the receipt rides the run DTO, so the frame must out-version
+ *  the prior delivery. Last write wins (continuations re-run readiness). */
+export function setAgentRunPhaseReceipt(
+  id: ULID,
+  receipt: WorktreePhaseReceipt,
+): void {
+  const patch: Partial<AgentRunRow> =
+    receipt.phase === 'preparation' ? { preparationReceipt: receipt } : { readinessReceipt: receipt };
+  patch.rev = REV_INC;
+  getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, id)).run();
 }
 
 /** Point read by ULID. `pc_continue_agent` calls this to validate the
@@ -266,6 +339,40 @@ export function listRecentTerminalAgentRuns(since: number): AgentRunRow[] {
       ),
     )
     .orderBy(desc(agentRuns.completedAt))
+    .all();
+}
+
+/** State-based retention (docs/worktree-lifecycle.md 'Teardown and
+ *  retention'): terminal rows parked in a preserved lifecycle state
+ *  (merge-ready, conflict, stranded, review-rejected, failed) stay listed
+ *  until resolved — no age window. Non-repo rows (lifecycleState NULL) never
+ *  match; they keep the recent-terminal window. Newest first. */
+export function listPreservedTerminalAgentRuns(projectId: ULID): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.projectId, projectId),
+        inArray(agentRuns.status, ['completed', 'failed', 'cancelled']),
+        inArray(agentRuns.lifecycleState, PRESERVED_LIFECYCLE_STATES as unknown as RunLifecycleState[]),
+      ),
+    )
+    .orderBy(desc(agentRuns.completedAt))
+    .all();
+}
+
+/** Every run bound to one contract — the original dispatch plus its
+ *  continuations/re-drives. Feeds the landed-contract resolution pass:
+ *  once the contract lands and its worktree is reclaimed, earlier runs
+ *  parked in preserved lifecycle states resolve to 'completed'. Newest
+ *  first. */
+export function listAgentRunsForContract(contractId: ULID): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.contractId, contractId))
+    .orderBy(desc(agentRuns.queuedAt))
     .all();
 }
 

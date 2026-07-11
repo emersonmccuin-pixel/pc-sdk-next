@@ -9,8 +9,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import type { AgentRunDto } from '@pc/contracts';
+import type { AgentRunDto, Contract, WorktreePhaseReceiptDto } from '@pc/contracts';
 import { agentRunsApi, type AgentRunEventEntry, type AgentRunTranscriptStatus } from '@/features/agent-runs/client';
+import { useProjectContracts } from '@/features/contracts/use-project-contracts';
+import { effectivePolicy } from '@/features/contracts/view';
 import {
   agentTranscriptEmptyMessage,
   mergeAgentTranscriptEvents,
@@ -72,6 +74,14 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
 
   const liveEvents = useLiveAgentEvents(run.runId);
 
+  // Landing receipt lives on the contract; find this run's (newest-first, so
+  // `find` picks the latest if a run somehow produced several).
+  const { contracts } = useProjectContracts(run.projectId);
+  const contract = useMemo(
+    () => contracts.find((c) => c.agentRunId === run.runId) ?? null,
+    [contracts, run.runId],
+  );
+
   const items = useMemo(
     () =>
       mergeAgentTranscriptEvents({
@@ -105,6 +115,14 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
                 <span className={`shrink-0 px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${statusPillClasses}`}>
                   {run.status}
                 </span>
+                {run.lifecycleState && (
+                  <span
+                    title="Worktree pipeline state (docs/worktree-lifecycle.md)"
+                    className="shrink-0 border border-border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground"
+                  >
+                    {run.lifecycleState}
+                  </span>
+                )}
               </div>
             </div>
             <button
@@ -126,6 +144,9 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
           {run.status === 'failed' && run.failureReason && (
             <div className="mt-1 text-[11px] text-destructive">{run.failureReason}</div>
           )}
+          <PhaseReceiptDetails receipt={run.preparationReceipt ?? null} />
+          <PhaseReceiptDetails receipt={run.readinessReceipt ?? null} />
+          <LandingReceiptDetails contract={contract} />
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col">
@@ -150,6 +171,133 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
       </aside>
     </div>
   );
+}
+
+/** Collapsed preparation/readiness receipt summary — per-step command + exit
+ *  + duration, with the bounded output tails one more click in. */
+function PhaseReceiptDetails({ receipt }: { receipt: WorktreePhaseReceiptDto | null }) {
+  if (!receipt) return null;
+  return (
+    <details className="mt-1 border border-border/60 bg-card/40 px-2 py-1">
+      <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
+        {receipt.phase} ·{' '}
+        <span className={receipt.ok ? 'text-primary' : 'text-destructive'}>
+          {receipt.ok ? 'ok' : 'failed'}
+        </span>{' '}
+        · {receipt.steps.length} step{receipt.steps.length === 1 ? '' : 's'}
+      </summary>
+      <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto">
+        {receipt.steps.map((step, i) => (
+          <li key={i} className="font-mono text-[10px]">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-foreground" title={step.command}>
+                {step.command}
+              </span>
+              <span
+                className={`shrink-0 ${step.exitCode === 0 && !step.timedOut ? 'text-muted-foreground' : 'text-destructive'}`}
+              >
+                {step.timedOut ? 'timeout' : `exit ${step.exitCode}`} · {formatDuration(step.durationMs)}
+              </span>
+            </div>
+            {(step.stdoutTail || step.stderrTail) && (
+              <details className="ml-2">
+                <summary className="cursor-pointer select-none text-muted-foreground/80">output tail</summary>
+                {step.stdoutTail && (
+                  <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap border-l border-border pl-2 text-muted-foreground">
+                    {step.stdoutTail}
+                  </pre>
+                )}
+                {step.stderrTail && (
+                  <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap border-l border-destructive/40 pl-2 text-destructive/90">
+                    {step.stderrTail}
+                  </pre>
+                )}
+              </details>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/** Landing receipt (docs/worktree-lifecycle.md 'Merge receipt') — target
+ *  before/after, merge sha, authorizer, policy. Renders once landing state or
+ *  a merge-ready park exists on the run's contract. */
+function LandingReceiptDetails({ contract }: { contract: Contract | null }) {
+  if (!contract) return null;
+  // Repo-only: null landing status means 'not applicable' for every other
+  // kind (a passed answer/payload run is NOT parked merge-ready) — same
+  // guard as mergeReadyContracts in features/contracts/view.ts.
+  const parked =
+    contract.expectedOutput?.kind === 'repo' &&
+    contract.verificationStatus === 'passed' &&
+    contract.landingStatus === null;
+  if (contract.landingStatus === null && !parked) return null;
+  const rows: [string, string | null][] = [
+    ['status', contract.landingStatus ?? 'merge-ready (awaiting review)'],
+    ['policy', effectivePolicy(contract)],
+    ['authorizer', contract.landingAuthorizer],
+    ['target', contract.landedBranch],
+    [
+      'target sha',
+      contract.targetShaBefore || contract.targetShaAfter
+        ? `${shortSha(contract.targetShaBefore)} → ${shortSha(contract.targetShaAfter)}`
+        : null,
+    ],
+    ['merge sha', shortSha(contract.mergeSha)],
+    ['branch tip', shortSha(contract.landedSha)],
+    ['verified base', shortSha(contract.verifiedBaseSha)],
+    ['landed at', contract.landedAt ? new Date(contract.landedAt).toLocaleString() : null],
+  ];
+  return (
+    <details className="mt-1 border border-border/60 bg-card/40 px-2 py-1">
+      <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
+        landing ·{' '}
+        <span
+          className={
+            contract.landingStatus === 'landed'
+              ? 'text-primary'
+              : contract.landingStatus === null
+                ? 'text-muted-foreground'
+                : 'text-destructive'
+          }
+        >
+          {contract.landingStatus ?? 'merge-ready'}
+        </span>
+      </summary>
+      <dl className="mt-1 space-y-0.5 font-mono text-[10px]">
+        {rows
+          .filter((r): r is [string, string] => r[1] !== null)
+          .map(([label, value]) => (
+            <div key={label} className="flex gap-2">
+              <dt className="w-24 shrink-0 text-muted-foreground/80">{label}</dt>
+              <dd className="min-w-0 flex-1 truncate text-foreground" title={value}>
+                {value}
+              </dd>
+            </div>
+          ))}
+      </dl>
+      {contract.landingError && (
+        <div className="mt-1 text-[11px] text-destructive">{contract.landingError}</div>
+      )}
+      {contract.verificationNotes && (
+        <div className="mt-1 whitespace-pre-wrap text-[11px] text-muted-foreground">
+          {contract.verificationNotes}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function shortSha(sha: string | null): string | null {
+  return sha ? sha.slice(0, 10) : null;
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 /** Always-mounted Shell-level instance, driven by useAgentTranscript. Renders
