@@ -17,6 +17,7 @@ test('record merges windows per account and preserves the untouched window', () 
     accountId: 'personal',
     fiveHour: { utilization: 42, resetsAt: 1000 },
     sevenDay: null,
+    fable: null,
     status: 'allowed',
     model: 'opus',
     updatedAt: 1,
@@ -26,6 +27,7 @@ test('record merges windows per account and preserves the untouched window', () 
     accountId: 'personal',
     fiveHour: null,
     sevenDay: { utilization: 10, resetsAt: 2000 },
+    fable: null,
     status: 'allowed_warning',
     model: null,
     updatedAt: 2,
@@ -40,8 +42,8 @@ test('record merges windows per account and preserves the untouched window', () 
 test('accounts are isolated', () => {
   freshDb();
   const cache = new UsageCache();
-  cache.record({ accountId: 'personal', fiveHour: { utilization: 1, resetsAt: null }, sevenDay: null, status: 'allowed', model: null, updatedAt: 1 });
-  cache.record({ accountId: 'work', fiveHour: { utilization: 99, resetsAt: null }, sevenDay: null, status: 'rejected', model: null, updatedAt: 1 });
+  cache.record({ accountId: 'personal', fiveHour: { utilization: 1, resetsAt: null }, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt: 1 });
+  cache.record({ accountId: 'work', fiveHour: { utilization: 99, resetsAt: null }, sevenDay: null, fable: null, status: 'rejected', model: null, updatedAt: 1 });
   assert.equal(cache.get('personal')!.fiveHour!.utilization, 1);
   assert.equal(cache.get('work')!.status, 'rejected');
   assert.equal(cache.list().length, 2);
@@ -54,6 +56,7 @@ test('record emits a durable usage resource event', () => {
     accountId: 'work',
     fiveHour: { utilization: 88, resetsAt: 5000 },
     sevenDay: null,
+    fable: null,
     status: 'rejected',
     model: 'opus',
     updatedAt: 7,

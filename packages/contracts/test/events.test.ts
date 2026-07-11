@@ -112,13 +112,14 @@ test('isUsageSnapshot + isMcpServerStatus', () => {
       accountId: 'personal',
       fiveHour: { utilization: 0.4, resetsAt: 123 },
       sevenDay: null,
+      fable: { utilization: 0.92, resetsAt: 456 },
       status: 'allowed_warning',
       model: 'opus',
       updatedAt: 1,
     }),
     true,
   );
-  assert.equal(isUsageSnapshot({ accountId: 'x', fiveHour: {}, sevenDay: null, status: 'allowed', model: null, updatedAt: 1 }), false);
+  assert.equal(isUsageSnapshot({ accountId: 'x', fiveHour: {}, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt: 1 }), false);
   assert.equal(
     isMcpServerStatus({
       id: 'm1',

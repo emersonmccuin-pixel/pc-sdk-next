@@ -25,11 +25,21 @@ interface OauthWindow {
   resets_at?: unknown;
 }
 
+interface OauthLimit {
+  kind?: unknown;
+  group?: unknown;
+  severity?: unknown;
+  is_active?: unknown;
+  percent?: unknown;
+  resets_at?: unknown;
+  scope?: { model?: { id?: unknown; display_name?: unknown } | null; surface?: unknown } | null;
+}
+
 /** The slice of the OAuth usage response we consume (verified 2026-07-10). */
 export interface OauthUsageResponse {
   five_hour?: OauthWindow | null;
   seven_day?: OauthWindow | null;
-  limits?: Array<{ severity?: unknown; is_active?: unknown }>;
+  limits?: OauthLimit[];
 }
 
 /** Map one OAuth usage response to the contract snapshot. Endpoint scale is
@@ -50,7 +60,15 @@ export function mapOauthUsage(
   const fiveHour = mapWindow(body.five_hour);
   const sevenDay = mapWindow(body.seven_day);
 
-  const severities = (body.limits ?? []).map((l) => String(l.severity ?? ''));
+  const limits = body.limits ?? [];
+  const fableLimit = limits.find(
+    (l) => String(l.scope?.model?.display_name ?? '').toLowerCase() === 'fable',
+  );
+  const fable = fableLimit
+    ? mapWindow({ utilization: fableLimit.percent, resets_at: fableLimit.resets_at })
+    : null;
+
+  const severities = limits.map((l) => String(l.severity ?? ''));
   const maxUtil = Math.max(fiveHour?.utilization ?? 0, sevenDay?.utilization ?? 0);
   const status: UsageSnapshot['status'] =
     maxUtil >= 1 || severities.some((s) => /reject|exceed|critical|block/i.test(s))
@@ -59,7 +77,7 @@ export function mapOauthUsage(
         ? 'allowed_warning'
         : 'allowed';
 
-  return { accountId, fiveHour, sevenDay, status, model: null, updatedAt: now };
+  return { accountId, fiveHour, sevenDay, fable, status, model: null, updatedAt: now };
 }
 
 interface PollerDeps {
@@ -149,7 +167,8 @@ function sameQuotaState(a: UsageSnapshot, b: UsageSnapshot): boolean {
   return (
     a.status === b.status &&
     sameWindow(a.fiveHour, b.fiveHour) &&
-    sameWindow(a.sevenDay, b.sevenDay)
+    sameWindow(a.sevenDay, b.sevenDay) &&
+    sameWindow(a.fable, b.fable)
   );
 }
 

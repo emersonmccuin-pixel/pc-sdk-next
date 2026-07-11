@@ -108,6 +108,7 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
       accountId: 'personal',
       fiveHour: { utilization: 0.1, resetsAt: null },
       sevenDay: null,
+      fable: null,
       status: 'allowed',
       model: null,
       updatedAt: Date.now(),

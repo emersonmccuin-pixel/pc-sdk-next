@@ -34,6 +34,7 @@ export interface UsageSnapshot {
   accountId: string; // 'personal' | 'work' | …
   fiveHour: { utilization: number; resetsAt: number | null } | null;
   sevenDay: { utilization: number; resetsAt: number | null } | null;
+  fable: { utilization: number; resetsAt: number | null } | null;
   status: 'allowed' | 'allowed_warning' | 'rejected';
   model: string | null;
   updatedAt: number;
@@ -165,6 +166,7 @@ export function isUsageSnapshot(value: unknown): value is UsageSnapshot {
     typeof value.accountId === 'string' &&
     windowOk(value.fiveHour) &&
     windowOk(value.sevenDay) &&
+    windowOk(value.fable) &&
     (value.status === 'allowed' ||
       value.status === 'allowed_warning' ||
       value.status === 'rejected') &&
