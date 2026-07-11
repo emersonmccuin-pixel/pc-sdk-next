@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-002 provisioning.
+Updated: 2026-07-11 after CF-002 verification and sealing.
 
 ## Repository
 
@@ -18,19 +18,23 @@ Updated: 2026-07-11 after CF-002 provisioning.
 - Active branch/worktree: `codex/cf-002-projector-scale` at
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-002`
 - CF-002 base: `57be70f63e6e449afff27e5039aa5f0b81f042e9`
+- CF-002 sealed implementation:
+  `9ebf2c6284bebdae43f9263193999764a0c8413b`
 
 ## Status
 
-CF-001 is landed, pushed, and torn down. CF-002 is provisioned to remove the
-correct projector's identified long-session O(n²) behavior without changing
-the canonical wire or persistence contract. Two read-only design/test lanes are
-active; root is the sole writer.
+CF-001 is landed, pushed, and torn down. CF-002 implementation is sealed and
+verified. Ordered live projection is indexed/incremental, stable history uses
+bounded persistent chunks, completed raw deltas compact to digest receipts, and
+replay has one checkpoint-aware normalization path. Focused web checks and the
+full `pnpm ci:check` pass; generated and final diff audits have no remaining
+finding.
 
 ## Next safe action
 
-Implement and verify CF-002 exactly as bounded: indexed ordered projection,
-completed-stream compaction, deterministic scale/immutability evidence, and no
-wire/server/database changes. Then seal, land, prove, teardown, and push.
+Commit this feature receipt, perform the guarded merge from unchanged `main`,
+prove sealed/feature ancestry, remove the CF-002 worktree, push `main`, and then
+provision the next bounded durable queue/positive-interrupt slice.
 
 ## Startup checks
 
