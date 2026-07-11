@@ -21,7 +21,8 @@ only in PC-SDK Next.
 - `origin`: PC-SDK Next, fetch and push
 - `upstream`: stable PC-SDK, fetch-only (`pushurl=DISABLED`)
 - Base branch: `main`
-- Planning worktree: `E:\Claude Code Projects\Personal\PC-SDK-Next-worktrees\planning-foundation`
+- PF-001 landing merge: `e1667dbae069f1ea62fe4d8e54489927734f2483`
+- PF-001 worktree: removed after positive landing proof
 
 Isolation defaults in the planning slice:
 
@@ -73,5 +74,5 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`PF-001` creates the fork isolation and durable planning foundation. See
-`docs/execution/current.md` for the exact next action.
+`PF-001` is complete. `BC-001` is the next read-only baseline-characterization
+slice. See `docs/execution/current.md` for the exact next action.

@@ -106,14 +106,14 @@ AInativePM is the first registered server and the standing test case.
 Phase ordering after N1 is a reviewed migration hypothesis. Baseline evidence may
 reorder slices, but gates and dependency direction cannot be skipped silently.
 
-**N0 — Freeze, fork, and planning foundation (active).** Preserve and verify the
+**N0 — Freeze, fork, and planning foundation (complete 2026-07-11).** Preserve and verify the
 working baseline; create the private sibling fork; isolate port/data/logs/
 launcher/remotes; establish requirements, boundaries, decisions, pickup,
 dynamic agent routing, and execution slices. *Gate:* every item in
 `docs/phases/phase-00-freeze-and-foundation.md` has positive evidence and the
 planning commit lands cleanly on Next `main`.
 
-**N1 — Baseline characterization and discovery.** Audit actual component/data
+**N1 — Baseline characterization and discovery (next).** Audit actual component/data
 ownership, session/event schemas, browser behavior, recovery, permissions, and
 provider leakage. Complete the pending user-driven browser baseline. In
 parallel, perform the read-only joint AInativePM domain/code/UI/MCP discovery.
