@@ -25,7 +25,9 @@ only in PC-SDK Next.
 - PF-001 worktree: removed after positive landing proof
 - BC-001 landing merge: `fd0756a3c39640d91bcb20cfe4a9fe22cb7d2380`
 - CF-001 sealed implementation: `35b49d3a012abfb3ec1b439060b1046f95887e19`
-  on `codex/cf-001-conversation-foundation`; guarded landing is pending
+- CF-001 landing merge: `6ea518bc6b520934aece30cbea94d201f4334b0b`
+- CF-001 worktree: removed after positive sealed-commit and feature-tip
+  ancestry proof; feature branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -94,9 +96,9 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`CF-001` is sealed and its full `pnpm ci:check` gate passed. The slice replaces
+`CF-001` is complete and its full `pnpm ci:check` gate passed. The slice replaces
 the Claude-first split chat/delta path with the canonical transactional
-conversation foundation described in `docs/event-contract.md`. Its guarded
-merge, positive ancestry proof, and worktree teardown are the only remaining
-closeout actions. After landing, the next safe slice is a bounded projector
-scale/compaction pass before durable queue and interrupt state.
+conversation foundation described in `docs/event-contract.md`. Guarded merge,
+positive ancestry proof, and worktree teardown are complete. The next safe
+slice is a bounded projector scale/compaction pass before durable queue and
+interrupt state.
