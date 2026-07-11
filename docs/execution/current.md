@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-001 guarded landing and teardown.
+Updated: 2026-07-11 after CF-002 verification and sealing.
 
 ## Repository
 
@@ -14,22 +14,27 @@ Updated: 2026-07-11 after CF-001 guarded landing and teardown.
 - CF-001 feature worktree: removed after positive landing proof
 - Sealed implementation commit:
   `35b49d3a012abfb3ec1b439060b1046f95887e19`
+- Active slice: `docs/execution/slices/CF-002.md`
+- Active branch/worktree: `codex/cf-002-projector-scale` at
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-002`
+- CF-002 base: `57be70f63e6e449afff27e5039aa5f0b81f042e9`
+- CF-002 sealed implementation:
+  `9ebf2c6284bebdae43f9263193999764a0c8413b`
 
 ## Status
 
-CF-001 is landed and complete. Canonical identity, atomic sequence/event/outbox
-persistence, the dedicated relay, persisted deltas, adapter-local native
-correlation, migration/backfill, and the single browser projector are complete.
-Focused checks and `pnpm ci:check` passed; an independent final diff audit found
-no blocker. Both the sealed implementation and feature tip are ancestors of the
-merge commit, and the worktree is removed.
+CF-001 is landed, pushed, and torn down. CF-002 implementation is sealed and
+verified. Ordered live projection is indexed/incremental, stable history uses
+bounded persistent chunks, completed raw deltas compact to digest receipts, and
+replay has one checkpoint-aware normalization path. Focused web checks and the
+full `pnpm ci:check` pass; generated and final diff audits have no remaining
+finding.
 
 ## Next safe action
 
-Provision the next bounded slice from clean current `main`: optimize and
-measure the canonical browser projector's ordered fast path and completed-stream
-compaction without changing the wire or persistence contract. Only after that
-gate should durable queue/control work begin.
+Commit this feature receipt, perform the guarded merge from unchanged `main`,
+prove sealed/feature ancestry, remove the CF-002 worktree, push `main`, and then
+provision the next bounded durable queue/positive-interrupt slice.
 
 ## Startup checks
 
@@ -45,8 +50,5 @@ BC-001 evidence, and the named boundary documents before continuing.
 
 ## Known blockers
 
-No blocker. The pure projector is correct but O(n²) over long, delta-heavy
-histories; address that in the next measured ordered-fast-path/completed-stream
-compaction slice. The Next shortcut code is isolated
-but has not been installed; regular daily driving remains on the original
-PC-SDK until the migration gate.
+No blocker. The Next shortcut code is isolated but has not been installed;
+regular daily driving remains on the original PC-SDK until the migration gate.

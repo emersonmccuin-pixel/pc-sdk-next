@@ -13,6 +13,19 @@ import type {
   SessionReplayFrame,
 } from '@pc/contracts';
 
+import {
+  indexDelete,
+  indexGet,
+  indexSet,
+  type PersistentIndex,
+} from './persistent-index';
+import {
+  emptySequence,
+  sequenceAppend,
+  type PersistentSequence,
+} from './persistent-sequence';
+import { sha256 } from './sha256';
+
 export interface Aggregates {
   inputTokens: number;
   outputTokens: number;
@@ -31,7 +44,37 @@ export interface DeltaBuffer {
   toolInput: Record<string, string>;
   ended: boolean;
   nextDeltaIndex: number;
-  pending: Record<number, ChatDeltaEvent>;
+  pending: PersistentIndex<ChatDeltaEvent>;
+  /** Number of unique raw contributions represented by this live buffer. */
+  retainedPayloadCount: number;
+}
+
+interface SequenceReceipt {
+  eventId: string;
+  digest: string;
+}
+
+interface DeltaReceipt {
+  digest: string;
+  sequence: number;
+}
+
+interface StreamReceipt {
+  itemId: string | null;
+  firstSequence: number | null;
+  turnId: string | null;
+  completed: boolean;
+  retracted: boolean;
+  deltaReceipts: PersistentIndex<DeltaReceipt>;
+}
+
+/** Internal immutable indexes. Values retain identities and digests, never
+ * completed raw delta payloads. Plain-data tree nodes survive structuredClone. */
+export interface ProjectorState {
+  sequenceReceipts: PersistentIndex<SequenceReceipt>;
+  eventSequences: PersistentIndex<number>;
+  pendingFrames: PersistentIndex<ConversationEventFrame>;
+  streams: PersistentIndex<StreamReceipt>;
 }
 
 export type OptimisticStatus =
@@ -52,12 +95,16 @@ export interface OptimisticSend {
 export interface ChatState {
   conversationId: string | null;
   sessionId: string | null;
+  /** Highest accepted or checkpointed server sequence. */
   highWaterSequence: number;
-  /** Immutable accepted canonical events, sorted by authoritative sequence. */
-  frames: ConversationEventFrame[];
-  /** Deterministic render input after fail-closed stream/item exclusions. */
-  projectedFrames: ConversationEventFrame[];
+  /** Highest authoritative sequence whose transition has been folded. */
+  projectedThroughSequence: number;
+  /** Immutable accepted stable events in authoritative sequence order. */
+  frames: PersistentSequence<ConversationEventFrame>;
+  /** Stable render input after fail-closed stream/item exclusions. */
+  projectedFrames: PersistentSequence<ConversationEventFrame>;
   aggregates: Aggregates;
+  /** Raw/coalesced payload exists only while a stream is active. */
   deltas: Record<string, DeltaBuffer>;
   sendQueue: SendQueueItem[];
   optimistic: OptimisticSend[];
@@ -65,6 +112,29 @@ export interface ChatState {
   answeredAsks: Record<string, string>;
   /** Fail-closed protocol/data conflicts; accepted projection is preserved. */
   integrityConflicts: string[];
+  projector: ProjectorState;
+}
+
+export type ProjectionPath =
+  | 'ignored'
+  | 'duplicate'
+  | 'conflict'
+  | 'buffered'
+  | 'ordered'
+  | 'replay';
+
+/** Deterministic work evidence. It intentionally avoids wall-clock thresholds. */
+export interface ProjectionWork {
+  path: ProjectionPath;
+  acceptedEventVisits: number;
+  historyVisits: number;
+  fallbackRebuilds: number;
+  compactedDeltaPayloads: number;
+}
+
+export interface ProjectionReceipt {
+  state: ChatState;
+  work: ProjectionWork;
 }
 
 export function emptyAggregates(): Aggregates {
@@ -80,6 +150,26 @@ export function emptyAggregates(): Aggregates {
   };
 }
 
+function emptyProjector(): ProjectorState {
+  return {
+    sequenceReceipts: null,
+    eventSequences: null,
+    pendingFrames: null,
+    streams: null,
+  };
+}
+
+function emptyStreamReceipt(): StreamReceipt {
+  return {
+    itemId: null,
+    firstSequence: null,
+    turnId: null,
+    completed: false,
+    retracted: false,
+    deltaReceipts: null,
+  };
+}
+
 export function initialChatState(
   sessionId: string | null = null,
   conversationId: string | null = sessionId,
@@ -88,8 +178,9 @@ export function initialChatState(
     conversationId,
     sessionId,
     highWaterSequence: 0,
-    frames: [],
-    projectedFrames: [],
+    projectedThroughSequence: 0,
+    frames: emptySequence(),
+    projectedFrames: emptySequence(),
     aggregates: emptyAggregates(),
     deltas: {},
     sendQueue: [],
@@ -97,6 +188,7 @@ export function initialChatState(
     asks: [],
     answeredAsks: {},
     integrityConflicts: [],
+    projector: emptyProjector(),
   };
 }
 
@@ -120,184 +212,441 @@ function foldAggregate(agg: Aggregates, event: ChatEvent): Aggregates {
   }
 }
 
-function sameFrame(a: ConversationEventFrame, b: ConversationEventFrame): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+function sequenceKey(sequence: number): string {
+  return String(sequence);
+}
+
+function frameDigest(frame: ConversationEventFrame): string {
+  return sha256(JSON.stringify(frame));
+}
+
+function deltaDigest(delta: ChatDeltaEvent): string {
+  return sha256(JSON.stringify(delta));
 }
 
 function addConflict(conflicts: string[], conflict: string): string[] {
-  return conflicts.includes(conflict) ? conflicts : [...conflicts, conflict];
+  if (conflicts.includes(conflict)) return conflicts;
+  return [...conflicts, conflict].sort();
 }
 
-function applyDeltaToBuffer(buffer: DeltaBuffer, delta: ChatDeltaEvent): void {
+function withConflict(state: ChatState, conflict: string): ChatState {
+  const integrityConflicts = addConflict(state.integrityConflicts, conflict);
+  return integrityConflicts === state.integrityConflicts
+    ? state
+    : { ...state, integrityConflicts };
+}
+
+function applyDeltaToBuffer(buffer: DeltaBuffer, delta: ChatDeltaEvent): DeltaBuffer {
   switch (delta.kind) {
     case 'message-start':
-      break;
+      return buffer;
     case 'text-delta':
-      buffer.text += delta.text;
-      break;
+      return { ...buffer, text: buffer.text + delta.text };
     case 'tool-input-delta': {
       const key = delta.toolUseId ?? '';
-      buffer.toolInput[key] = (buffer.toolInput[key] ?? '') + delta.partialJson;
-      break;
+      return {
+        ...buffer,
+        toolInput: {
+          ...buffer.toolInput,
+          [key]: (buffer.toolInput[key] ?? '') + delta.partialJson,
+        },
+      };
     }
     case 'message-end':
-      buffer.ended = true;
-      break;
+      return { ...buffer, ended: true };
   }
 }
 
-function derive(
-  frames: readonly ConversationEventFrame[],
-  protocolConflicts: readonly string[],
-): {
-  aggregates: Aggregates;
-  deltas: Record<string, DeltaBuffer>;
-  conflicts: string[];
-  projectedFrames: ConversationEventFrame[];
-} {
-  let aggregates = emptyAggregates();
-  let conflicts = [...protocolConflicts];
-  const excludedEventIds = new Set<string>();
-  const streamItems = new Map<string, string>();
-  const deltaPayloads = new Map<string, Map<number, string>>();
-
-  // Validate identity from the complete sequence-sorted set before applying
-  // retraction/completion suppression. This keeps conflicts and exclusions
-  // deterministic under shuffled live delivery and replay.
-  for (const frame of frames) {
-    if (frame.streamId) {
-      const priorItemId = streamItems.get(frame.streamId);
-      if (priorItemId !== undefined && priorItemId !== frame.itemId) {
-        conflicts = addConflict(conflicts, `stream:${frame.streamId}:item`);
-        excludedEventIds.add(frame.eventId);
-        continue;
-      }
-      streamItems.set(frame.streamId, frame.itemId);
-    }
-    if (frame.event.kind !== 'stream-delta') continue;
-    const streamId = frame.streamId!;
-    const index = frame.deltaIndex!;
-    const payload = JSON.stringify(frame.event.delta);
-    const byIndex = deltaPayloads.get(streamId) ?? new Map<number, string>();
-    const prior = byIndex.get(index);
-    if (prior !== undefined) {
-      if (prior !== payload) conflicts = addConflict(conflicts, `delta:${streamId}:${index}`);
-      excludedEventIds.add(frame.eventId);
-      continue;
-    }
-    byIndex.set(index, payload);
-    deltaPayloads.set(streamId, byIndex);
-  }
-
-  const retracted = new Set<string>();
-  for (const frame of frames) {
-    if (excludedEventIds.has(frame.eventId)) continue;
-    if (frame.event.kind === 'retract') {
-      for (const streamId of frame.event.streamIds) retracted.add(streamId);
-    }
-  }
-  const deltas: Record<string, DeltaBuffer> = {};
-  const completed = new Set<string>();
-
-  for (const frame of frames) {
-    if (excludedEventIds.has(frame.eventId)) continue;
-    if (frame.streamId && retracted.has(frame.streamId)) continue;
-    if (frame.event.kind === 'stream-delta') {
-      const streamId = frame.streamId!;
-      if (completed.has(streamId)) continue;
-      const index = frame.deltaIndex!;
-      const buffer = deltas[streamId] ?? {
-        itemId: frame.itemId,
-        streamId,
-        text: '',
-        toolInput: {},
-        ended: false,
-        nextDeltaIndex: 0,
-        pending: {},
-      };
-      buffer.pending[index] = frame.event.delta;
-      while (buffer.pending[buffer.nextDeltaIndex]) {
-        const next = buffer.pending[buffer.nextDeltaIndex]!;
-        delete buffer.pending[buffer.nextDeltaIndex];
-        applyDeltaToBuffer(buffer, next);
-        buffer.nextDeltaIndex += 1;
-      }
-      deltas[streamId] = buffer;
-      continue;
-    }
-    aggregates = foldAggregate(aggregates, frame.event);
-    if (frame.streamId) {
-      completed.add(frame.streamId);
-      delete deltas[frame.streamId];
-    }
-    if (frame.event.kind === 'turn-end' || frame.event.kind === 'turn-failed') {
-      for (const key of Object.keys(deltas)) delete deltas[key];
-    }
-  }
-  for (const streamId of retracted) delete deltas[streamId];
-  return {
-    aggregates,
-    deltas,
-    conflicts,
-    projectedFrames: frames.filter((frame) => !excludedEventIds.has(frame.eventId)),
+function bufferDelta(
+  buffer: DeltaBuffer,
+  deltaIndex: number,
+  delta: ChatDeltaEvent,
+): DeltaBuffer {
+  let next: DeltaBuffer = {
+    ...buffer,
+    pending: indexSet(buffer.pending, sequenceKey(deltaIndex), delta),
+    retainedPayloadCount: buffer.retainedPayloadCount + 1,
   };
+  while (true) {
+    const queued = indexGet(next.pending, sequenceKey(next.nextDeltaIndex));
+    if (!queued) return next;
+    const pending = indexDelete(next.pending, sequenceKey(next.nextDeltaIndex));
+    next = applyDeltaToBuffer({
+      ...next,
+      pending,
+      nextDeltaIndex: next.nextDeltaIndex + 1,
+    }, queued);
+  }
+}
+
+function removeDeltaBuffer(
+  deltas: Record<string, DeltaBuffer>,
+  streamId: string,
+  work: ProjectionWork,
+): Record<string, DeltaBuffer> {
+  const buffer = deltas[streamId];
+  if (!buffer) return deltas;
+  work.compactedDeltaPayloads += buffer.retainedPayloadCount;
+  const next = { ...deltas };
+  delete next[streamId];
+  return next;
+}
+
+interface StreamBinding {
+  projector: ProjectorState;
+  conflicts: string[];
+  receipt: StreamReceipt | null;
+  valid: boolean;
+}
+
+function bindStream(
+  projector: ProjectorState,
+  conflicts: string[],
+  frame: ConversationEventFrame,
+): StreamBinding {
+  if (!frame.streamId) return { projector, conflicts, receipt: null, valid: true };
+  const current = indexGet(projector.streams, frame.streamId) ?? emptyStreamReceipt();
+  if (current.itemId !== null && current.itemId !== frame.itemId) {
+    return {
+      projector,
+      conflicts: addConflict(conflicts, `stream:${frame.streamId}:item`),
+      receipt: current,
+      valid: false,
+    };
+  }
+  if (current.itemId !== null) {
+    return { projector, conflicts, receipt: current, valid: true };
+  }
+  const receipt: StreamReceipt = {
+    ...current,
+    itemId: frame.itemId,
+    firstSequence: frame.sequence,
+    turnId: frame.turnId ?? null,
+  };
+  return {
+    projector: { ...projector, streams: indexSet(projector.streams, frame.streamId, receipt) },
+    conflicts,
+    receipt,
+    valid: true,
+  };
+}
+
+function foldDeltaFrame(
+  state: ChatState,
+  frame: ConversationEventFrame,
+  binding: StreamBinding,
+): ChatState {
+  if (frame.event.kind !== 'stream-delta') return state;
+  const event = frame.event;
+  const streamId = frame.streamId;
+  const deltaIndex = frame.deltaIndex;
+  if (!streamId || deltaIndex === undefined || !binding.receipt) {
+    return withConflict(
+      { ...state, projector: binding.projector, integrityConflicts: binding.conflicts },
+      `stream:${frame.eventId}:shape`,
+    );
+  }
+  if (!binding.valid) {
+    return {
+      ...state,
+      projector: binding.projector,
+      integrityConflicts: binding.conflicts,
+    };
+  }
+
+  const key = sequenceKey(deltaIndex);
+  const digest = deltaDigest(event.delta);
+  const prior = indexGet(binding.receipt.deltaReceipts, key);
+  if (prior) {
+    const integrityConflicts = prior.digest === digest
+      ? binding.conflicts
+      : addConflict(binding.conflicts, `delta:${streamId}:${deltaIndex}`);
+    return {
+      ...state,
+      projector: binding.projector,
+      integrityConflicts,
+    };
+  }
+
+  const receipt: StreamReceipt = {
+    ...binding.receipt,
+    deltaReceipts: indexSet(binding.receipt.deltaReceipts, key, {
+      digest,
+      sequence: frame.sequence,
+    }),
+  };
+  const projector: ProjectorState = {
+    ...binding.projector,
+    streams: indexSet(binding.projector.streams, streamId, receipt),
+  };
+  if (receipt.completed || receipt.retracted) {
+    return { ...state, projector, integrityConflicts: binding.conflicts };
+  }
+
+  const buffer = state.deltas[streamId] ?? {
+    itemId: frame.itemId,
+    streamId,
+    text: '',
+    toolInput: {},
+    ended: false,
+    nextDeltaIndex: 0,
+    pending: null,
+    retainedPayloadCount: 0,
+  };
+  return {
+    ...state,
+    projector,
+    integrityConflicts: binding.conflicts,
+    deltas: {
+      ...state.deltas,
+      [streamId]: bufferDelta(buffer, deltaIndex, event.delta),
+    },
+  };
+}
+
+function foldStableFrame(
+  state: ChatState,
+  frame: ConversationEventFrame,
+  binding: StreamBinding,
+  work: ProjectionWork,
+): ChatState {
+  if (frame.event.kind === 'stream-delta') return state;
+  const event = frame.event;
+  const streamWasRetracted = binding.receipt?.retracted ?? false;
+  let projector = binding.projector;
+  let deltas = state.deltas;
+  let optimistic = state.optimistic;
+
+  if (binding.valid && event.kind === 'user' && frame.clientMessageId) {
+    optimistic = optimistic.filter((send) => send.clientMessageId !== frame.clientMessageId);
+  }
+
+  if (binding.valid && frame.streamId && !streamWasRetracted && binding.receipt) {
+    const completed: StreamReceipt = { ...binding.receipt, completed: true };
+    projector = {
+      ...projector,
+      streams: indexSet(projector.streams, frame.streamId, completed),
+    };
+    deltas = removeDeltaBuffer(deltas, frame.streamId, work);
+  }
+
+  if (binding.valid && event.kind === 'retract') {
+    for (const streamId of new Set(event.streamIds)) {
+      const current = indexGet(projector.streams, streamId) ?? emptyStreamReceipt();
+      projector = {
+        ...projector,
+        streams: indexSet(projector.streams, streamId, { ...current, retracted: true }),
+      };
+      deltas = removeDeltaBuffer(deltas, streamId, work);
+    }
+  }
+
+  if (
+    binding.valid &&
+    (event.kind === 'turn-end' || event.kind === 'turn-failed')
+  ) {
+    for (const streamId of Object.keys(deltas)) {
+      const current = indexGet(projector.streams, streamId);
+      if (current && !current.completed) {
+        projector = {
+          ...projector,
+          streams: indexSet(projector.streams, streamId, { ...current, completed: true }),
+        };
+      }
+      deltas = removeDeltaBuffer(deltas, streamId, work);
+    }
+  }
+
+  return {
+    ...state,
+    frames: sequenceAppend(state.frames, frame),
+    projectedFrames: binding.valid
+      ? sequenceAppend(state.projectedFrames, frame)
+      : state.projectedFrames,
+    aggregates: binding.valid && !streamWasRetracted
+      ? foldAggregate(state.aggregates, event)
+      : state.aggregates,
+    deltas,
+    optimistic,
+    integrityConflicts: binding.conflicts,
+    projector,
+  };
+}
+
+function foldFrame(
+  state: ChatState,
+  frame: ConversationEventFrame,
+  work: ProjectionWork,
+): ChatState {
+  const priorEventSequence = indexGet(state.projector.eventSequences, frame.eventId);
+  if (priorEventSequence !== undefined) {
+    work.path = 'conflict';
+    return withConflict(state, `event:${frame.eventId}`);
+  }
+  const projector: ProjectorState = {
+    ...state.projector,
+    eventSequences: indexSet(state.projector.eventSequences, frame.eventId, frame.sequence),
+  };
+  const indexedState = { ...state, projector };
+  const binding = bindStream(projector, state.integrityConflicts, frame);
+  if (frame.event.kind === 'stream-delta') {
+    return foldDeltaFrame(indexedState, frame, binding);
+  }
+  return foldStableFrame(indexedState, frame, binding, work);
+}
+
+function drainContiguous(
+  state: ChatState,
+  first: ConversationEventFrame,
+  work: ProjectionWork,
+): ChatState {
+  let next = state;
+  let frame: ConversationEventFrame | undefined = first;
+  while (frame) {
+    next = foldFrame(next, frame, work);
+    next = { ...next, projectedThroughSequence: frame.sequence };
+
+    const pendingKey = sequenceKey(frame.sequence + 1);
+    frame = indexGet(next.projector.pendingFrames, pendingKey);
+    if (frame) {
+      next = {
+        ...next,
+        projector: {
+          ...next.projector,
+          pendingFrames: indexDelete(next.projector.pendingFrames, pendingKey),
+        },
+      };
+    }
+  }
+  return next;
+}
+
+function work(path: ProjectionPath): ProjectionWork {
+  return {
+    path,
+    acceptedEventVisits: 0,
+    historyVisits: 0,
+    fallbackRebuilds: 0,
+    compactedDeltaPayloads: 0,
+  };
+}
+
+export function reduceConversationEvent(
+  state: ChatState,
+  frame: ConversationEventFrame,
+): ProjectionReceipt {
+  const receiptWork = work('ignored');
+  if (state.sessionId !== null && frame.sessionId !== state.sessionId) {
+    return { state, work: receiptWork };
+  }
+  if (state.conversationId !== null && frame.conversationId !== state.conversationId) {
+    return { state, work: receiptWork };
+  }
+
+  const key = sequenceKey(frame.sequence);
+  const digest = frameDigest(frame);
+  const sameSequence = indexGet(state.projector.sequenceReceipts, key);
+  if (sameSequence) {
+    if (sameSequence.eventId === frame.eventId && sameSequence.digest === digest) {
+      receiptWork.path = 'duplicate';
+      return { state, work: receiptWork };
+    }
+    receiptWork.path = 'conflict';
+    return { state: withConflict(state, `sequence:${frame.sequence}`), work: receiptWork };
+  }
+  // A replay checkpoint positively accounts for every lower sequence, including
+  // hidden legacy rows. An unseen late frame cannot be safely inserted behind it.
+  if (frame.sequence <= state.projectedThroughSequence) {
+    receiptWork.path = 'conflict';
+    return { state: withConflict(state, `sequence:${frame.sequence}`), work: receiptWork };
+  }
+
+  receiptWork.acceptedEventVisits = 1;
+  let projector: ProjectorState = {
+    ...state.projector,
+    sequenceReceipts: indexSet(state.projector.sequenceReceipts, key, {
+      eventId: frame.eventId,
+      digest,
+    }),
+  };
+  let next: ChatState = {
+    ...state,
+    conversationId: frame.conversationId,
+    sessionId: frame.sessionId,
+    highWaterSequence: Math.max(state.highWaterSequence, frame.sequence),
+    projector,
+  };
+
+  if (frame.sequence > state.projectedThroughSequence + 1) {
+    receiptWork.path = 'buffered';
+    projector = {
+      ...projector,
+      pendingFrames: indexSet(projector.pendingFrames, key, frame),
+    };
+    next = { ...next, projector };
+    return { state: next, work: receiptWork };
+  }
+
+  receiptWork.path = 'ordered';
+  return { state: drainContiguous(next, frame, receiptWork), work: receiptWork };
 }
 
 export function applyConversationEvent(
   state: ChatState,
   frame: ConversationEventFrame,
 ): ChatState {
-  if (state.sessionId !== null && frame.sessionId !== state.sessionId) return state;
-  if (state.conversationId !== null && frame.conversationId !== state.conversationId) return state;
+  return reduceConversationEvent(state, frame).state;
+}
 
-  const sameSequence = state.frames.find((accepted) => accepted.sequence === frame.sequence);
-  if (sameSequence) {
-    if (sameFrame(sameSequence, frame)) return state;
-    return {
-      ...state,
-      integrityConflicts: addConflict(state.integrityConflicts, `sequence:${frame.sequence}`),
-    };
-  }
-  const sameEventId = state.frames.find((accepted) => accepted.eventId === frame.eventId);
-  if (sameEventId) {
-    return {
-      ...state,
-      integrityConflicts: addConflict(state.integrityConflicts, `event:${frame.eventId}`),
-    };
+export function reduceReplay(state: ChatState, replay: SessionReplayFrame): ProjectionReceipt {
+  const receiptWork = work('replay');
+  receiptWork.fallbackRebuilds = 1;
+  receiptWork.historyVisits = replay.events.length;
+
+  const ordered = replay.events
+    .map((event, inputIndex) => ({ event, inputIndex }))
+    .sort((left, right) =>
+      left.event.sequence - right.event.sequence || left.inputIndex - right.inputIndex)
+    .map(({ event }) => event);
+  let next = initialChatState(
+    replay.sessionId,
+    ordered[0]?.conversationId ?? replay.sessionId,
+  );
+  next = { ...next, optimistic: state.optimistic, sendQueue: state.sendQueue };
+
+  for (const event of ordered) {
+    const belongs =
+      event.sessionId === next.sessionId && event.conversationId === next.conversationId;
+    if (belongs && event.sequence > next.projectedThroughSequence + 1) {
+      // Replay high-water is the positive checkpoint that lets visible rows skip
+      // sequences occupied by hidden historical evidence.
+      next = { ...next, projectedThroughSequence: event.sequence - 1 };
+    }
+    const reduced = reduceConversationEvent(next, event);
+    next = reduced.state;
+    receiptWork.acceptedEventVisits += reduced.work.acceptedEventVisits;
+    receiptWork.compactedDeltaPayloads += reduced.work.compactedDeltaPayloads;
   }
 
-  const frames = [...state.frames, frame].sort((a, b) => a.sequence - b.sequence);
-  const derived = derive(frames, state.integrityConflicts);
-  let optimistic = state.optimistic;
-  if (frame.event.kind === 'user' && frame.clientMessageId) {
-    optimistic = optimistic.filter((send) => send.clientMessageId !== frame.clientMessageId);
+  const highestVisible = ordered.at(-1)?.sequence ?? 0;
+  if (replay.highWaterSequence < highestVisible) {
+    next = withConflict(next, 'replay:high-water');
   }
-  return {
-    ...state,
-    conversationId: frame.conversationId,
-    sessionId: frame.sessionId,
-    frames,
-    projectedFrames: derived.projectedFrames,
-    aggregates: derived.aggregates,
-    deltas: derived.deltas,
-    optimistic,
-    integrityConflicts: derived.conflicts,
-    highWaterSequence: Math.max(state.highWaterSequence, frame.sequence),
+  const checkpoint = Math.max(
+    replay.highWaterSequence,
+    highestVisible,
+    next.highWaterSequence,
+  );
+  next = {
+    ...next,
+    highWaterSequence: checkpoint,
+    projectedThroughSequence: checkpoint,
   };
+  return { state: next, work: receiptWork };
 }
 
 export function applyReplay(state: ChatState, replay: SessionReplayFrame): ChatState {
-  let next = initialChatState(replay.sessionId, replay.events[0]?.conversationId ?? replay.sessionId);
-  next = { ...next, optimistic: state.optimistic, sendQueue: state.sendQueue };
-  for (const event of replay.events) next = applyConversationEvent(next, event);
-  const observed = next.frames.at(-1)?.sequence ?? 0;
-  if (replay.highWaterSequence < observed) {
-    next = {
-      ...next,
-      integrityConflicts: addConflict(next.integrityConflicts, 'replay:high-water'),
-    };
-  }
-  return { ...next, highWaterSequence: Math.max(replay.highWaterSequence, observed) };
+  return reduceReplay(state, replay).state;
 }
 
 export function applySessionChanged(state: ChatState, frame: SessionChangedFrame): ChatState {
