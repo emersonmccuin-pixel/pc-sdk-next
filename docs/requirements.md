@@ -20,10 +20,10 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | ID | Status | Requirement |
 | --- | --- | --- |
 | BASE-001 | verified | The known-working PC-SDK baseline is preserved in the original private repository at tag `working-v1-2026-07-11`. |
-| OPS-001 | accepted | PC-SDK Next runs from a separate checkout, GitHub repository, port, data directory, logs, launcher identity, and worktree root. |
+| OPS-001 | verified | PC-SDK Next runs from a separate checkout, GitHub repository, port, data directory, logs, launcher identity, and worktree root. |
 | OPS-002 | accepted | The original PC-SDK remains the dependable daily driver until an explicit migration gate is passed. |
 | OPS-003 | accepted | Boot recovery reconciles durable state with runtime, Git, and filesystem evidence and fails uncertain work loudly. |
-| OPS-004 | implemented | The original repository is configured as fetch-only `upstream`; ordinary and explicit fork pushes target `origin`. |
+| OPS-004 | verified | The original repository is configured as fetch-only `upstream`; ordinary and explicit fork pushes target `origin`. |
 | OPS-005 | accepted | A data-directory single-instance lock and cross-process repository lease prevent two engines from mutating the same app state or target repository concurrently. |
 | OPS-006 | accepted | The local HTTP/WS listener binds only to loopback unless a separately approved remote-access design replaces it. |
 

@@ -1,6 +1,6 @@
 # Phase N0: Freeze, fork, and planning foundation
 
-Status: gate evidence passed; landing pending, 2026-07-11.
+Status: complete; gate met 2026-07-11.
 
 ## Outcome
 
