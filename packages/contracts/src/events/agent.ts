@@ -12,7 +12,7 @@ export interface AgentEventFrame {
   projectId: ULID;
   runId: ULID;
   event: ChatEvent;
-  /** Stable: `sdkUuid ?? ${kind}:tool:${toolUseId}`; server guarantees presence. */
+  /** Stable canonical conversation event id. */
   dedupId: string;
 }
 

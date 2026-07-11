@@ -54,7 +54,6 @@ const MAX_AUTO_CONTINUES = 5;
 const BUDGET_RESULT = {
   type: 'result',
   ok: false,
-  subtype: 'error_max_turns',
   stopReason: null,
   usage: null,
   durationMs: null,
@@ -66,7 +65,6 @@ const BUDGET_RESULT = {
 const CRASH_RESULT = {
   type: 'result',
   ok: false,
-  subtype: 'error_during_execution',
   stopReason: null,
   usage: null,
   durationMs: null,
@@ -202,7 +200,7 @@ test('a killed (cancelled) run never auto-continues', async () => {
   // Hang forever — the run is only ended by killRun. `init` first so the run
   // actually reaches 'running' (onSdkSessionId fires the announce).
   const hangingTurn: ScriptedTurn = [
-    { type: 'init', sdkSessionId: 'sdk-1', model: null, permissionMode: null },
+    { type: 'init', nativeSessionId: 'sdk-1', model: null, permissionMode: null },
     { hang: true },
   ];
   const adapter = new FakeAdapter([hangingTurn]);

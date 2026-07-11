@@ -15,7 +15,7 @@ import type { AgentRunDto, ChatEvent, ULID } from '@pc/contracts';
 export type AgentRunTranscriptStatus = 'ready' | 'empty' | 'missing';
 
 /** One backfilled transcript row. `dedupId` mirrors the live `agent-event`
- *  frame's key exactly (`sdkUuid ?? kind:tool:toolUseId`) so the merge in
+ *  frame's canonical event id exactly so the merge in
  *  transcript.ts is a single dedup pass, not two different id schemes. */
 export interface AgentRunEventEntry {
   dedupId: string;

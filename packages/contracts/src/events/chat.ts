@@ -1,18 +1,43 @@
-// Channel 1 — Chat (durable, per-session seq). See docs/event-contract.md.
-//
-// The chat spine: every content event the server persists to conversation_events
-// and broadcasts, plus the ephemeral streaming-delta frame that rides outside
-// the seq'd store. Browser-safe, zero runtime deps.
+// Canonical conversation events. Stable content and visible stream deltas use
+// the same durable, server-sequenced envelope. Provider-native identifiers and
+// private reasoning content never cross this contract.
 
 import type { ULID } from '../shared.ts';
 
-// ── ChatEvent — persisted + broadcast content kinds ──────────────────────────
+export type ConversationFamily =
+  | 'user'
+  | 'assistant'
+  | 'activity'
+  | 'tool'
+  | 'agent'
+  | 'control'
+  | 'telemetry'
+  | 'system';
 
+export const CONVERSATION_FAMILIES = [
+  'user',
+  'assistant',
+  'activity',
+  'tool',
+  'agent',
+  'control',
+  'telemetry',
+  'system',
+] as const satisfies readonly ConversationFamily[];
+
+export type TurnStopReason =
+  | 'complete'
+  | 'max-output'
+  | 'stop-sequence'
+  | 'tool-use'
+  | 'other';
+
+/** Stable/checkpoint content. Historical private reasoning is retained in the
+ * database as `legacy-hidden` rows and is deliberately absent from this union. */
 export type ChatEvent =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant-text'; text: string; midLoop: boolean } // complete block
-  | { kind: 'thinking'; text: string }
-  | { kind: 'turn-end'; text: string; stopReason: string | null }
+  | { kind: 'assistant-text'; text: string; midLoop: boolean }
+  | { kind: 'turn-end'; text: string; stopReason: TurnStopReason | null }
   | { kind: 'turn-failed'; error: string; source: 'api' | 'abort' | 'internal' }
   | { kind: 'tool-call'; toolUseId: string; name: string; input: unknown }
   | { kind: 'tool-result'; toolUseId: string; result: unknown; isError: boolean }
@@ -39,38 +64,25 @@ export type ChatEvent =
       raw?: unknown;
     }
   | { kind: 'compaction'; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
-  // pre-shaped server-side; no raw transcript rows on the wire
   | { kind: 'sidechain'; role: 'user' | 'assistant' | 'tool'; text: string }
-  // anchor only — the bubble hydrates status from agent-run/contract resource
-  // events by runId
   | { kind: 'agent-dispatch'; runId: ULID; agentName: string }
-  // Agent → orchestrator envelope (ask + terminal), injected by
-  // SessionService.injectAgentEnvelope. Collapsed per-run card in chat;
-  // repeated events for the same runId coalesce into one card (latest wins).
   | {
       kind: 'agent-envelope';
       runId: ULID;
       agentName: string;
-      /** Set only while this envelope is an open ask — the durable
-       *  pending-ask row the orchestrator answers via pc_answer_pending. */
       pendingAskId?: ULID;
       status: 'waiting' | 'done' | 'failed';
-      /** One-line label for the collapsed card. */
       summary: string;
-      /** Shown when the card expands. */
       detail: string;
-      /** Verbatim envelope text — also the turn text sent to the runtime. */
       envelope: string;
     }
-  // model-refusal fallback: evict already-delivered events by sdkUuid
-  | { kind: 'retract'; uuids: string[] };
+  | { kind: 'retract'; streamIds: string[] };
 
 export type ChatEventKind = ChatEvent['kind'];
 
 export const CHAT_EVENT_KINDS = [
   'user',
   'assistant-text',
-  'thinking',
   'turn-end',
   'turn-failed',
   'tool-call',
@@ -87,80 +99,231 @@ export const CHAT_EVENT_KINDS = [
   'retract',
 ] as const satisfies readonly ChatEventKind[];
 
-export function isChatEventKind(value: unknown): value is ChatEventKind {
-  return typeof value === 'string' && (CHAT_EVENT_KINDS as readonly string[]).includes(value);
-}
-
-// ── Envelope ──────────────────────────────────────────────────────────────────
-
-export interface ChatFrame {
-  type: 'chat';
-  projectId: ULID;
-  sessionId: string;
-  /** Per-session monotonic, allocated at persist time. */
-  seq: number;
-  /** THE dedup key; `${sessionId}:${seq}`; UNIQUE(session_id, seq) in DB. */
-  id: `${string}:${number}`;
-  /** Stamped server-side on the user-turn row before broadcast. */
-  clientMessageId?: string;
-  /** The SDK message uuid — stored per event for retraction + delta reconcile. */
-  sdkUuid?: string;
-  event: ChatEvent;
-}
-
-// ── Streaming deltas (ephemeral, broadcast-only, never persisted) ─────────────
-
 export type ChatDeltaEvent =
   | { kind: 'message-start' }
   | { kind: 'text-delta'; text: string }
-  | { kind: 'thinking-delta'; text: string }
   | { kind: 'tool-input-delta'; toolUseId?: string; partialJson: string }
   | { kind: 'message-end' };
 
-export interface ChatDeltaFrame {
-  type: 'chat-delta';
-  projectId: ULID;
-  sessionId: string;
-  /** The in-flight assistant message. Client dedupes against the persisted
-   *  ChatFrame with the same sdkUuid (final block wins). */
-  sdkUuid: string;
-  event: ChatDeltaEvent;
+export interface ChatStreamEvent {
+  kind: 'stream-delta';
+  delta: ChatDeltaEvent;
 }
 
-// ── Guards (cheap discriminant checks) ───────────────────────────────────────
+export type ConversationEvent = ChatEvent | ChatStreamEvent;
+
+export interface ConversationEventFrame {
+  type: 'conversation-event';
+  eventId: string;
+  projectId: ULID;
+  conversationId: string;
+  sessionId: string;
+  sequence: number;
+  family: ConversationFamily;
+  turnId?: string;
+  itemId: string;
+  streamId?: string;
+  deltaIndex?: number;
+  clientMessageId?: string;
+  occurredAt: number;
+  event: ConversationEvent;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function isChatFrame(value: unknown): value is ChatFrame {
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function finiteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isTurnStopReason(value: unknown): value is TurnStopReason {
   return (
-    isRecord(value) &&
-    value.type === 'chat' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.seq === 'number' &&
-    isRecord(value.event) &&
-    isChatEventKind((value.event as Record<string, unknown>).kind)
+    value === 'complete' ||
+    value === 'max-output' ||
+    value === 'stop-sequence' ||
+    value === 'tool-use' ||
+    value === 'other'
   );
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+export function isConversationFamily(value: unknown): value is ConversationFamily {
+  return typeof value === 'string' && (CONVERSATION_FAMILIES as readonly string[]).includes(value);
+}
+
+export function isChatEventKind(value: unknown): value is ChatEventKind {
+  return typeof value === 'string' && (CHAT_EVENT_KINDS as readonly string[]).includes(value);
 }
 
 const CHAT_DELTA_KINDS = [
   'message-start',
   'text-delta',
-  'thinking-delta',
   'tool-input-delta',
   'message-end',
 ] as const;
 
-export function isChatDeltaFrame(value: unknown): value is ChatDeltaFrame {
-  return (
-    isRecord(value) &&
-    value.type === 'chat-delta' &&
-    typeof value.sdkUuid === 'string' &&
-    isRecord(value.event) &&
-    typeof (value.event as Record<string, unknown>).kind === 'string' &&
-    (CHAT_DELTA_KINDS as readonly string[]).includes(
-      (value.event as Record<string, unknown>).kind as string,
-    )
-  );
+export function isChatDeltaEvent(value: unknown): value is ChatDeltaEvent {
+  if (
+    !isRecord(value) ||
+    typeof value.kind !== 'string' ||
+    !(CHAT_DELTA_KINDS as readonly string[]).includes(value.kind)
+  ) return false;
+  switch (value.kind) {
+    case 'message-start':
+    case 'message-end':
+      return true;
+    case 'text-delta':
+      return typeof value.text === 'string';
+    case 'tool-input-delta':
+      return (
+        typeof value.partialJson === 'string' &&
+        (value.toolUseId === undefined || nonEmptyString(value.toolUseId))
+      );
+    default:
+      return false;
+  }
+}
+
+export function isChatEvent(value: unknown): value is ChatEvent {
+  if (!isRecord(value) || !isChatEventKind(value.kind)) return false;
+  switch (value.kind) {
+    case 'user':
+      return typeof value.text === 'string';
+    case 'assistant-text':
+      return typeof value.text === 'string' && typeof value.midLoop === 'boolean';
+    case 'turn-end':
+      return (
+        typeof value.text === 'string' &&
+        (value.stopReason === null || isTurnStopReason(value.stopReason))
+      );
+    case 'turn-failed':
+      return (
+        typeof value.error === 'string' &&
+        (value.source === 'api' || value.source === 'abort' || value.source === 'internal')
+      );
+    case 'tool-call':
+      return nonEmptyString(value.toolUseId) && nonEmptyString(value.name) && hasOwn(value, 'input');
+    case 'tool-result':
+      return nonEmptyString(value.toolUseId) && hasOwn(value, 'result') && typeof value.isError === 'boolean';
+    case 'tool-denied':
+      return nonEmptyString(value.toolUseId) && nonEmptyString(value.name) && typeof value.reason === 'string';
+    case 'usage':
+      return (
+        finiteNonNegativeNumber(value.inputTokens) &&
+        finiteNonNegativeNumber(value.outputTokens) &&
+        finiteNonNegativeNumber(value.cacheCreationTokens) &&
+        finiteNonNegativeNumber(value.cacheReadTokens) &&
+        nullableString(value.model)
+      );
+    case 'turn-duration':
+      return value.durationMs === null || finiteNonNegativeNumber(value.durationMs);
+    case 'session-state':
+      return (
+        (value.state === 'idle' || value.state === 'running' || value.state === 'requires_action') &&
+        nullableString(value.permissionMode)
+      );
+    case 'system':
+      return (
+        nonEmptyString(value.subtype) &&
+        (value.level === 'info' || value.level === 'notice' || value.level === 'warning' || value.level === 'error') &&
+        typeof value.message === 'string'
+      );
+    case 'compaction':
+      return (
+        (value.trigger === 'manual' || value.trigger === 'auto') &&
+        finiteNonNegativeNumber(value.preTokens) &&
+        (value.postTokens === null || finiteNonNegativeNumber(value.postTokens))
+      );
+    case 'sidechain':
+      return (
+        (value.role === 'user' || value.role === 'assistant' || value.role === 'tool') &&
+        typeof value.text === 'string'
+      );
+    case 'agent-dispatch':
+      return nonEmptyString(value.runId) && nonEmptyString(value.agentName);
+    case 'agent-envelope':
+      return (
+        nonEmptyString(value.runId) &&
+        nonEmptyString(value.agentName) &&
+        (value.pendingAskId === undefined || nonEmptyString(value.pendingAskId)) &&
+        (value.status === 'waiting' || value.status === 'done' || value.status === 'failed') &&
+        typeof value.summary === 'string' &&
+        typeof value.detail === 'string' &&
+        typeof value.envelope === 'string'
+      );
+    case 'retract':
+      return Array.isArray(value.streamIds) && value.streamIds.every(nonEmptyString);
+    default:
+      return false;
+  }
+}
+
+export function isConversationEvent(value: unknown): value is ConversationEvent {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'stream-delta') return isChatDeltaEvent(value.delta);
+  return isChatEvent(value);
+}
+
+export function conversationFamilyForEvent(event: ConversationEvent): ConversationFamily {
+  switch (event.kind) {
+    case 'user':
+      return 'user';
+    case 'assistant-text':
+    case 'stream-delta':
+      return 'assistant';
+    case 'tool-call':
+    case 'tool-result':
+    case 'tool-denied':
+      return 'tool';
+    case 'agent-dispatch':
+    case 'agent-envelope':
+    case 'sidechain':
+      return 'agent';
+    case 'usage':
+    case 'turn-duration':
+      return 'telemetry';
+    case 'system':
+      return 'system';
+    default:
+      return 'control';
+  }
+}
+
+export function isConversationEventFrame(value: unknown): value is ConversationEventFrame {
+  if (!isRecord(value) || value.type !== 'conversation-event') return false;
+  if (
+    !nonEmptyString(value.eventId) ||
+    !nonEmptyString(value.projectId) ||
+    !nonEmptyString(value.conversationId) ||
+    !nonEmptyString(value.sessionId) ||
+    !Number.isSafeInteger(value.sequence) ||
+    (value.sequence as number) < 1 ||
+    !isConversationFamily(value.family) ||
+    !nonEmptyString(value.itemId) ||
+    !Number.isFinite(value.occurredAt) ||
+    !isConversationEvent(value.event)
+  ) return false;
+  if (value.family !== conversationFamilyForEvent(value.event)) return false;
+  if (value.turnId !== undefined && !nonEmptyString(value.turnId)) return false;
+  if (value.streamId !== undefined && !nonEmptyString(value.streamId)) return false;
+  if (value.clientMessageId !== undefined && !nonEmptyString(value.clientMessageId)) return false;
+  if (value.deltaIndex !== undefined && (!Number.isSafeInteger(value.deltaIndex) || (value.deltaIndex as number) < 0)) {
+    return false;
+  }
+  if (value.event.kind === 'stream-delta') {
+    return nonEmptyString(value.streamId) && value.deltaIndex !== undefined;
+  }
+  return value.deltaIndex === undefined;
 }

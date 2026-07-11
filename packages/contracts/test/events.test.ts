@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import {
   CHAT_EVENT_KINDS,
   RESOURCE_ENTITIES,
-  isChatFrame,
-  isChatDeltaFrame,
+  isConversationEventFrame,
   isChatEventKind,
   isResourceEntity,
   isResourceFrame,
@@ -13,44 +12,63 @@ import {
   isUsageSnapshot,
   isMcpServerStatus,
   isSessionChangedFrame,
+  isSessionReplayFrame,
   isOrchestratorStateFrame,
   isAskFrame,
   isSendQueueItem,
-  type ChatFrame,
+  type ConversationEventFrame,
   type ResourceFrame,
   type ServerFrame,
 } from '../src/index.ts';
 
-test('isChatFrame accepts a well-formed frame and rejects junk', () => {
-  const frame: ChatFrame = {
-    type: 'chat',
+test('isConversationEventFrame enforces canonical identity', () => {
+  const frame: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'e1',
     projectId: 'p1',
+    conversationId: 'c1',
     sessionId: 's1',
-    seq: 4,
-    id: 's1:4',
+    sequence: 4,
+    family: 'assistant',
+    itemId: 'i1',
+    occurredAt: 10,
     event: { kind: 'assistant-text', text: 'hi', midLoop: false },
   };
-  assert.equal(isChatFrame(frame), true);
-  assert.equal(isChatFrame({ ...frame, event: { kind: 'bogus' } }), false);
-  assert.equal(isChatFrame({ ...frame, type: 'chat-delta' }), false);
-  assert.equal(isChatFrame(null), false);
+  assert.equal(isConversationEventFrame(frame), true);
+  assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'bogus' } }), false);
+  assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'assistant-text', text: 'missing flag' } }), false);
+  assert.equal(isConversationEventFrame({ ...frame, family: 'user' }), false);
+  assert.equal(isConversationEventFrame({ ...frame, sequence: 0 }), false);
+  assert.equal(isConversationEventFrame({ ...frame, itemId: '' }), false);
+  assert.equal(isConversationEventFrame(null), false);
 });
 
 test('every ChatEvent kind is registered', () => {
-  assert.equal(CHAT_EVENT_KINDS.length, 17);
+  assert.equal(CHAT_EVENT_KINDS.length, 16);
   for (const k of CHAT_EVENT_KINDS) assert.equal(isChatEventKind(k), true);
   assert.equal(isChatEventKind('jsonl-user'), false); // old wire kind is dead
 });
 
-test('isChatDeltaFrame validates the delta kinds', () => {
-  assert.equal(
-    isChatDeltaFrame({ type: 'chat-delta', projectId: 'p', sessionId: 's', sdkUuid: 'u', event: { kind: 'text-delta', text: 'x' } }),
-    true,
-  );
-  assert.equal(
-    isChatDeltaFrame({ type: 'chat-delta', projectId: 'p', sessionId: 's', sdkUuid: 'u', event: { kind: 'nope' } }),
-    false,
-  );
+test('stream deltas use the same sequenced envelope and require stream order', () => {
+  const frame = {
+    type: 'conversation-event',
+    eventId: 'e2',
+    projectId: 'p',
+    conversationId: 'c',
+    sessionId: 's',
+    sequence: 2,
+    family: 'assistant',
+    itemId: 'i',
+    streamId: 'stream',
+    deltaIndex: 0,
+    occurredAt: 2,
+    event: { kind: 'stream-delta', delta: { kind: 'text-delta', text: 'x' } },
+  };
+  assert.equal(isConversationEventFrame(frame), true);
+  assert.equal(isConversationEventFrame({ ...frame, streamId: undefined }), false);
+  assert.equal(isConversationEventFrame({ ...frame, deltaIndex: -1 }), false);
+  assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'stream-delta', delta: { kind: 'text-delta' } } }), false);
+  assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'stream-delta', delta: { kind: 'nope' } } }), false);
 });
 
 test('ResourceEntity is a closed set (guard rule 7)', () => {
@@ -163,6 +181,20 @@ test('session-changed + orchestrator-state + ask + send-queue-item guards', () =
     true,
   );
   assert.equal(isSendQueueItem({ id: 'i1', clientMessageId: 'c1', text: 'hi', status: 'delivered_to_pty', failureReason: null, createdAt: 1, updatedAt: 2 }), false);
+});
+
+test('session replay validates every canonical event identity', () => {
+  const event: ConversationEventFrame = {
+    type: 'conversation-event', eventId: 'e', projectId: 'p', conversationId: 's',
+    sessionId: 's', sequence: 1, family: 'user', itemId: 'i', occurredAt: 1,
+    event: { kind: 'user', text: 'hi' },
+  };
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1, events: [event],
+  }), true);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 'other', highWaterSequence: 1, events: [event],
+  }), false);
 });
 
 // Compile-time smoke: a ServerFrame narrows on `type`.

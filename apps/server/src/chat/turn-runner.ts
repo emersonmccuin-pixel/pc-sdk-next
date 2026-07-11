@@ -6,11 +6,11 @@
 //    A result maps to one; a stream that ends without a result, or throws,
 //    still emits a terminal (internal/abort). Post-terminal messages are dropped.
 //  - Rule 5: an unknown message variant is dropped + logged; the loop continues.
-//  - Subagent messages (`parentToolUseId != null`) are not forwarded to chat.
+//  - Runtime events marked as sidechain are not forwarded to chat.
 //  - `supersedes` → `retract` (model-refusal fallback).
 //
-// It does NOT persist — `emitChat` is the persist-then-broadcast door (rule 1
-// lives there). Deltas ride `emitDelta` (broadcast-only, never persisted).
+// It does NOT persist directly. `emitChat` and `emitDelta` both enter the
+// canonical atomic event/outbox door; the conversation relay publishes later.
 
 import type { ChatDeltaEvent, ChatEvent, UsageSnapshot } from '@pc/contracts';
 import type { RuntimeEvent } from '../runner/runtime.ts';
@@ -29,20 +29,16 @@ export interface TurnResult {
 }
 
 export interface TurnRunnerDeps {
-  /** Persist + broadcast one chat event. */
-  emitChat: (event: ChatEvent, opts?: { sdkUuid?: string }) => void;
-  /** Broadcast-only streaming delta. */
-  emitDelta: (sdkUuid: string, event: ChatDeltaEvent) => void;
-  /** SDK session id captured from `init` (persisted for `resume`). */
-  onSdkSessionId?: (id: string, model: string | null) => void;
+  /** Persist one stable canonical event and schedule its outbox drain. */
+  emitChat: (event: ChatEvent, identity?: { itemId?: string; streamId?: string }) => void;
+  /** Persist one visible streaming delta with deterministic per-item order. */
+  emitDelta: (itemId: string, deltaIndex: number, event: ChatDeltaEvent) => void;
+  /** Adapter-native session id captured from `init` (persisted for resume). */
+  onNativeSessionId?: (id: string, model: string | null) => void;
   /** Durable per-account usage snapshot (`rate_limit_event`). */
   onRateLimit?: (snapshot: UsageSnapshot) => void;
   /** Dropped/unknown message log (rule 5). */
   onDropped?: (reason: string, message: unknown) => void;
-}
-
-function isAbortSubtype(subtype: string): boolean {
-  return /abort|interrupt|cancel/i.test(subtype);
 }
 
 /** Drive one turn to completion. Returns the single terminal outcome emitted. */
@@ -53,6 +49,7 @@ export async function runTurn(
   let terminated = false;
   let sawToolCall = false;
   let lastAssistantText = '';
+  const nextDeltaIndex = new Map<string, number>();
   // Overwritten the moment a real terminal is emitted; the post-terminal-throw
   // branch below relies on this holding the actual result, not a placeholder.
   let terminalResult: TurnResult = { terminal: 'turn-failed', outcome: 'error', numTurns: null };
@@ -78,47 +75,50 @@ export async function runTurn(
       }
       switch (msg.type) {
         case 'init':
-          deps.onSdkSessionId?.(msg.sdkSessionId, msg.model);
+          deps.onNativeSessionId?.(msg.nativeSessionId, msg.model);
           break;
 
         case 'assistant-block': {
-          if (msg.parentToolUseId !== null) {
+          if (msg.scope === 'sidechain') {
             drop('subagent assistant-block', msg);
             break;
           }
           const b = msg.block;
           if (b.kind === 'text') {
             lastAssistantText = b.text;
-            deps.emitChat({ kind: 'assistant-text', text: b.text, midLoop: sawToolCall }, { sdkUuid: msg.sdkUuid });
-          } else if (b.kind === 'thinking') {
-            deps.emitChat({ kind: 'thinking', text: b.text }, { sdkUuid: msg.sdkUuid });
+            deps.emitChat(
+              { kind: 'assistant-text', text: b.text, midLoop: sawToolCall },
+              { itemId: msg.itemId, streamId: msg.itemId },
+            );
           } else {
             sawToolCall = true;
             deps.emitChat(
               { kind: 'tool-call', toolUseId: b.toolUseId, name: b.name, input: b.input },
-              { sdkUuid: msg.sdkUuid },
+              { itemId: msg.itemId, streamId: msg.itemId },
             );
           }
           break;
         }
 
         case 'tool-result':
-          if (msg.parentToolUseId !== null) {
+          if (msg.scope === 'sidechain') {
             drop('subagent tool-result', msg);
             break;
           }
           deps.emitChat(
             { kind: 'tool-result', toolUseId: msg.toolUseId, result: msg.result, isError: msg.isError },
-            { sdkUuid: msg.sdkUuid },
+            { itemId: msg.itemId, streamId: msg.itemId },
           );
           break;
 
         case 'delta':
-          if (msg.parentToolUseId !== null) {
+          if (msg.scope === 'sidechain') {
             drop('subagent delta', msg);
             break;
           }
-          deps.emitDelta(msg.sdkUuid, msg.delta);
+          const deltaIndex = nextDeltaIndex.get(msg.itemId) ?? 0;
+          nextDeltaIndex.set(msg.itemId, deltaIndex + 1);
+          deps.emitDelta(msg.itemId, deltaIndex, msg.delta);
           break;
 
         case 'result': {
@@ -129,8 +129,14 @@ export async function runTurn(
           } else {
             deps.emitChat({
               kind: 'turn-failed',
-              error: msg.error ?? msg.subtype,
-              source: isAbortSubtype(msg.subtype) ? 'abort' : 'api',
+              error: msg.error ?? (
+                msg.outcome === 'budget-exhausted'
+                  ? 'runtime turn budget exhausted'
+                  : msg.outcome === 'aborted'
+                    ? 'runtime turn aborted'
+                    : 'runtime turn failed'
+              ),
+              source: msg.outcome === 'aborted' ? 'abort' : 'api',
             });
           }
           terminated = true;
@@ -174,7 +180,7 @@ export async function runTurn(
           break;
 
         case 'supersedes':
-          deps.emitChat({ kind: 'retract', uuids: msg.uuids });
+          deps.emitChat({ kind: 'retract', streamIds: msg.streamIds });
           break;
 
         default:

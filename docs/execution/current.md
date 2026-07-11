@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after BC-001 landed.
+Updated: 2026-07-11 after CF-001 sealed verification.
 
 ## Repository
 
@@ -8,26 +8,26 @@ Updated: 2026-07-11 after BC-001 landed.
 - Base branch: `main`
 - BC-001 base: `c3c9480416542cce4d42ad3b8d469887b45c1dfa`
 - BC-001 landing merge: `fd0756a3c39640d91bcb20cfe4a9fe22cb7d2380`
-- Active branch/worktree: none after closeout
 - Evidence: `docs/research/baseline-characterization.md`
-- Next behavior slice: not approved
+- Active slice: `docs/execution/slices/CF-001.md`
+- Active branch/worktree: `codex/cf-001-conversation-foundation` at
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-001`
+- Sealed implementation commit:
+  `35b49d3a012abfb3ec1b439060b1046f95887e19`
 
 ## Status
 
-BC-001 completed its three read-only audit lanes and root synthesis, landed
-with positive ancestry proof, and its feature worktree was removed. The
-baseline map confirms strong delivery mechanics alongside provider-shaped
-session/event contracts, an in-memory chat queue, process-local landing
-serialization, and broad child-process environment inheritance. `pnpm ci:check`
-passed after worktree dependency preparation.
+CF-001 is sealed and verified. Canonical identity, atomic sequence/event/outbox
+persistence, the dedicated relay, persisted deltas, adapter-local native
+correlation, migration/backfill, and the single browser projector are complete.
+Focused checks and `pnpm ci:check` passed; an independent final diff audit found
+no blocker.
 
 ## Next safe action
 
-Review `docs/research/baseline-characterization.md`, resolve its four user
-decisions, and approve the first behavior-changing N2 slice. The recommended
-first slice is canonical conversation identity plus transactional sequence and
-chat outbox. Do not implement that migration from this handoff without user
-approval.
+Revalidate clean `main` at the recorded base, commit this execution record, then
+perform the guarded CF-001 merge, positive ancestry proof, and worktree
+teardown. Do not widen the landing into durable queue/control or runtime work.
 
 ## Startup checks
 
@@ -38,11 +38,13 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Read `AGENTS.md`, `docs/master-plan.md`, `docs/current-state.md`, the BC-001
-evidence, and the boundary documents before drafting the approved slice.
+Read `AGENTS.md`, `docs/master-plan.md`, `docs/current-state.md`, CF-001, the
+BC-001 evidence, and the named boundary documents before continuing.
 
 ## Known blockers
 
-Behavior work is intentionally blocked on the BC-001 user-review gate. The Next
-shortcut code is isolated but has not been installed; regular daily driving
-remains on the original PC-SDK until the migration gate.
+No closeout blocker. The pure projector is correct but O(n²) over long,
+delta-heavy histories; queue a measured ordered-fast-path/completed-stream
+compaction slice immediately after landing. The Next shortcut code is isolated
+but has not been installed; regular daily driving remains on the original
+PC-SDK until the migration gate.

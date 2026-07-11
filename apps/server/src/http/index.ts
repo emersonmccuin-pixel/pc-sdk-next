@@ -1,13 +1,14 @@
 // HTTP surface — health, the @pc/contracts project + settings APIs (mounted
 // from their own modules), sessions (new/resume/list + replay events),
 // pasted-images upload, accounts + usage. Replay events return the SAME
-// ChatFrame shape the WS live channel emits (docs/event-contract.md).
+// canonical conversation-event shape the WS live channel emits.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import {
-  getConversationHighWaterSeq,
+  getConversationHighWaterSequence,
+  getOrchestratorSession,
   getProjectById,
   listOrchestratorSessionsForProject,
   newId,
@@ -15,7 +16,7 @@ import {
 import { getDataDir } from '@pc/utils';
 import type { ULID } from '@pc/domain';
 import type { SessionRegistry } from '../chat/registry.ts';
-import { replayFrames } from '../chat/replay.ts';
+import { replayConversationEvents } from '../chat/replay.ts';
 import { toSessionSummary } from './dto.ts';
 import { mountAgents } from './agents.ts';
 import { mountAgentRuns } from './agent-runs.ts';
@@ -107,11 +108,15 @@ export function createHttpApp(deps: HttpDeps): Hono {
 
   app.get('/api/projects/:id/sessions/:sid/events', (c) => {
     const projectId = c.req.param('id') as ULID;
-    const sessionId = c.req.param('sid');
+    const sessionId = c.req.param('sid') as ULID;
+    const session = getOrchestratorSession(sessionId);
+    if (!session || session.projectId !== projectId) {
+      return c.json({ ok: false, error: 'session not found' }, 404);
+    }
     return c.json({
       ok: true,
-      events: replayFrames(projectId, sessionId),
-      highWaterSeq: getConversationHighWaterSeq(sessionId),
+      events: replayConversationEvents(sessionId),
+      highWaterSequence: getConversationHighWaterSequence(sessionId),
     });
   });
 

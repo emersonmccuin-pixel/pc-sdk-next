@@ -4,7 +4,7 @@
 // yields in order. A step may be `{ hang: true }` — the turn stalls there until
 // `interrupt()` (or `dispose()`) fires, modelling a mid-turn server kill for the
 // kill-recovery test. `interrupt()` on a hung turn ends the stream with a
-// `result` `ok:false` (`subtype: 'abort'`) unless the script already supplies a
+// canonical aborted `result` unless the script already supplies a
 // terminal, keeping the turn-runner's "exactly one terminal" contract honest.
 
 import type { RuntimeEvent, RuntimeSession } from './runtime.ts';
@@ -65,7 +65,7 @@ export class FakeRuntime implements RuntimeSession {
     // where the first pull could clobber an interrupt that already arrived.
     this.aborted = false;
     const script: ScriptedTurn = this.turns[this.turnIndex] ?? [
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
+      { type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 0, error: null, outcome: 'ok', numTurns: null },
     ];
     this.turnIndex += 1;
     return this.run(script);
@@ -91,7 +91,6 @@ export class FakeRuntime implements RuntimeSession {
           yield {
             type: 'result',
             ok: false,
-            subtype: 'abort',
             stopReason: null,
             usage: null,
             durationMs: null,
@@ -112,8 +111,7 @@ export class FakeRuntime implements RuntimeSession {
       yield {
         type: 'result',
         ok: true,
-        subtype: 'success',
-        stopReason: 'end_turn',
+        stopReason: 'complete',
         usage: null,
         durationMs: 0,
         error: null,

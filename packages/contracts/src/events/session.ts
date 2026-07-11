@@ -2,7 +2,7 @@
 // Browser-safe, zero runtime deps.
 
 import type { ULID } from '../shared.ts';
-import type { ChatFrame } from './chat.ts';
+import { isConversationEventFrame, type ConversationEventFrame } from './chat.ts';
 
 /** The session summary the header + rail read. App sessions are server-owned
  *  rows; the SDK `session_id` is captured per turn for `resume`. */
@@ -29,8 +29,8 @@ export interface SessionReplayFrame {
   type: 'session-replay';
   projectId: ULID;
   sessionId: string;
-  highWaterSeq: number;
-  events: ChatFrame[];
+  highWaterSequence: number;
+  events: ConversationEventFrame[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -56,4 +56,20 @@ export function isSessionChangedFrame(value: unknown): value is SessionChangedFr
     (value.transition === 'new-session' || value.transition === 'resume-session') &&
     (value.session === null || isSessionSummary(value.session))
   );
+}
+
+export function isSessionReplayFrame(value: unknown): value is SessionReplayFrame {
+  if (
+    !isRecord(value) ||
+    value.type !== 'session-replay' ||
+    typeof value.projectId !== 'string' ||
+    typeof value.sessionId !== 'string' ||
+    !Number.isSafeInteger(value.highWaterSequence) ||
+    (value.highWaterSequence as number) < 0 ||
+    !Array.isArray(value.events)
+  ) return false;
+  return value.events.every((event) => {
+    if (!isConversationEventFrame(event)) return false;
+    return event.projectId === value.projectId && event.sessionId === value.sessionId;
+  });
 }

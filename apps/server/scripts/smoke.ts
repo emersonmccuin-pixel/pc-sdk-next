@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     emitDelta: () => {
       /* deltas are noisy — count only */
     },
-    onSdkSessionId: (id, model) => console.log(`[smoke] sdkSessionId=${id} model=${model}`),
+    onNativeSessionId: (id, model) => console.log(`[smoke] nativeSessionId=${id} model=${model}`),
     onRateLimit: (snap) => console.log('[usage]', snap),
     onDropped: (reason, msg) => console.log(`[dropped] ${reason}`, preview(msg)),
   });

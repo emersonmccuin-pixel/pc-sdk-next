@@ -12,7 +12,7 @@
 
 import { create } from 'zustand';
 import { getJson, postJson } from '@/api/http';
-import type { ChatFrame, SessionSummary, ULID } from '@pc/contracts';
+import type { ConversationEventFrame, SessionSummary, ULID } from '@pc/contracts';
 
 export type { SessionSummary } from '@pc/contracts';
 
@@ -39,10 +39,10 @@ export const sessionsApi = {
       {},
     ),
 
-  /** Past-session viewing: the same ChatFrame shape as live, rendered read-only
+  /** Past-session viewing: the same canonical event shape as live, rendered read-only
    *  through the same pipeline. */
   sessionEvents: (projectId: ULID, sessionId: string) =>
-    getJson<{ ok: true; events: ChatFrame[]; highWaterSeq: number }>(
+    getJson<{ ok: true; events: ConversationEventFrame[]; highWaterSequence: number }>(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`,
     ).then((r) => r.events),
 };

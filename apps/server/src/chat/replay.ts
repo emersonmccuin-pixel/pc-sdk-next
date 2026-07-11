@@ -1,23 +1,28 @@
-// Replay-frame mapper. The one place conversation_events rows become ChatFrames.
-// Replay shape === live shape (docs/event-contract.md): HTTP replay and WS
-// session-replay both go through here so a past session renders identically.
+// The only canonical row-to-wire mapper. Live outbox relay, WS replay, and
+// past-session HTTP all use this function.
 
 import { listConversationEvents, type ConversationEventRow } from '@pc/db';
-import type { ChatEvent, ChatFrame, ULID } from '@pc/contracts';
+import type { ConversationEvent, ConversationEventFrame } from '@pc/contracts';
 
-export function rowToChatFrame(projectId: ULID, sessionId: string, r: ConversationEventRow): ChatFrame {
+export function rowToConversationEventFrame(r: ConversationEventRow): ConversationEventFrame {
   return {
-    type: 'chat',
-    projectId,
-    sessionId,
-    seq: r.seq,
-    id: `${sessionId}:${r.seq}`,
-    event: r.event as ChatEvent,
-    ...(r.sdkUuid ? { sdkUuid: r.sdkUuid } : {}),
+    type: 'conversation-event',
+    eventId: r.eventId,
+    projectId: r.projectId,
+    conversationId: r.conversationId,
+    sessionId: r.sessionId,
+    sequence: r.sequence,
+    family: r.family,
+    itemId: r.itemId,
+    occurredAt: r.occurredAt,
+    event: r.payload as ConversationEvent,
+    ...(r.turnId ? { turnId: r.turnId } : {}),
+    ...(r.streamId ? { streamId: r.streamId } : {}),
+    ...(r.deltaIndex !== null ? { deltaIndex: r.deltaIndex } : {}),
     ...(r.clientMessageId ? { clientMessageId: r.clientMessageId } : {}),
   };
 }
 
-export function replayFrames(projectId: ULID, sessionId: string): ChatFrame[] {
-  return listConversationEvents(sessionId).map((r) => rowToChatFrame(projectId, sessionId, r));
+export function replayConversationEvents(conversationId: string): ConversationEventFrame[] {
+  return listConversationEvents(conversationId).map(rowToConversationEventFrame);
 }

@@ -18,7 +18,7 @@ function make(timeoutMs: number) {
 
 test('reply resolves the pending ask (allow)', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: { cmd: 'ls' }, sessionId: 's1' });
+  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: { cmd: 'ls' }, appSessionId: 's1' });
   assert.equal(frames.length, 1);
   assert.ok(reg.reply(frames[0].askId, 'allow'));
   assert.deepEqual(await p, { behavior: 'allow' });
@@ -26,14 +26,14 @@ test('reply resolves the pending ask (allow)', async () => {
 
 test('non-allow answer denies, carrying the reason', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   reg.reply(frames[0].askId, 'nope not safe');
   assert.deepEqual(await p, { behavior: 'deny', message: 'nope not safe' });
 });
 
 test('watchdog auto-denies an abandoned ask (never hangs)', async () => {
   const { reg } = make(20);
-  const decision = await reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const decision = await reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   assert.equal(decision.behavior, 'deny');
   assert.match(decision.message ?? '', /timed out/);
 });
@@ -45,7 +45,7 @@ test('reply to an unknown/expired askId is a harmless no-op', async () => {
 
 test('clear denies every pending ask', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   reg.clear('session ended');
   assert.equal((await p).behavior, 'deny');
   assert.equal(reg.openCount, 0);
@@ -54,28 +54,28 @@ test('clear denies every pending ask', async () => {
 
 test('AskUserQuestion reply allows with rawAnswer, bypassing ALLOW_ANSWERS', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   assert.ok(reg.reply(frames[0].askId, 'some chosen label'));
   assert.deepEqual(await p, { behavior: 'allow', rawAnswer: 'some chosen label' });
 });
 
 test('ExitPlanMode reply allows with rawAnswer, bypassing ALLOW_ANSWERS', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'ExitPlanMode', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'ExitPlanMode', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   assert.ok(reg.reply(frames[0].askId, 'reject'));
   assert.deepEqual(await p, { behavior: 'allow', rawAnswer: 'reject' });
 });
 
 test('__cancelled__ still denies for answer-style tools', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   assert.ok(reg.reply(frames[0].askId, '__cancelled__'));
   assert.deepEqual(await p, { behavior: 'deny', message: 'declined by user' });
 });
 
 test('Bash reply routing is unchanged (ALLOW_ANSWERS gate)', async () => {
   const { reg, frames } = make(10_000);
-  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, sessionId: null });
+  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, appSessionId: 's1' });
   assert.ok(reg.reply(frames[0].askId, 'allow'));
   assert.deepEqual(await p, { behavior: 'allow' });
 });

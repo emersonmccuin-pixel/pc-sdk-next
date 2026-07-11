@@ -1,345 +1,329 @@
-# Event Contract — PC-SDK
+# Event contract — PC-SDK Next
 
-As-built v1, 2026-07-10. This records the current browser wire; it is not the
-final PC-SDK Next conversation contract. `docs/architecture/chat-communications.md`
-defines the accepted target, including durable queueing and runtime-neutral
-identities. Types in `packages/contracts/src/events/` remain the executable
-source until that migration lands in one pass. No shim or parallel wire is
-permitted.
-
-Phase 2's implemented v1 wire contains Claude-derived names such as `sdkUuid`.
-Those names describe current code, not the locked multi-runtime architecture.
-Phase 3 performs a one-pass canonical rename after the adapter boundary is
-defined; see **Provider-neutral evolution** below and
-`docs/agent-runtime-architecture.md`. Until that code change lands, this v1
-section remains exact rather than claiming an unimplemented wire.
-
-Sources: `docs/research/event-contract-research.json` (what the old UI actually consumes; what the SDK emits). Fields nobody reads were not carried.
+As built after `CF-001`, 2026-07-11. This document records the implemented
+browser wire and its persistence/publication semantics. The executable source
+is `packages/contracts/src/events/`; the target behavior beyond this slice is
+owned by `docs/architecture/chat-communications.md`.
 
 ## Principles
 
-- **DB is the source of truth; sockets are projections.** Chat events persist before they broadcast — a broadcast can never precede its durable write.
-- **Two durable replay systems, deliberately separate.** Chat replays by per-session `seq`; resources replay by a global cursor. Their recovery semantics differ; do not merge.
-- **Three delivery classes.** Durable-chat, durable-resource, and latency-class (no replay — consumers heal via HTTP on reconnect). Every event type belongs to exactly one.
-- **Unknown-tolerant both ways.** Client drops unknown `type`/`kind` silently. A concrete runtime adapter drops/logs unknown native variants without leaking them into the canonical stream (provider unions grow).
-- **Positive receipt.** Errors and timeouts are typed events, never silence. `isError`, `failureReason`, `cause` are read and rendered — the old contract carried `tool-result.isError` and dropped it; this one renders it.
-- **Structured over scraped.** Dispatch lifecycle and verification verdicts are events, not `[pc:agent-event …]` text markers parsed out of prose. The marker protocol is dead.
+- The database is durable truth. Processes, sockets, and browser state are
+  projections.
+- Stable conversation content and visible streaming deltas use one canonical,
+  provider-neutral, server-sequenced envelope.
+- Conversation sequence allocation, event insertion, and publication-outbox
+  insertion are one SQLite transaction.
+- The dedicated conversation relay is the only live-publication path. It fans
+  an immutable committed event before marking its outbox row relayed; a crash
+  between those steps intentionally causes an exact redelivery.
+- Live delivery, active-session replay, and past-session HTTP reads all use the
+  same row-to-frame mapper and the same browser projector.
+- Sequence is authoritative. Timestamps are display metadata and socket arrival
+  is never an ordering mechanism.
+- Provider-native message identifiers and private reasoning do not cross the
+  runtime adapter boundary. Historical reasoning rows remain retained as
+  `legacy-hidden` evidence and product replay never returns them.
+- The conversation outbox and the resource `live_outbox` remain separate
+  durable channels because their cursors and consumer semantics differ.
 
-## Transport
+## Transport and startup
 
-One WebSocket per project: `GET /ws?projectId=<ulid>`. JSON text frames. Multi-tab is first-class (N sockets per project; broadcast to all, acks only to sender).
+One WebSocket is opened per project at `GET /ws?projectId=<ulid>`. JSON text
+frames are validated at the browser boundary. On open the server sends, in
+order:
 
-Heartbeat: client sends `client-ping` every interval; server answers `server-pong`; any inbound frame counts as liveness. Client treats silence as death: close(4000), reconnect with 2/5/15/30s backoff, force-reconnect on visibility/online/focus.
-
-On every socket open, in order:
-1. `session-changed` (current session or null)
-2. `orchestrator-state` (current snapshot)
-3. `session-replay` (full checkpoint of the active session)
+1. `session-changed`
+2. `orchestrator-state`
+3. `session-replay`
 4. `send-queue-snapshot`
-Then the client sends `subscribe { lastVersion }` and the server replays resource events `(lastVersion, head]` — or `live-reset` if the cursor predates the pruned floor. The client also bumps its ws-epoch on open so every HTTP-seeded list refetches. Cursor replay + epoch refetch are both kept, deliberately (belt and suspenders — the epoch bump is what killed the "refresh to see new agents" bug).
 
-## Channel 1 — Chat (durable, per-session seq)
+The client then subscribes to the independent resource cursor. Heartbeat and
+reconnect behavior are unchanged: `client-ping`/`server-pong`, bounded backoff,
+and reconnect on visibility, focus, or network recovery.
+
+## Channel 1 — canonical conversation events
 
 ### Envelope
 
 ```ts
-type ChatFrame = {
-  type: 'chat'
-  projectId: Ulid
+interface ConversationEventFrame {
+  type: 'conversation-event'
+  eventId: string
+  projectId: ULID
+  conversationId: string
   sessionId: string
-  seq: number                 // per-session monotonic, allocated at persist time
-  id: `${sessionId}:${seq}`   // THE dedup key; UNIQUE(session_id, seq) in DB
-  clientMessageId?: string    // stamped server-side on the user-turn row before broadcast
-  event: ChatEvent
+  sequence: number
+  family:
+    | 'user' | 'assistant' | 'activity' | 'tool'
+    | 'agent' | 'control' | 'telemetry' | 'system'
+  turnId?: string
+  itemId: string
+  streamId?: string
+  deltaIndex?: number
+  clientMessageId?: string
+  occurredAt: number
+  event: ConversationEvent
 }
 ```
 
-Rules (all carried from the old system — they work):
-- Single writer allocates `seq`; persist to `conversation_events`, then broadcast the same payload.
-- Reducer replaces on duplicate `id` **without re-folding aggregates** (re-delivery must not double-count tokens) and inserts out-of-order arrivals into seq position.
-- Frames with a `sessionId` ≠ active session are dropped client-side.
-- Replay shape === live shape. Past-session viewing is the same events over HTTP (`GET /api/projects/:id/sessions/:sid/events`), rendered by the same pipeline.
+`eventId` is the immutable event identity. `(conversationId, sequence)` is
+unique and is the authoritative projection order. `itemId` identifies the
+logical canonical item; `turnId` groups the events produced while delivering
+one queue item; `streamId` and `deltaIndex` identify a visible stream and its
+deterministic order. A stream event must carry both `streamId` and a
+non-negative `deltaIndex`; stable events never carry `deltaIndex`.
 
-### ChatEvent kinds (persisted + broadcast)
+CF-001 binds one app session to one conversation, so current orchestrator rows
+use `conversationId === sessionId`. Conversation persistence owns the cursor
+independently so a later attributed handoff may intentionally group successor
+sessions without changing the event contract.
+
+The strict frame guard validates identity, sequence, family/event agreement,
+payload shape, and stream-order fields before browser ingestion.
+
+### Stable event payloads
 
 ```ts
 type ChatEvent =
-  | { kind: 'user';            text: string }
-  | { kind: 'assistant-text';  text: string; midLoop: boolean }      // complete block
-  | { kind: 'thinking';        text: string }
-  | { kind: 'turn-end';        text: string; stopReason: string | null }
-  | { kind: 'turn-failed';     error: string; source: 'api' | 'abort' | 'internal' }
-  | { kind: 'tool-call';       toolUseId: string; name: string; input: unknown }
-  | { kind: 'tool-result';     toolUseId: string; result: unknown; isError: boolean }
-  | { kind: 'tool-denied';     toolUseId: string; name: string; reason: string }
-  | { kind: 'usage';           inputTokens: number; outputTokens: number
-                               cacheCreationTokens: number; cacheReadTokens: number
-                               model: string | null }
-  | { kind: 'turn-duration';   durationMs: number | null }
-  | { kind: 'session-state';   state: 'idle' | 'running' | 'requires_action'
-                               permissionMode: string | null }
-  | { kind: 'system';          subtype: string; level: 'info' | 'notice' | 'warning' | 'error'
-                               message: string; raw?: unknown }
-  | { kind: 'compaction';      trigger: 'manual' | 'auto'; preTokens: number
-                               postTokens: number | null }
-  | { kind: 'sidechain';       role: 'user' | 'assistant' | 'tool'; text: string }  // pre-shaped server-side; no raw transcript rows on the wire
-  | { kind: 'agent-dispatch';  runId: Ulid; agentName: string }   // anchor only — the bubble hydrates status from agent-run/contract resource events by runId
-  | { kind: 'agent-envelope';  runId: Ulid; agentName: string; pendingAskId?: Ulid
-                               status: 'waiting' | 'done' | 'failed'; summary: string
-                               detail: string; envelope: string }  // agent→orchestrator ask/terminal envelope; collapsed per-run card, coalesces by runId
-  | { kind: 'retract';         uuids: string[] }                  // model-refusal fallback: evict already-delivered events by sdkUuid
+  | { kind: 'user'; text: string }
+  | { kind: 'assistant-text'; text: string; midLoop: boolean }
+  | { kind: 'turn-end'; text: string
+      stopReason: 'complete' | 'max-output' | 'stop-sequence'
+        | 'tool-use' | 'other' | null }
+  | { kind: 'turn-failed'; error: string; source: 'api' | 'abort' | 'internal' }
+  | { kind: 'tool-call'; toolUseId: string; name: string; input: unknown }
+  | { kind: 'tool-result'; toolUseId: string; result: unknown; isError: boolean }
+  | { kind: 'tool-denied'; toolUseId: string; name: string; reason: string }
+  | { kind: 'usage'; inputTokens: number; outputTokens: number
+      cacheCreationTokens: number; cacheReadTokens: number; model: string | null }
+  | { kind: 'turn-duration'; durationMs: number | null }
+  | { kind: 'session-state'; state: 'idle' | 'running' | 'requires_action'
+      permissionMode: string | null }
+  | { kind: 'system'; subtype: string
+      level: 'info' | 'notice' | 'warning' | 'error'
+      message: string; raw?: unknown }
+  | { kind: 'compaction'; trigger: 'manual' | 'auto'
+      preTokens: number; postTokens: number | null }
+  | { kind: 'sidechain'; role: 'user' | 'assistant' | 'tool'; text: string }
+  | { kind: 'agent-dispatch'; runId: ULID; agentName: string }
+  | { kind: 'agent-envelope'; runId: ULID; agentName: string
+      pendingAskId?: ULID; status: 'waiting' | 'done' | 'failed'
+      summary: string; detail: string; envelope: string }
+  | { kind: 'retract'; streamIds: string[] }
 ```
 
-Every persisted ChatEvent also stores `sdkUuid?: string` (the SDK message uuid) for retraction and delta-reconciliation.
+The canonical `activity` family is reserved for the next safe-activity slice;
+there is no private-reasoning payload in the public union. Tool and activity
+lifecycle enrichment remains explicitly outside CF-001.
 
-Turn/busy state is owned by two kinds only: `session-state` (authoritative; currently mapped from Claude SDK `session_state_changed`) with `turn-end`/`turn-failed` as the per-turn boundary. No derived blends of PTY state — that machinery is gone. **Every turn terminates in exactly one of `turn-end` or `turn-failed`** — a runtime error that kills a turn with no assistant content must still emit `turn-failed` (the old "stop-failure" defensive semantics, now first-class).
+Every turn ends in exactly one `turn-end` or `turn-failed`. A runtime error,
+abort, thrown stream, or stream that closes without a terminal result receives
+a typed `turn-failed` event rather than silence.
 
-### Streaming deltas (ephemeral, broadcast-only, never persisted)
-
-New capability — the old UI never streamed. Deltas are their own frame type, outside the seq'd store:
+### Visible streaming payloads
 
 ```ts
-type ChatDeltaFrame = {
-  type: 'chat-delta'
-  projectId: Ulid
-  sessionId: string
-  sdkUuid: string             // the in-flight assistant message
-  event:
+type ChatStreamEvent = {
+  kind: 'stream-delta'
+  delta:
     | { kind: 'message-start' }
-    | { kind: 'text-delta';     text: string }
-    | { kind: 'thinking-delta'; text: string }
+    | { kind: 'text-delta'; text: string }
     | { kind: 'tool-input-delta'; toolUseId?: string; partialJson: string }
     | { kind: 'message-end' }
 }
 ```
 
-Client keeps one streaming buffer per `sdkUuid`, renders it live, and **discards it when the persisted `chat` frame with the same `sdkUuid` arrives** (final block wins; dedupe by sdkUuid). Deltas are lossy by design: missed deltas need no healing — the persisted block is the truth. Sourced from SDK `stream_event` with `includePartialMessages: true`; subagent deltas (`parent_tool_use_id != null`) are not forwarded to chat.
+Streaming events use the same durable envelope and outbox as stable content.
+The server assigns a monotonic `deltaIndex` per canonical stream. There is no
+`chat-delta` side channel and no reasoning delta.
 
-### Send path (client → server)
+### Persistence and relay
+
+The conversation component owns three tables:
+
+- `conversation_sequences`: one next-sequence cursor per conversation;
+- `conversation_events`: immutable canonical rows and projection state;
+- `conversation_outbox`: one `chat` or `agent` publication entry per event.
+
+One transaction performs cursor allocation, event insert, and outbox insert.
+Any failure rolls back all three effects, including the allocated sequence. The
+relay drains by monotonic outbox sequence, fans to the project room, and marks
+the row only after fanout. Startup plus a periodic drain recover rows left
+pending by a process crash.
+
+Migration `0009_conversation_foundation.sql` rebuilds the legacy table, backfills
+conversation cursors and already-relayed historical outbox entries, rewrites
+legacy retraction references to opaque canonical legacy stream IDs, drops the
+old provider-named identifier column, and retains prior `thinking` rows only as
+`legacy-hidden` data.
+
+### Browser projection
+
+The browser stores accepted canonical frames sorted by `sequence` and derives
+timeline aggregates and stream buffers from that ordered set.
+
+- Exact event redelivery is a no-op.
+- A conflicting event identity or sequence preserves the first accepted value
+  and records an integrity conflict.
+- Deltas are keyed by canonical stream and index. Gaps are held until a
+  contiguous prefix exists; exact duplicates are ignored and conflicting
+  content at one index is recorded.
+- Stable completion clears its live stream. A late delta cannot resurrect it.
+- Shuffled live delivery, reconnect replay, and past-session replay converge
+  through the same pure projector.
+
+### Session replay
 
 ```ts
-// client → server
+interface SessionReplayFrame {
+  type: 'session-replay'
+  projectId: ULID
+  sessionId: string
+  highWaterSequence: number
+  events: ConversationEventFrame[]
+}
+```
+
+Replay events use the exact live frame shape. The checkpoint guard rejects a
+foreign project/session frame or malformed canonical event. Hidden legacy rows
+are excluded from product replay; therefore the high-water sequence may be
+higher than the last visible sequence.
+
+Past-session HTTP uses
+`GET /api/projects/:projectId/sessions/:sessionId/events` and returns the same
+`highWaterSequence` plus canonical event array.
+
+### Send, queue, ask, and session control
+
+Client commands and control frames remain:
+
+```ts
 { type: 'send'; text: string; clientMessageId: string }
-{ type: 'interrupt' }                                    // abort the in-flight turn
+{ type: 'interrupt' }
 { type: 'ask-reply'; askId: string; answer: string }
 { type: 'subscribe'; lastVersion?: string }
 { type: 'client-ping'; nonce: string; sentAt: number }
 
-// server → sender only
-{ type: 'send-ack'; projectId: Ulid; clientMessageId: string; ok: boolean
+{ type: 'send-ack'; projectId: ULID; clientMessageId: string; ok: boolean
   status: 'received' | 'queued' | 'invalid' | 'error'; error?: string }
 
-// server → broadcast
-{ type: 'send-queue-snapshot'; projectId: Ulid; sessionId: string
-  items: Array<{ id: Ulid; clientMessageId: string; text: string
+{ type: 'send-queue-snapshot'; projectId: ULID; sessionId: string
+  items: Array<{ id: ULID; clientMessageId: string; text: string
     status: 'queued' | 'delivering' | 'delivered' | 'failed' | 'cancelled'
     failureReason: string | null; createdAt: number; updatedAt: number }> }
-```
 
-Optimistic-send reconcile, two confirmation paths in priority order (the old fuzzy text-match fallback is dropped):
-1. `send-queue-snapshot` item reaching `delivered` by `clientMessageId`;
-2. the canonical `user` chat frame stamped with `clientMessageId` (primary).
-
-Snapshot replaces snapshot (no per-item deltas) — kept property. PTY-era statuses (`delivered_to_pty`, `observed_in_jsonl`, `queued_spawning`) are dead.
-
-Attachments never ride the wire: images POST to `/api/projects/:id/pasted-images`, the returned path is spliced into `send.text`, the agent reads the file.
-
-### Ask / permission
-
-The runtime approval bridge blocks on a browser answer (currently Claude SDK
-`canUseTool`; Codex adapter maps its native approval request to the same frame):
-
-```ts
-{ type: 'ask'; projectId: Ulid; askId: Ulid; sessionId: string | null
+{ type: 'ask'; projectId: ULID; askId: ULID; sessionId: string | null
   toolName: string; toolUseId: string; toolInput: unknown }
 ```
 
-Client answers with `ask-reply { askId, answer }`. Server resolves the pending promise; a timeout watchdog auto-resolves abandoned asks as denied (typed, visible — never a hang). Asks are keyed by `askId` (not toolUseId — one tool use can re-ask after edits).
+The `clientMessageId` on the canonical user event is the primary optimistic-send
+reconciliation key. Queue snapshots are still process-memory projections in
+this as-built version; durable queue revisions and positive interrupt receipts
+belong to the next conversation slice and are not claimed here.
 
-### Session lifecycle
+Session lifecycle remains app-owned:
 
 ```ts
-{ type: 'session-changed'; projectId: Ulid
+{ type: 'session-changed'; projectId: ULID
   transition: 'new-session' | 'resume-session'
-  session: { id: string; projectId: Ulid; model: string | null; title: string | null
-             status: 'active' | 'ended'; startedAt: number } | null }
-
-{ type: 'session-replay'; projectId: Ulid; sessionId: string
-  highWaterSeq: number; events: ChatFrame[] }   // full checkpoint, same frame shape as live
+  session: { id: string; projectId: ULID; model: string | null
+    title: string | null; status: 'active' | 'ended'; startedAt: number } | null }
 ```
 
-`new-session` wipes client timeline + aggregates; replay re-seeds wholesale and recomputes aggregates from the set (never carries forward). Native runtime initialization is turn/session metadata, **not** app-session creation — app sessions are server-owned rows. The adapter captures the native session/thread id for same-runtime resume. Runtime/account/model switching creates a new app session; it never reuses a native id across adapters.
+## Channel 2 — resource events
 
-## Channel 2 — Resources (durable, global cursor)
-
-The live-outbox pattern, kept wholesale: gateway writes the event row in the same transaction as the mutation; a post-commit relay fans out.
+The resource channel remains a separate global-cursor outbox. Its executable
+contract is `packages/contracts/src/events/resource.ts`.
 
 ```ts
 type ResourceFrame = {
   type: 'resource'
   event: {
-    id: Ulid
-    cursor: string                    // global monotonic, numeric-string
+    id: ULID
+    cursor: string
     scope: 'project' | 'global'
-    projectId: Ulid | null            // null = global (client selectors must union global into project views)
-    entity: ResourceEntity
-    entityId: Ulid
+    projectId: ULID | null
+    entity:
+      | 'agent-run' | 'contract' | 'specialist' | 'mailbox-message'
+      | 'session-title' | 'mcp-server' | 'project' | 'usage'
+    entityId: ULID
     eventType: `${ResourceEntity}.changed`
-    version: number | null            // per-entity dedup; null = last-write-wins by cursor
+    version: number | null
     createdAt: number
-    payload: unknown                  // per-entity, below
+    payload: unknown
   }
 }
-
-{ type: 'live-reset'; projectId: Ulid | null; cursor: string | null }  // cursor fell below pruned floor: clear store, clear cursor, epoch-refetch everything
-
-type ResourceEntity =
-  | 'agent-run' | 'contract' | 'specialist' | 'mailbox-message'
-  | 'session-title' | 'mcp-server' | 'project' | 'usage'
 ```
 
-Per-entity style is fixed — **full-snapshot** (payload carries the whole DTO, consumer never refetches) or **signal-only** (payload is a change signal, consumer refetches over HTTP). Never mix per entity.
+Consumers replay `(lastVersion, head]`; a cursor below the pruning floor gets a
+typed `live-reset`. Full-snapshot versus signal-only payload policy remains
+fixed per entity.
 
-| entity | style | payload | notes |
-| --- | --- | --- | --- |
-| `agent-run` | full snapshot | `{ reason, run: AgentRunDto, pendingAskId? }` | reason: `queued\|spawning\|running\|paused\|resumed\|stalled\|completed\|failed\|cancelled\|reconciled`. `stalled` is non-terminal, bumps `rev`, badge-only, absent from HTTP seed. `paused` carries `pendingAskId`. Running-list HTTP seed excludes terminal rows; client drops rows on terminal frame. Dead field: `parentWorkItemId`. |
-| `contract` | full snapshot | `{ reason, contract: ContractDto }` | reason: `created\|dispatched\|deliverable-set\|verification-set\|landing-set\|patched`. Rolled-up `verificationStatus/Notes` ride here; per-predicate AC detail stays HTTP (ReviewPackage). Landing receipts (`landed\|conflict\|failed\|abandoned` + branch/sha) on `landing-set`. Keyed by contract id / `agentRunId` — `workItemId` is dead; contracts carry an external PM ref string instead. |
-| `specialist` | signal-only | `{ specialistId: Ulid }` | pods, renamed. Global-scope frames (stock specialists) must reach project views. |
-| `mailbox-message` | signal-only | `{ messageId: Ulid }` | inbox refetches actionable-only list. Workflow-gate kinds are dead; agent asks + human-review kinds survive. |
-| `session-title` | full snapshot | `{ session: SessionDto }` | latest-by-cursor wins. |
-| `mcp-server` | full snapshot | `{ server: { id, name, status: 'healthy'\|'degraded'\|'down'\|'unknown', reason: string \| null, lastProbeAt: number \| null, toolCount: number \| null, lastError: string \| null } }` | new — the MCP manager's reliability bar: every state change surfaces, unknown is a state. |
-| `project` | signal-only | `{ projectId: Ulid }` | replaces the legacy `project.changed` special-case envelope. |
-| `usage` | full snapshot | `UsageSnapshot` (below) | quota is durable state, not a lucky broadcast. |
+## Channel 3 — HTTP-healed live projections
 
-Dedup: `(entity, entityId)` + `version` — strictly-older loses, equal wins (supports same-version overlays like the stalled badge). No cross-entity ordering guarantee.
-
-Dead entities, not carried: `workflow-run`, `workflow-review`, `workflow-definition`, `work-item`, `stage`, `field-schema`, `area`, `attachment`, `work-item-dossier`, `host-health`, `pod` (renamed `specialist`).
-
-### Usage snapshot
+Agent transcript events are durably stored through the same conversation
+event/outbox transaction, but their compact live frame remains HTTP-healed:
 
 ```ts
-type UsageSnapshot = {
-  accountId: string                    // 'personal' | 'work' | …
-  fiveHour:  { utilization: number; resetsAt: number | null } | null
-  sevenDay:  { utilization: number; resetsAt: number | null } | null
-  status: 'allowed' | 'allowed_warning' | 'rejected'
-  model: string | null
-  updatedAt: number
-}
+{ type: 'agent-event'; projectId: ULID; runId: ULID
+  event: ChatEvent; dedupId: string }
 ```
 
-Current Claude source: SDK `rate_limit_event` (push) + per-turn `result.usage`, cached server-side per account. Rides the durable channel (the old statusline-snapshot's "idle tab shows stale caps forever" wart dies with it). `status: 'rejected'` or `allowed_warning` is the premortem-#3 tripwire — surface loudly. Phase 3 adds runtime/provider attribution and an explicit unavailable state rather than forcing Codex telemetry into Claude's window shape.
+`dedupId` is the canonical conversation event ID. Opening the run view fetches
+the durable transcript and merges by that identity.
 
-## Channel 3 — Latency-class broadcasts (no replay; HTTP heals)
-
-### Agent transcript streaming
-
-```ts
-{ type: 'agent-event'; projectId: Ulid; runId: Ulid; event: ChatEvent
-  dedupId: string }   // stable: sdkUuid ?? `${kind}:tool:${toolUseId}`; server guarantees presence
-```
-
-Agent transcripts reuse `ChatEvent` — one render pipeline for orchestrator chat and agent run views. Missed frames heal on modal open via HTTP backfill: `GET /api/projects/:pid/agent-runs/:runId/events → { events, transcriptStatus: 'ready' | 'empty' | 'missing', status }`, merged by `dedupId`.
-
-### Orchestrator state
+Orchestrator health remains latest-wins process state:
 
 ```ts
-{ type: 'orchestrator-state'; projectId: Ulid; sessionId: string | null
+{ type: 'orchestrator-state'; projectId: ULID; sessionId: string | null
   health: 'idle' | 'starting' | 'busy' | 'failed'
   queueDepth: number; failureReason: string | null }
 ```
 
-Latest-wins, no dedup key. The PTY-era snapshot (waitPoint, ptyState, rawJsonl cursors, respawn counters) is dead; this is the whole shape.
+## Runtime adapter mapping
 
-## Current Claude SDK → contract mapping
+Only `ClaudeRuntimeAdapter` imports or parses the Claude Agent SDK. It keeps a
+native-to-canonical ID map and emits canonical runtime events:
 
-This table is the Phase 2 `ClaudeRuntimeAdapter` extraction checklist. Each row
-must move behind that adapter without changing the v1 browser behavior. Codex
-gets its own native-to-canonical mapping inside `CodexRuntimeAdapter`; core code
-must never add Codex item kinds to this table or to Claude-shaped runner types.
-
-| SDK message | Contract emission |
+| Native observation | Canonical result |
 | --- | --- |
-| `system/init` | capture `session_id` for resume; first turn of a session also emits `session-changed` |
-| `assistant` (text/thinking/tool_use blocks) | `assistant-text` / `thinking` / `tool-call` per block; `.error` → `turn-failed` (or `system` level error if turn survives); `supersedes` → `retract`; skip when `parent_tool_use_id != null` (subagent) |
-| `user` (tool_result blocks) | `tool-result` (carry `is_error`); not a chat user bubble — user bubbles come from our own send path |
-| `stream_event` | `chat-delta` frames (main thread only) |
-| `result` (success) | `usage` + `turn-duration` + `turn-end`; update `UsageSnapshot` |
-| `result` (error subtypes) | same telemetry + `turn-failed` |
-| `system/status`, `session_state_changed` | `session-state` |
-| `system/compact_boundary` | `compaction` |
-| `tool_progress` | `agent-event`/chat `tool-progress` — broadcast-only, not persisted |
-| `rate_limit_event` | `usage` resource event |
-| `system/permission_denied` | `tool-denied` |
-| `system/api_retry` | `system` (level warning) |
-| `canUseTool` callback | `ask` frame; resolved by `ask-reply` |
-| task_* / background_tasks_changed | reserved for Phase 3 dispatch views; dropped in Phase 2 |
-| everything else | dropped, silently, by design |
+| initialization | adapter-owned native session ID for resume metadata |
+| main assistant text/tool block | canonical item ID plus `assistant-text` or `tool-call` |
+| main tool result | canonical item ID plus `tool-result` |
+| main visible stream event | canonical item ID plus persisted ordered delta |
+| private thinking block/delta | dropped before the canonical runtime seam |
+| sidechain block/delta/result | dropped from orchestrator chat |
+| result | usage/duration plus exactly one turn terminal |
+| session/compaction/permission/retry/system | mapped canonical stable event |
+| supersession | `retract` with canonical stream IDs |
+| unknown native variant | dropped/logged by the adapter; loop continues |
 
-## Old → new rename ledger
+Native session identity remains adapter/composition metadata and never becomes
+a conversation message identifier.
 
-| Old | New |
-| --- | --- |
-| `jsonl` envelope + `jsonl-*` kinds | `chat` frame + clean kinds |
-| `event` (hook-event channel) | dead; `turn-failed` + structured dispatch events absorb the survivors |
-| `[pc:agent-event kind=…]` text markers | `agent-dispatch` chat anchor + `agent-run`/`contract` resource events |
-| `live-event` | `resource` |
-| `agent-jsonl-event` | `agent-event` |
-| `runtime-state` | `orchestrator-state` (slimmed) |
-| `statusline-snapshot` | `usage` resource event |
-| `pod.changed` | `specialist` resource event |
-| `raw`, `state`, `turn-end` (WS), `exit`, `terminal-input`, `resize`, `terminal-input-ack` | dead (PTY) |
-| `agent-run-changed` (legacy v1) | dead |
-| `project.changed` special envelope | `project` resource event |
+## Guard rules
 
-## Guard rules (each gets a test when built)
+1. No live conversation event exists without a committed event and outbox row.
+2. Sequence allocation and event/outbox insertion either all commit or all roll
+   back.
+3. Exact redelivery never changes the browser projection.
+4. Conflicting sequence, event, or delta identity fails closed and is visible
+   as an integrity conflict.
+5. Live, reconnect, and past-session replay use one frame mapper and projector.
+6. Every turn has exactly one canonical terminal outcome.
+7. Historical or new private reasoning never enters product replay.
+8. Provider-native message identifiers, the retired split-delta wire, native
+   terminal reasons, and private-reasoning render paths are rejected from
+   canonical contract/browser source by guard tests.
+9. Unknown resource entities fail the closed-union contract.
 
-1. Persist-then-broadcast: no chat frame on the wire without its `conversation_events` row committed.
-2. Duplicate `chat.id` delivery never double-counts aggregates.
-3. Every turn ends in exactly one `turn-end` or `turn-failed` — including abort and API-error paths.
-4. `ask` never hangs: watchdog resolves to typed denial.
-5. Unknown provider-native variant → dropped and logged by its adapter; loop continues.
-6. Reconnect: replay + cursor + epoch-refetch produce identical state to an uninterrupted socket.
-7. `resource` frames for a dead entity name fail typecheck (closed union, no strings).
+## Deliberately unfinished boundaries
 
-## Provider-neutral evolution (Phase 3, one pass)
+- durable send queue, edit/remove revisions, and restart recovery;
+- positive interrupt receipts and interrupt-and-send sequencing;
+- safe operational activity and complete tool lifecycle families;
+- immutable runtime/account/model/effort app-session stamps;
+- provider-neutral context and usage observations;
+- Codex adapter and conformance.
 
-The durable delivery classes and browser semantics remain. The provider-shaped
-identifiers are generalized across contracts, persistence mapping, server,
-tests, and web consumers in one change:
-
-- `sdkUuid` → `runtimeMessageId` (stable adapter-supplied message correlation);
-- SDK/native session wording → `runtimeSessionId` or `nativeSessionId`;
-- `RunnerMessage` → canonical `RuntimeEvent` variants;
-- usage gains runtime/provider attribution plus explicit unavailable telemetry;
-- session summaries expose the immutable runtime/account/model selection while
-  keeping native credentials out of the browser.
-
-No compatibility aliases or dual fields. The adapter conformance suite proves
-that Claude, Codex, and the fake runtime all produce the same canonical turn,
-streaming, tool, approval, interrupt, and terminal-outcome behavior.
-
-## Worktree lifecycle evolution (Phase 3)
-
-`docs/worktree-lifecycle.md` adds a durable app-owned lifecycle above individual
-agent turns. Before implementation, the contract/types must select one explicit
-aggregate id for the run that owns the worktree; sequential Plan/Build/Review/
-Fix agent runs reference that owner rather than each pretending to own an
-independent checkout.
-
-The browser must receive enough durable state to show provisioning/readiness,
-active phase, sealed deliverable, verification/review outcome, merge queue,
-conflict/stranded retention, merge receipt, and teardown. This may be an
-expanded closed `agent-run` snapshot or a dedicated delivery-run resource, but
-must be chosen once before code lands. Do not infer lifecycle state from agent
-transcript events or process presence.
-
-Wire invariants:
-
-- review and merge actions identify the lifecycle owner + sealed commit;
-- every mutation state transition is persist-then-broadcast;
-- missing/inconclusive auto-merge evidence is a visible non-pass state;
-- base advancement/revalidation and landing-queue position surface explicitly;
-- merge and teardown receipts are durable snapshots;
-- conflict, failure, cancellation, stranding, and uncertainty retain visible
-  recovery actions and never disappear because a worktree was removed.
+Those are subsequent slices; none has a compatibility wire in this contract.

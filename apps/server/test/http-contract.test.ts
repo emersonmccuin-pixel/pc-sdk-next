@@ -111,11 +111,24 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.equal(sessions.ok, true);
     assert.ok(sessions.sessions.some((s: { id: string }) => s.id === newSess.session.id));
 
-    // events → { ok, events, highWaterSeq }
+    // events → { ok, events, highWaterSequence }
     const events = await fetch(`${base}/api/projects/${project.id}/sessions/${newSess.session.id}/events`).then(body);
     assert.equal(events.ok, true);
     assert.ok(Array.isArray(events.events));
-    assert.equal(typeof events.highWaterSeq, 'number');
+    assert.equal(typeof events.highWaterSequence, 'number');
+
+    // A route project cannot read another project's conversation by guessing
+    // its session id.
+    const otherDir = mkdtempSync(join(tmpdir(), 'pc-probe-other-'));
+    const other = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Beta', folder_path: otherDir, mode: 'init-empty' }),
+    }).then(body);
+    const foreignEvents = await fetch(
+      `${base}/api/projects/${other.project.id}/sessions/${newSess.session.id}/events`,
+    );
+    assert.equal(foreignEvents.status, 404);
 
     // usage re-prime → { snapshots }
     usage.record({

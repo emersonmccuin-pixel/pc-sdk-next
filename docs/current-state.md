@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11 after BC-001 baseline characterization.
+Last updated: 2026-07-11 after CF-001 sealed verification.
 
 ## Preserved baseline
 
@@ -23,6 +23,9 @@ only in PC-SDK Next.
 - Base branch: `main`
 - PF-001 landing merge: `e1667dbae069f1ea62fe4d8e54489927734f2483`
 - PF-001 worktree: removed after positive landing proof
+- BC-001 landing merge: `fd0756a3c39640d91bcb20cfe4a9fe22cb7d2380`
+- CF-001 sealed implementation: `35b49d3a012abfb3ec1b439060b1046f95887e19`
+  on `codex/cf-001-conversation-foundation`; guarded landing is pending
 
 Isolation defaults in the planning slice:
 
@@ -46,6 +49,17 @@ Isolation defaults in the planning slice:
   teardown, recovery, and lifecycle tests
 - Global MCP client/bridge foundation and Claude usage observations
 - One-click hidden launcher and boot recovery
+- Canonical provider-neutral conversation event identity with strict guards,
+  conversation-owned transactional sequence allocation, and a dedicated
+  atomic publication outbox
+- Persisted visible stream deltas and one row-to-frame mapping for live,
+  reconnect replay, and past-session HTTP projection
+- Deterministic browser projection by authoritative sequence, including exact
+  redelivery idempotency, gap buffering, and fail-closed sequence/item/stream/
+  delta conflicts
+- Adapter-local native message correlation; canonical terminal outcomes and
+  stop reasons; historical private reasoning retained only as hidden migration
+  evidence with no producer or render path
 
 ## Known architectural gaps
 
@@ -54,15 +68,21 @@ Isolation defaults in the planning slice:
 - Orchestrator sessions do not yet durably stamp the full runtime/account/model/
   effort selection needed for safe provider-neutral resume.
 - Adapter capabilities/model discovery are specified but not implemented.
-- Core event/persistence vocabulary still includes Claude-first names such as
-  `sdkUuid`, `sdkSessionId`, and a literal Claude provider type.
+- Orchestrator session, account, usage, and some runtime-notice/permission
+  vocabulary remain provider-shaped. Full immutable runtime/account/model/
+  effort stamps and typed capability semantics remain N3 work.
 - User send queue ordering works in-process but the queue is not durable across
   restart.
 - Usage DTOs are Claude-shaped and do not retain general source semantics,
   confidence, staleness, or runtime attribution.
 - No honest per-session context-use contract exists yet.
-- Current thinking events need a policy migration to safe operational activity
-  rather than unrestricted reasoning content.
+- Private reasoning no longer crosses the canonical runtime or browser seams,
+  but a typed safe operational-activity taxonomy and continuous honest waiting
+  feedback still need their own N2 slice.
+- The correct pure browser projector currently scans/copies/re-derives the full
+  accepted event history for each event. Long delta-heavy sessions therefore
+  need a measured ordered fast path and completed-stream compaction before the
+  Next daily-driver migration gate.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
 - Process identity is positive at `/health`, but a data-directory mutex and
@@ -74,8 +94,9 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`BC-001` is complete. Its evidence-backed as-built map, test gaps, migration
-dependencies, and user decisions are in
-`docs/research/baseline-characterization.md`. No behavior-changing slice is
-approved yet; the next action is user review of that evidence and selection of
-the first N2 slice.
+`CF-001` is sealed and its full `pnpm ci:check` gate passed. The slice replaces
+the Claude-first split chat/delta path with the canonical transactional
+conversation foundation described in `docs/event-contract.md`. Its guarded
+merge, positive ancestry proof, and worktree teardown are the only remaining
+closeout actions. After landing, the next safe slice is a bounded projector
+scale/compaction pass before durable queue and interrupt state.

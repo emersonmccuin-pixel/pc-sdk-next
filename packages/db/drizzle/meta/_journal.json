@@ -64,6 +64,13 @@
       "when": 1783749600000,
       "tag": "0008_auto_continue",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1783750800000,
+      "tag": "0009_conversation_foundation",
+      "breakpoints": true
     }
   ]
 }

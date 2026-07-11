@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
+const REPO = join(SRC, '..', '..', '..');
 // Match the module-specifier in an import/require (handles multi-line imports
 // where `from '…'` sits on its own line); a bare comment mention won't match.
 const SDK_IMPORT = /(?:from|require\(\s*)\s*['"]@anthropic-ai\/claude-agent-sdk['"]/;
@@ -31,4 +32,15 @@ test('only runner/claude-adapter.ts imports the Claude Agent SDK', () => {
     }
   }
   assert.deepEqual(importers, ['runner/claude-adapter.ts'], `unexpected SDK importers: ${importers.join(', ')}`);
+});
+
+test('canonical contracts and browser contain no provider-native chat vocabulary', () => {
+  const forbidden = /\b(?:sdkUuid|sdkSessionId|chat-delta|thinking-delta|ThinkingBubble|end_turn)\b|kind:\s*['"]thinking['"]|case\s+['"]thinking['"]/;
+  const offenders: string[] = [];
+  for (const root of [join(REPO, 'packages', 'contracts', 'src'), join(REPO, 'apps', 'web', 'src')]) {
+    for (const file of walk(root)) {
+      if (forbidden.test(readFileSync(file, 'utf8'))) offenders.push(relative(REPO, file).replace(/\\/g, '/'));
+    }
+  }
+  assert.deepEqual(offenders, [], `provider-native chat vocabulary leaked into: ${offenders.join(', ')}`);
 });

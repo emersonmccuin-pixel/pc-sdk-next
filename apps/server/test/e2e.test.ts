@@ -43,15 +43,15 @@ function connect(url: string) {
 }
 
 const SCRIPT = [[
-  { type: 'init', sdkSessionId: 'sdk-e2e', model: 'opus', permissionMode: 'default' },
-  { type: 'delta', sdkUuid: 'u1', parentToolUseId: null, delta: { kind: 'message-start' } },
-  { type: 'delta', sdkUuid: 'u1', parentToolUseId: null, delta: { kind: 'text-delta', text: 'Hel' } },
-  { type: 'delta', sdkUuid: 'u1', parentToolUseId: null, delta: { kind: 'text-delta', text: 'lo' } },
-  { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'Hello' } },
-  { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'tool_use', toolUseId: 't1', name: 'Read', input: { path: 'x' } } },
-  { type: 'tool-result', sdkUuid: 'u2', parentToolUseId: null, toolUseId: 't1', result: 'contents', isError: false },
-  { type: 'assistant-block', sdkUuid: 'u3', parentToolUseId: null, block: { kind: 'text', text: 'Done' } },
-  { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 12, error: null, outcome: 'ok', numTurns: null },
+  { type: 'init', nativeSessionId: 'sdk-e2e', model: 'opus', permissionMode: 'default' },
+  { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'message-start' } },
+  { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'Hel' } },
+  { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'lo' } },
+  { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'text', text: 'Hello' } },
+  { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'tool_use', toolUseId: 't1', name: 'Read', input: { path: 'x' } } },
+  { type: 'tool-result', itemId: 'u2', scope: 'primary', toolUseId: 't1', result: 'contents', isError: false },
+  { type: 'assistant-block', itemId: 'u3', scope: 'primary', block: { kind: 'text', text: 'Done' } },
+  { type: 'result', ok: true, stopReason: 'complete', usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 12, error: null, outcome: 'ok', numTurns: null },
 ]] as never;
 
 test('ws connect → send → deltas → persisted frames → turn-end → reconnect replay identical', async () => {
@@ -74,13 +74,13 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
     assert.equal(ack.status, 'received');
 
     // Turn runs to its idle bracket (last chat frame of the turn).
-    await c1.waitFor((f) => f.type === 'chat' && f.event?.kind === 'session-state' && f.event?.state === 'idle');
+    await c1.waitFor((f) => f.type === 'conversation-event' && f.event?.kind === 'session-state' && f.event?.state === 'idle');
     await sleep(30); // let any trailing non-chat frames settle
 
-    // Streaming deltas were seen (broadcast-only, never persisted).
-    assert.ok(c1.frames.some((f) => f.type === 'chat-delta'), 'expected chat-delta frames');
+    // Streaming deltas use the same durable sequenced envelope.
+    assert.ok(c1.frames.some((f) => f.type === 'conversation-event' && f.event?.kind === 'stream-delta'));
 
-    const liveChat = c1.frames.filter((f) => f.type === 'chat');
+    const liveChat = c1.frames.filter((f) => f.type === 'conversation-event');
     // The turn produced its content + exactly one turn-end.
     assert.equal(liveChat.filter((f) => f.event?.kind === 'turn-end').length, 1);
     assert.ok(liveChat.some((f) => f.event?.kind === 'tool-result'));
@@ -92,7 +92,7 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
     const c2 = connect(url);
     const replay = await c2.waitFor((f) => f.type === 'session-replay');
 
-    // Rule 6: replay events are byte-identical to the live chat frames.
+    // Replay events are byte-identical to the live outbox frames, deltas included.
     assert.deepEqual(replay.events, liveChat);
     c2.close();
   } finally {

@@ -7,6 +7,7 @@
 // unknown types drop silently.
 
 import { useEffect, useRef, useState } from 'react';
+import { isConversationEventFrame, isSessionReplayFrame } from '@pc/contracts';
 import type {
   ClientMessage,
   OrchestratorHealth,
@@ -51,8 +52,7 @@ export interface SocketApi {
 }
 
 const CHAT_CHANNEL_TYPES = new Set<ChatChannelFrame['type']>([
-  'chat',
-  'chat-delta',
+  'conversation-event',
   'session-changed',
   'session-replay',
   'send-ack',
@@ -142,7 +142,7 @@ export class ProjectSocket {
       } catch {
         return; // unparseable — drop
       }
-      this.route(frame as ServerFrame);
+      this.route(frame);
     };
     ws.onclose = () => {
       this.clearTimers();
@@ -155,31 +155,41 @@ export class ProjectSocket {
     };
   }
 
-  private route(frame: ServerFrame): void {
+  private route(frame: unknown): void {
     if (!frame || typeof (frame as { type?: unknown }).type !== 'string') return;
-    if (CHAT_CHANNEL_TYPES.has(frame.type as ChatChannelFrame['type'])) {
+    const type = (frame as { type: string }).type;
+    if (type === 'conversation-event') {
+      if (isConversationEventFrame(frame)) useChatStore.getState().ingest(frame);
+      return;
+    }
+    if (type === 'session-replay') {
+      if (isSessionReplayFrame(frame)) useChatStore.getState().ingest(frame);
+      return;
+    }
+    if (CHAT_CHANNEL_TYPES.has(type as ChatChannelFrame['type'])) {
       useChatStore.getState().ingest(frame as ChatChannelFrame);
       return;
     }
-    switch (frame.type) {
+    const serverFrame = frame as ServerFrame;
+    switch (serverFrame.type) {
       case 'server-pong':
         break; // liveness already registered
       case 'orchestrator-state':
-        this.setHealth(frame.health);
+        this.setHealth(serverFrame.health);
         break;
       case 'resource':
-        this.onResource(frame);
+        this.onResource(serverFrame);
         break;
       case 'live-reset':
         this.cursor = undefined;
         writeCursor(this.projectId, null);
-        useResourceStore.getState().applyLiveReset(frame);
+        useResourceStore.getState().applyLiveReset(serverFrame);
         useConnectionStore.getState().bumpEpoch();
         break;
       case 'agent-event':
         // Latency-class agent transcript stream (Channel 3) — live buffer only;
         // missed frames heal on modal open via the HTTP backfill.
-        useAgentEventStore.getState().applyAgentEventFrame(frame);
+        useAgentEventStore.getState().applyAgentEventFrame(serverFrame);
         break;
       default:
         break;

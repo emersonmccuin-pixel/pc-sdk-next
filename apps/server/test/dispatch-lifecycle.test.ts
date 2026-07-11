@@ -45,8 +45,7 @@ import { commitFile, freshDb, newGitProject, newProject, until } from './helpers
 const OK_RESULT: RuntimeEvent = {
   type: 'result',
   ok: true,
-  subtype: 'success',
-  stopReason: 'end_turn',
+  stopReason: 'complete',
   usage: null,
   durationMs: 1,
   error: null,

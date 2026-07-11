@@ -25,14 +25,14 @@
 // Never silently resume, never fake success. Idempotent.
 
 import {
-  appendConversationEvent,
+  commitConversationEvent,
   getActiveOrchestratorSession,
-  getConversationReplayState,
   listConversationEvents,
   listNonTerminalAgentRuns,
   listOpenPendingAsksForProject,
   listProjects,
   markPendingAskCancelled,
+  newId,
 } from '@pc/db';
 import { AgentRunMutationGateway, ContractService } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
@@ -47,27 +47,28 @@ function hasOpenTurn(sessionId: string): boolean {
   let lastTerminalSeq = 0;
   let lastOpenSeq = 0;
   for (const r of listConversationEvents(sessionId)) {
-    if (r.kind === 'turn-end' || r.kind === 'turn-failed') {
-      lastTerminalSeq = Math.max(lastTerminalSeq, r.seq);
-    } else if (r.kind === 'user') {
-      lastOpenSeq = Math.max(lastOpenSeq, r.seq);
-    } else if (r.kind === 'session-state') {
-      const state = (r.event as { state?: string } | null)?.state;
-      if (state && state !== 'idle') lastOpenSeq = Math.max(lastOpenSeq, r.seq);
+    if (r.eventType === 'turn-end' || r.eventType === 'turn-failed') {
+      lastTerminalSeq = Math.max(lastTerminalSeq, r.sequence);
+    } else if (r.eventType === 'user') {
+      lastOpenSeq = Math.max(lastOpenSeq, r.sequence);
+    } else if (r.eventType === 'session-state') {
+      const state = (r.payload as { state?: string } | null)?.state;
+      if (state && state !== 'idle') lastOpenSeq = Math.max(lastOpenSeq, r.sequence);
     }
   }
   return lastOpenSeq > lastTerminalSeq;
 }
 
 function append(sessionId: string, projectId: ULID, event: ChatEvent): void {
-  const seq = getConversationReplayState(sessionId).nextSeq;
-  appendConversationEvent({
+  commitConversationEvent({
     projectId,
+    conversationId: sessionId,
     sessionId,
-    seq,
-    kind: event.kind,
+    family: 'control',
     event,
-    now: Date.now(),
+    itemId: newId(),
+    occurredAt: Date.now(),
+    deliveryKind: 'chat',
   });
 }
 

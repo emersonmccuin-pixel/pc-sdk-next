@@ -10,11 +10,12 @@
 // Streaming-input mode: ONE `query()` per session with an AsyncIterable prompt.
 // Each `sendTurn` pushes a user message into that prompt so `interrupt()` works
 // (control methods require streaming-input). `includePartialMessages: true`
-// yields `stream_event` deltas → chat-delta frames. `resume` re-attaches after a
+// yields `stream_event` deltas → canonical sequenced stream events. `resume` re-attaches after a
 // restart. `canUseTool` bridges to the app's ask registry. Native SDK messages
 // are mapped to canonical `RuntimeEvent`s per the contract table; unknown
 // variants are dropped here (never surfaced as an unknown RuntimeEvent).
 
+import { randomUUID } from 'node:crypto';
 import {
   createSdkMcpServer,
   query,
@@ -70,7 +71,7 @@ export interface ClaudeSessionConfig {
 
 interface StartOptions {
   appSessionId: string;
-  resumeSdkSessionId?: string;
+  resumeNativeSessionId?: string;
   cwd?: string;
   ask?: AskHandler;
 }
@@ -119,21 +120,31 @@ class AsyncQueue<T> {
  * to the keys the frames were actually stamped with.
  */
 export interface SdkKeyContext {
-  streamMsgId: string | null;
-  uuidToKey: Map<string, string>;
+  streamItemId: string | null;
+  nativeToItemId: Map<string, string>;
+  idFactory: () => string;
 }
 
-export function createSdkKeyContext(): SdkKeyContext {
-  return { streamMsgId: null, uuidToKey: new Map() };
+export function createSdkKeyContext(idFactory: () => string = randomUUID): SdkKeyContext {
+  return { streamItemId: null, nativeToItemId: new Map(), idFactory };
 }
 
 /** Bounded so a long-lived session can't grow the map without limit. */
-function rememberKey(keys: SdkKeyContext, envelopeUuid: string, key: string): void {
-  keys.uuidToKey.set(envelopeUuid, key);
-  if (keys.uuidToKey.size > 500) {
-    const oldest = keys.uuidToKey.keys().next().value;
-    if (oldest !== undefined) keys.uuidToKey.delete(oldest);
+function rememberKey(keys: SdkKeyContext, nativeId: string, itemId: string): void {
+  if (!nativeId) return;
+  keys.nativeToItemId.set(nativeId, itemId);
+  if (keys.nativeToItemId.size > 500) {
+    const oldest = keys.nativeToItemId.keys().next().value;
+    if (oldest !== undefined) keys.nativeToItemId.delete(oldest);
   }
+}
+
+function canonicalItemId(keys: SdkKeyContext, nativeId: string): string {
+  const existing = nativeId ? keys.nativeToItemId.get(nativeId) : undefined;
+  if (existing) return existing;
+  const itemId = keys.idFactory();
+  rememberKey(keys, nativeId, itemId);
+  return itemId;
 }
 
 export class ClaudeRuntimeSession implements RuntimeSession {
@@ -146,6 +157,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   private currentTurn: AsyncQueue<RuntimeEvent> | null = null;
   private pendingInit: RuntimeEvent | null = null;
   private sdkSessionId: string | null = null;
+  private appSessionId = '';
 
   constructor(config: ClaudeSessionConfig) {
     this.config = config;
@@ -156,6 +168,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   async start(opts: StartOptions): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.appSessionId = opts.appSessionId;
 
     const promptQueue = new AsyncQueue<SDKUserMessage>();
     this.promptQueue = promptQueue;
@@ -181,7 +194,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       ...new Set([...(this.config.allowedTools ?? BASE_ALLOWED_TOOLS), ...(bridge?.allowedToolNames ?? [])]),
     ];
 
-    const resume = opts.resumeSdkSessionId && opts.resumeSdkSessionId.length > 0 ? opts.resumeSdkSessionId : undefined;
+    const resume = opts.resumeNativeSessionId && opts.resumeNativeSessionId.length > 0 ? opts.resumeNativeSessionId : undefined;
 
     const options: Options = {
       model: this.config.model ?? 'opus',
@@ -259,7 +272,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       this.sdkSessionId = anyMsg.session_id ?? null;
       const rm: RuntimeEvent = {
         type: 'init',
-        sdkSessionId: anyMsg.session_id ?? '',
+        nativeSessionId: anyMsg.session_id ?? '',
         model: anyMsg.model ?? null,
         permissionMode: anyMsg.permissionMode ?? null,
       };
@@ -291,7 +304,6 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     turn.push({
       type: 'result',
       ok: false,
-      subtype: abort ? 'abort' : 'error',
       stopReason: null,
       usage: null,
       durationMs: null,
@@ -311,7 +323,6 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     turn.push({
       type: 'result',
       ok: false,
-      subtype: 'error',
       stopReason: null,
       usage: null,
       durationMs: null,
@@ -332,7 +343,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         toolName,
         toolUseId: opts.toolUseID,
         toolInput: input,
-        sessionId: this.sdkSessionId,
+        appSessionId: this.appSessionId,
       });
       if (decision.behavior === 'allow') {
         if (decision.rawAnswer !== undefined) {
@@ -418,7 +429,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
     });
     await session.start({
       appSessionId: input.appSessionId,
-      resumeSdkSessionId: resume,
+      resumeNativeSessionId: resume,
       cwd: input.cwd,
       ask: input.ask,
     });
@@ -436,7 +447,7 @@ export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyCo
     case 'assistant':
       return mapAssistant(m, keys);
     case 'user':
-      return mapUser(m);
+      return mapUser(m, keys);
     case 'stream_event':
       return mapStreamEvent(m, keys);
     case 'result':
@@ -457,24 +468,23 @@ function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeE
   const envelopeUuid = String(m.uuid ?? '');
   const parent = (m.parent_tool_use_id as string | null) ?? null;
   const message = m.message as { id?: unknown; content?: unknown; error?: unknown } | undefined;
-  // Frame key = inner message id (matches this message's stream deltas);
-  // envelope uuid only as a fallback for id-less messages.
-  const uuid = String(message?.id ?? '') || envelopeUuid;
-  if (envelopeUuid) rememberKey(keys, envelopeUuid, uuid);
+  const nativeMessageId = String(message?.id ?? '') || envelopeUuid;
+  const itemId = canonicalItemId(keys, nativeMessageId);
+  rememberKey(keys, envelopeUuid, itemId);
   const blocks = Array.isArray(message?.content) ? (message!.content as Array<Record<string, unknown>>) : [];
   for (const block of blocks) {
     switch (block.type) {
       case 'text':
-        out.push({ type: 'assistant-block', sdkUuid: uuid, parentToolUseId: parent, block: { kind: 'text', text: String(block.text ?? '') } });
+        out.push({ type: 'assistant-block', itemId, scope: parent === null ? 'primary' : 'sidechain', block: { kind: 'text', text: String(block.text ?? '') } });
         break;
       case 'thinking':
-        out.push({ type: 'assistant-block', sdkUuid: uuid, parentToolUseId: parent, block: { kind: 'thinking', text: String(block.thinking ?? '') } });
+        // Retain no private reasoning in the canonical runtime seam.
         break;
       case 'tool_use':
         out.push({
           type: 'assistant-block',
-          sdkUuid: uuid,
-          parentToolUseId: parent,
+          itemId,
+          scope: parent === null ? 'primary' : 'sidechain',
           block: { kind: 'tool_use', toolUseId: String(block.id ?? ''), name: String(block.name ?? ''), input: block.input ?? {} },
         });
         break;
@@ -484,7 +494,7 @@ function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeE
   }
   const supersedes = m.supersedes as string[] | undefined;
   if (Array.isArray(supersedes) && supersedes.length > 0) {
-    out.push({ type: 'supersedes', uuids: translateUuids(supersedes, keys) });
+    out.push({ type: 'supersedes', streamIds: translateUuids(supersedes, keys) });
   }
   const err = (m as { error?: { message?: string } }).error;
   if (err && typeof err.message === 'string') {
@@ -493,9 +503,9 @@ function mapAssistant(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeE
   return out;
 }
 
-function mapUser(m: Record<string, unknown>): RuntimeEvent[] {
+function mapUser(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {
   if (m.isReplay === true) return []; // resume echo — not live tool activity
-  const uuid = String(m.uuid ?? '');
+  const itemId = canonicalItemId(keys, String(m.uuid ?? ''));
   const parent = (m.parent_tool_use_id as string | null) ?? null;
   const message = m.message as { content?: unknown } | undefined;
   const blocks = Array.isArray(message?.content) ? (message!.content as Array<Record<string, unknown>>) : [];
@@ -504,8 +514,8 @@ function mapUser(m: Record<string, unknown>): RuntimeEvent[] {
     if (block.type !== 'tool_result') continue;
     out.push({
       type: 'tool-result',
-      sdkUuid: uuid,
-      parentToolUseId: parent,
+      itemId,
+      scope: parent === null ? 'primary' : 'sidechain',
       toolUseId: String(block.tool_use_id ?? ''),
       result: block.content ?? null,
       isError: block.is_error === true,
@@ -521,28 +531,30 @@ function mapStreamEvent(m: Record<string, unknown>, keys: SdkKeyContext): Runtim
     | { type?: string; delta?: Record<string, unknown>; message?: { id?: unknown } }
     | undefined;
   if (!event) return [];
-  if (event.type === 'message_start') keys.streamMsgId = String(event.message?.id ?? '') || uuid;
-  // All of one message's deltas share the inner message id opened at
-  // message_start — envelope uuids are per-emission and would split the buffer.
-  const key = keys.streamMsgId ?? uuid;
+  if (event.type === 'message_start') {
+    const nativeMessageId = String(event.message?.id ?? '') || uuid;
+    keys.streamItemId = canonicalItemId(keys, nativeMessageId);
+    rememberKey(keys, uuid, keys.streamItemId);
+  }
+  const itemId = keys.streamItemId ?? canonicalItemId(keys, uuid);
   let delta: RuntimeDelta | null = null;
   if (event.type === 'message_start') delta = { kind: 'message-start' };
   else if (event.type === 'message_stop') {
     delta = { kind: 'message-end' };
-    keys.streamMsgId = null;
+    keys.streamItemId = null;
   } else if (event.type === 'content_block_delta' && event.delta) {
     const d = event.delta;
     if (d.type === 'text_delta') delta = { kind: 'text-delta', text: String(d.text ?? '') };
-    else if (d.type === 'thinking_delta') delta = { kind: 'thinking-delta', text: String(d.thinking ?? '') };
+    else if (d.type === 'thinking_delta') delta = null;
     else if (d.type === 'input_json_delta') delta = { kind: 'tool-input-delta', partialJson: String(d.partial_json ?? '') };
   }
-  return delta ? [{ type: 'delta', sdkUuid: key, parentToolUseId: parent, delta }] : [];
+  return delta ? [{ type: 'delta', itemId, scope: parent === null ? 'primary' : 'sidechain', delta }] : [];
 }
 
 /** `supersedes`/`retracted_message_uuids` reference envelope uuids; frames were
  *  stamped with inner message ids — translate so retraction actually evicts. */
 function translateUuids(uuids: unknown[], keys: SdkKeyContext): string[] {
-  return uuids.map((u) => keys.uuidToKey.get(String(u)) ?? String(u));
+  return uuids.map((u) => canonicalItemId(keys, String(u)));
 }
 
 /** Provider-neutral terminal classification for a native `result` message —
@@ -555,19 +567,46 @@ function classifyResultOutcome(subtype: string): 'ok' | 'error' | 'aborted' | 'b
   return 'error';
 }
 
+function classifyStopReason(
+  nativeReason: unknown,
+): Extract<RuntimeEvent, { type: 'result' }>['stopReason'] {
+  switch (nativeReason) {
+    case 'end_turn':
+      return 'complete';
+    case 'max_tokens':
+      return 'max-output';
+    case 'stop_sequence':
+      return 'stop-sequence';
+    case 'tool_use':
+      return 'tool-use';
+    case null:
+    case undefined:
+      return null;
+    default:
+      return 'other';
+  }
+}
+
 function mapResult(m: Record<string, unknown>): RuntimeEvent {
   const subtype = String(m.subtype ?? 'success');
   const ok = subtype === 'success';
+  const outcome = classifyResultOutcome(subtype);
   const usage = toRuntimeUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
   const durationMs = typeof m.duration_ms === 'number' ? m.duration_ms : null;
-  const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
+  const stopReason = classifyStopReason(m.stop_reason);
   const numTurns = typeof m.num_turns === 'number' ? m.num_turns : null;
   let error: string | null = null;
   if (!ok) {
     const errors = m.errors;
-    error = Array.isArray(errors) && errors.length > 0 ? errors.map(String).join('; ') : subtype;
+    error = Array.isArray(errors) && errors.length > 0
+      ? errors.map(String).join('; ')
+      : outcome === 'budget-exhausted'
+        ? 'runtime turn budget exhausted'
+        : outcome === 'aborted'
+          ? 'runtime turn aborted'
+          : 'runtime execution failed';
   }
-  return { type: 'result', ok, subtype, stopReason, usage, durationMs, error, outcome: classifyResultOutcome(subtype), numTurns };
+  return { type: 'result', ok, stopReason, usage, durationMs, error, outcome, numTurns };
 }
 
 function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {
@@ -610,7 +649,7 @@ function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEven
     case 'model_refusal_no_fallback': {
       const uuids = m.retracted_message_uuids;
       const out: RuntimeEvent[] = [{ type: 'system', subtype: String(m.subtype), level: 'warning', message: String(m.content ?? 'model refused the request') }];
-      if (Array.isArray(uuids) && uuids.length > 0) out.push({ type: 'supersedes', uuids: translateUuids(uuids, keys) });
+      if (Array.isArray(uuids) && uuids.length > 0) out.push({ type: 'supersedes', streamIds: translateUuids(uuids, keys) });
       return out;
     }
     default:

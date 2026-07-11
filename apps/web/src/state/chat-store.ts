@@ -6,8 +6,7 @@
 import { create } from 'zustand';
 import type {
   AskFrame,
-  ChatDeltaFrame,
-  ChatFrame,
+  ConversationEventFrame,
   SendAckFrame,
   SendQueueSnapshotFrame,
   SessionChangedFrame,
@@ -18,8 +17,7 @@ import {
   addOptimistic,
   answerAsk,
   applyAsk,
-  applyChatFrame,
-  applyDelta,
+  applyConversationEvent,
   applyReplay,
   applySendAck,
   applySendQueueSnapshot,
@@ -31,8 +29,7 @@ import {
 /** Channel-1 frames the chat store owns. Resource/usage/mcp/orchestrator frames
  *  are routed elsewhere by the ws-client. */
 export type ChatChannelFrame =
-  | ChatFrame
-  | ChatDeltaFrame
+  | ConversationEventFrame
   | SessionChangedFrame
   | SessionReplayFrame
   | SendAckFrame
@@ -52,10 +49,8 @@ export const useChatStore = create<ChatStore>((set) => ({
   ingest: (frame) =>
     set((s) => {
       switch (frame.type) {
-        case 'chat':
-          return { state: applyChatFrame(s.state, frame) };
-        case 'chat-delta':
-          return { state: applyDelta(s.state, frame) };
+        case 'conversation-event':
+          return { state: applyConversationEvent(s.state, frame) };
         case 'session-replay':
           return { state: applyReplay(s.state, frame) };
         case 'session-changed':

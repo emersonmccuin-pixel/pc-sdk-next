@@ -55,9 +55,9 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | ID | Status | Requirement |
 | --- | --- | --- |
 | CHAT-001 | accepted | User messages, assistant output, safe reasoning status, tool activity, agent activity, asks, queue state, and system notices are distinct canonical event families. |
-| CHAT-002 | accepted | Server-assigned sequence is authoritative. The browser never orders durable conversation state by timestamp or arrival order. |
-| CHAT-003 | accepted | Stream items have stable turn/item/stream identities and deterministic delta ordering; one logical response cannot split into orphan bubbles. |
-| CHAT-004 | accepted | Event persistence and live publication use an outbox/replay discipline so reconnect neither loses nor duplicates committed events. |
+| CHAT-002 | verified | Server-assigned sequence is authoritative. The browser never orders durable conversation state by timestamp or arrival order. |
+| CHAT-003 | verified | Stream items have stable turn/item/stream identities and deterministic delta ordering; one logical response cannot split into orphan bubbles. |
+| CHAT-004 | verified | Event persistence and live publication use an outbox/replay discipline so reconnect neither loses nor duplicates committed events. |
 | CHAT-005 | accepted | Messages sent during an active turn enter a durable, visible FIFO queue with edit/remove rules before delivery. |
 | CHAT-006 | accepted | “Interrupt and send” requires a positive interruption receipt before the replacement message is delivered. |
 | CHAT-007 | accepted | The user always receives honest activity feedback while the orchestrator is working or waiting. Operational status must not expose private chain-of-thought. |
