@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-002 verification and sealing.
+Updated: 2026-07-11 after CF-002 guarded landing and teardown.
 
 ## Repository
 
@@ -14,27 +14,29 @@ Updated: 2026-07-11 after CF-002 verification and sealing.
 - CF-001 feature worktree: removed after positive landing proof
 - Sealed implementation commit:
   `35b49d3a012abfb3ec1b439060b1046f95887e19`
-- Active slice: `docs/execution/slices/CF-002.md`
-- Active branch/worktree: `codex/cf-002-projector-scale` at
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-002`
+- Completed slice: `docs/execution/slices/CF-002.md`
+- CF-002 feature branch: `codex/cf-002-projector-scale` (preserved)
+- CF-002 feature worktree: removed after positive landing proof
 - CF-002 base: `57be70f63e6e449afff27e5039aa5f0b81f042e9`
 - CF-002 sealed implementation:
   `9ebf2c6284bebdae43f9263193999764a0c8413b`
+- CF-002 feature record: `8a4be486c14fab994335469edcb4838ebac55a36`
+- CF-002 landing merge: `77688fd1f1e5afe35d496e439a2743f59302fa31`
 
 ## Status
 
-CF-001 is landed, pushed, and torn down. CF-002 implementation is sealed and
-verified. Ordered live projection is indexed/incremental, stable history uses
-bounded persistent chunks, completed raw deltas compact to digest receipts, and
-replay has one checkpoint-aware normalization path. Focused web checks and the
-full `pnpm ci:check` pass; generated and final diff audits have no remaining
-finding.
+CF-002 is complete, guarded-landed, positively ancestry-proven, and torn down.
+Ordered live projection is indexed/incremental, stable history uses bounded
+persistent chunks, completed raw deltas compact to digest receipts, and replay
+has one checkpoint-aware normalization path. Focused web checks and the full
+`pnpm ci:check` pass; generated and final diff audits have no remaining finding.
 
 ## Next safe action
 
-Commit this feature receipt, perform the guarded merge from unchanged `main`,
-prove sealed/feature ancestry, remove the CF-002 worktree, push `main`, and then
-provision the next bounded durable queue/positive-interrupt slice.
+Provision the next bounded conversation slice from clean current `main`:
+durable FIFO queued-send state, restart recovery, explicit queue revisions, and
+positive interruption receipts. Keep safe activity/tool lifecycle and runtime
+selection outside that slice.
 
 ## Startup checks
 
