@@ -594,6 +594,10 @@ export interface StrandedReconcileResult {
   stranded: StrandedWorktreeFinding[];
   /** Previously stranded rows that self-healed back to active. */
   revived: string[];
+  /** Previously stranded rows resolved to terminal 'destroyed' — the
+   *  contract already landed/abandoned and the directory is gone, so there
+   *  is nothing left to reclaim (just a finished dispatch's leftover row). */
+  resolved: string[];
 }
 
 /** Durable stranded reconcile (docs/worktree-lifecycle.md 'Recovery' —
@@ -605,7 +609,10 @@ export interface StrandedReconcileResult {
  *  through the repo: row → status 'stranded' + reason + strandedAt; the bound
  *  run (when resolvable) gets lifecycle 'stranded' where canTransition allows.
  *  A stranded row whose dir + live run are back flips to active (self-heal;
- *  fuller recovery is a later slice). Never throws. */
+ *  fuller recovery is a later slice). A stranded row whose dir is gone AND
+ *  whose contract already landed/abandoned resolves to terminal 'destroyed'
+ *  — the contract record proves the work is done, so it never lingers as a
+ *  scary-but-harmless stranded row forever. Never throws. */
 export function reconcileStrandedWorktrees(): StrandedReconcileResult {
   const live = new Set<string>();
   for (const run of listNonTerminalAgentRuns()) {
@@ -641,15 +648,39 @@ export function reconcileStrandedWorktrees(): StrandedReconcileResult {
     stranded.push({ name: row.name, path: row.path, reason });
   }
   const revived: string[] = [];
+  const resolved: string[] = [];
   for (const row of listStrandedWorktrees()) {
     // Self-heal: dir back + live run, OR the contract is (still) awaiting
     // review/landing — heals rows stranded by earlier scans of parked work.
     const healed =
       existsSync(row.path) && (live.has(row.path) || awaitingReviewOrLanding(row.contractId));
-    if (!healed) continue;
-    if (reviveStrandedWorktree(row.id)) revived.push(row.name);
+    if (healed) {
+      if (reviveStrandedWorktree(row.id)) revived.push(row.name);
+      continue;
+    }
+    // Resolve to terminal: the contract already landed/abandoned and the dir
+    // is gone — there is no live run to revive and nothing left to reclaim,
+    // so this is a finished dispatch's leftover row, not a genuine stranding.
+    // A dir-gone row whose contract is NOT landed/abandoned (or has none)
+    // stays surfaced as 'stranded' — that is the real, actionable case.
+    if (!existsSync(row.path) && isLandedOrAbandoned(row.contractId)) {
+      markWorktreeDestroyed(row.name);
+      resolved.push(row.name);
+    }
   }
-  return { stranded, revived };
+  return { stranded, revived, resolved };
+}
+
+/** True when the worktree's contract already reached a terminal landing
+ *  outcome ('landed' or 'abandoned'). Used to resolve a stranded row whose
+ *  directory is gone into terminal 'destroyed' instead of leaving it stranded
+ *  forever — the contract's own record proves the work is done, so there is
+ *  nothing left for a human to reclaim. */
+function isLandedOrAbandoned(contractId: ULID | null): boolean {
+  if (!contractId) return false;
+  const contract = getContract(contractId);
+  if (!contract) return false;
+  return contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned';
 }
 
 /** True when the worktree's contract is parked for review/landing: verification

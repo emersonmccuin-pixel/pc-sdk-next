@@ -198,12 +198,15 @@ function recoverAgentRuns(): string[] {
 export async function reconcileStrandedWorktreesAtBoot(): Promise<string[]> {
   let strandedNames: string[] = [];
   try {
-    const { stranded, revived } = reconcileStrandedWorktrees();
+    const { stranded, revived, resolved } = reconcileStrandedWorktrees();
     for (const w of stranded) {
       console.warn(`[pc-sdk][boot-recovery] stranded worktree ${w.name} at ${w.path} (${w.reason}) — row marked stranded.`);
     }
     for (const name of revived) {
       console.warn(`[pc-sdk][boot-recovery] stranded worktree ${name} self-healed — back to active.`);
+    }
+    for (const name of resolved) {
+      console.warn(`[pc-sdk][boot-recovery] stranded worktree ${name} resolved — contract landed/abandoned, dir gone, row marked destroyed.`);
     }
     strandedNames = stranded.map((w) => w.name);
   } catch (err) {
