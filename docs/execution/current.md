@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-001 approval and provisioning.
+Updated: 2026-07-11 after CF-001 sealed verification.
 
 ## Repository
 
@@ -12,17 +12,22 @@ Updated: 2026-07-11 after CF-001 approval and provisioning.
 - Active slice: `docs/execution/slices/CF-001.md`
 - Active branch/worktree: `codex/cf-001-conversation-foundation` at
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-001`
+- Sealed implementation commit:
+  `35b49d3a012abfb3ec1b439060b1046f95887e19`
 
 ## Status
 
-CF-001 is in progress. Its read-only DB, contract/server, and browser/test lanes
-map the coordinated migration; root owns the serialized schema, shared
-contract, producer, persistence, consumer, verification, and landing changes.
+CF-001 is sealed and verified. Canonical identity, atomic sequence/event/outbox
+persistence, the dedicated relay, persisted deltas, adapter-local native
+correlation, migration/backfill, and the single browser projector are complete.
+Focused checks and `pnpm ci:check` passed; an independent final diff audit found
+no blocker.
 
 ## Next safe action
 
-Implement and verify `CF-001` exactly as bounded in its slice. Do not widen into
-durable send queues, runtime selection, or the Codex adapter.
+Revalidate clean `main` at the recorded base, commit this execution record, then
+perform the guarded CF-001 merge, positive ancestry proof, and worktree
+teardown. Do not widen the landing into durable queue/control or runtime work.
 
 ## Startup checks
 
@@ -38,8 +43,8 @@ BC-001 evidence, and the named boundary documents before continuing.
 
 ## Known blockers
 
-No implementation blocker. The user delegated routine product/engineering
-direction and approved the recommended BC-001 defaults; escalate only a
-material product choice. The Next shortcut code is isolated but has not been
-installed; regular daily driving remains on the original PC-SDK until the
-migration gate.
+No closeout blocker. The pure projector is correct but O(n²) over long,
+delta-heavy histories; queue a measured ordered-fast-path/completed-stream
+compaction slice immediately after landing. The Next shortcut code is isolated
+but has not been installed; regular daily driving remains on the original
+PC-SDK until the migration gate.
