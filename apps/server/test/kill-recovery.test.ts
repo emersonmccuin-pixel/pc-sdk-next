@@ -449,10 +449,17 @@ test('F3: a terminal envelope minted before attach is queued, not dropped — re
 
     await until(() => getActiveOrchestratorSession(gp.project.id) !== null);
     const session = getActiveOrchestratorSession(gp.project.id)!;
-    await until(() =>
-      listConversationEvents(session.id).some(
-        (r) => r.kind === 'user' && (r.event as { text: string }).text.includes(`[agent-completed] agent=code-writer runId=${runId}`),
-      ),
+    // Replay still goes through the typed agent-envelope path (Part A's
+    // collapsed per-run chat card) — never a plain-text 'user' bubble.
+    await until(
+      () =>
+        listConversationEvents(session.id).some(
+          (r) =>
+            r.kind === 'agent-envelope' &&
+            (r.event as { runId: string; status: string; envelope: string }).runId === runId &&
+            (r.event as { status: string }).status === 'done' &&
+            (r.event as { envelope: string }).envelope.includes(`[agent-completed] agent=code-writer runId=${runId}`),
+        ),
       5000,
     );
   } finally {
