@@ -635,7 +635,25 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
         },
         "expected_output": {
           "type": "object",
-          "description": "contract-first output spec authored directly onto the dispatch's contract. `{ kind }` is one of answer | prose | payload | repo | external | binary | action. Optional ONLY for stock pods that carry a default (researcher, writer, code-writer, reviewer, planner, extractor, …); a pod with no stored/stock default is REJECTED without it. A bare `{ kind: 'answer' }` with no min_chars escalates to orchestrator review unless you set `trust_end_turn: true`. For `repo`, add `checks` (e.g. [\"typecheck\",\"test\"]) so verification runs them in the worktree; `auto_land: true` opts into auto-merge, `review: 'full'` requests the independent review phase (wins over auto_land)."
+          "description": "contract-first output spec authored directly onto the dispatch's contract. `{ kind }` is one of answer | prose | payload | repo | external | binary | action. Optional ONLY for stock pods that carry a default (researcher, writer, code-writer, reviewer, planner, extractor, …); a pod with no stored/stock default is REJECTED without it. A bare `{ kind: 'answer' }` with no min_chars escalates to orchestrator review unless you set `trust_end_turn: true`. For `repo`, add `checks` (e.g. [\"typecheck\",\"test\"]) so verification runs them in the worktree; `auto_land: true` opts into auto-merge, `review: 'full'` requests the independent review phase (wins over auto_land).",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "answer",
+                "prose",
+                "payload",
+                "repo",
+                "external",
+                "binary",
+                "action"
+              ],
+              "description": "output family this contract verifies against; required when expected_output is supplied"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       },
       "required": [
