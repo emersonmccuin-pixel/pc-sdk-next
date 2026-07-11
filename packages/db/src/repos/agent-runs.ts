@@ -66,6 +66,10 @@ export interface InsertAgentRunRowInput {
   /** Initial worktree-pipeline state. NULL (default) = non-repo/legacy run —
    *  no lifecycle vocabulary applies to the row, ever. */
   lifecycleState?: RunLifecycleState | null;
+  /** Bounded auto-continue counter (docs: max-turns fix part 2). Omit (0) for
+   *  a fresh dispatch or a manual continuation; the dispatch service passes
+   *  `parent.autoContinueCount + 1` for an internal auto-continuation. */
+  autoContinueCount?: number;
   queuedAt: number;
 }
 
@@ -108,6 +112,7 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     runtimeId: input.runtimeId ?? null,
     accountId: input.accountId ?? null,
     model: input.model ?? null,
+    autoContinueCount: input.autoContinueCount ?? 0,
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
@@ -391,6 +396,44 @@ export function findActiveContinuation(priorRunId: ULID): AgentRunRow | null {
     )
     .get();
   return row ?? null;
+}
+
+/** Auto-continue idempotency guard (docs: max-turns fix part 2). True iff
+ *  ANY continuation row exists for `priorRunId`, terminal or not — unlike
+ *  `findActiveContinuation`, this also catches the case where a prior
+ *  auto-continue attempt was already dispatched and has since settled (e.g.
+ *  force-failed 'server-restart' by the boot sweep). Boot re-entry
+ *  (`recoverPendingAutoContinues`) uses this to never double-fire. */
+export function hasContinuation(priorRunId: ULID): boolean {
+  const row = getDb()
+    .select({ id: agentRuns.id })
+    .from(agentRuns)
+    .where(eq(agentRuns.continues, priorRunId))
+    .limit(1)
+    .get();
+  return row !== undefined;
+}
+
+/** Boot re-entry feeder for bounded auto-continue (docs: max-turns fix part
+ *  2). Every run that settled 'failed' with cause 'turn-budget-exhausted' —
+ *  the dispatch service filters by MAX_AUTO_CONTINUES and `hasContinuation`
+ *  to find the ones still needing an auto-continuation fired. */
+export function listTurnBudgetExhaustedRuns(): AgentRunRow[] {
+  return getDb()
+    .select()
+    .from(agentRuns)
+    .where(and(eq(agentRuns.status, 'failed'), eq(agentRuns.failureCause, 'turn-budget-exhausted')))
+    .orderBy(desc(agentRuns.completedAt))
+    .all();
+}
+
+/** Patch the failure reason on an already-terminal row without touching its
+ *  status (unlike `markAgentRunTerminal`, no terminal-idempotency guard — the
+ *  caller already knows the row is terminal). Used to record why an
+ *  auto-continue attempt itself failed to dispatch (docs: max-turns fix part
+ *  2) before delivering the ceiling envelope off the existing terminal row. */
+export function setAgentRunFailureReason(id: ULID, failureReason: string): void {
+  getDb().update(agentRuns).set({ failureReason }).where(eq(agentRuns.id, id)).run();
 }
 
 // Step 2 (2026-06-03) — the boot-time bulk-fail sweeps (`reconcileOrphanedRunningRuns`,

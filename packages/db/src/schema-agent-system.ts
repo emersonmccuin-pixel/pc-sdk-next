@@ -123,6 +123,12 @@ export const agentRuns = sqliteTable(
     runtimeId: text('runtime_id'),
     accountId: text('account_id'),
     model: text('model'),
+    /** Migration 0008 — bounded auto-continue on turn-budget exhaustion.
+     *  Durable per-chain counter (survives a server restart mid-chain): 0 for
+     *  a fresh dispatch / manual continuation, N+1 for an auto-continuation of
+     *  a run whose own count was N. Compared against MAX_AUTO_CONTINUES in
+     *  the dispatch service. */
+    autoContinueCount: integer('auto_continue_count').notNull().default(0),
   },
   (t) => [
     index('agent_runs_session_queued_idx').on(t.dispatcherSessionId, t.queuedAt),

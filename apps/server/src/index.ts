@@ -167,6 +167,12 @@ async function main(): Promise<void> {
   await dispatch
     .recoverPendingReviews()
     .catch((err) => console.warn('[pc-sdk][dispatch] review re-entry failed:', err));
+  // 7. auto-continue re-entry — AFTER attach, same reason as review re-entry:
+  //    a run that settled 'failed'/'turn-budget-exhausted' but never got its
+  //    auto-continuation fired (crash in that window) resumes here.
+  await dispatch
+    .recoverPendingAutoContinues()
+    .catch((err) => console.warn('[pc-sdk][dispatch] auto-continue re-entry failed:', err));
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
