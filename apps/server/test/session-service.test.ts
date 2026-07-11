@@ -23,7 +23,7 @@ test('rule 1: every chat frame is committed before it broadcasts', async () => {
     turns: [[
       { type: 'init', sdkSessionId: 's1', model: 'opus', permissionMode: 'default' },
       { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'hi' } },
-      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null },
+      { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null },
     ]],
   });
   let violations = 0;
@@ -72,7 +72,7 @@ test('rule 3: success turn ends in exactly one turn-end', async () => {
   freshDb();
   const project = newProject();
   const backend = new FakeRuntime({
-    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }]],
+    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
@@ -87,7 +87,7 @@ test('rule 3: api-error turn ends in exactly one turn-failed', async () => {
   freshDb();
   const project = newProject();
   const backend = new FakeRuntime({
-    turns: [[{ type: 'result', ok: false, subtype: 'error_during_execution', stopReason: null, usage: null, durationMs: null, error: 'boom' }]],
+    turns: [[{ type: 'result', ok: false, subtype: 'error_during_execution', stopReason: null, usage: null, durationMs: null, error: 'boom', outcome: 'error', numTurns: null }]],
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
@@ -131,8 +131,8 @@ test('queued sends drain FIFO and reconcile via the user frame', async () => {
   const project = newProject();
   const backend = new FakeRuntime({
     turns: [
-      [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }],
-      [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null }],
+      [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
     ],
     stepDelayMs: 5,
   });

@@ -42,6 +42,8 @@ const OK_RESULT: RuntimeEvent = {
   usage: null,
   durationMs: 1,
   error: null,
+  outcome: 'ok',
+  numTurns: null,
 };
 
 const NODE_OK = (tag: string) => `node -e "console.log('${tag}')"`;

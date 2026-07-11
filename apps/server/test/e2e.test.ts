@@ -51,7 +51,7 @@ const SCRIPT = [[
   { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'tool_use', toolUseId: 't1', name: 'Read', input: { path: 'x' } } },
   { type: 'tool-result', sdkUuid: 'u2', parentToolUseId: null, toolUseId: 't1', result: 'contents', isError: false },
   { type: 'assistant-block', sdkUuid: 'u3', parentToolUseId: null, block: { kind: 'text', text: 'Done' } },
-  { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 12, error: null },
+  { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 12, error: null, outcome: 'ok', numTurns: null },
 ]] as never;
 
 test('ws connect → send → deltas → persisted frames → turn-end → reconnect replay identical', async () => {

@@ -296,6 +296,10 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       usage: null,
       durationMs: null,
       error: message,
+      // A genuine stream break is a real failure, never mistaken for turn-budget
+      // exhaustion (which only ever comes from a native `result` message).
+      outcome: abort ? 'aborted' : 'error',
+      numTurns: null,
     });
     turn.end();
   }
@@ -312,6 +316,8 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       usage: null,
       durationMs: null,
       error: reason,
+      outcome: 'error',
+      numTurns: null,
     });
     turn.end();
   }
@@ -539,18 +545,29 @@ function translateUuids(uuids: unknown[], keys: SdkKeyContext): string[] {
   return uuids.map((u) => keys.uuidToKey.get(String(u)) ?? String(u));
 }
 
+/** Provider-neutral terminal classification for a native `result` message —
+ *  the ONLY place an SDK subtype (e.g. 'error_max_turns') is interpreted; it
+ *  must never leak past this function. */
+function classifyResultOutcome(subtype: string): 'ok' | 'error' | 'aborted' | 'budget-exhausted' {
+  if (subtype === 'success') return 'ok';
+  if (subtype === 'error_max_turns' || subtype === 'error_max_budget_usd') return 'budget-exhausted';
+  if (/abort/i.test(subtype)) return 'aborted';
+  return 'error';
+}
+
 function mapResult(m: Record<string, unknown>): RuntimeEvent {
   const subtype = String(m.subtype ?? 'success');
   const ok = subtype === 'success';
   const usage = toRuntimeUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
   const durationMs = typeof m.duration_ms === 'number' ? m.duration_ms : null;
   const stopReason = typeof m.stop_reason === 'string' ? m.stop_reason : null;
+  const numTurns = typeof m.num_turns === 'number' ? m.num_turns : null;
   let error: string | null = null;
   if (!ok) {
     const errors = m.errors;
     error = Array.isArray(errors) && errors.length > 0 ? errors.map(String).join('; ') : subtype;
   }
-  return { type: 'result', ok, subtype, stopReason, usage, durationMs, error };
+  return { type: 'result', ok, subtype, stopReason, usage, durationMs, error, outcome: classifyResultOutcome(subtype), numTurns };
 }
 
 function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEvent[] {

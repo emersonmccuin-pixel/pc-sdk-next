@@ -67,7 +67,11 @@ export type AgentRunFailureCause =
   | 'contract-required'
   /** Isolation invariant: the dispatch declared `isolation: "worktree"` but
    *  the worktree provisioning step failed. Never fall back to the main repo. */
-  | 'worktree-provision-failed';
+  | 'worktree-provision-failed'
+  /** The runtime hit its turn budget (SDK `error_max_turns` / a sibling
+   *  `error_max_budget_usd`) — a real terminal result, NOT a crash. Distinct
+   *  from `unexpected-exit` so the run is resumable, not misreported. */
+  | 'turn-budget-exhausted';
 
 export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'spawn-stuck',
@@ -90,6 +94,7 @@ export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'no-deliverable',
   'contract-required',
   'worktree-provision-failed',
+  'turn-budget-exhausted',
 ];
 
 /** One persisted agent_runs row. Mirrors the in-memory AgentRunRecord plus

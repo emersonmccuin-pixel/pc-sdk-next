@@ -51,6 +51,8 @@ const OK_RESULT = {
   usage: null,
   durationMs: 1,
   error: null,
+  outcome: 'ok',
+  numTurns: null,
 } as const;
 
 class FakeAdapter implements AgentRuntimeAdapter {
@@ -165,6 +167,40 @@ test('completed run with no deliverable fails no-deliverable; selection stamped;
   assert.equal(adapter.created[0]!.bypassPermissions, true);
   // Verification recorded the run failure on the contract.
   await until(() => getContract(row.contractId!)?.verificationStatus === 'failed');
+});
+
+test('a turn that hits the SDK turn budget settles turn-budget-exhausted, not unexpected-exit', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject();
+  const BUDGET_RESULT = {
+    type: 'result',
+    ok: false,
+    subtype: 'error_max_turns',
+    stopReason: null,
+    usage: null,
+    durationMs: null,
+    error: 'hit max turns',
+    outcome: 'budget-exhausted',
+    numTurns: 100,
+  } as const;
+  const adapter = new FakeAdapter([[BUDGET_RESULT]]);
+  const dispatch = rig(adapter);
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'find the answer',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true);
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+
+  await until(() => getAgentRunRow(runId)?.status === 'failed');
+  const row = getAgentRunRow(runId)!;
+  // A real terminal result (SDK error_max_turns), never mistaken for a crash.
+  assert.equal(row.failureCause, 'turn-budget-exhausted');
+  assert.match(row.failureReason ?? '', /100 turns/);
+  assert.match(row.failureReason ?? '', /resumable/);
 });
 
 test('delivered trust_end_turn answer verifies passed end-to-end', async () => {

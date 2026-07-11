@@ -32,7 +32,7 @@ test('rev change between turns re-mints the runtime with resume; stable rev reus
       const runtime = new FakeRuntime({
         turns: Array.from({ length: 5 }, () => [
           { type: 'init', sdkSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
-          { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null },
+          { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null },
         ]),
       });
       minted.push({ runtime, ctx });
