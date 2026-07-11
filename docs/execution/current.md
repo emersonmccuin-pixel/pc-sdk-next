@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 during PF-001.
+Updated: 2026-07-11 after PF-001 verification and review.
 
 ## Repository
 
@@ -13,15 +13,16 @@ Updated: 2026-07-11 during PF-001.
 
 ## Status
 
-PF-001 is in progress. The stable baseline and fork exist. Isolation and
-planning artifacts are being implemented and have not yet landed on Next main.
+PF-001 is merge-ready at sealed commit `aecd607`. The stable baseline and fork
+exist; isolation and planning artifacts passed verification and independent
+review but have not yet landed on Next `main`.
 
 ## Next safe action
 
-Complete PF-001 validation and independent review, seal the commit, merge it to
-Next `main`, prove ancestry, push `origin/main`, and record the completion
-receipt. Then begin a read-only baseline-characterization slice; do not begin a
-runtime or chat migration directly from this handoff.
+Merge the reviewed PF-001 branch to Next `main`, prove ancestry, push
+`origin/main`, and record the final completion receipt. Then begin a read-only
+baseline-characterization slice; do not begin a runtime or chat migration
+directly from this handoff.
 
 ## Startup checks
 
@@ -37,6 +38,5 @@ the boundary documents before continuing.
 
 ## Known blockers
 
-None. Do not launch Next on 5124 until PF-001 has landed and dependencies are
-installed in the main Next checkout.
-
+None. Do not install the Next shortcut for regular use until PF-001 has landed
+and dependencies are installed in the main Next checkout.

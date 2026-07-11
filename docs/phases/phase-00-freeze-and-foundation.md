@@ -1,6 +1,6 @@
 # Phase N0: Freeze, fork, and planning foundation
 
-Status: in progress, 2026-07-11.
+Status: gate evidence passed; landing pending, 2026-07-11.
 
 ## Outcome
 
@@ -28,4 +28,3 @@ pickup, agent routing, and current-state memory before product behavior changes.
 - No Codex adapter
 - No AInativePM integration implementation
 - No daily-driver cutover
-
