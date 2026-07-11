@@ -12,7 +12,7 @@
 // variants are dropped inside the adapter (never surfaced as an unknown
 // RuntimeEvent).
 
-import type { UsageSnapshot } from '@pc/contracts';
+import type { TurnStopReason, UsageSnapshot } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 
 /** Per-turn token telemetry (native result usage). Maps to the chat `usage`
@@ -28,45 +28,38 @@ export interface RuntimeUsage {
 /** One block of an assistant message. */
 export type AssistantBlock =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; toolUseId: string; name: string; input: unknown };
 
 /** Streaming-delta payload. */
 export type RuntimeDelta =
   | { kind: 'message-start' }
   | { kind: 'text-delta'; text: string }
-  | { kind: 'thinking-delta'; text: string }
   | { kind: 'tool-input-delta'; toolUseId?: string; partialJson: string }
   | { kind: 'message-end' };
 
-/** The typed events a runtime session yields for one turn. `sdkUuid` is the
- *  canonical per-message frame key (wire-frozen in docs/event-contract.md —
- *  the name survives from the Claude-first wire; adapters for other runtimes
- *  mint their own stable per-message keys into it). `parentToolUseId != null`
- *  marks a subagent (sidechain) event — the turn-runner does not forward those
- *  to the main chat. */
+/** The typed events a runtime session yields for one turn. Adapters mint
+ * provider-neutral item ids and reduce native parentage to primary/sidechain. */
 export type RuntimeEvent =
   // Native session opened/attached — capture `nativeSessionId` for resume.
-  | { type: 'init'; sdkSessionId: string; model: string | null; permissionMode: string | null }
-  // Assistant block (text / thinking / tool_use).
-  | { type: 'assistant-block'; sdkUuid: string; parentToolUseId: string | null; block: AssistantBlock }
+  | { type: 'init'; nativeSessionId: string; model: string | null; permissionMode: string | null }
+  // Public assistant block (text or tool use). Private reasoning is absent.
+  | { type: 'assistant-block'; itemId: string; scope: 'primary' | 'sidechain'; block: AssistantBlock }
   // Tool result (NOT a chat user bubble).
   | {
       type: 'tool-result';
-      sdkUuid: string;
-      parentToolUseId: string | null;
+      itemId: string;
+      scope: 'primary' | 'sidechain';
       toolUseId: string;
       result: unknown;
       isError: boolean;
     }
   // Streaming delta (main thread only).
-  | { type: 'delta'; sdkUuid: string; parentToolUseId: string | null; delta: RuntimeDelta }
-  // Turn terminal — success (ok) or an error subtype. Always ends the turn.
+  | { type: 'delta'; itemId: string; scope: 'primary' | 'sidechain'; delta: RuntimeDelta }
+  // Turn terminal. Native terminal vocabulary is classified by the adapter.
   | {
       type: 'result';
       ok: boolean;
-      subtype: string;
-      stopReason: string | null;
+      stopReason: TurnStopReason | null;
       usage: RuntimeUsage | null;
       durationMs: number | null;
       /** Present when `ok === false`. */
@@ -74,7 +67,7 @@ export type RuntimeEvent =
       /** Provider-neutral terminal classification — computed by the adapter so
        *  no Claude subtype (e.g. 'error_max_turns') leaks past it. */
       outcome: 'ok' | 'error' | 'aborted' | 'budget-exhausted';
-      /** SDK `num_turns` when the native result carries it, else null. */
+      /** Turn count when the runtime reports it, else null. */
       numTurns: number | null;
     }
   // Session-state transitions.
@@ -96,7 +89,7 @@ export type RuntimeEvent =
       raw?: unknown;
     }
   // Retract already-delivered events by frame key (model-refusal fallback).
-  | { type: 'supersedes'; uuids: string[] };
+  | { type: 'supersedes'; streamIds: string[] };
 
 /** The permission seam. A session calls this to block on an app answer; the
  *  app resolves it (or a watchdog denies it). */
@@ -104,7 +97,7 @@ export interface AskRequest {
   toolName: string;
   toolUseId: string;
   toolInput: unknown;
-  sessionId: string | null;
+  appSessionId: string;
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny';

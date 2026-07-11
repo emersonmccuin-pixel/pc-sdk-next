@@ -138,7 +138,7 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     if (!row || row.projectId !== projectId) return c.json({ ok: false, error: 'run not found' }, 404);
     const events = listConversationEvents(row.id);
     const last = events.length > 0 ? events[events.length - 1] : null;
-    const lastAt = last ? last.createdAt : row.queuedAt;
+    const lastAt = last ? last.occurredAt : row.queuedAt;
     return c.json({
       ok: true,
       inspection: {
@@ -148,7 +148,7 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
         live: dispatch.hasLiveRun(row.id),
         lastActivityAt: lastAt,
         idleMs: Date.now() - lastAt,
-        lastAction: last ? last.kind : null,
+        lastAction: last ? last.eventType : null,
         contractId: row.contractId,
         worktreeDir: row.worktreeDir,
         failureCause: row.failureCause,
@@ -173,8 +173,8 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const row = getAgentRunRow(c.req.param('runId') as ULID);
     if (!row || row.projectId !== projectId) return c.json({ ok: false, error: 'run not found' }, 404);
     const events = listConversationEvents(row.id).map((r) => ({
-      dedupId: `${row.id}:${r.seq}`,
-      event: r.event as ChatEvent,
+      dedupId: r.eventId,
+      event: r.payload as ChatEvent,
     }));
     return c.json({
       events,

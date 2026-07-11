@@ -1,6 +1,3 @@
-// conversation_events repo: append/replay-state/list/high-water on a fresh
-// migrated DB. Shape per docs/event-contract.md (Channel 1 — Chat).
-
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,14 +8,16 @@ const tmpDir = mkdtempSync(join(tmpdir(), 'pc-conversation-events-'));
 process.env.PC_DATA_DIR = tmpDir;
 
 const {
-  appendConversationEvent,
-  appendConversationEvents,
   closeDb,
+  commitConversationEvent,
   countConversationEvents,
-  getConversationHighWaterSeq,
-  getConversationReplayState,
+  getConversationHighWaterSequence,
+  getRawDb,
   hasConversationEvents,
   listConversationEvents,
+  listConversationEventsRaw,
+  listUnrelayedConversationEvents,
+  markConversationEventsRelayed,
   runMigrations,
 } = await import('../src/index.ts');
 
@@ -28,70 +27,94 @@ after(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-const PROJECT = 'p1';
-
-function input(seq: number, over: Record<string, unknown> = {}) {
-  return {
-    projectId: PROJECT,
-    sessionId: 's1',
-    seq,
-    kind: 'assistant-text',
-    event: { kind: 'assistant-text', text: `t${seq}`, midLoop: false },
-    now: 1000 + seq,
+function commit(
+  conversationId: string,
+  text: string,
+  over: Record<string, unknown> = {},
+) {
+  return commitConversationEvent({
+    projectId: 'p1',
+    conversationId,
+    sessionId: conversationId,
+    family: 'assistant',
+    event: { kind: 'assistant-text', text, midLoop: false },
+    itemId: `item-${text}`,
+    occurredAt: 1000,
+    deliveryKind: 'chat',
     ...over,
-  } as Parameters<typeof appendConversationEvent>[0];
+  } as Parameters<typeof commitConversationEvent>[0]);
 }
 
-test('append + list round-trips the envelope fields, ordered by seq', () => {
-  appendConversationEvent(input(2, { sdkUuid: 'u2', clientMessageId: 'c2' }));
-  appendConversationEvent(input(1, { sdkUuid: 'u1' }));
-  const rows = listConversationEvents('s1');
-  assert.deepEqual(rows.map((r) => r.seq), [1, 2]);
-  assert.equal(rows[0]!.id, 's1:1');
-  assert.equal(rows[0]!.projectId, PROJECT);
-  assert.deepEqual(rows[0]!.event, { kind: 'assistant-text', text: 't1', midLoop: false });
-  assert.equal(rows[0]!.sdkUuid, 'u1');
-  assert.equal(rows[0]!.clientMessageId, null);
-  assert.equal(rows[1]!.clientMessageId, 'c2');
+test('commit allocates gapless conversation sequence and writes one outbox row atomically', () => {
+  const first = commit('c1', 'one');
+  const second = commit('c1', 'two');
+  assert.equal(first.event.sequence, 1);
+  assert.equal(second.event.sequence, 2);
+  assert.ok(second.outboxSequence > first.outboxSequence);
+  assert.deepEqual(listConversationEvents('c1').map((row) => row.sequence), [1, 2]);
+  assert.equal(getConversationHighWaterSequence('c1'), 2);
+  assert.equal(countConversationEvents('c1'), 2);
+  assert.equal(hasConversationEvents('c1'), true);
+  assert.equal(listUnrelayedConversationEvents().filter((entry) => entry.event.conversationId === 'c1').length, 2);
 });
 
-test('replay state resumes nextSeq', () => {
-  assert.equal(getConversationReplayState('s1').nextSeq, 3);
-  // Unknown session = a fresh log.
-  assert.deepEqual(getConversationReplayState('nope'), { nextSeq: 1 });
+test('different conversations allocate independently and afterSequence is authoritative', () => {
+  assert.equal(commit('c2', 'one').event.sequence, 1);
+  assert.equal(commit('c2', 'two').event.sequence, 2);
+  assert.equal(commit('c3', 'one').event.sequence, 1);
+  assert.deepEqual(listConversationEvents('c2', { afterSequence: 1 }).map((row) => row.sequence), [2]);
 });
 
-test('double-write on the same (session, seq) throws (UNIQUE)', () => {
-  assert.throws(() => appendConversationEvent(input(1)), /UNIQUE/);
+test('outbox mark removes only relayed entries from the pending drain', () => {
+  const result = commit('c4', 'one');
+  assert.ok(listUnrelayedConversationEvents().some((entry) => entry.outboxSequence === result.outboxSequence));
+  markConversationEventsRelayed([result.outboxSequence], 2000);
+  assert.equal(listUnrelayedConversationEvents().some((entry) => entry.outboxSequence === result.outboxSequence), false);
 });
 
-test('afterSeq returns only later rows; limit caps oldest-first; high water is stable', () => {
-  appendConversationEvent(input(3));
-  appendConversationEvent(input(4));
-  const after2 = listConversationEvents('s1', { afterSeq: 2 });
-  assert.deepEqual(after2.map((r) => r.seq), [3, 4]);
-  const capped = listConversationEvents('s1', { limit: 2 });
-  assert.deepEqual(capped.map((r) => r.seq), [1, 2]);
-  assert.equal(getConversationHighWaterSeq('s1'), 4);
+test('outbox failure rolls back event and cursor; next success reuses the sequence', () => {
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TRIGGER fail_conversation_outbox
+    BEFORE INSERT ON conversation_outbox
+    BEGIN SELECT RAISE(ABORT, 'forced outbox failure'); END;
+  `);
+  assert.throws(() => commit('rollback', 'failed'), /forced outbox failure/);
+  raw.exec('DROP TRIGGER fail_conversation_outbox');
+  assert.equal(countConversationEvents('rollback'), 0);
+  assert.equal(commit('rollback', 'success').event.sequence, 1);
 });
 
-test('bulk import writes all rows in one txn; count + has reflect it', () => {
-  const n = appendConversationEvents([
-    input(1, { sessionId: 's2' }),
-    input(2, { sessionId: 's2' }),
-  ]);
-  assert.equal(n, 2);
-  assert.equal(countConversationEvents('s2'), 2);
-  assert.equal(hasConversationEvents('s2'), true);
-  assert.equal(hasConversationEvents('s3'), false);
-});
-
-test('a bulk import with a duplicate seq rolls back whole (txn)', () => {
-  assert.throws(() =>
-    appendConversationEvents([
-      input(5, { sessionId: 's2' }),
-      input(2, { sessionId: 's2' }), // dup → throws
-    ]),
+test('project mismatch and invalid delta identity fail closed without consuming sequence', () => {
+  assert.equal(commit('owned', 'one').event.sequence, 1);
+  assert.throws(() => commit('owned', 'wrong-project', { projectId: 'p2' }), /project mismatch/);
+  assert.throws(
+    () => commit('delta', 'bad', { deltaIndex: 0, streamId: null }),
+    /stable conversation events cannot carry deltaIndex/,
   );
-  assert.equal(countConversationEvents('s2'), 2); // unchanged — txn rolled back
+  assert.throws(
+    () => commit('delta', 'bad-stream', {
+      event: { kind: 'stream-delta', delta: { kind: 'text-delta', text: 'x' } },
+      family: 'assistant',
+      streamId: 'stream',
+      deltaIndex: null,
+    }),
+    /stream-delta requires/,
+  );
+  assert.throws(() => commit('delta', 'wrong-family', { family: 'user' }), /family mismatch/);
+  assert.throws(() => commit('delta', 'empty-event', { eventId: '' }), /eventId/);
+  assert.throws(() => commit('delta', 'empty-turn', { turnId: '' }), /turnId/);
+  assert.throws(() => commit('delta', 'bad-time', { occurredAt: Number.NaN }), /occurredAt/);
+  assert.equal(commit('delta', 'good').event.sequence, 1);
+});
+
+test('legacy-hidden evidence is retained raw but never appears in product replay', () => {
+  const hidden = commit('legacy', 'private');
+  const raw = getRawDb();
+  raw.prepare('UPDATE conversation_events SET projection_state = ? WHERE event_id = ?')
+    .run('legacy-hidden', hidden.event.eventId);
+  markConversationEventsRelayed([hidden.outboxSequence], 2000);
+  assert.equal(listConversationEvents('legacy').length, 0);
+  assert.equal(listConversationEventsRaw('legacy').length, 1);
+  assert.equal(listConversationEventsRaw('legacy')[0]!.projectionState, 'legacy-hidden');
 });

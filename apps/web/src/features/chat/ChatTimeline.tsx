@@ -5,11 +5,11 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 
-import type { ChatFrame } from '@pc/contracts';
+import type { ConversationEventFrame } from '@pc/contracts';
 import { buildRenderItems } from './chat-render';
-import { RenderItemView, AssistantBubble, ThinkingBubble, UserBubble } from './Bubbles';
+import { RenderItemView, AssistantBubble, UserBubble } from './Bubbles';
 import { AskCard } from './AskCard';
-import type { ChatState } from './chat-reducer';
+import { applyReplay, initialChatState, type ChatState } from './chat-reducer';
 
 export function ChatTimeline({
   state,
@@ -20,15 +20,18 @@ export function ChatTimeline({
   onAskReply?: (askId: string, answer: string) => void;
   readOnly?: boolean;
 }) {
-  const items = useMemo(() => buildRenderItems(state.frames), [state.frames]);
-  const liveBuffers = useMemo(() => Object.values(state.deltas).filter((b) => b.text || b.thinking), [state.deltas]);
+  const items = useMemo(
+    () => buildRenderItems(state.projectedFrames),
+    [state.projectedFrames],
+  );
+  const liveBuffers = useMemo(() => Object.values(state.deltas).filter((b) => b.text), [state.deltas]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
 
   const scrollSignal =
-    state.frames.length + liveBuffers.reduce((n, b) => n + b.text.length + b.thinking.length, 0) + state.optimistic.length;
+    state.frames.length + liveBuffers.reduce((n, b) => n + b.text.length, 0) + state.optimistic.length;
   useEffect(() => {
     if (pinnedRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [scrollSignal]);
@@ -57,8 +60,7 @@ export function ChatTimeline({
 
         {!readOnly &&
           liveBuffers.map((b) => (
-            <div key={`live-${b.sdkUuid}`} className="flex flex-col gap-2">
-              {b.thinking && <ThinkingBubble text={b.thinking} live />}
+            <div key={`live-${b.streamId}`} className="flex flex-col gap-2">
               {b.text && <AssistantBubble text={b.text} live />}
             </div>
           ))}
@@ -93,27 +95,14 @@ export function ChatTimeline({
 
 /** Read-only timeline for a past session fetched over HTTP: reuses the exact
  *  render pipeline by seeding a bare ChatState from the fetched frames. */
-export function PastSessionTimeline({ frames }: { frames: ChatFrame[] }) {
+export function PastSessionTimeline({ frames }: { frames: ConversationEventFrame[] }) {
   const state = useMemo<ChatState>(
-    () => ({
-      sessionId: frames[0]?.sessionId ?? null,
-      highWaterSeq: 0,
-      frames: frames.slice().sort((a, b) => a.seq - b.seq),
-      aggregates: {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        latestModel: null,
-        sessionState: null,
-        permissionMode: null,
-        lastTurnDurationMs: null,
-      },
-      deltas: {},
-      sendQueue: [],
-      optimistic: [],
-      asks: [],
-      answeredAsks: {},
+    () => applyReplay(initialChatState(), {
+      type: 'session-replay',
+      projectId: frames[0]?.projectId ?? '',
+      sessionId: frames[0]?.sessionId ?? '',
+      highWaterSequence: frames.reduce((highest, frame) => Math.max(highest, frame.sequence), 0),
+      events: frames,
     }),
     [frames],
   );

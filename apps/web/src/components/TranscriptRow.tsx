@@ -66,17 +66,11 @@ export function TranscriptRow({ event }: { event: ChatEvent }) {
           <div className="whitespace-pre-wrap text-foreground">{event.text}</div>
         </Row>
       );
-    case 'thinking':
-      return (
-        <Row label="thinking" tone="muted">
-          <div className="whitespace-pre-wrap italic text-muted-foreground">{event.text}</div>
-        </Row>
-      );
     case 'turn-end':
       return (
         <Row label="turn end" tone="assistant">
           {event.text && <div className="whitespace-pre-wrap text-foreground">{event.text}</div>}
-          {event.stopReason && event.stopReason !== 'end_turn' && (
+          {event.stopReason && event.stopReason !== 'complete' && (
             <div className="mt-1 font-mono text-[10px] text-muted-foreground">
               stop: {event.stopReason}
             </div>
@@ -168,7 +162,7 @@ export function TranscriptRow({ event }: { event: ChatEvent }) {
       return (
         <Row label="retracted" tone="muted">
           <div className="font-mono text-[10px] text-muted-foreground">
-            {event.uuids.length} event(s) withdrawn
+            {event.streamIds.length} event(s) withdrawn
           </div>
         </Row>
       );

@@ -15,6 +15,7 @@ import type { DispatchService } from './dispatch/service.ts';
 import type { AccountRegistry } from './runner/account-env.ts';
 import type { UsageCache } from './usage/cache.ts';
 import { SessionRegistry } from './chat/registry.ts';
+import { ConversationRelay } from './chat/conversation-relay.ts';
 import { ResourceRelay } from './resources/relay.ts';
 import { createHttpApp } from './http/index.ts';
 import { runBootRecovery } from './boot-recovery.ts';
@@ -56,6 +57,7 @@ export interface RunningServer {
   hub: ProjectWebSocketHub<ULID>;
   registry: SessionRegistry;
   relay: ResourceRelay;
+  conversationRelay: ConversationRelay;
   close(): Promise<void>;
 }
 
@@ -78,9 +80,11 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
 
   const hub = new ProjectWebSocketHub<ULID>();
   const relay = new ResourceRelay({ hub });
+  const conversationRelay = new ConversationRelay({ hub });
   relay.primeToHead();
   const registry = new SessionRegistry({
     hub,
+    conversationRelay,
     mintSession: opts.mintSession,
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
@@ -142,7 +146,12 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     try {
       relay.drain();
     } catch (err) {
-      console.warn('[pc-sdk][relay] drain failed:', err instanceof Error ? err.message : err);
+      console.warn('[pc-sdk][resource-relay] drain failed:', err instanceof Error ? err.message : err);
+    }
+    try {
+      conversationRelay.drain();
+    } catch (err) {
+      console.warn('[pc-sdk][conversation-relay] drain failed:', err instanceof Error ? err.message : err);
     }
   }, drainIntervalMs);
   if (typeof drainTimer.unref === 'function') drainTimer.unref();
@@ -153,6 +162,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     hub,
     registry,
     relay,
+    conversationRelay,
     async close() {
       clearInterval(drainTimer);
       for (const ws of wss.clients) ws.terminate();

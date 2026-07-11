@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import type { ChatFrame } from '@pc/contracts';
+import type { ConversationEventFrame } from '@pc/contracts';
 import { useChatStore } from '@/state/chat-store';
 import { sessionsApi } from '@/state/sessions';
 import { useViewingSession } from '@/store/viewing-session';
@@ -71,7 +71,7 @@ function PastSessionView({
   sessionId: string;
   onExit: () => void;
 }) {
-  const [frames, setFrames] = useState<ChatFrame[] | null>(null);
+  const [frames, setFrames] = useState<ConversationEventFrame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

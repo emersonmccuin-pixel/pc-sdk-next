@@ -14,7 +14,7 @@ import { freshDb, newProject, until } from './helpers.ts';
 
 function terminalCount(sessionId: string): number {
   return listConversationEvents(sessionId)
-    .map((r) => r.event as ChatEvent)
+    .map((r) => r.payload as ChatEvent)
     .filter((e) => e.kind === 'turn-end' || e.kind === 'turn-failed').length;
 }
 
@@ -31,8 +31,8 @@ test('rev change between turns re-mints the runtime with resume; stable rev reus
       // Each turn script: init (carries the provider session id) + success.
       const runtime = new FakeRuntime({
         turns: Array.from({ length: 5 }, () => [
-          { type: 'init', sdkSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
-          { type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null },
+          { type: 'init', nativeSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
+          { type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null },
         ]),
       });
       minted.push({ runtime, ctx });

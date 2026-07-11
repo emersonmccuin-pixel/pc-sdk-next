@@ -16,12 +16,11 @@
 import { randomUUID } from 'node:crypto';
 import { basename, resolve as resolvePath } from 'node:path';
 import {
-  appendConversationEvent,
+  commitConversationEvent,
   countAgentRunsForSessionAndPod,
   findActiveContinuation,
   findContractByReviewRun,
   getAgentRunRow,
-  getConversationReplayState,
   getPendingAsk,
   getPodForSpawn,
   getProjectById,
@@ -45,7 +44,12 @@ import {
   ContractService,
   toAgentRunDto,
 } from '@pc/app-services';
-import type { AgentEventFrame, ChatEvent, Contract, Deliverable as ContractDeliverable } from '@pc/contracts';
+import {
+  conversationFamilyForEvent,
+  type ChatEvent,
+  type Contract,
+  type Deliverable as ContractDeliverable,
+} from '@pc/contracts';
 import {
   PRESERVED_LIFECYCLE_STATES,
   canTransition,
@@ -73,6 +77,7 @@ import { CLAUDE_RUNTIME_ID } from '../runner/claude-adapter.ts';
 import type { RuntimeEvent, RuntimeRegistry, RuntimeSelection, RuntimeSession } from '../runner/runtime.ts';
 import type { McpManager } from '../mcp/manager.ts';
 import type { SessionRegistry } from '../chat/registry.ts';
+import type { ConversationRelay } from '../chat/conversation-relay.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { runTurn } from '../chat/turn-runner.ts';
 import { AGENT_PC_TOOLS, buildPcToolDefs, mergePcTools } from './pc-bridge.ts';
@@ -166,6 +171,7 @@ export interface DispatchServiceDeps {
 interface AttachContext {
   registry: SessionRegistry;
   hub: ProjectWebSocketHub<ULID>;
+  conversationRelay?: ConversationRelay;
   serverPort: number;
 }
 
@@ -185,7 +191,6 @@ interface LiveRun {
   session: RuntimeSession;
   selection: RuntimeSelection;
   wallClock: ReturnType<typeof setTimeout>;
-  nextSeq: number;
 }
 
 interface StartRunInput {
@@ -727,7 +732,6 @@ export class DispatchService {
     const liveRun: LiveRun = {
       session,
       selection: input.selection,
-      nextSeq: getConversationReplayState(input.runId).nextSeq,
       wallClock: setTimeout(() => {
         void this.killRun(input.projectId, input.runId, {
           failureCause: 'wall-clock-timeout',
@@ -808,7 +812,6 @@ export class DispatchService {
       const liveRun: LiveRun = {
         session,
         selection,
-        nextSeq: getConversationReplayState(run.id).nextSeq,
         // A revived run gets a fresh wall clock from the moment of revival —
         // the original timer died with the old process along with everything
         // else in `this.live`.
@@ -840,14 +843,14 @@ export class DispatchService {
     let markedRunning = !opts.firstTurn;
 
     const terminalResult = await runTurn(turn, {
-      emitChat: (event) => {
+      emitChat: (event, identity) => {
         if (event.kind === 'assistant-text') lastText = event.text;
-        this.persistAgentEvent(projectId, runId, liveRun, event);
+        this.persistAgentEvent(projectId, runId, event, identity?.itemId);
       },
       emitDelta: () => {
         /* agent transcripts are persisted-event only; the modal heals over HTTP */
       },
-      onSdkSessionId: (nativeId) => {
+      onNativeSessionId: (nativeId) => {
         setAgentRunCcSession(runId, nativeId);
         if (!markedRunning) {
           markedRunning = true;
@@ -867,8 +870,8 @@ export class DispatchService {
     if (terminalResult.terminal === 'turn-end') {
       this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null });
     } else if (terminalResult.outcome === 'budget-exhausted') {
-      // A real terminal result (SDK error_max_turns/error_max_budget_usd), not
-      // a crash — distinct failureCause so the run reads as resumable.
+      // A canonical budget-exhausted terminal, not a crash — distinct
+      // failureCause so the run reads as resumable.
       this.settleTerminal(runId, {
         status: 'failed',
         result: lastText || null,
@@ -888,25 +891,28 @@ export class DispatchService {
     }
   }
 
-  private persistAgentEvent(projectId: ULID, runId: ULID, liveRun: LiveRun, event: ChatEvent): void {
-    const seq = liveRun.nextSeq++;
-    const dedupId = `${runId}:${seq}`;
+  private persistAgentEvent(projectId: ULID, runId: ULID, event: ChatEvent, itemId?: string): void {
     try {
-      appendConversationEvent({
+      commitConversationEvent({
         projectId,
+        conversationId: runId,
         sessionId: runId,
-        seq,
-        kind: event.kind,
+        family: conversationFamilyForEvent(event),
         event,
-        sdkUuid: null,
+        itemId: itemId ?? newId(),
         clientMessageId: null,
-        now: Date.now(),
+        occurredAt: Date.now(),
+        deliveryKind: 'agent',
       });
     } catch (err) {
       console.warn(`[pc-sdk][dispatch] transcript persist failed for ${runId}:`, err);
+      return;
     }
-    const frame: AgentEventFrame = { type: 'agent-event', projectId, runId, event, dedupId };
-    this.ctx?.hub.broadcast(projectId, frame);
+    try {
+      this.ctx?.conversationRelay?.drain();
+    } catch (err) {
+      console.warn(`[pc-sdk][dispatch] transcript relay pending for ${runId}:`, err);
+    }
   }
 
   private announce(
@@ -2144,7 +2150,7 @@ export class DispatchService {
   private evidenceToolCalls(runId: ULID): Array<{ name: string }> {
     try {
       return listConversationEvents(runId)
-        .map((r) => r.event as ChatEvent)
+        .map((r) => r.payload as ChatEvent)
         .filter((e): e is Extract<ChatEvent, { kind: 'tool-call' }> => e.kind === 'tool-call')
         .map((e) => ({ name: e.name.replace(/^mcp__[^_]+__/, '') }));
     } catch {

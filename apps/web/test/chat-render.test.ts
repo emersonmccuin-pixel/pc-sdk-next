@@ -5,18 +5,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { ChatEvent, ChatFrame } from '../../../packages/contracts/src/events/index.ts';
+import type { ChatEvent, ConversationEventFrame } from '../../../packages/contracts/src/events/index.ts';
 import { buildRenderItems } from '../src/features/chat/chat-render.ts';
 
 const SID = 'sess-1';
 
-function frame(seq: number, event: ChatEvent): ChatFrame {
+function frame(sequence: number, event: ChatEvent): ConversationEventFrame {
   return {
-    type: 'chat',
+    type: 'conversation-event',
+    eventId: `${SID}:${sequence}`,
     projectId: 'proj-1',
+    conversationId: SID,
     sessionId: SID,
-    seq,
-    id: `${SID}:${seq}`,
+    sequence,
+    family: event.kind === 'user' ? 'user' : event.kind.startsWith('agent-') ? 'agent' : 'assistant',
+    itemId: `item-${sequence}`,
+    occurredAt: sequence,
     event,
   };
 }

@@ -1,8 +1,9 @@
 // Bubble renderers for every render item. Tool calls pair into collapsible
 // groups; Edit/Write/NotebookEdit promote to diff cards; tool-result.isError
 // renders as a visible failed state (the old UI dropped it — ours must not);
-// thinking, compaction dividers, denied tools, dispatch anchors, sidechains,
-// system + turn-failed bubbles all render structurally.
+// Compaction dividers, denied tools, dispatch anchors, sidechains, system, and
+// turn-failed bubbles all render structurally. Private reasoning has no
+// canonical render path.
 
 import { useState } from 'react';
 
@@ -50,25 +51,6 @@ export function AssistantBubble({ text, live }: { text: string; live?: boolean }
     <div className="border border-border bg-card px-3 py-2 text-sm">
       <Markdown text={text} />
       {live && <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-text-bottom" />}
-    </div>
-  );
-}
-
-export function ThinkingBubble({ text, live }: { text: string; live?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const preview = text.split('\n')[0]?.slice(0, 80) ?? '';
-  return (
-    <div className="border-l-2 border-border/60 bg-muted/10 px-3 py-1.5 text-xs text-muted-foreground">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-left italic hover:text-foreground"
-      >
-        <span className="text-[10px] uppercase tracking-wider not-italic">{open ? '▾' : '▸'} thinking</span>
-        {!open && <span className="truncate opacity-70">{preview}</span>}
-        {live && <span className="ml-1 inline-block h-2.5 w-1 animate-pulse bg-muted-foreground align-middle" />}
-      </button>
-      {open && <div className="mt-1 whitespace-pre-wrap break-words italic">{text}</div>}
     </div>
   );
 }
@@ -313,8 +295,6 @@ export function RenderItemView({ item }: { item: RenderItem }) {
       return <UserBubble text={item.text} />;
     case 'assistant':
       return <AssistantBubble text={item.text} />;
-    case 'thinking':
-      return <ThinkingBubble text={item.text} />;
     case 'tool-group':
       return <ToolGroup calls={item.calls} />;
     case 'edit':

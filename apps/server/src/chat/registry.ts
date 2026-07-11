@@ -5,9 +5,11 @@ import type { ULID } from '@pc/domain';
 import type { RuntimeSessionFactory } from '../runner/runtime.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { SessionService } from './session-service.ts';
+import type { ConversationRelay } from './conversation-relay.ts';
 
 export interface SessionRegistryDeps {
   hub: ProjectWebSocketHub<ULID>;
+  conversationRelay?: ConversationRelay;
   mintSession: RuntimeSessionFactory;
   cwd?: string;
   askTimeoutMs?: number;
@@ -30,6 +32,7 @@ export class SessionRegistry {
         projectId,
         broadcast: (frame: ServerFrame) => this.deps.hub.broadcast(projectId, frame),
         mintSession: this.deps.mintSession,
+        drainConversationOutbox: () => this.deps.conversationRelay?.drain(),
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,
         onRateLimit: this.deps.onRateLimit,

@@ -48,8 +48,7 @@ import { freshDb, newProject, until } from './helpers.ts';
 const OK_RESULT = {
   type: 'result',
   ok: true,
-  subtype: 'success',
-  stopReason: 'end_turn',
+  stopReason: 'complete',
   usage: null,
   durationMs: 1,
   error: null,
@@ -240,7 +239,6 @@ test('a turn that hits the SDK turn budget settles turn-budget-exhausted, not un
   const BUDGET_RESULT = {
     type: 'result',
     ok: false,
-    subtype: 'error_max_turns',
     stopReason: null,
     usage: null,
     durationMs: null,

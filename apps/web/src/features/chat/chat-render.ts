@@ -1,10 +1,10 @@
-// Pure timeline builder: ChatFrame[] → render items. Pairs tool-call/tool-result
+// Pure timeline builder: canonical stable events → render items.
 // by toolUseId, groups consecutive tool calls (collapsible), promotes
 // Edit/Write/NotebookEdit to standalone diff cards, coalesces sub-agent
 // (sidechain) steps. Control/telemetry kinds (usage, turn-duration,
 // session-state, retract) fold into aggregates and never render.
 
-import type { ChatEvent, ChatFrame } from '@pc/contracts';
+import type { ChatEvent, ConversationEventFrame } from '@pc/contracts';
 
 const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
@@ -25,7 +25,6 @@ export interface SidechainStep {
 export type RenderItem =
   | { kind: 'user'; key: string; text: string; pending?: never }
   | { kind: 'assistant'; key: string; text: string; midLoop: boolean }
-  | { kind: 'thinking'; key: string; text: string }
   | { kind: 'tool-group'; key: string; calls: ToolCall[] }
   | { kind: 'edit'; key: string; call: ToolCall }
   | { kind: 'denied'; key: string; name: string; reason: string }
@@ -44,9 +43,13 @@ export type RenderItem =
   | { kind: 'compaction'; key: string; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
   | { kind: 'system'; key: string; subtype: string; level: 'info' | 'notice' | 'warning' | 'error'; message: string }
   | { kind: 'turn-failed'; key: string; error: string; source: 'api' | 'abort' | 'internal' }
-  | { kind: 'turn-end'; key: string; stopReason: string | null };
+  | {
+      kind: 'turn-end';
+      key: string;
+      stopReason: Extract<ChatEvent, { kind: 'turn-end' }>['stopReason'];
+    };
 
-export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
+export function buildRenderItems(frames: readonly ConversationEventFrame[]): RenderItem[] {
   const items: RenderItem[] = [];
   const callById = new Map<string, ToolCall>();
   // Same-runId agent-envelope events coalesce into one card (latest wins),
@@ -74,9 +77,14 @@ export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
     flushSidechain();
   };
 
+  const retracted = new Set(
+    frames.flatMap((frame) => frame.event.kind === 'retract' ? frame.event.streamIds : []),
+  );
   for (const frame of frames) {
+    if (frame.event.kind === 'stream-delta') continue;
+    if (frame.streamId && retracted.has(frame.streamId)) continue;
     const ev: ChatEvent = frame.event;
-    const key = frame.id;
+    const key = frame.eventId;
 
     if (ev.kind === 'sidechain') {
       flushTools();
@@ -133,10 +141,6 @@ export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
         flushTools();
         items.push({ kind: 'assistant', key, text: ev.text, midLoop: ev.midLoop });
         break;
-      case 'thinking':
-        flushTools();
-        items.push({ kind: 'thinking', key, text: ev.text });
-        break;
       case 'tool-denied':
         flushTools();
         items.push({ kind: 'denied', key, name: ev.name, reason: ev.reason });
@@ -180,8 +184,8 @@ export function buildRenderItems(frames: readonly ChatFrame[]): RenderItem[] {
         break;
       case 'turn-end':
         flushTools();
-        // Only surface a non-normal stop as a marker; end_turn is silent.
-        if (ev.stopReason && ev.stopReason !== 'end_turn') {
+        // Only surface a non-normal canonical stop as a marker.
+        if (ev.stopReason && ev.stopReason !== 'complete') {
           items.push({ kind: 'turn-end', key, stopReason: ev.stopReason });
         }
         break;

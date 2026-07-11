@@ -18,8 +18,13 @@ function streamEvent(envelopeUuid: string, event: Record<string, unknown>): SDKM
   return sdk({ type: 'stream_event', uuid: envelopeUuid, parent_tool_use_id: null, event });
 }
 
+function testKeys() {
+  let next = 0;
+  return createSdkKeyContext(() => `item-${++next}`);
+}
+
 test('deltas and final assistant blocks share the inner message id', () => {
-  const keys = createSdkKeyContext();
+  const keys = testKeys();
 
   // message_start opens msg_A; every subsequent chunk has a DIFFERENT envelope uuid.
   const start = mapSdkMessage(
@@ -48,7 +53,7 @@ test('deltas and final assistant blocks share the inner message id', () => {
     assert.equal(out.length, 1, `${label} mapped to one delta`);
     const rm = out[0]!;
     assert.equal(rm.type, 'delta');
-    assert.equal((rm as { sdkUuid: string }).sdkUuid, 'msg_A', `${label} keyed by inner message id`);
+    assert.equal((rm as { itemId: string }).itemId, 'item-1', `${label} shares one canonical item id`);
   }
 
   // The final assistant message (yet another envelope uuid, same message.id)
@@ -65,11 +70,11 @@ test('deltas and final assistant blocks share the inner message id', () => {
   );
   assert.equal(final.length, 1);
   assert.equal(final[0]!.type, 'assistant-block');
-  assert.equal((final[0] as { sdkUuid: string }).sdkUuid, 'msg_A');
+  assert.equal((final[0] as { itemId: string }).itemId, 'item-1');
 });
 
 test('the next streamed message opens a fresh key', () => {
-  const keys = createSdkKeyContext();
+  const keys = testKeys();
   mapSdkMessage(streamEvent('env-1', { type: 'message_start', message: { id: 'msg_A' } }), ACCOUNT, keys);
   mapSdkMessage(streamEvent('env-2', { type: 'message_stop' }), ACCOUNT, keys);
   mapSdkMessage(streamEvent('env-3', { type: 'message_start', message: { id: 'msg_B' } }), ACCOUNT, keys);
@@ -78,11 +83,11 @@ test('the next streamed message opens a fresh key', () => {
     ACCOUNT,
     keys,
   );
-  assert.equal((chunk[0] as { sdkUuid: string }).sdkUuid, 'msg_B');
+  assert.equal((chunk[0] as { itemId: string }).itemId, 'item-2');
 });
 
 test('supersedes lists are translated from envelope uuids to frame keys', () => {
-  const keys = createSdkKeyContext();
+  const keys = testKeys();
   // An assistant message stamped msg_A arrived under envelope env-5…
   mapSdkMessage(
     sdk({
@@ -107,15 +112,15 @@ test('supersedes lists are translated from envelope uuids to frame keys', () => 
   );
   const supersedes = out.find((rm) => rm.type === 'supersedes');
   assert.ok(supersedes, 'refusal emitted a supersedes message');
-  assert.deepEqual((supersedes as { uuids: string[] }).uuids, ['msg_A']);
+  assert.deepEqual((supersedes as { streamIds: string[] }).streamIds, ['item-1']);
 });
 
 test('id-less messages fall back to the envelope uuid (never an empty key)', () => {
-  const keys = createSdkKeyContext();
+  const keys = testKeys();
   const out = mapSdkMessage(
     streamEvent('env-9', { type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } }),
     ACCOUNT,
     keys,
   );
-  assert.equal((out[0] as { sdkUuid: string }).sdkUuid, 'env-9');
+  assert.equal((out[0] as { itemId: string }).itemId, 'item-1');
 });

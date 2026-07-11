@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { ResourceEntity } from '@pc/contracts';
+import type { ConversationFamily, ResourceEntity } from '@pc/contracts';
 import type {
   AgentEffort,
   AgentModel,
@@ -373,30 +373,64 @@ export const agentMcpAttachments = sqliteTable(
   ],
 );
 
-/**
- * The orchestrator chat's replay store — one row per persisted chat event.
- * Replay = a query by per-session `seq`. Shape follows docs/event-contract.md
- * (Channel 1 — Chat): `id` is the `${sessionId}:${seq}` dedup key; `sdk_uuid`
- * powers retraction + delta reconciliation; `client_message_id` reconciles the
- * optimistic user-send path. UNIQUE(session_id, seq) is the persist-time guard.
- */
+/** Conversation-owned sequence cursor. Runtime-session rows do not own chat
+ * ordering; all writers allocate here inside the event/outbox transaction. */
+export const conversationSequences = sqliteTable('conversation_sequences', {
+  conversationId: text('conversation_id').primaryKey(),
+  projectId: text('project_id').notNull().$type<ULID>(),
+  nextSequence: integer('next_sequence').notNull().default(1),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/** Canonical, immutable conversation event store. */
 export const conversationEvents = sqliteTable(
   'conversation_events',
   {
-    /** `${sessionId}:${seq}` — the dedup key the UI keys on. */
-    id: text('id').primaryKey(),
+    eventId: text('event_id').primaryKey(),
     projectId: text('project_id').notNull().$type<ULID>(),
+    conversationId: text('conversation_id').notNull(),
     sessionId: text('session_id').notNull(),
-    seq: integer('seq').notNull(),
-    kind: text('kind'),
-    event: text('event', { mode: 'json' }).notNull().$type<unknown>(),
-    /** SDK message uuid — for retraction + delta reconciliation. Nullable. */
-    sdkUuid: text('sdk_uuid'),
-    /** Stamped on the user-turn row before broadcast. Nullable. */
+    sequence: integer('sequence').notNull(),
+    family: text('family').notNull().$type<ConversationFamily>(),
+    eventType: text('event_type').notNull(),
+    turnId: text('turn_id'),
+    itemId: text('item_id').notNull(),
+    streamId: text('stream_id'),
+    deltaIndex: integer('delta_index'),
+    payload: text('payload', { mode: 'json' }).notNull().$type<unknown>(),
     clientMessageId: text('client_message_id'),
-    createdAt: integer('created_at').notNull(),
+    occurredAt: integer('occurred_at').notNull(),
+    projectionState: text('projection_state')
+      .notNull()
+      .default('visible')
+      .$type<'visible' | 'legacy-hidden'>(),
   },
-  (t) => [uniqueIndex('conversation_events_session_seq_idx').on(t.sessionId, t.seq)],
+  (t) => [
+    uniqueIndex('conversation_events_conversation_sequence_idx').on(t.conversationId, t.sequence),
+    index('conversation_events_session_sequence_idx').on(t.sessionId, t.sequence),
+    index('conversation_events_turn_sequence_idx').on(t.turnId, t.sequence),
+    index('conversation_events_item_sequence_idx').on(t.itemId, t.sequence),
+  ],
+);
+
+/** Transactional publication buffer for canonical chat and agent transcript
+ * frames. The event row is the payload authority; the outbox only references
+ * it and records channel/relay state. */
+export const conversationOutbox = sqliteTable(
+  'conversation_outbox',
+  {
+    outboxSequence: integer('outbox_sequence').primaryKey({ autoIncrement: true }),
+    eventId: text('event_id')
+      .notNull()
+      .references(() => conversationEvents.eventId),
+    deliveryKind: text('delivery_kind').notNull().$type<'chat' | 'agent'>(),
+    createdAt: integer('created_at').notNull(),
+    relayedAt: integer('relayed_at'),
+  },
+  (t) => [
+    uniqueIndex('conversation_outbox_event_idx').on(t.eventId),
+    index('conversation_outbox_relay_idx').on(t.relayedAt, t.outboxSequence),
+  ],
 );
 
 /** A durable mailbox message. `idempotency_key` dedupes replayed sources. */

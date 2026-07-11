@@ -1,46 +1,45 @@
 // SessionService — the orchestrator-chat engine for ONE project.
 //
-// Owns: the active app session row, per-session `seq` allocation, the
-// persist-then-broadcast door (guard rule 1), clientMessageId stamping, the
-// send-queue, the ask registry, and the turn bracket (session-state
-// running/idle) the boot-recovery reads. Runtime-agnostic: it drives whatever
+// Owns: the active app session row, clientMessageId stamping, the send queue,
+// ask registry, and the turn bracket (session-state running/idle) that boot
+// recovery reads. Conversation persistence owns sequence allocation and the
+// atomic event/outbox write. Runtime-agnostic: this service drives whatever
 // `RuntimeSession` the injected factory mints (the composition root resolves
 // the adapter — ClaudeRuntimeAdapter in prod, FakeRuntime in tests).
 
 import {
-  appendConversationEvent,
+  commitConversationEvent,
   createOrchestratorSession,
   endOrchestratorSession,
   getActiveOrchestratorSession,
-  getConversationHighWaterSeq,
-  getConversationReplayState,
+  getConversationHighWaterSequence,
   getOrchestratorSession,
+  newId,
   reactivateOrchestratorSession,
   setOrchestratorSessionProvider,
   setOrchestratorSessionTitle,
   type OrchestratorSessionRow,
 } from '@pc/db';
-import type {
-  ChatDeltaEvent,
-  ChatDeltaFrame,
-  ChatEvent,
-  ChatFrame,
-  OrchestratorHealth,
-  OrchestratorStateFrame,
-  SendAckStatus,
-  SendQueueItem,
-  SendQueueSnapshotFrame,
-  ServerFrame,
-  SessionChangedFrame,
-  SessionReplayFrame,
-  SessionSummary,
-  UsageSnapshot,
+import {
+  conversationFamilyForEvent,
+  type AskFrame,
+  type ChatEvent,
+  type ConversationEvent,
+  type OrchestratorHealth,
+  type OrchestratorStateFrame,
+  type SendAckStatus,
+  type SendQueueItem,
+  type SendQueueSnapshotFrame,
+  type ServerFrame,
+  type SessionChangedFrame,
+  type SessionReplayFrame,
+  type SessionSummary,
+  type UsageSnapshot,
 } from '@pc/contracts';
-import type { AskFrame } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import type { RuntimeSession, RuntimeSessionFactory } from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
-import { replayFrames } from './replay.ts';
+import { replayConversationEvents } from './replay.ts';
 import { SendQueue, type AgentEnvelopeMeta } from './send-queue.ts';
 import { runTurn, type TurnRunnerDeps } from './turn-runner.ts';
 
@@ -62,6 +61,11 @@ export interface SessionServiceDeps {
   broadcast: (frame: ServerFrame) => void;
   /** Mint one live runtime session (composition root resolves the adapter). */
   mintSession: RuntimeSessionFactory;
+  /** Post-commit outbox drain; this is the only live event publication path. */
+  drainConversationOutbox?: () => void;
+  /** Diagnostic sink for a post-commit relay failure. Durable delivery remains
+   * pending and the turn must continue; the periodic relay will retry. */
+  onConversationRelayError?: (error: unknown) => void;
   cwd?: string;
   askTimeoutMs?: number;
   /** Durable per-account usage sink (the sibling's usage cache). */
@@ -87,6 +91,8 @@ export class SessionService {
   private readonly projectId: ULID;
   private readonly broadcast: (frame: ServerFrame) => void;
   private readonly mintSession: RuntimeSessionFactory;
+  private readonly drainConversationOutbox: () => void;
+  private readonly onConversationRelayError: (error: unknown) => void;
   private readonly cwd?: string;
   private readonly onRateLimit?: (snapshot: UsageSnapshot) => void;
 
@@ -96,7 +102,6 @@ export class SessionService {
   private runtime: RuntimeSession | null = null;
   /** Orchestrator-row rev the live runtime session was minted under. */
   private runtimeRev: number | null = null;
-  private nextSeq = 1;
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
 
@@ -107,13 +112,15 @@ export class SessionService {
     this.projectId = deps.projectId;
     this.broadcast = deps.broadcast;
     this.mintSession = deps.mintSession;
+    this.drainConversationOutbox = deps.drainConversationOutbox ?? (() => {});
+    this.onConversationRelayError = deps.onConversationRelayError ?? ((error) => {
+      console.warn('[pc-sdk][conversation-relay] post-commit drain failed:', error);
+    });
     this.cwd = deps.cwd;
     this.onRateLimit = deps.onRateLimit;
     this.orchestratorRev = deps.orchestratorRev;
 
     this.session = getActiveOrchestratorSession(this.projectId);
-    if (this.session) this.nextSeq = getConversationReplayState(this.session.id).nextSeq;
-
     this.askRegistry = new AskRegistry({
       projectId: this.projectId,
       emit: (frame: AskFrame) => this.broadcast(frame),
@@ -189,7 +196,6 @@ export class SessionService {
     this.teardownRunner('new-session');
     // providerSessionId captured from the runner's `init`; empty until then.
     this.session = createOrchestratorSession({ projectId: this.projectId, providerSessionId: '' });
-    this.nextSeq = 1;
     this.broadcast(this.sessionChangedFrame('new-session'));
     this.broadcast(this.orchestratorStateFrame());
     return this.session;
@@ -205,7 +211,6 @@ export class SessionService {
     this.teardownRunner('resume-session');
     this.session = reactivateOrchestratorSession(sessionId);
     if (!this.session) return null;
-    this.nextSeq = getConversationReplayState(this.session.id).nextSeq;
     this.broadcast(this.sessionChangedFrame('resume-session'));
     this.broadcast(this.orchestratorStateFrame());
     this.broadcast(this.sessionReplayFrame());
@@ -257,8 +262,9 @@ export class SessionService {
     return runtime;
   }
 
-  private async deliver(item: { clientMessageId: string; text: string; agentEnvelope?: AgentEnvelopeMeta }): Promise<void> {
+  private async deliver(item: { id: string; clientMessageId: string; text: string; agentEnvelope?: AgentEnvelopeMeta }): Promise<void> {
     const session = this.ensureActiveSession();
+    const turnId = item.id;
     // Title from the first user message — an agent envelope never seeds it.
     if (!session.title && !item.agentEnvelope) {
       const title = deriveTitle(item.text);
@@ -272,7 +278,7 @@ export class SessionService {
     // collapsed per-run card instead (same turn text either way, below).
     if (item.agentEnvelope) {
       const meta = item.agentEnvelope;
-      this.persistAndBroadcast(
+      this.persistAndPublish(
         {
           kind: 'agent-envelope',
           runId: meta.runId as ULID,
@@ -283,36 +289,57 @@ export class SessionService {
           detail: meta.detail,
           envelope: item.text,
         },
-        { clientMessageId: item.clientMessageId },
+        { turnId, itemId: item.id, clientMessageId: item.clientMessageId },
       );
     } else {
-      this.persistAndBroadcast({ kind: 'user', text: item.text }, { clientMessageId: item.clientMessageId });
+      this.persistAndPublish(
+        { kind: 'user', text: item.text },
+        { turnId, itemId: item.id, clientMessageId: item.clientMessageId },
+      );
     }
-    this.persistAndBroadcast({ kind: 'session-state', state: 'running', permissionMode: null });
+    this.persistAndPublish(
+      { kind: 'session-state', state: 'running', permissionMode: null },
+      { turnId, itemId: newId() },
+    );
     this.broadcast(this.orchestratorStateFrame());
     try {
       const runtime = await this.ensureRuntime(session);
       // In flight now — health is authoritative for interrupt().
       this.setHealth('busy');
       this.broadcast(this.orchestratorStateFrame());
-      await runTurn(runtime.sendTurn(item.text), this.turnDeps(session));
+      await runTurn(runtime.sendTurn(item.text), this.turnDeps(session, turnId));
     } catch (err) {
       // Reaches here only if the runtime refused to mint / stream — runTurn
       // itself always terminates internally. Guarantee the turn's terminal.
       const message = err instanceof Error ? err.message : String(err);
-      this.persistAndBroadcast({ kind: 'turn-failed', error: message, source: 'internal' });
+      this.persistAndPublish(
+        { kind: 'turn-failed', error: message, source: 'internal' },
+        { turnId, itemId: newId() },
+      );
     } finally {
-      this.persistAndBroadcast({ kind: 'session-state', state: 'idle', permissionMode: null });
+      this.persistAndPublish(
+        { kind: 'session-state', state: 'idle', permissionMode: null },
+        { turnId, itemId: newId() },
+      );
       this.setHealth('idle');
       this.broadcast(this.orchestratorStateFrame());
     }
   }
 
-  private turnDeps(session: OrchestratorSessionRow): TurnRunnerDeps {
+  private turnDeps(session: OrchestratorSessionRow, turnId: string): TurnRunnerDeps {
     return {
-      emitChat: (event, opts) => this.persistAndBroadcast(event, { sdkUuid: opts?.sdkUuid }),
-      emitDelta: (sdkUuid, event) => this.broadcastDelta(session.id, sdkUuid, event),
-      onSdkSessionId: (id, model) => {
+      emitChat: (event, identity) =>
+        this.persistAndPublish(event, {
+          turnId,
+          itemId: identity?.itemId ?? newId(),
+          streamId: identity?.streamId,
+        }),
+      emitDelta: (itemId, deltaIndex, delta) =>
+        this.persistAndPublish(
+          { kind: 'stream-delta', delta },
+          { turnId, itemId, streamId: itemId, deltaIndex },
+        ),
+      onNativeSessionId: (id, model) => {
         if (session.providerSessionId === id) return;
         setOrchestratorSessionProvider(session.id, { providerSessionId: id, model });
         session.providerSessionId = id;
@@ -325,50 +352,42 @@ export class SessionService {
     };
   }
 
-  // ── persist-then-broadcast (guard rule 1) ────────────────────────────────────
+  // ── transactional event + outbox commit ─────────────────────────────────────
 
-  /** Allocate seq, persist to conversation_events, THEN broadcast the same
-   *  payload. The DB write commits before the frame reaches the wire. */
-  private persistAndBroadcast(
-    event: ChatEvent,
-    opts: { sdkUuid?: string; clientMessageId?: string } = {},
-  ): ChatFrame {
+  private persistAndPublish(
+    event: ConversationEvent,
+    opts: {
+      turnId?: string;
+      itemId: string;
+      streamId?: string;
+      deltaIndex?: number;
+      clientMessageId?: string;
+    },
+  ): void {
     const session = this.session;
-    if (!session) throw new Error('persistAndBroadcast without an active session');
-    const seq = this.nextSeq++;
-    appendConversationEvent({
+    if (!session) throw new Error('persistAndPublish without an active session');
+    commitConversationEvent({
       projectId: this.projectId,
+      conversationId: session.id,
       sessionId: session.id,
-      seq,
-      kind: event.kind,
+      family: conversationFamilyForEvent(event),
       event,
-      sdkUuid: opts.sdkUuid ?? null,
+      turnId: opts.turnId ?? null,
+      itemId: opts.itemId,
+      streamId: opts.streamId ?? null,
+      deltaIndex: opts.deltaIndex ?? null,
       clientMessageId: opts.clientMessageId ?? null,
-      now: Date.now(),
+      occurredAt: Date.now(),
+      deliveryKind: 'chat',
     });
-    const frame: ChatFrame = {
-      type: 'chat',
-      projectId: this.projectId,
-      sessionId: session.id,
-      seq,
-      id: `${session.id}:${seq}`,
-      event,
-      ...(opts.sdkUuid ? { sdkUuid: opts.sdkUuid } : {}),
-      ...(opts.clientMessageId ? { clientMessageId: opts.clientMessageId } : {}),
-    };
-    this.broadcast(frame);
-    return frame;
-  }
-
-  private broadcastDelta(sessionId: string, sdkUuid: string, event: ChatDeltaEvent): void {
-    const frame: ChatDeltaFrame = {
-      type: 'chat-delta',
-      projectId: this.projectId,
-      sessionId,
-      sdkUuid,
-      event,
-    };
-    this.broadcast(frame);
+    try {
+      this.drainConversationOutbox();
+    } catch (error) {
+      // The event and outbox row are already committed. A relay failure is not
+      // a turn-delivery failure; keep processing and let the periodic drain
+      // redeliver the immutable pending event.
+      this.onConversationRelayError(error);
+    }
   }
 
   // ── frame builders ───────────────────────────────────────────────────────────
@@ -392,12 +411,16 @@ export class SessionService {
 
   private sessionReplayFrame(): SessionReplayFrame {
     const s = this.session!;
+    const events = replayConversationEvents(s.id);
     return {
       type: 'session-replay',
       projectId: this.projectId,
       sessionId: s.id,
-      highWaterSeq: getConversationHighWaterSeq(s.id),
-      events: replayFrames(this.projectId, s.id),
+      highWaterSequence: Math.max(
+        getConversationHighWaterSequence(s.id),
+        events.at(-1)?.sequence ?? 0,
+      ),
+      events,
     };
   }
 

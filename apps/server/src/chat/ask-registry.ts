@@ -51,7 +51,7 @@ export class AskRegistry {
       type: 'ask',
       projectId: this.projectId,
       askId,
-      sessionId: req.sessionId,
+      sessionId: req.appSessionId,
       toolName: req.toolName,
       toolUseId: req.toolUseId,
       toolInput: req.toolInput,

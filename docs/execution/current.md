@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after BC-001 landed.
+Updated: 2026-07-11 after CF-001 approval and provisioning.
 
 ## Repository
 
@@ -8,26 +8,21 @@ Updated: 2026-07-11 after BC-001 landed.
 - Base branch: `main`
 - BC-001 base: `c3c9480416542cce4d42ad3b8d469887b45c1dfa`
 - BC-001 landing merge: `fd0756a3c39640d91bcb20cfe4a9fe22cb7d2380`
-- Active branch/worktree: none after closeout
 - Evidence: `docs/research/baseline-characterization.md`
-- Next behavior slice: not approved
+- Active slice: `docs/execution/slices/CF-001.md`
+- Active branch/worktree: `codex/cf-001-conversation-foundation` at
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-001`
 
 ## Status
 
-BC-001 completed its three read-only audit lanes and root synthesis, landed
-with positive ancestry proof, and its feature worktree was removed. The
-baseline map confirms strong delivery mechanics alongside provider-shaped
-session/event contracts, an in-memory chat queue, process-local landing
-serialization, and broad child-process environment inheritance. `pnpm ci:check`
-passed after worktree dependency preparation.
+CF-001 is in progress. Its read-only DB, contract/server, and browser/test lanes
+map the coordinated migration; root owns the serialized schema, shared
+contract, producer, persistence, consumer, verification, and landing changes.
 
 ## Next safe action
 
-Review `docs/research/baseline-characterization.md`, resolve its four user
-decisions, and approve the first behavior-changing N2 slice. The recommended
-first slice is canonical conversation identity plus transactional sequence and
-chat outbox. Do not implement that migration from this handoff without user
-approval.
+Implement and verify `CF-001` exactly as bounded in its slice. Do not widen into
+durable send queues, runtime selection, or the Codex adapter.
 
 ## Startup checks
 
@@ -38,11 +33,13 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Read `AGENTS.md`, `docs/master-plan.md`, `docs/current-state.md`, the BC-001
-evidence, and the boundary documents before drafting the approved slice.
+Read `AGENTS.md`, `docs/master-plan.md`, `docs/current-state.md`, CF-001, the
+BC-001 evidence, and the named boundary documents before continuing.
 
 ## Known blockers
 
-Behavior work is intentionally blocked on the BC-001 user-review gate. The Next
-shortcut code is isolated but has not been installed; regular daily driving
-remains on the original PC-SDK until the migration gate.
+No implementation blocker. The user delegated routine product/engineering
+direction and approved the recommended BC-001 defaults; escalate only a
+material product choice. The Next shortcut code is isolated but has not been
+installed; regular daily driving remains on the original PC-SDK until the
+migration gate.

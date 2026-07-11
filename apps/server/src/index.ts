@@ -160,7 +160,12 @@ async function main(): Promise<void> {
     .recoverIncompleteTeardowns()
     .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
   await reconcileStrandedWorktreesAtBoot();
-  dispatch.attach({ registry: server.registry, hub: server.hub, serverPort: server.port });
+  dispatch.attach({
+    registry: server.registry,
+    hub: server.hub,
+    conversationRelay: server.conversationRelay,
+    serverPort: server.port,
+  });
   // 6. review re-entry — AFTER attach (a review dispatch needs the live
   //    context): full-review contracts whose reviewer died (or was never
   //    dispatched pre-attach) re-enter the review gate re-dispatchable.

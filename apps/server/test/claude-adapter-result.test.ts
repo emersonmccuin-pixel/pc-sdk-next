@@ -18,11 +18,19 @@ function mapResult(fields: Record<string, unknown>): RuntimeEvent {
   return out[0];
 }
 
-test('subtype success -> outcome ok', () => {
-  const rm = mapResult({ subtype: 'success', num_turns: 7 }) as { ok: boolean; outcome: string; numTurns: number | null };
+test('native success and stop reason become canonical terminal fields', () => {
+  const rm = mapResult({ subtype: 'success', stop_reason: 'end_turn', num_turns: 7 }) as {
+    ok: boolean;
+    outcome: string;
+    stopReason: string | null;
+    numTurns: number | null;
+    subtype?: unknown;
+  };
   assert.equal(rm.ok, true);
   assert.equal(rm.outcome, 'ok');
+  assert.equal(rm.stopReason, 'complete');
   assert.equal(rm.numTurns, 7);
+  assert.equal('subtype' in rm, false);
 });
 
 test('subtype error_max_turns -> outcome budget-exhausted, not a crash', () => {

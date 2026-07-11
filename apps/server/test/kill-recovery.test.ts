@@ -49,11 +49,11 @@ import { reconcileStrandedWorktreesAtBoot, runBootRecovery } from '../src/boot-r
 import { commitFile, freshDb, newGitProject, newProject, until, type GitProject } from './helpers.ts';
 
 function kinds(sessionId: string): string[] {
-  return listConversationEvents(sessionId).map((r) => r.kind ?? '');
+  return listConversationEvents(sessionId).map((r) => r.eventType);
 }
 function terminals(sessionId: string): ChatEvent[] {
   return listConversationEvents(sessionId)
-    .map((r) => r.event as ChatEvent)
+    .map((r) => r.payload as ChatEvent)
     .filter((e) => e.kind === 'turn-end' || e.kind === 'turn-failed');
 }
 
@@ -65,8 +65,8 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
   // with the turn in flight). We deliberately never resolve it.
   const backend = new FakeRuntime({
     turns: [[
-      { type: 'init', sdkSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
-      { type: 'assistant-block', sdkUuid: 'u1', parentToolUseId: null, block: { kind: 'text', text: 'working on it' } },
+      { type: 'init', nativeSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
+      { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'text', text: 'working on it' } },
       { hang: true },
     ]],
   });
@@ -77,7 +77,7 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
   // Wait until the turn is genuinely in flight (running persisted, no terminal).
   await until(() =>
     listConversationEvents(session.id).some(
-      (r) => r.kind === 'session-state' && (r.event as { state: string }).state === 'running',
+      (r) => r.eventType === 'session-state' && (r.payload as { state: string }).state === 'running',
     ),
   );
   assert.equal(terminals(session.id).length, 0, 'no terminal yet — turn is in flight');
@@ -97,9 +97,9 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
 
   // Not stuck busy: the last session-state is idle.
   const lastState = listConversationEvents(session.id)
-    .filter((r) => r.kind === 'session-state')
+    .filter((r) => r.eventType === 'session-state')
     .at(-1);
-  assert.equal((lastState?.event as { state: string }).state, 'idle');
+  assert.equal((lastState?.payload as { state: string }).state, 'idle');
 
   // Replay is coherent: the crashed turn is closed out, in order.
   assert.deepEqual(kinds(session.id).slice(-2), ['turn-failed', 'session-state']);
@@ -114,7 +114,7 @@ test('a cleanly-idle session is not touched by boot recovery', async () => {
   freshDb();
   const project = newProject();
   const backend = new FakeRuntime({
-    turns: [[{ type: 'result', ok: true, subtype: 'success', stopReason: 'end_turn', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+    turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
@@ -455,10 +455,10 @@ test('F3: a terminal envelope minted before attach is queued, not dropped — re
       () =>
         listConversationEvents(session.id).some(
           (r) =>
-            r.kind === 'agent-envelope' &&
-            (r.event as { runId: string; status: string; envelope: string }).runId === runId &&
-            (r.event as { status: string }).status === 'done' &&
-            (r.event as { envelope: string }).envelope.includes(`[agent-completed] agent=code-writer runId=${runId}`),
+            r.eventType === 'agent-envelope' &&
+            (r.payload as { runId: string; status: string; envelope: string }).runId === runId &&
+            (r.payload as { status: string }).status === 'done' &&
+            (r.payload as { envelope: string }).envelope.includes(`[agent-completed] agent=code-writer runId=${runId}`),
         ),
       5000,
     );

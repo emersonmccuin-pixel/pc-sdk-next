@@ -1,34 +1,17 @@
-// The chat reducer — the event contract, exactly. Pure (no React, no zustand)
-// so it runs under `tsx --test` and its invariants are guard-tested directly.
-//
-// Rules (docs/event-contract.md §Channel 1):
-//   1. Ordered dedup by `sessionId:seq` — out-of-order arrivals insert into seq
-//      position; a duplicate `seq` REPLACES the frame WITHOUT re-folding
-//      aggregates (re-delivery must never double-count tokens).
-//   2. Aggregate folding: usage totals, latest model, session state, last turn
-//      duration — folded once, on first arrival of each seq.
-//   3. Streaming deltas buffer per `sdkUuid`; the buffer is discarded the moment
-//      the persisted `chat` frame with that `sdkUuid` lands (final block wins).
-//   4. `session-replay` re-seeds the timeline wholesale and RECOMPUTES aggregates
-//      from the set (never carried forward).
-//   5. `retract` evicts already-delivered events by `sdkUuid`.
-//   6. Send reconcile: optimistic sends clear on the `clientMessageId`-stamped
-//      canonical user frame or a `delivered` send-queue item — no fuzzy text match.
-//   7. `session-changed` wipes the timeline (new-session) / resets for resume.
+// Pure canonical conversation projector. Live outbox frames, reconnect replay,
+// and past-session HTTP checkpoints all reduce through this one path.
 
 import type {
   AskFrame,
-  ChatDeltaFrame,
+  ChatDeltaEvent,
   ChatEvent,
-  ChatFrame,
+  ConversationEventFrame,
   SendAckFrame,
   SendQueueItem,
   SendQueueSnapshotFrame,
   SessionChangedFrame,
   SessionReplayFrame,
 } from '@pc/contracts';
-
-// ── State shapes ──────────────────────────────────────────────────────────────
 
 export interface Aggregates {
   inputTokens: number;
@@ -41,15 +24,14 @@ export interface Aggregates {
   lastTurnDurationMs: number | null;
 }
 
-/** One in-flight assistant message, assembled from `chat-delta` frames. Lives
- *  only until the persisted `chat` frame with the same `sdkUuid` arrives. */
 export interface DeltaBuffer {
-  sdkUuid: string;
+  itemId: string;
+  streamId: string;
   text: string;
-  thinking: string;
-  /** Accumulated partial tool-input JSON, keyed by toolUseId ('' when absent). */
   toolInput: Record<string, string>;
   ended: boolean;
+  nextDeltaIndex: number;
+  pending: Record<number, ChatDeltaEvent>;
 }
 
 export type OptimisticStatus =
@@ -60,7 +42,6 @@ export type OptimisticStatus =
   | 'failed'
   | 'cancelled';
 
-/** A user send the composer showed immediately, before the server confirmed it. */
 export interface OptimisticSend {
   clientMessageId: string;
   text: string;
@@ -69,20 +50,21 @@ export interface OptimisticSend {
 }
 
 export interface ChatState {
+  conversationId: string | null;
   sessionId: string | null;
-  highWaterSeq: number;
-  /** Active session only, sorted ascending by seq. */
-  frames: ChatFrame[];
+  highWaterSequence: number;
+  /** Immutable accepted canonical events, sorted by authoritative sequence. */
+  frames: ConversationEventFrame[];
+  /** Deterministic render input after fail-closed stream/item exclusions. */
+  projectedFrames: ConversationEventFrame[];
   aggregates: Aggregates;
-  /** In-flight streaming buffers, keyed by sdkUuid. */
   deltas: Record<string, DeltaBuffer>;
-  /** Latest send-queue snapshot (snapshot replaces snapshot). */
   sendQueue: SendQueueItem[];
-  /** Local-only sends awaiting reconcile. */
   optimistic: OptimisticSend[];
-  /** Pending permission asks, keyed by askId. */
   asks: AskFrame[];
   answeredAsks: Record<string, string>;
+  /** Fail-closed protocol/data conflicts; accepted projection is preserved. */
+  integrityConflicts: string[];
 }
 
 export function emptyAggregates(): Aggregates {
@@ -98,21 +80,25 @@ export function emptyAggregates(): Aggregates {
   };
 }
 
-export function initialChatState(sessionId: string | null = null): ChatState {
+export function initialChatState(
+  sessionId: string | null = null,
+  conversationId: string | null = sessionId,
+): ChatState {
   return {
+    conversationId,
     sessionId,
-    highWaterSeq: 0,
+    highWaterSequence: 0,
     frames: [],
+    projectedFrames: [],
     aggregates: emptyAggregates(),
     deltas: {},
     sendQueue: [],
     optimistic: [],
     asks: [],
     answeredAsks: {},
+    integrityConflicts: [],
   };
 }
-
-// ── Aggregate folding ─────────────────────────────────────────────────────────
 
 function foldAggregate(agg: Aggregates, event: ChatEvent): Aggregates {
   switch (event.kind) {
@@ -134,192 +120,239 @@ function foldAggregate(agg: Aggregates, event: ChatEvent): Aggregates {
   }
 }
 
-export function recomputeAggregates(frames: readonly ChatFrame[]): Aggregates {
-  let agg = emptyAggregates();
-  for (const f of frames) agg = foldAggregate(agg, f.event);
-  return agg;
+function sameFrame(a: ConversationEventFrame, b: ConversationEventFrame): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// ── Frame insertion ───────────────────────────────────────────────────────────
-
-/** Index of the frame with this seq, or -1. */
-function seqIndex(frames: readonly ChatFrame[], seq: number): number {
-  for (let i = frames.length - 1; i >= 0; i--) {
-    if (frames[i]!.seq === seq) return i;
-    if (frames[i]!.seq < seq) return -1; // sorted — no earlier match possible
-  }
-  return -1;
+function addConflict(conflicts: string[], conflict: string): string[] {
+  return conflicts.includes(conflict) ? conflicts : [...conflicts, conflict];
 }
 
-function insertBySeq(frames: readonly ChatFrame[], frame: ChatFrame): ChatFrame[] {
-  const next = frames.slice();
-  let i = next.length;
-  while (i > 0 && next[i - 1]!.seq > frame.seq) i--;
-  next.splice(i, 0, frame);
-  return next;
-}
-
-function omit<T>(map: Record<string, T>, key: string): Record<string, T> {
-  if (!(key in map)) return map;
-  const next = { ...map };
-  delete next[key];
-  return next;
-}
-
-// ── Chat frame ────────────────────────────────────────────────────────────────
-
-export function applyChatFrame(state: ChatState, frame: ChatFrame): ChatState {
-  // Frames for a non-active session are dropped client-side.
-  if (state.sessionId !== null && frame.sessionId !== state.sessionId) return state;
-
-  const existing = seqIndex(state.frames, frame.seq);
-  if (existing !== -1) {
-    // Rule 1: duplicate seq REPLACES without re-folding aggregates.
-    const frames = state.frames.slice();
-    frames[existing] = frame;
-    const deltas = frame.sdkUuid ? omit(state.deltas, frame.sdkUuid) : state.deltas;
-    return { ...state, frames, deltas };
-  }
-
-  // New seq — insert in order, fold aggregates once.
-  let frames = insertBySeq(state.frames, frame);
-  let aggregates = foldAggregate(state.aggregates, frame.event);
-  // Rule 3: the persisted block supersedes any live buffer for its sdkUuid.
-  let deltas = frame.sdkUuid ? omit(state.deltas, frame.sdkUuid) : state.deltas;
-
-  // Turn terminal: any buffer still live is an orphan (its persisted block
-  // never landed, or landed under a different key) — drop, never ghost.
-  if (frame.event.kind === 'turn-end' || frame.event.kind === 'turn-failed') deltas = {};
-
-  // Rule 5: retract evicts already-delivered events by sdkUuid.
-  if (frame.event.kind === 'retract') {
-    const evict = new Set(frame.event.uuids);
-    frames = frames.filter(
-      (f) => f.event.kind === 'retract' || !(f.sdkUuid && evict.has(f.sdkUuid)),
-    );
-    for (const u of frame.event.uuids) deltas = omit(deltas, u);
-    aggregates = recomputeAggregates(frames);
-  }
-
-  // Rule 6: the canonical clientMessageId-stamped user frame clears its optimistic.
-  let optimistic = state.optimistic;
-  if (frame.event.kind === 'user' && frame.clientMessageId) {
-    const cid = frame.clientMessageId;
-    optimistic = optimistic.filter((o) => o.clientMessageId !== cid);
-  }
-
-  const highWaterSeq = Math.max(state.highWaterSeq, frame.seq);
-  return { ...state, frames, aggregates, deltas, optimistic, highWaterSeq };
-}
-
-// ── Streaming delta ───────────────────────────────────────────────────────────
-
-export function applyDelta(state: ChatState, frame: ChatDeltaFrame): ChatState {
-  if (state.sessionId !== null && frame.sessionId !== state.sessionId) return state;
-  // Final block already landed → ignore late deltas (dedupe by sdkUuid).
-  if (state.frames.some((f) => f.sdkUuid === frame.sdkUuid)) return state;
-
-  const prev =
-    state.deltas[frame.sdkUuid] ??
-    ({ sdkUuid: frame.sdkUuid, text: '', thinking: '', toolInput: {}, ended: false } satisfies DeltaBuffer);
-  const buf: DeltaBuffer = { ...prev, toolInput: { ...prev.toolInput } };
-
-  switch (frame.event.kind) {
+function applyDeltaToBuffer(buffer: DeltaBuffer, delta: ChatDeltaEvent): void {
+  switch (delta.kind) {
     case 'message-start':
       break;
     case 'text-delta':
-      buf.text += frame.event.text;
-      break;
-    case 'thinking-delta':
-      buf.thinking += frame.event.text;
+      buffer.text += delta.text;
       break;
     case 'tool-input-delta': {
-      const key = frame.event.toolUseId ?? '';
-      buf.toolInput[key] = (buf.toolInput[key] ?? '') + frame.event.partialJson;
+      const key = delta.toolUseId ?? '';
+      buffer.toolInput[key] = (buffer.toolInput[key] ?? '') + delta.partialJson;
       break;
     }
     case 'message-end':
-      buf.ended = true;
+      buffer.ended = true;
       break;
   }
-  return { ...state, deltas: { ...state.deltas, [frame.sdkUuid]: buf } };
 }
 
-// ── Session replay (rule 4) ───────────────────────────────────────────────────
+function derive(
+  frames: readonly ConversationEventFrame[],
+  protocolConflicts: readonly string[],
+): {
+  aggregates: Aggregates;
+  deltas: Record<string, DeltaBuffer>;
+  conflicts: string[];
+  projectedFrames: ConversationEventFrame[];
+} {
+  let aggregates = emptyAggregates();
+  let conflicts = [...protocolConflicts];
+  const excludedEventIds = new Set<string>();
+  const streamItems = new Map<string, string>();
+  const deltaPayloads = new Map<string, Map<number, string>>();
 
-export function applyReplay(state: ChatState, frame: SessionReplayFrame): ChatState {
-  const frames = frame.events.slice().sort((a, b) => a.seq - b.seq);
-  const aggregates = recomputeAggregates(frames);
-  const persisted = new Set(frames.map((f) => f.sdkUuid).filter((u): u is string => !!u));
-  const deltas: Record<string, DeltaBuffer> = {};
-  for (const [uuid, buf] of Object.entries(state.deltas)) {
-    if (!persisted.has(uuid)) deltas[uuid] = buf;
+  // Validate identity from the complete sequence-sorted set before applying
+  // retraction/completion suppression. This keeps conflicts and exclusions
+  // deterministic under shuffled live delivery and replay.
+  for (const frame of frames) {
+    if (frame.streamId) {
+      const priorItemId = streamItems.get(frame.streamId);
+      if (priorItemId !== undefined && priorItemId !== frame.itemId) {
+        conflicts = addConflict(conflicts, `stream:${frame.streamId}:item`);
+        excludedEventIds.add(frame.eventId);
+        continue;
+      }
+      streamItems.set(frame.streamId, frame.itemId);
+    }
+    if (frame.event.kind !== 'stream-delta') continue;
+    const streamId = frame.streamId!;
+    const index = frame.deltaIndex!;
+    const payload = JSON.stringify(frame.event.delta);
+    const byIndex = deltaPayloads.get(streamId) ?? new Map<number, string>();
+    const prior = byIndex.get(index);
+    if (prior !== undefined) {
+      if (prior !== payload) conflicts = addConflict(conflicts, `delta:${streamId}:${index}`);
+      excludedEventIds.add(frame.eventId);
+      continue;
+    }
+    byIndex.set(index, payload);
+    deltaPayloads.set(streamId, byIndex);
   }
+
+  const retracted = new Set<string>();
+  for (const frame of frames) {
+    if (excludedEventIds.has(frame.eventId)) continue;
+    if (frame.event.kind === 'retract') {
+      for (const streamId of frame.event.streamIds) retracted.add(streamId);
+    }
+  }
+  const deltas: Record<string, DeltaBuffer> = {};
+  const completed = new Set<string>();
+
+  for (const frame of frames) {
+    if (excludedEventIds.has(frame.eventId)) continue;
+    if (frame.streamId && retracted.has(frame.streamId)) continue;
+    if (frame.event.kind === 'stream-delta') {
+      const streamId = frame.streamId!;
+      if (completed.has(streamId)) continue;
+      const index = frame.deltaIndex!;
+      const buffer = deltas[streamId] ?? {
+        itemId: frame.itemId,
+        streamId,
+        text: '',
+        toolInput: {},
+        ended: false,
+        nextDeltaIndex: 0,
+        pending: {},
+      };
+      buffer.pending[index] = frame.event.delta;
+      while (buffer.pending[buffer.nextDeltaIndex]) {
+        const next = buffer.pending[buffer.nextDeltaIndex]!;
+        delete buffer.pending[buffer.nextDeltaIndex];
+        applyDeltaToBuffer(buffer, next);
+        buffer.nextDeltaIndex += 1;
+      }
+      deltas[streamId] = buffer;
+      continue;
+    }
+    aggregates = foldAggregate(aggregates, frame.event);
+    if (frame.streamId) {
+      completed.add(frame.streamId);
+      delete deltas[frame.streamId];
+    }
+    if (frame.event.kind === 'turn-end' || frame.event.kind === 'turn-failed') {
+      for (const key of Object.keys(deltas)) delete deltas[key];
+    }
+  }
+  for (const streamId of retracted) delete deltas[streamId];
   return {
-    ...state,
-    sessionId: frame.sessionId,
-    frames,
     aggregates,
     deltas,
-    highWaterSeq: frame.highWaterSeq,
+    conflicts,
+    projectedFrames: frames.filter((frame) => !excludedEventIds.has(frame.eventId)),
   };
 }
 
-// ── Session lifecycle (rule 7) ────────────────────────────────────────────────
+export function applyConversationEvent(
+  state: ChatState,
+  frame: ConversationEventFrame,
+): ChatState {
+  if (state.sessionId !== null && frame.sessionId !== state.sessionId) return state;
+  if (state.conversationId !== null && frame.conversationId !== state.conversationId) return state;
+
+  const sameSequence = state.frames.find((accepted) => accepted.sequence === frame.sequence);
+  if (sameSequence) {
+    if (sameFrame(sameSequence, frame)) return state;
+    return {
+      ...state,
+      integrityConflicts: addConflict(state.integrityConflicts, `sequence:${frame.sequence}`),
+    };
+  }
+  const sameEventId = state.frames.find((accepted) => accepted.eventId === frame.eventId);
+  if (sameEventId) {
+    return {
+      ...state,
+      integrityConflicts: addConflict(state.integrityConflicts, `event:${frame.eventId}`),
+    };
+  }
+
+  const frames = [...state.frames, frame].sort((a, b) => a.sequence - b.sequence);
+  const derived = derive(frames, state.integrityConflicts);
+  let optimistic = state.optimistic;
+  if (frame.event.kind === 'user' && frame.clientMessageId) {
+    optimistic = optimistic.filter((send) => send.clientMessageId !== frame.clientMessageId);
+  }
+  return {
+    ...state,
+    conversationId: frame.conversationId,
+    sessionId: frame.sessionId,
+    frames,
+    projectedFrames: derived.projectedFrames,
+    aggregates: derived.aggregates,
+    deltas: derived.deltas,
+    optimistic,
+    integrityConflicts: derived.conflicts,
+    highWaterSequence: Math.max(state.highWaterSequence, frame.sequence),
+  };
+}
+
+export function applyReplay(state: ChatState, replay: SessionReplayFrame): ChatState {
+  let next = initialChatState(replay.sessionId, replay.events[0]?.conversationId ?? replay.sessionId);
+  next = { ...next, optimistic: state.optimistic, sendQueue: state.sendQueue };
+  for (const event of replay.events) next = applyConversationEvent(next, event);
+  const observed = next.frames.at(-1)?.sequence ?? 0;
+  if (replay.highWaterSequence < observed) {
+    next = {
+      ...next,
+      integrityConflicts: addConflict(next.integrityConflicts, 'replay:high-water'),
+    };
+  }
+  return { ...next, highWaterSequence: Math.max(replay.highWaterSequence, observed) };
+}
 
 export function applySessionChanged(state: ChatState, frame: SessionChangedFrame): ChatState {
-  // Both transitions reset the timeline; a session-replay reseeds resume.
   void state;
   return initialChatState(frame.session?.id ?? null);
 }
 
-// ── Send path ─────────────────────────────────────────────────────────────────
-
 export function addOptimistic(state: ChatState, clientMessageId: string, text: string): ChatState {
-  if (state.optimistic.some((o) => o.clientMessageId === clientMessageId)) return state;
-  const send: OptimisticSend = { clientMessageId, text, status: 'sending', failureReason: null };
-  return { ...state, optimistic: [...state.optimistic, send] };
+  if (state.optimistic.some((send) => send.clientMessageId === clientMessageId)) return state;
+  return {
+    ...state,
+    optimistic: [
+      ...state.optimistic,
+      { clientMessageId, text, status: 'sending', failureReason: null },
+    ],
+  };
 }
 
 export function applySendAck(state: ChatState, ack: SendAckFrame): ChatState {
-  const optimistic = state.optimistic.map((o) => {
-    if (o.clientMessageId !== ack.clientMessageId) return o;
-    if (ack.status === 'queued') return { ...o, status: 'queued' as const };
+  const optimistic = state.optimistic.map((send) => {
+    if (send.clientMessageId !== ack.clientMessageId) return send;
+    if (ack.status === 'queued') return { ...send, status: 'queued' as const };
     if (ack.status === 'invalid' || ack.status === 'error') {
-      return { ...o, status: 'failed' as const, failureReason: ack.error ?? ack.status };
+      return { ...send, status: 'failed' as const, failureReason: ack.error ?? ack.status };
     }
-    return o; // 'received' — stays optimistic until the canonical user frame lands
+    return send;
   });
   return { ...state, optimistic };
 }
 
 export function applySendQueueSnapshot(state: ChatState, frame: SendQueueSnapshotFrame): ChatState {
-  const byCid = new Map(frame.items.map((it) => [it.clientMessageId, it] as const));
+  if (state.sessionId && frame.sessionId && frame.sessionId !== state.sessionId) return state;
+  const byClientId = new Map(frame.items.map((item) => [item.clientMessageId, item] as const));
   const optimistic: OptimisticSend[] = [];
-  for (const o of state.optimistic) {
-    const item = byCid.get(o.clientMessageId);
+  for (const send of state.optimistic) {
+    const item = byClientId.get(send.clientMessageId);
     if (!item) {
-      optimistic.push(o);
+      optimistic.push(send);
       continue;
     }
-    if (item.status === 'delivered') continue; // reconciled — drop the placeholder
-    optimistic.push({ ...o, status: item.status, failureReason: item.failureReason });
+    if (item.status === 'delivered') continue;
+    optimistic.push({ ...send, status: item.status, failureReason: item.failureReason });
   }
   return { ...state, sendQueue: frame.items, optimistic };
 }
 
-// ── Asks ──────────────────────────────────────────────────────────────────────
-
 export function applyAsk(state: ChatState, frame: AskFrame): ChatState {
-  if (state.answeredAsks[frame.askId]) return state;
-  if (state.asks.some((a) => a.askId === frame.askId)) return state;
+  if (state.answeredAsks[frame.askId] || state.asks.some((ask) => ask.askId === frame.askId)) return state;
   return { ...state, asks: [...state.asks, frame] };
 }
 
 export function answerAsk(state: ChatState, askId: string, answer: string): ChatState {
   return {
     ...state,
-    asks: state.asks.filter((a) => a.askId !== askId),
+    asks: state.asks.filter((ask) => ask.askId !== askId),
     answeredAsks: { ...state.answeredAsks, [askId]: answer },
   };
 }

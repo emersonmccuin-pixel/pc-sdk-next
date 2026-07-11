@@ -142,17 +142,21 @@ export type {
 
 // conversation replay store (chat events in SQLite; replay = a query).
 export {
-  appendConversationEvent,
-  appendConversationEvents,
+  commitConversationEvent,
   countConversationEvents,
-  getConversationHighWaterSeq,
-  getConversationReplayState,
+  getConversationHighWaterSequence,
   hasConversationEvents,
   listConversationEvents,
+  listConversationEventsRaw,
+  listUnrelayedConversationEvents,
+  markConversationEventsRelayed,
 } from './repos/conversation-events.ts';
 export type {
-  AppendConversationEventInput,
+  CommitConversationEventInput,
+  CommitConversationEventResult,
+  ConversationDeliveryKind,
   ConversationEventRow,
+  ConversationOutboxEntry,
 } from './repos/conversation-events.ts';
 
 export {

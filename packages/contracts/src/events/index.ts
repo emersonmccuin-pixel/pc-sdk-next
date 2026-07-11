@@ -7,7 +7,7 @@ export * from './messages.ts';
 export * from './resources.ts';
 export * from './agent.ts';
 
-import type { ChatFrame, ChatDeltaFrame } from './chat.ts';
+import type { ConversationEventFrame } from './chat.ts';
 import type { SessionChangedFrame, SessionReplayFrame } from './session.ts';
 import type {
   SendAckFrame,
@@ -21,8 +21,7 @@ import type { AgentEventFrame, OrchestratorStateFrame } from './agent.ts';
 /** Every server → client frame. Consumers dispatch on `type`; unknown types are
  *  dropped silently (unknown-tolerant by design). */
 export type ServerFrame =
-  | ChatFrame
-  | ChatDeltaFrame
+  | ConversationEventFrame
   | SessionChangedFrame
   | SessionReplayFrame
   | SendAckFrame
