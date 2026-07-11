@@ -35,6 +35,7 @@ import {
   RuntimeRegistry,
   type AgentRuntimeAdapter,
   type CreateRuntimeSession,
+  type ResumeRuntimeSession,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
@@ -59,13 +60,22 @@ const OK_RESULT = {
 class FakeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   created: CreateRuntimeSession[] = [];
+  resumed: ResumeRuntimeSession[] = [];
+  /** One entry per minted session (create OR resume), in order — lets a test
+   *  reach the FakeRuntime a revival produced. */
+  runtimes: FakeRuntime[] = [];
   constructor(private readonly turns: ScriptedTurn[], private readonly stepDelayMs = 0) {}
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.created.push(input);
-    return new FakeRuntime({ turns: this.turns, stepDelayMs: this.stepDelayMs });
+    const rt = new FakeRuntime({ turns: this.turns, stepDelayMs: this.stepDelayMs });
+    this.runtimes.push(rt);
+    return rt;
   }
-  async resumeSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
-    return this.createSession(input);
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    this.resumed.push(input);
+    const rt = new FakeRuntime({ turns: this.turns, stepDelayMs: this.stepDelayMs });
+    this.runtimes.push(rt);
+    return rt;
   }
 }
 
@@ -336,4 +346,105 @@ test('kill-test: boot recovery fails live runs loudly, cancels open asks, parks 
   assert.equal(row.failureCause, 'server-restart');
   assert.equal(getPendingAsk(askId)!.status, 'cancelled');
   assert.equal(getContract(contract.id)!.verificationStatus, 'pending');
+});
+
+// ── F1 (comms-hardening): a paused ask survives a server restart ───────────
+
+test('F1: boot leaves a paused run + its open ask intact (never failed/cancelled)', () => {
+  freshDb();
+  const project = newProject();
+  const contract = createContract({
+    projectId: project.id,
+    podName: 'researcher',
+    expectedOutput: { kind: 'answer' },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  const runId = newId() as ULID;
+  insertAgentRunRow({
+    id: runId,
+    projectId: project.id,
+    podName: 'researcher',
+    dispatcherSessionId: 'S1',
+    ccSessionId: 'native-cc-1',
+    status: 'paused',
+    input: 'go',
+    contractId: contract.id,
+    queuedAt: Date.now(),
+  });
+  const askId = newId() as ULID;
+  createPendingAsk({
+    id: askId,
+    agentRunId: runId,
+    ccSessionId: 'native-cc-1',
+    projectId: project.id,
+    kind: 'orchestrator',
+    promptBody: 'which way?',
+    now: Date.now(),
+  });
+
+  const recovery = runBootRecovery();
+
+  assert.equal(recovery.failedRuns.includes(runId), false, 'a paused run is never failed loudly at boot');
+  assert.equal(getAgentRunRow(runId)!.status, 'paused', 'row stays paused');
+  assert.equal(getPendingAsk(askId)!.status, 'open', 'ask stays open — never orphaned');
+  assert.equal(getContract(contract.id)!.verificationStatus, null, 'not touched — the run never settled');
+});
+
+test('F1: recoverPausedAsks revives a paused run across a restart — answering its ask no longer 410s', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject();
+  const contract = createContract({
+    projectId: project.id,
+    podName: 'researcher',
+    expectedOutput: { kind: 'answer' },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  const runId = newId() as ULID;
+  insertAgentRunRow({
+    id: runId,
+    projectId: project.id,
+    podName: 'researcher',
+    dispatcherSessionId: 'S1',
+    ccSessionId: 'native-cc-1',
+    status: 'paused',
+    input: 'go find it',
+    contractId: contract.id,
+    queuedAt: Date.now(),
+  });
+  const askId = newId() as ULID;
+  createPendingAsk({
+    id: askId,
+    agentRunId: runId,
+    ccSessionId: 'native-cc-1',
+    projectId: project.id,
+    kind: 'orchestrator',
+    promptBody: 'which way?',
+    now: Date.now(),
+  });
+
+  // The boot sweep must leave this run+ask alone (covered by the test above);
+  // a FRESH DispatchService instance below models the restart itself — its
+  // `this.live` map starts empty, exactly like a new process.
+  runBootRecovery();
+
+  const adapter = new FakeAdapter([[OK_RESULT]]);
+  const dispatch = rig(adapter);
+  await dispatch.recoverPausedAsks();
+
+  assert.equal(adapter.resumed.length, 1, 'the native session was resumed at boot, not created fresh');
+  assert.equal(adapter.resumed[0]!.nativeSessionId, 'native-cc-1');
+  assert.equal(adapter.created.length, 0);
+  assert.equal(dispatch.hasLiveRun(runId), true);
+
+  const result = await dispatch.answerPendingAsk({
+    projectId: project.id,
+    pendingAskId: askId,
+    answer: 'go left',
+    answeredBy: 'orchestrator',
+  });
+  assert.equal(result.ok, true, 'answering a revived paused ask no longer 410s');
+  assert.deepEqual(adapter.runtimes[0]!.sentTexts, ['[answer from orchestrator] go left']);
 });

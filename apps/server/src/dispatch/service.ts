@@ -169,6 +169,18 @@ interface AttachContext {
   serverPort: number;
 }
 
+/** The structured shape `deliverToOrchestrator` renders through
+ *  `injectAgentEnvelope` (Part A: typed per-run chat cards, not plain-text
+ *  user bubbles). */
+interface AgentEnvelope {
+  text: string;
+  runId: ULID;
+  agentName: string;
+  pendingAskId?: ULID;
+  status: 'waiting' | 'done' | 'failed';
+  summary: string;
+}
+
 interface LiveRun {
   session: RuntimeSession;
   selection: RuntimeSelection;
@@ -200,14 +212,27 @@ export class DispatchService {
    *  active landing mutation per repository at a time. Keyed by canonical
    *  resolved folderPath — two project rows over one folder share the lock. */
   private readonly landingLocks = new Map<string, Promise<unknown>>();
+  /** F3 (comms-hardening): envelopes minted pre-attach (boot recovery, e.g.
+   *  recoverSealedRuns, runs BEFORE dispatch.attach) have nowhere live to
+   *  land — queued here instead of dropped, then replayed in order by
+   *  `attach()`. Carries the same structured shape `deliverToOrchestrator`
+   *  takes, so a replayed envelope still renders through the typed
+   *  `injectAgentEnvelope` path (Part A), never a plain-text fallback. */
+  private readonly pendingEnvelopes: Array<{ projectId: ULID; envelope: AgentEnvelope; clientMessageId: string }> = [];
 
   constructor(deps: DispatchServiceDeps) {
     this.deps = deps;
   }
 
-  /** Late-bind the server context (registry/hub/port exist only after listen). */
+  /** Late-bind the server context (registry/hub/port exist only after listen).
+   *  Flushes any envelope queued while ctx was still null (F3) — never a
+   *  silent drop. */
   attach(ctx: AttachContext): void {
     this.ctx = ctx;
+    const queued = this.pendingEnvelopes.splice(0);
+    for (const item of queued) {
+      this.deliverToOrchestrator(item.projectId, item.envelope, item.clientMessageId);
+    }
   }
 
   hasLiveRun(runId: string): boolean {
@@ -718,6 +743,90 @@ export class DispatchService {
     await this.consumeTurn(input.runId, input.projectId, session.sendTurn(input.firstMessage), { firstTurn: true });
   }
 
+  /** F1 (comms-hardening): re-mint a live runtime session for a run row
+   *  WITHOUT sending a turn — resumes the adapter-native session (via its
+   *  persisted `ccSessionId`) so the run has a live handle again after a
+   *  restart. Used to re-attach a 'paused' run whose in-process `this.live`
+   *  entry died with the old process, so `answerPendingAsk` can resume it
+   *  instead of 410ing on a dead handle. Never throws — a row whose pod/
+   *  contract/project can no longer be resolved degrades to null; the caller
+   *  leaves the ask open for a manual `pc_continue_agent` (degrade, never
+   *  block). */
+  private async reviveLiveSession(run: AgentRunRow): Promise<LiveRun | null> {
+    const ctx = this.ctx;
+    if (!ctx) return null;
+    try {
+      const project = getProjectById(run.projectId);
+      if (!project) return null;
+      const bundle = getPodForSpawn(run.podName, run.projectId);
+      if (!bundle) return null;
+      const contract = run.contractId ? this.contracts.get(run.contractId) : null;
+      const spec = (contract?.expectedOutput ?? null) as ExpectedOutput | null;
+      if (!contract || !spec) return null;
+
+      const cwd = run.worktreeDir ?? project.folderPath ?? process.cwd();
+      let instructions = buildSpecialistInstructions({
+        charter: bundle.agent.prompt,
+        podName: bundle.agent.name,
+        expectedOutput: spec,
+        acceptanceCriteria: (contract.acceptanceCriteria ?? []) as never,
+        worktreeDir: run.worktreeDir ?? null,
+      });
+      if (bundle.contextDocs.length > 0) {
+        instructions += `\n\n## Context documents\n${bundle.contextDocs
+          .map((d) => `### ${d.title}\n${d.body}`)
+          .join('\n\n')}`;
+      }
+      const tools = mergePcTools(
+        undefined,
+        buildPcToolDefs(AGENT_PC_TOOLS, {
+          projectId: run.projectId,
+          dispatcherSessionId: run.dispatcherSessionId,
+          agentRunId: run.id,
+          agentSessionId: run.ccSessionId,
+          invokeDepth: (run.parentInvokeDepth ?? 0) + 1,
+          serverPort: ctx.serverPort,
+        }),
+      );
+      const selection: RuntimeSelection = {
+        runtimeId: run.runtimeId ?? CLAUDE_RUNTIME_ID,
+        accountId: run.accountId ?? this.deps.accounts.resolveForProject(run.projectId).id,
+        model: run.model ?? bundle.agent.model ?? DEFAULT_AGENT_MODEL,
+      };
+      const adapter = this.deps.runtimes.get(selection.runtimeId);
+      const session = await adapter.resumeSession({
+        appSessionId: run.id,
+        projectId: run.projectId,
+        selection,
+        instructions,
+        cwd,
+        tools,
+        maxTurns: bundle.agent.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+        bypassPermissions: true,
+        nativeSessionId: run.ccSessionId,
+      });
+      const liveRun: LiveRun = {
+        session,
+        selection,
+        nextSeq: getConversationReplayState(run.id).nextSeq,
+        // A revived run gets a fresh wall clock from the moment of revival —
+        // the original timer died with the old process along with everything
+        // else in `this.live`.
+        wallClock: setTimeout(() => {
+          void this.killRun(run.projectId, run.id as ULID, {
+            failureCause: 'wall-clock-timeout',
+            failureReason: `run exceeded the ${Math.round(WALL_CLOCK_DEFAULT_MS / 60000)}min wall clock`,
+          });
+        }, WALL_CLOCK_DEFAULT_MS),
+      };
+      liveRun.wallClock.unref?.();
+      return liveRun;
+    } catch (err) {
+      console.error(`[pc-sdk][dispatch] live-session revival failed for run ${run.id}:`, err);
+      return null;
+    }
+  }
+
   /** Drive one turn to its terminal and settle/park by the run row's status. */
   private async consumeTurn(
     runId: ULID,
@@ -889,16 +998,29 @@ export class DispatchService {
 
   /** pc_answer_pending / user answer door. Atomic flip + resume the parked
    *  session with the answer as its next message. */
-  answerPendingAsk(input: {
+  async answerPendingAsk(input: {
     projectId: ULID;
     pendingAskId: ULID;
     answer: string;
     answeredBy: 'orchestrator' | 'user';
-  }): { ok: true } | { ok: false; message: string; httpStatus: number } {
+  }): Promise<{ ok: true } | { ok: false; message: string; httpStatus: number }> {
     const ask = getPendingAsk(input.pendingAskId);
     if (!ask || ask.projectId !== input.projectId) return { ok: false, message: 'unknown pending ask', httpStatus: 404 };
     if (ask.status !== 'open') return { ok: false, message: `ask already ${ask.status}`, httpStatus: 409 };
-    const liveRun = this.live.get(ask.agentRunId);
+    let liveRun = this.live.get(ask.agentRunId);
+    if (!liveRun) {
+      // F1 (comms-hardening): the in-process live handle does not survive a
+      // restart. `recoverPausedAsks` re-attaches one for every paused run at
+      // boot, but this lazy fallback covers any row it missed (revival
+      // failure, ordering race) — try once more before giving up, so
+      // answering a paused ask never 410s while its native session is still
+      // resumable.
+      const row = getAgentRunRow(ask.agentRunId);
+      if (row && row.status === 'paused') {
+        liveRun = (await this.reviveLiveSession(row)) ?? undefined;
+        if (liveRun) this.live.set(ask.agentRunId, liveRun);
+      }
+    }
     if (!liveRun) {
       return { ok: false, message: 'run is no longer live (server restarted) — re-dispatch or continue it', httpStatus: 410 };
     }
@@ -1445,6 +1567,7 @@ export class DispatchService {
           landingStatus: contract?.landingStatus ?? null,
           reviewInFlight: contract?.reviewRunId != null,
           deliverableSummary,
+          pmRef: freshRow.pmRef,
         }),
         runId,
         agentName: row.podName,
@@ -1781,6 +1904,38 @@ export class DispatchService {
     }
   }
 
+  /** Boot entry (index.ts, AFTER attach — reviving a live session needs the
+   *  live server context for its tool wiring). F1 (comms-hardening): pause/
+   *  resume is in-process — the live SDK session lives only in `this.live`,
+   *  which does not survive a restart. The boot sweep (boot-recovery.ts) now
+   *  SKIPS failing 'paused' runs and leaves their open ask exactly as it was;
+   *  this door re-attaches a live session per the row's persisted native
+   *  session id (`ccSessionId`) so `answerPendingAsk` resumes it instead of
+   *  410ing on a handle that died with the old process. Best-effort per row:
+   *  a row whose pod/contract/project can no longer be resolved stays paused
+   *  with its ask open (degrade, never block) — `answerPendingAsk`'s own
+   *  lazy-revival fallback gets a second try, and a manual
+   *  `pc_continue_agent` remains the last resort. */
+  async recoverPausedAsks(): Promise<void> {
+    const { listNonTerminalAgentRuns } = await import('@pc/db');
+    for (const run of listNonTerminalAgentRuns()) {
+      if (run.status !== 'paused' || this.live.has(run.id)) continue;
+      try {
+        const liveRun = await this.reviveLiveSession(run);
+        if (!liveRun) {
+          console.warn(
+            `[pc-sdk][boot-recovery] paused run ${run.id} (${run.podName}) could not be revived — ask left open for a manual continue.`,
+          );
+          continue;
+        }
+        this.live.set(run.id, liveRun);
+        console.warn(`[pc-sdk][boot-recovery] paused run ${run.id} (${run.podName}) revived — pending ask resumable.`);
+      } catch (err) {
+        console.error(`[pc-sdk][boot-recovery] paused-ask revival failed for run ${run.id} — continuing with the rest:`, err);
+      }
+    }
+  }
+
   /** The one landing path (accept/auto ⇒ land). Serialized per repository,
    *  record-then-teardown; the branch is always preserved. Also the boot
    *  re-drive door for `landing_status='pending'`. */
@@ -1997,20 +2152,17 @@ export class DispatchService {
     }
   }
 
-  private deliverToOrchestrator(
-    projectId: ULID,
-    envelope: {
-      text: string;
-      runId: ULID;
-      agentName: string;
-      pendingAskId?: ULID;
-      status: 'waiting' | 'done' | 'failed';
-      summary: string;
-    },
-    clientMessageId: string,
-  ): void {
+  private deliverToOrchestrator(projectId: ULID, envelope: AgentEnvelope, clientMessageId: string): void {
+    if (!this.ctx) {
+      // F3 (comms-hardening): pre-attach (boot recovery runs before
+      // dispatch.attach) — queue for replay instead of silently dropping the
+      // envelope. Replay still goes through injectAgentEnvelope below (Part
+      // A's typed per-run chat card), never a plain-text fallback.
+      this.pendingEnvelopes.push({ projectId, envelope, clientMessageId });
+      return;
+    }
     try {
-      this.ctx?.registry.get(projectId).injectAgentEnvelope({
+      this.ctx.registry.get(projectId).injectAgentEnvelope({
         runId: envelope.runId,
         agentName: envelope.agentName,
         pendingAskId: envelope.pendingAskId,
@@ -2049,8 +2201,11 @@ export class DispatchService {
    *  Open asks are cancelled only AFTER verification: an unresolved ask must
    *  still block auto-land (guard 5) exactly as it would have uninterrupted;
    *  only then is the now-unanswerable ask (its run is settled) closed out.
-   *  Pre-attach, the terminal envelope is dropped (ctx null) — the durable
-   *  contract/receipt state is the record the orchestrator reads. */
+   *  Pre-attach, the terminal envelope has nowhere live to land (ctx null) —
+   *  F3 (comms-hardening): `deliverToOrchestrator` queues it instead of
+   *  dropping it, and `attach()` replays the queue once the context is live,
+   *  so the orchestrator still sees it (in addition to the durable
+   *  contract/receipt state). */
   async recoverSealedRuns(): Promise<void> {
     const { listNonTerminalAgentRuns, listOpenPendingAsksForProject, markPendingAskCancelled } = await import('@pc/db');
     for (const run of listNonTerminalAgentRuns()) {

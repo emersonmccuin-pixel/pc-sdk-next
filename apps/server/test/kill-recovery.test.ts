@@ -23,6 +23,7 @@ import { existsSync } from 'node:fs';
 import { ContractService } from '@pc/app-services';
 import {
   closeDb,
+  getActiveOrchestratorSession,
   getActiveWorktreeByName,
   getAgentRunRow,
   getContract,
@@ -36,6 +37,8 @@ import {
 import type { ChatEvent, Contract } from '@pc/contracts';
 import type { AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
 import { SessionService } from '../src/chat/session-service.ts';
+import { SessionRegistry } from '../src/chat/registry.ts';
+import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
@@ -410,6 +413,48 @@ test('guard 10: killed mid-prep (no seal) — failed loudly, worktree preserved,
     assert.equal(stranded.length, 1);
     assert.equal(stranded[0].name, wt.branch);
     assert.equal(stranded[0].strandedReason, 'no-live-run');
+  } finally {
+    gp.cleanup();
+  }
+});
+
+// ── F3 (comms-hardening): boot-time terminal envelope is queued, not dropped ─
+
+test('F3: a terminal envelope minted before attach is queued, not dropped — replayed once attach() runs', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const dispatch = dispatchRig(); // pre-attach, exactly like real boot order
+    const contracts = new ContractService();
+    // Crash point: deliverable sealed, process died before settlement — same
+    // shape as the first guard-10 test above. recoverSealedRuns settles it
+    // completed and mints the `[agent-completed]` terminal envelope, but ctx
+    // is still null here (attach hasn't run yet) — the old behavior silently
+    // dropped that envelope.
+    const { runId } = await crashedRepoRun(gp, contracts, {
+      status: 'running',
+      lifecycleState: 'verifying',
+      seal: true,
+      landingPolicy: 'auto-merge',
+    });
+
+    await dispatch.recoverSealedRuns();
+    assert.equal(getAgentRunRow(runId)!.status, 'completed', 'sealed evidence settled the run pre-attach');
+    assert.equal(getActiveOrchestratorSession(gp.project.id), null, 'nothing live yet to deliver into');
+
+    // Boot finishes — attach. F3: the queued envelope must replay now.
+    const hub = new ProjectWebSocketHub<ULID>();
+    const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
+    dispatch.attach({ registry, hub, serverPort: 1 });
+
+    await until(() => getActiveOrchestratorSession(gp.project.id) !== null);
+    const session = getActiveOrchestratorSession(gp.project.id)!;
+    await until(() =>
+      listConversationEvents(session.id).some(
+        (r) => r.kind === 'user' && (r.event as { text: string }).text.includes(`[agent-completed] agent=code-writer runId=${runId}`),
+      ),
+      5000,
+    );
   } finally {
     gp.cleanup();
   }

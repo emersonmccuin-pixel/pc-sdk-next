@@ -360,7 +360,7 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const answer = typeof body.answer === 'string' ? body.answer : '';
     const answeredBy = body.answeredBy === 'user' ? 'user' : 'orchestrator';
     if (!answer.trim()) return c.json({ ok: false, error: 'answer required' }, 400);
-    const result = dispatch.answerPendingAsk({
+    const result = await dispatch.answerPendingAsk({
       projectId,
       pendingAskId: c.req.param('askId') as ULID,
       answer,

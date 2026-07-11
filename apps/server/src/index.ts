@@ -173,6 +173,13 @@ async function main(): Promise<void> {
   await dispatch
     .recoverPendingAutoContinues()
     .catch((err) => console.warn('[pc-sdk][dispatch] auto-continue re-entry failed:', err));
+  // 8. paused-ask revival (F1, comms-hardening) — AFTER attach, same reason:
+  //    re-mints a live session for every run the boot sweep left 'paused'
+  //    (its ask survives with it) so answering it doesn't 410 on a dead
+  //    in-process handle.
+  await dispatch
+    .recoverPausedAsks()
+    .catch((err) => console.warn('[pc-sdk][dispatch] paused-ask revival failed:', err));
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
