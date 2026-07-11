@@ -51,3 +51,31 @@ test('clear denies every pending ask', async () => {
   assert.equal(reg.openCount, 0);
   assert.equal(frames.length, 1);
 });
+
+test('AskUserQuestion reply allows with rawAnswer, bypassing ALLOW_ANSWERS', async () => {
+  const { reg, frames } = make(10_000);
+  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, sessionId: null });
+  assert.ok(reg.reply(frames[0].askId, 'some chosen label'));
+  assert.deepEqual(await p, { behavior: 'allow', rawAnswer: 'some chosen label' });
+});
+
+test('ExitPlanMode reply allows with rawAnswer, bypassing ALLOW_ANSWERS', async () => {
+  const { reg, frames } = make(10_000);
+  const p = reg.ask({ toolName: 'ExitPlanMode', toolUseId: 't1', toolInput: {}, sessionId: null });
+  assert.ok(reg.reply(frames[0].askId, 'reject'));
+  assert.deepEqual(await p, { behavior: 'allow', rawAnswer: 'reject' });
+});
+
+test('__cancelled__ still denies for answer-style tools', async () => {
+  const { reg, frames } = make(10_000);
+  const p = reg.ask({ toolName: 'AskUserQuestion', toolUseId: 't1', toolInput: {}, sessionId: null });
+  assert.ok(reg.reply(frames[0].askId, '__cancelled__'));
+  assert.deepEqual(await p, { behavior: 'deny', message: 'declined by user' });
+});
+
+test('Bash reply routing is unchanged (ALLOW_ANSWERS gate)', async () => {
+  const { reg, frames } = make(10_000);
+  const p = reg.ask({ toolName: 'Bash', toolUseId: 't1', toolInput: {}, sessionId: null });
+  assert.ok(reg.reply(frames[0].askId, 'allow'));
+  assert.deepEqual(await p, { behavior: 'allow' });
+});
