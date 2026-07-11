@@ -24,14 +24,17 @@ import {
   getPendingAsk,
   getPodForSpawn,
   getProjectById,
+  hasContinuation,
   hasOpenPendingAskForRun,
   hasPendingAskForRun,
   insertAgentRunRow,
   listAgentRunsForContract,
   listConversationEvents,
+  listTurnBudgetExhaustedRuns,
   markAgentRunDelivered,
   newId,
   setAgentRunCcSession,
+  setAgentRunFailureReason,
   setAgentRunPhaseReceipt,
   setWorktreeContractId,
   updateAgentRunStatus,
@@ -99,6 +102,19 @@ const REVIEWER_POD_NAME = 'contract-reviewer';
  *  burns a round too, so even a permanently-failing reviewer converges on the
  *  orchestrator park instead of looping. */
 const MAX_REVIEW_ROUNDS = 2;
+/** Bounded auto-continue on turn-budget exhaustion (max-turns fix part 2):
+ *  a run that settles 'failed'/'turn-budget-exhausted' is a real terminal
+ *  result, not a crash — its worktree/session/contract are intact, so the
+ *  service resumes it automatically through the same mechanism
+ *  `pc_continue_agent` uses. Bounded per chain (`autoContinueCount`) so a
+ *  genuinely stuck/looping task still stops and surfaces to the
+ *  orchestrator instead of auto-continuing forever. */
+const MAX_AUTO_CONTINUES = 5;
+const AUTO_CONTINUE_MESSAGE =
+  'You hit your turn budget on the previous attempt and were cut off mid-work — this is not a fresh ' +
+  'dispatch. Your worktree, session, and contract are intact exactly as you left them. Pick up where ' +
+  'you left off (check git status / your prior progress first) and continue toward completing the ' +
+  'contract; do not restart from scratch.';
 
 export type DispatchFailureCause =
   | 'unknown-agent'
@@ -367,11 +383,29 @@ export class DispatchService {
 
   // ── dispatch (continue) ─────────────────────────────────────────────────────
 
+  /** pc_continue_agent door — manual continuation. Always starts (or
+   *  restarts) its own auto-continue budget at 0: a human/orchestrator
+   *  directed continuation is a fresh decision, not part of an automatic
+   *  chain, even if the parent run itself had been auto-continued. */
   async dispatchContinue(input: {
     projectId: ULID;
     runId: ULID;
     input: string;
     dispatcherSessionId: string;
+  }): Promise<DispatchResult> {
+    return this.dispatchContinueInternal({ ...input, autoContinueCount: 0 });
+  }
+
+  /** Shared continuation mechanism — same session-resume + same worktree +
+   *  same contract, whether triggered manually (pc_continue_agent,
+   *  `autoContinueCount: 0`) or automatically off a turn-budget-exhausted
+   *  terminal (`fireAutoContinue`, `autoContinueCount: parent + 1`). */
+  private async dispatchContinueInternal(input: {
+    projectId: ULID;
+    runId: ULID;
+    input: string;
+    dispatcherSessionId: string;
+    autoContinueCount: number;
   }): Promise<DispatchResult> {
     const ctx = this.ctx;
     if (!ctx) return refuse('not-attached', 'dispatch service not ready', 503);
@@ -461,6 +495,7 @@ export class DispatchService {
           // ('preparing' when the profile re-checks readiness first); the
           // turn start stamps 'building'.
           lifecycleState: spec.kind === 'repo' ? (recheckReadiness ? 'preparing' : 'ready') : null,
+          autoContinueCount: input.autoContinueCount,
           queuedAt: now,
         }),
     });
@@ -1125,6 +1160,19 @@ export class DispatchService {
       failureReason = 'run ended without pc_submit_deliverable — delivery is the done-signal';
     }
 
+    // Bounded auto-continue gate (max-turns fix part 2) — decided BEFORE the
+    // terminal write so the ceiling message rides the SAME commit, never a
+    // follow-up patch. Only 'turn-budget-exhausted' is eligible (never
+    // 'aborted'/'unexpected-exit'/'cancelled'/etc.) — those settle as they
+    // do today. `row.autoContinueCount` is this run's OWN position in the
+    // chain (stamped at insert time, immutable since), so it's read once
+    // here rather than after the mutation.
+    const autoContinueEligible = status === 'failed' && failureCause === 'turn-budget-exhausted';
+    const autoContinue = autoContinueEligible && row.autoContinueCount < MAX_AUTO_CONTINUES;
+    if (autoContinueEligible && !autoContinue) {
+      failureReason = `hit turn budget ${MAX_AUTO_CONTINUES}× — needs attention`;
+    }
+
     // Lifecycle: dispatch-terminal failed/cancelled end the pipeline too; a
     // repo COMPLETION does not — its lifecycle continues (verify → land →
     // teardown) past the status terminal, so 'completed' stamps nothing here.
@@ -1147,9 +1195,83 @@ export class DispatchService {
     });
     if (!publication) return; // already terminal (idempotent)
 
+    if (autoContinue) {
+      // Suppressed envelope: this terminal is an intermediate stop on the
+      // way to auto-continuation, never a chat turn for the orchestrator.
+      // verifyAndLand (contract verification + envelope + review-verdict
+      // routing) runs only on the FINAL outcome — skipping it here also
+      // avoids reclaiming a review checkout the continuation is about to
+      // resume in.
+      void this.fireAutoContinue(runId, row).catch((err) => {
+        console.error(`[pc-sdk][dispatch] auto-continue crashed for ${runId}:`, err);
+      });
+      return;
+    }
+
     void this.verifyAndLand(runId, status).catch((err) => {
       console.error(`[pc-sdk][dispatch] verify/land crashed for ${runId}:`, err);
     });
+  }
+
+  /** Fire one automatic continuation off a 'turn-budget-exhausted' terminal —
+   *  the SAME session-resume + same worktree + same contract mechanism
+   *  `pc_continue_agent` uses, just triggered by the service instead of a
+   *  human/orchestrator. `parentRow` is the pre-terminal snapshot (its
+   *  `autoContinueCount` is this attempt's zero-based position in the
+   *  chain). Idempotent alongside `recoverPendingAutoContinues`: both check
+   *  `hasContinuation` first, so a restart between the terminal commit and
+   *  this call never double-fires. */
+  private async fireAutoContinue(runId: ULID, parentRow: AgentRunRow): Promise<void> {
+    if (hasContinuation(runId)) return; // already fired (boot re-entry raced this call)
+    const attempt = parentRow.autoContinueCount + 1;
+    console.warn(`[auto-continue] run ${runId} budget-exhausted, attempt ${attempt}/${MAX_AUTO_CONTINUES}`);
+    const result = await this.dispatchContinueInternal({
+      projectId: parentRow.projectId,
+      runId,
+      input: AUTO_CONTINUE_MESSAGE,
+      dispatcherSessionId: parentRow.dispatcherSessionId,
+      autoContinueCount: attempt,
+    });
+    if (!result.ok) {
+      // The chain can't continue (contract/agent/worktree gone, or a
+      // concurrent continuation raced this one) — the existing terminal row
+      // is the final outcome; patch its reason and deliver the envelope off
+      // it instead of silently wedging.
+      console.error(
+        `[auto-continue] run ${runId} attempt ${attempt}/${MAX_AUTO_CONTINUES} could not be dispatched (${result.cause}: ${result.message}) — settling as failed`,
+      );
+      setAgentRunFailureReason(
+        runId,
+        `hit turn budget, but the auto-continuation could not be dispatched (${result.message}) — needs attention`,
+      );
+      void this.verifyAndLand(runId, 'failed').catch((err) => {
+        console.error(`[pc-sdk][dispatch] verify/land crashed for ${runId}:`, err);
+      });
+    }
+  }
+
+  /** Boot re-entry for bounded auto-continue (docs: max-turns fix part 2,
+   *  mirrors recoverPendingReviews). Ordering (index.ts): AFTER attach — an
+   *  auto-continuation needs the live server context to dispatch. A run that
+   *  settled 'failed'/'turn-budget-exhausted' but never got its
+   *  continuation fired (the crash window between the terminal commit and
+   *  `fireAutoContinue`'s own insert) resumes here; `hasContinuation` keeps
+   *  it idempotent against a continuation that DID make it through before
+   *  the crash (including one that itself later failed for an unrelated,
+   *  non-eligible cause — the chain stops there, same as the live path). */
+  async recoverPendingAutoContinues(): Promise<void> {
+    for (const row of listTurnBudgetExhaustedRuns()) {
+      try {
+        if (row.autoContinueCount >= MAX_AUTO_CONTINUES) continue; // ceiling already reached
+        if (hasContinuation(row.id)) continue; // already fired
+        console.warn(
+          `[auto-continue] resuming after restart — run ${row.id}, attempt ${row.autoContinueCount + 1}/${MAX_AUTO_CONTINUES}`,
+        );
+        await this.fireAutoContinue(row.id as ULID, row);
+      } catch (err) {
+        console.error(`[pc-sdk][dispatch] auto-continue re-entry failed for run ${row.id} — continuing with the rest:`, err);
+      }
+    }
   }
 
   private async verifyAndLand(runId: ULID, terminalStatus: 'completed' | 'failed' | 'cancelled'): Promise<void> {

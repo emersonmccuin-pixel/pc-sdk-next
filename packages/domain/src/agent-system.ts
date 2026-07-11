@@ -175,6 +175,12 @@ export interface AgentRunRow {
   runtimeId: string | null;
   accountId: string | null;
   model: string | null;
+  /** Bounded auto-continue on turn-budget exhaustion (max-turns fix part 2):
+   *  how many automatic continuations preceded THIS run in its chain. 0 for a
+   *  fresh dispatch or a manual `pc_continue_agent`; N+1 for an
+   *  auto-continuation of a run whose own count was N. Durable so the ceiling
+   *  (MAX_AUTO_CONTINUES) survives a server restart mid-chain. */
+  autoContinueCount: number;
 }
 
 /** Pending-ask kind. ☠ M7 (FD-6, 2026-06-04) — `'user'` deleted with

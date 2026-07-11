@@ -57,6 +57,13 @@
       "when": 1783748400000,
       "tag": "0007_review_seal_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783749600000,
+      "tag": "0008_auto_continue",
+      "breakpoints": true
     }
   ]
 }
