@@ -181,6 +181,7 @@ export type { ComputePodRevisionInput } from './repos/pod-revision.ts';
 // agent runs repo.
 export {
   bumpAgentRunRev,
+  countAgentRunsForSessionAndPod,
   findActiveContinuation,
   getAgentRunRow,
   hasContinuation,
