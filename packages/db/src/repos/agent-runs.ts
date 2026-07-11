@@ -8,7 +8,7 @@
 // Continuation lineage via `continues` self-FK. `findActiveContinuation`
 // guards `pc_continue_agent` against double-continuation of the same parent.
 
-import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import {
   IllegalLifecycleTransitionError,
@@ -302,6 +302,30 @@ export function listAgentRunsForSession(
     .orderBy(desc(agentRuns.queuedAt))
     .limit(opts.limit)
     .all();
+}
+
+/** Dispatch loop-cap input (docs/phase-3-dispatch.md F5): how many times has
+ *  this dispatcher session already dispatched THIS pod, ever (any status).
+ *  A session that keeps re-dispatching the same agent — a looping dispatch
+ *  pattern rather than a deepening chain — trips the loop cap even though
+ *  `parentInvokeDepth` never grows. */
+export function countAgentRunsForSessionAndPod(
+  projectId: ULID,
+  dispatcherSessionId: string,
+  podName: string,
+): number {
+  const row = getDb()
+    .select({ n: count() })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.projectId, projectId),
+        eq(agentRuns.dispatcherSessionId, dispatcherSessionId),
+        eq(agentRuns.podName, podName),
+      ),
+    )
+    .get();
+  return row?.n ?? 0;
 }
 
 /** Activity Panel feeder. Lists non-terminal rows for a project

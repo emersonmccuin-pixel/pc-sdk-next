@@ -21,6 +21,7 @@ import {
   getContract,
   getPendingAsk,
   insertAgentRunRow,
+  listAgentRunsForSession,
   listContractsForProject,
   listNonTerminalAgentRuns,
   newId,
@@ -119,6 +120,59 @@ test('spec-less dispatch of a custom pod is refused (contract-required) — no r
   if (!result.ok) assert.equal(result.cause, 'contract-required');
   assert.equal(listNonTerminalAgentRuns().length, 0);
   assert.equal(listContractsForProject(project.id).length, 0, 'a contract that checks nothing must never be minted');
+});
+
+test('dispatch past the max invoke depth is refused (depth-cap) — no rows minted', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject();
+  const dispatch = rig(new FakeAdapter([]));
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'go',
+    dispatcherSessionId: 'S1',
+    parentInvokeDepth: 6, // would nest to depth 7 — past MAX_INVOKE_DEPTH (6)
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.cause, 'depth-cap');
+  assert.equal(listNonTerminalAgentRuns().length, 0);
+  assert.equal(listContractsForProject(project.id).length, 0);
+});
+
+test('a dispatch loop past the max dispatch loop is refused (loop-cap) — no rows minted', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject();
+  // Seed 20 prior dispatches of the same agent by the same dispatcher
+  // session — a looping pattern, at the cap, before the 21st attempt.
+  for (let i = 0; i < 20; i++) {
+    insertAgentRunRow({
+      id: newId() as ULID,
+      projectId: project.id,
+      podName: 'researcher',
+      dispatcherSessionId: 'S1',
+      ccSessionId: `cc-${i}`,
+      status: 'completed',
+      input: 'go',
+      queuedAt: Date.now(),
+    });
+  }
+  const dispatch = rig(new FakeAdapter([]));
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'go',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.cause, 'loop-cap');
+  assert.equal(
+    listAgentRunsForSession(project.id, 'S1', { podName: 'researcher', limit: 100 }).length,
+    20,
+    'the refused dispatch must not mint a 21st row',
+  );
+  assert.equal(listContractsForProject(project.id).length, 0);
 });
 
 test('repo kind with no provisionable folder ⇒ durable worktree-provision-failed terminal, never a fallback', async () => {

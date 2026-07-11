@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, resolve as resolvePath } from 'node:path';
 import {
   appendConversationEvent,
+  countAgentRunsForSessionAndPod,
   findActiveContinuation,
   findContractByReviewRun,
   getAgentRunRow,
@@ -110,6 +111,19 @@ const MAX_REVIEW_ROUNDS = 2;
  *  genuinely stuck/looping task still stops and surfaces to the
  *  orchestrator instead of auto-continuing forever. */
 const MAX_AUTO_CONTINUES = 5;
+/** Dispatch depth cap (F5 — typed cause 'depth-cap', packages/domain
+ *  agent-comms.ts): bounds a NESTING chain of pc_invoke_agent calls
+ *  (dispatcher → agent → sub-agent → ...). `parentInvokeDepth` on the
+ *  inbound request is the CALLER's own depth; the run being dispatched now
+ *  would sit one level deeper. Exceeding the cap refuses the dispatch
+ *  outright — no row is minted. */
+const MAX_INVOKE_DEPTH = 6;
+/** Dispatch loop cap (F5 — typed cause 'loop-cap'): bounds how many times
+ *  ONE dispatcher session may dispatch the SAME agent, total. Catches a
+ *  looping dispatch pattern (repeatedly re-invoking the same pod) that
+ *  never deepens the chain, so it would otherwise sail past the depth cap
+ *  unbounded. */
+const MAX_DISPATCH_LOOP = 20;
 const AUTO_CONTINUE_MESSAGE =
   'You hit your turn budget on the previous attempt and were cut off mid-work — this is not a fresh ' +
   'dispatch. Your worktree, session, and contract are intact exactly as you left them. Pick up where ' +
@@ -125,7 +139,9 @@ export type DispatchFailureCause =
   | 'run-not-found'
   | 'not-continuable'
   | 'concurrent-continuation'
-  | 'not-attached';
+  | 'not-attached'
+  | 'depth-cap'
+  | 'loop-cap';
 
 export type DispatchResult =
   | { ok: true; run: ReturnType<typeof toAgentRunDto> }
@@ -211,6 +227,29 @@ export class DispatchService {
       return refuse('unknown-agent', `no agent named '${input.agentName}' is visible in this project (pc_list_agents)`, 422);
     }
     const pod = bundle.agent;
+
+    // F5 — depth/loop caps, enforced BEFORE any row insert (refused dispatch
+    // mints nothing, mirroring the other pre-checks in this method). A
+    // dispatch that would sit deeper than MAX_INVOKE_DEPTH is a recursive
+    // chain running away; a dispatcher session re-dispatching the same agent
+    // past MAX_DISPATCH_LOOP is a looping pattern that never deepens the
+    // chain, so depth alone would never catch it.
+    const invokeDepth = (input.parentInvokeDepth ?? 0) + 1;
+    if (invokeDepth > MAX_INVOKE_DEPTH) {
+      return refuse(
+        'depth-cap',
+        `dispatch would nest to depth ${invokeDepth}, exceeding the max invoke depth (${MAX_INVOKE_DEPTH}) — the agent chain is recursing too deep`,
+        422,
+      );
+    }
+    const priorDispatchCount = countAgentRunsForSessionAndPod(input.projectId, input.dispatcherSessionId, input.agentName);
+    if (priorDispatchCount >= MAX_DISPATCH_LOOP) {
+      return refuse(
+        'loop-cap',
+        `dispatcher session has already dispatched '${input.agentName}' ${priorDispatchCount} times, at/past the max dispatch loop (${MAX_DISPATCH_LOOP}) — this looks like a looping dispatch`,
+        422,
+      );
+    }
 
     // Contract-required pre-check — BEFORE any row insert. Resolution chain:
     // inline spec → pod-row default → stock default. Chain empty ⇒ refuse; a
