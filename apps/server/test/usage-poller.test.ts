@@ -14,6 +14,15 @@ const RESPONSE: OauthUsageResponse = {
   limits: [
     { severity: 'normal', is_active: true },
     { severity: 'normal', is_active: false },
+    {
+      kind: 'weekly_scoped',
+      group: 'weekly',
+      percent: 92,
+      severity: 'normal',
+      resets_at: '2026-07-13T08:00:00.000000+00:00',
+      scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+      is_active: true,
+    },
   ],
 };
 
@@ -23,11 +32,14 @@ test('mapOauthUsage normalizes scale, timestamps, and status', () => {
   assert.equal(snap.fiveHour!.utilization, 0.5);
   assert.equal(snap.fiveHour!.resetsAt, Date.parse('2026-07-10T23:00:00.000000+00:00'));
   assert.equal(snap.sevenDay!.utilization, 0.26);
+  assert.equal(snap.fable!.utilization, 0.92);
+  assert.equal(snap.fable!.resetsAt, Date.parse('2026-07-13T08:00:00.000000+00:00'));
   assert.equal(snap.status, 'allowed');
   assert.equal(snap.updatedAt, 123);
 
   const warned = mapOauthUsage({ ...RESPONSE, limits: [{ severity: 'warning' }] }, 'work');
   assert.equal(warned.status, 'allowed_warning');
+  assert.equal(warned.fable, null, 'no Fable-scoped limit entry → null, never fabricated');
 
   const maxed = mapOauthUsage(
     { five_hour: { utilization: 100, resets_at: RESPONSE.five_hour!.resets_at }, seven_day: null },
@@ -35,6 +47,16 @@ test('mapOauthUsage normalizes scale, timestamps, and status', () => {
   );
   assert.equal(maxed.status, 'rejected');
   assert.equal(maxed.sevenDay, null);
+  assert.equal(maxed.fable, null);
+});
+
+test('mapOauthUsage: a critical-severity Fable limit rides status to rejected (matches the live 92%-critical example)', () => {
+  const snap = mapOauthUsage(
+    { ...RESPONSE, limits: [{ ...RESPONSE.limits![2], severity: 'critical' }] },
+    'work',
+  );
+  assert.equal(snap.fable!.utilization, 0.92);
+  assert.equal(snap.status, 'rejected');
 });
 
 test('poll records into the cache; unchanged polls skip the outbox', async () => {
@@ -82,9 +104,9 @@ test('expired token degrades: nothing recorded, no throw', async () => {
 test('hydrateFromDb restores the latest snapshot per account', () => {
   freshDb();
   const writer = new UsageCache();
-  writer.record({ accountId: 'personal', fiveHour: { utilization: 0.1, resetsAt: 1 }, sevenDay: null, status: 'allowed', model: null, updatedAt: 1 });
-  writer.record({ accountId: 'personal', fiveHour: { utilization: 0.2, resetsAt: 2 }, sevenDay: null, status: 'allowed', model: null, updatedAt: 2 });
-  writer.record({ accountId: 'work', fiveHour: { utilization: 0.9, resetsAt: 3 }, sevenDay: null, status: 'allowed_warning', model: null, updatedAt: 3 });
+  writer.record({ accountId: 'personal', fiveHour: { utilization: 0.1, resetsAt: 1 }, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt: 1 });
+  writer.record({ accountId: 'personal', fiveHour: { utilization: 0.2, resetsAt: 2 }, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt: 2 });
+  writer.record({ accountId: 'work', fiveHour: { utilization: 0.9, resetsAt: 3 }, sevenDay: null, fable: null, status: 'allowed_warning', model: null, updatedAt: 3 });
 
   // A fresh cache (new boot) starts empty; hydrate restores last-known rows.
   const rebooted = new UsageCache();

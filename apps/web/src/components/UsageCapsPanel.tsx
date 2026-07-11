@@ -70,6 +70,7 @@ export function UsageCapsPanel({ snapshot }: UsageCapsPanelProps) {
       <div className="flex flex-col gap-2">
         <CapBar label="5h" window={snapshot?.fiveHour ?? null} now={now} />
         <CapBar label="7d" window={snapshot?.sevenDay ?? null} now={now} />
+        <CapBar label="Fable" window={snapshot?.fable ?? null} now={now} />
       </div>
     </div>
   );

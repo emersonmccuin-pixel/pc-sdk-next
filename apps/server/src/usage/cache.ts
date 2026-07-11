@@ -38,6 +38,7 @@ export class UsageCache {
       accountId: incoming.accountId,
       fiveHour: incoming.fiveHour ?? prev?.fiveHour ?? null,
       sevenDay: incoming.sevenDay ?? prev?.sevenDay ?? null,
+      fable: incoming.fable ?? prev?.fable ?? null,
       status: incoming.status,
       model: incoming.model ?? prev?.model ?? null,
       updatedAt: incoming.updatedAt,

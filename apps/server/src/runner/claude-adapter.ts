@@ -600,6 +600,7 @@ function toUsageSnapshot(info: Record<string, unknown> | undefined, accountId: s
     accountId,
     fiveHour: isFiveHour ? win : null,
     sevenDay: windowType.startsWith('seven_day') ? win : null,
+    fable: null,
     status,
     model: null,
     updatedAt: Date.now(),

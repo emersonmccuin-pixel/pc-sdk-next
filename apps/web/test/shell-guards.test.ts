@@ -23,7 +23,7 @@ test('dead tabs are absent from the nav', () => {
 // Invariant 2: usage store is last-write-wins by updatedAt — a stale snapshot
 // (re-delivery / out-of-order) never clobbers a fresher one.
 function snap(accountId: string, updatedAt: number): UsageSnapshot {
-  return { accountId, fiveHour: null, sevenDay: null, status: 'allowed', model: null, updatedAt };
+  return { accountId, fiveHour: null, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt };
 }
 
 test('usage store keeps the newest snapshot per account', () => {
