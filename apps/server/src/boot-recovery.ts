@@ -13,6 +13,11 @@
 //    DispatchService.recoverSealedRuns (index.ts, before the pending-landing
 //    re-drive) settles it completed and re-fires verification from that
 //    durable evidence.
+//    EXCEPTION (F1, comms-hardening): a run 'paused' on an open pending ask is
+//    also SKIPPED here — failing it would cancel the ask and orphan it for
+//    good. DispatchService.recoverPausedAsks (index.ts, AFTER attach)
+//    re-mints a live session from the row's persisted native session id so
+//    answering the ask later resumes it instead of 410ing.
 //  - worktrees: classified AFTER the pending-landing re-drive (locked ordering
 //    — re-driven landings must finish tearing down before classification), via
 //    reconcileStrandedWorktreesAtBoot below. Stranded is durable on the row;
@@ -128,6 +133,18 @@ function recoverAgentRuns(): string[] {
   for (const run of listNonTerminalAgentRuns()) {
     // Per-run isolation: one bad row must never abort the sweep (or boot).
     try {
+      // F1 (comms-hardening): a paused run's ask is durable (pending_asks
+      // table) — failing the run and cancelling the ask would orphan it for
+      // good. Leave it exactly as-is; DispatchService.recoverPausedAsks
+      // (index.ts, AFTER attach) re-mints a live session from the row's
+      // persisted native session id so `answerPendingAsk` resumes it instead
+      // of 410ing on a dead in-process handle.
+      if (run.status === 'paused') {
+        console.warn(
+          `[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) is paused on a pending ask — left for DispatchService.recoverPausedAsks.`,
+        );
+        continue;
+      }
       // Evidence-aware CASE 4: a sealed deliverable survives the process.
       // Keyed on THE RUN's own deliveredAt stamp, never the contract's
       // deliverable alone — a continuation carries its parent's contract

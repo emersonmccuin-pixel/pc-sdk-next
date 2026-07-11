@@ -139,9 +139,14 @@ export function buildTerminalEnvelope(input: {
   /** Full-review policy: an independent review run is in flight. */
   reviewInFlight?: boolean;
   deliverableSummary?: string | null;
+  /** F10: the external PM-item ref (AInativePM) this run was dispatched
+   *  against, if any — ties a completion back to its PM item from the chat
+   *  text alone. */
+  pmRef?: string | null;
 }): string {
   const lines: string[] = [];
   lines.push(`[${input.kind}] agent=${input.podName} runId=${input.runId}`);
+  if (input.pmRef) lines.push(`pmRef: ${input.pmRef}`);
   if (input.result) lines.push(`Result: ${input.result}`);
   if (input.failureCause) {
     lines.push(`Failure: ${input.failureCause}${input.failureReason ? ` — ${input.failureReason}` : ''}`);
