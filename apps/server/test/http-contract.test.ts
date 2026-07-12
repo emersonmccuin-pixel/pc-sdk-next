@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   enqueueConversationSend,
+  getActiveConversationTurn,
   getActiveOrchestratorSession,
   getConversationQueueSnapshot,
   getOrchestratorSession,
@@ -213,6 +214,7 @@ test('accounts: registry list; switching a project account ends the session + mi
       text: 'bind the native session', clientMessageId: 'bind-personal-client',
     })).status, 'applied');
     await until(() => getOrchestratorSession(oldSessionId)?.nativeIdentityState === 'bound');
+    await until(() => getActiveConversationTurn(oldSessionId) === null);
 
     // switch account → ends the old session, mints a new one
     const sw = await fetch(`${base}/api/projects/${pid}/account`, {

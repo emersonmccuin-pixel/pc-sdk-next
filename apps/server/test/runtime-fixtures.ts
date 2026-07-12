@@ -28,6 +28,10 @@ export function testCapabilities(
     nativeContinuation: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
   };
 }
 
@@ -99,6 +103,7 @@ export function withRuntimeReceipt(
           yield* stream;
         })();
       },
+      observeContext: () => inner.observeContext(),
       interrupt: () => inner.interrupt(),
       dispose: () => inner.dispose(),
     };

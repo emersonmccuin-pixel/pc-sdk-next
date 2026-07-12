@@ -7,7 +7,7 @@
 // canonical aborted `result` unless the script already supplies a
 // terminal, keeping the turn-runner's "exactly one terminal" contract honest.
 
-import type { RuntimeEvent, RuntimeSession } from './runtime.ts';
+import type { ContextObservation, RuntimeEvent, RuntimeSession } from './runtime.ts';
 
 /** A hang marker: the turn stalls here until interrupt/dispose. */
 export interface HangStep {
@@ -26,6 +26,9 @@ export interface FakeRuntimeOptions {
   turns?: ScriptedTurn[];
   /** Delay (ms) between yielded steps. 0 = synchronous microtask cadence. */
   stepDelayMs?: number;
+  /** Current-context observation or a scripted observer. Defaults to explicit
+   *  unsupported rather than inventing context from scripted turn usage. */
+  contextObservation?: ContextObservation | (() => ContextObservation | Promise<ContextObservation>);
 }
 
 /** A resolved abort signal the current hung turn awaits. */
@@ -45,6 +48,7 @@ function deferred(): Interruptible {
 export class FakeRuntime implements RuntimeSession {
   private readonly turns: ScriptedTurn[];
   private readonly stepDelayMs: number;
+  private readonly contextObservation: NonNullable<FakeRuntimeOptions['contextObservation']>;
   private turnIndex = 0;
   private disposed = false;
   private interruptCurrent: Interruptible | null = null;
@@ -56,6 +60,24 @@ export class FakeRuntime implements RuntimeSession {
   constructor(opts: FakeRuntimeOptions = {}) {
     this.turns = opts.turns ?? [];
     this.stepDelayMs = opts.stepDelayMs ?? 0;
+    this.contextObservation = opts.contextObservation ?? {
+      confidence: 'unavailable',
+      reason: 'unsupported',
+    };
+  }
+
+  async observeContext(): Promise<ContextObservation> {
+    const observation = typeof this.contextObservation === 'function'
+      ? await this.contextObservation()
+      : this.contextObservation;
+    return observation.confidence === 'unavailable'
+      ? { confidence: 'unavailable', reason: observation.reason }
+      : {
+          confidence: observation.confidence,
+          usedTokens: observation.usedTokens,
+          usableTokens: observation.usableTokens,
+          contextWindowTokens: observation.contextWindowTokens,
+        };
   }
 
   sendTurn(text: string): AsyncIterable<RuntimeEvent> {

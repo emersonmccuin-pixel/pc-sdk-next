@@ -137,6 +137,10 @@ class TrackingRuntime implements RuntimeSession {
     return (async function* () {})();
   }
 
+  async observeContext() {
+    return { confidence: 'unavailable' as const, reason: 'unsupported' as const };
+  }
+
   async interrupt(): Promise<void> {}
   async dispose(): Promise<void> { this.disposeCalls += 1; }
 }
@@ -155,6 +159,9 @@ class ThrowingCreateAdapter implements AgentRuntimeAdapter {
 
 class ThrowingSendRuntime implements RuntimeSession {
   sendTurn(): AsyncIterable<never> { throw new Error('SECRET provider send detail'); }
+  async observeContext() {
+    return { confidence: 'unavailable' as const, reason: 'unsupported' as const };
+  }
   async interrupt(): Promise<void> {}
   async dispose(): Promise<void> {}
 }

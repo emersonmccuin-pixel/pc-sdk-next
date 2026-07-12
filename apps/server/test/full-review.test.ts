@@ -98,6 +98,7 @@ class QueueAdapter implements AgentRuntimeAdapter {
         this.turnInputs[idx] = message;
         return turnStream(gate);
       },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
       interrupt: async () => {},
       dispose: async () => {},
     };

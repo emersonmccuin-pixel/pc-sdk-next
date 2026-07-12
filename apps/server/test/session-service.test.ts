@@ -29,7 +29,16 @@ function terminals(sessionId: string): ChatEvent[] {
     .filter((event) => event.kind === 'turn-end' || event.kind === 'turn-failed');
 }
 
-function rig(projectId: ULID, runtime: FakeRuntime) {
+function contextRows(sessionId: string) {
+  return listConversationEvents(sessionId)
+    .filter((row) => row.eventType === 'context-observation');
+}
+
+function rig(
+  projectId: ULID,
+  runtime: FakeRuntime,
+  opts: { contextObservationTimeoutMs?: number } = {},
+) {
   const frames: ServerFrame[] = [];
   const hub = new ProjectWebSocketHub<ULID>();
   const socket: WebSocketLike = {
@@ -45,6 +54,7 @@ function rig(projectId: ULID, runtime: FakeRuntime) {
     ...testSessionSelectionDeps(),
     broadcast: (frame) => hub.broadcast(projectId, frame),
     drainConversationOutbox: () => relay.drain(),
+    ...opts,
   });
   return { service, frames, relay };
 }
@@ -151,6 +161,7 @@ test('approval ask still carries an authoritative active turn when canonical rel
           durationMs: 1, error: null, outcome: 'ok', numTurns: null,
         };
       },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
       interrupt: async () => {},
       dispose: async () => {},
     })),
@@ -221,6 +232,7 @@ test('same-session resume re-emits a still-pending canonical approval after repl
         durationMs: 1, error: null, outcome: 'ok', numTurns: null,
       };
     },
+    observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
     interrupt: async () => {},
     dispose: async () => {},
   });
@@ -314,6 +326,7 @@ test('runtime startup and synchronous delivery exceptions persist only app-autho
     const project = newProject(`closed-${failure}-error`);
     const deadRuntime: RuntimeSession = {
       sendTurn: () => { throw new Error('SECRET provider send detail'); },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
       interrupt: async () => {},
       dispose: async () => {},
     };
@@ -352,6 +365,535 @@ test('runtime startup and synchronous delivery exceptions persist only app-autho
     }
     await service.dispose();
   }
+});
+
+test('terminal becomes idle before context observation while FIFO successors remain held', async () => {
+  freshDb();
+  const project = newProject('context-fifo');
+  let releaseFirst!: () => void;
+  const firstObservationGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let observationCalls = 0;
+  const observation = {
+    confidence: 'exact' as const,
+    usedTokens: 25,
+    usableTokens: 80,
+    contextWindowTokens: 100,
+  };
+  const runtime = new FakeRuntime({
+    turns: [
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+    ],
+    contextObservation: async () => {
+      observationCalls += 1;
+      if (observationCalls === 1) await firstObservationGate;
+      return observation;
+    },
+  });
+  const { service, frames } = rig(project.id, runtime, {
+    contextObservationTimeoutMs: 1_000,
+  });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-first', sessionId: session.id,
+    text: 'first', clientMessageId: 'context-first-client',
+  });
+  await service.handleSend({
+    type: 'send', commandId: 'context-second', sessionId: session.id,
+    text: 'second', clientMessageId: 'context-second-client',
+  });
+
+  await until(() => terminals(session.id).length === 1);
+  await until(() => frames.some((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.sessionId === session.id
+      && frame.activeTurnId === null
+      && frame.health === 'idle'
+  )));
+  assert.deepEqual(runtime.sentTexts, ['first']);
+  assert.equal(contextRows(session.id).length, 0);
+  const terminalFrameIndex = frames.findIndex((frame) => (
+    frame.type === 'conversation-event' && frame.event.kind === 'turn-end'
+  ));
+  const idleFrameIndex = frames.findIndex((frame, index) => (
+    index > terminalFrameIndex
+      && frame.type === 'orchestrator-state'
+      && frame.activeTurnId === null
+      && frame.health === 'idle'
+  ));
+  assert.ok(terminalFrameIndex >= 0 && idleFrameIndex > terminalFrameIndex);
+
+  releaseFirst();
+  await until(() => terminals(session.id).length === 2);
+  await until(() => contextRows(session.id).length === 2);
+  assert.deepEqual(runtime.sentTexts, ['first', 'second']);
+  assert.deepEqual(
+    contextRows(session.id).map((row) => row.payload),
+    [
+      { kind: 'context-observation', ...observation },
+      { kind: 'context-observation', ...observation },
+    ],
+  );
+  await service.dispose();
+});
+
+test('context timeout is explicit and a late native response cannot duplicate or cross turns', async () => {
+  freshDb();
+  const project = newProject('context-timeout');
+  let releaseLate!: () => void;
+  const lateGate = new Promise<void>((resolve) => { releaseLate = resolve; });
+  let observationCalls = 0;
+  const runtime = new FakeRuntime({
+    turns: [
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+    ],
+    contextObservation: async () => {
+      observationCalls += 1;
+      if (observationCalls === 1) await lateGate;
+      return {
+        confidence: 'derived',
+        usedTokens: observationCalls,
+        usableTokens: 80,
+        contextWindowTokens: 100,
+      };
+    },
+  });
+  const { service } = rig(project.id, runtime, { contextObservationTimeoutMs: 10 });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'timeout-first', sessionId: session.id,
+    text: 'first', clientMessageId: 'timeout-first-client',
+  });
+  await service.handleSend({
+    type: 'send', commandId: 'timeout-second', sessionId: session.id,
+    text: 'second', clientMessageId: 'timeout-second-client',
+  });
+
+  await until(() => terminals(session.id).length === 2);
+  await until(() => contextRows(session.id).length === 2);
+  const beforeLate = contextRows(session.id);
+  assert.deepEqual(beforeLate.map((row) => row.payload), [
+    {
+      kind: 'context-observation',
+      confidence: 'unavailable',
+      reason: 'observation-timeout',
+    },
+    {
+      kind: 'context-observation',
+      confidence: 'derived',
+      usedTokens: 2,
+      usableTokens: 80,
+      contextWindowTokens: 100,
+    },
+  ]);
+  releaseLate();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(contextRows(session.id), beforeLate);
+  await service.dispose();
+});
+
+test('context persistence retries before releasing the same-session FIFO successor', async () => {
+  freshDb();
+  const project = newProject('context-persistence-retry');
+  const observation = {
+    confidence: 'exact' as const,
+    usedTokens: 2,
+    usableTokens: 8,
+    contextWindowTokens: 10,
+  };
+  const runtime = new FakeRuntime({
+    turns: [
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+      [{
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      }],
+    ],
+    contextObservation: observation,
+  });
+  const { service, frames } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TABLE context_persistence_gate (blocked INTEGER NOT NULL);
+    INSERT INTO context_persistence_gate (blocked) VALUES (1);
+    CREATE TEMP TRIGGER fail_context_persistence_while_blocked
+    BEFORE INSERT ON conversation_events
+    WHEN NEW.event_type = 'context-observation'
+      AND (SELECT blocked FROM context_persistence_gate LIMIT 1) = 1
+    BEGIN SELECT RAISE(ABORT, 'forced context persistence failure'); END;
+  `);
+
+  await service.handleSend({
+    type: 'send', commandId: 'persistence-first', sessionId: session.id,
+    text: 'first', clientMessageId: 'persistence-first-client',
+  });
+  await service.handleSend({
+    type: 'send', commandId: 'persistence-second', sessionId: session.id,
+    text: 'second', clientMessageId: 'persistence-second-client',
+  });
+  await until(() => terminals(session.id).length === 1);
+  await until(() => frames.some((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.health === 'failed'
+      && frame.failureReason === 'context observation persistence unavailable'
+  )));
+  const failureFrameIndex = frames.findIndex((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.health === 'failed'
+      && frame.failureReason === 'context observation persistence unavailable'
+  ));
+  assert.notEqual(failureFrameIndex, -1);
+  assert.equal(contextRows(session.id).length, 0);
+  assert.deepEqual(runtime.sentTexts, ['first']);
+  assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
+
+  const observationReceiptDeadline = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const retryReleaseAt = Date.now();
+  raw.prepare('UPDATE context_persistence_gate SET blocked = 0').run();
+  await until(() => terminals(session.id).length === 2, 4_000);
+  await until(() => contextRows(session.id).length === 2, 4_000);
+  assert.deepEqual(runtime.sentTexts, ['first', 'second']);
+  const persistedContextRows = contextRows(session.id);
+  assert.deepEqual(persistedContextRows.map((row) => row.payload), [
+    { kind: 'context-observation', ...observation },
+    { kind: 'context-observation', ...observation },
+  ]);
+  assert.ok(persistedContextRows[0]!.occurredAt <= observationReceiptDeadline);
+  assert.ok(persistedContextRows[0]!.occurredAt < retryReleaseAt);
+  assert.equal(frames.slice(failureFrameIndex + 1).some((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.health === 'idle'
+      && frame.failureReason === null
+  )), true);
+  const latestState = [...frames].reverse()
+    .find((frame) => frame.type === 'orchestrator-state');
+  assert.ok(latestState?.type === 'orchestrator-state');
+  assert.equal(latestState.health, 'idle');
+  assert.equal(latestState.failureReason, null);
+  raw.exec('DROP TRIGGER fail_context_persistence_while_blocked');
+  raw.exec('DROP TABLE context_persistence_gate');
+  await service.dispose();
+});
+
+test('session replacement aborts a permanent context persistence retry', async () => {
+  freshDb();
+  const project = newProject('context-persistence-replacement');
+  const priorRuntime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: {
+      confidence: 'exact', usedTokens: 1, usableTokens: 8, contextWindowTokens: 10,
+    },
+  });
+  const replacementRuntime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: {
+      confidence: 'exact', usedTokens: 2, usableTokens: 8, contextWindowTokens: 10,
+    },
+  });
+  let mintCalls = 0;
+  const frames: ServerFrame[] = [];
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt(() => (
+      ++mintCalls === 1 ? priorRuntime : replacementRuntime
+    )),
+    ...testSessionSelectionDeps(),
+    broadcast: (frame) => frames.push(frame),
+  });
+  const prior = await service.ensureActiveSession();
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TABLE context_persistence_blocked_session (session_id TEXT NOT NULL);
+    CREATE TEMP TRIGGER fail_context_persistence_for_blocked_session
+    BEFORE INSERT ON conversation_events
+    WHEN NEW.event_type = 'context-observation'
+      AND NEW.session_id = (SELECT session_id FROM context_persistence_blocked_session LIMIT 1)
+    BEGIN SELECT RAISE(ABORT, 'forced permanent context persistence failure'); END;
+  `);
+  raw.prepare('INSERT INTO context_persistence_blocked_session (session_id) VALUES (?)')
+    .run(prior.id);
+
+  await service.handleSend({
+    type: 'send', commandId: 'persistence-replacement-first', sessionId: prior.id,
+    text: 'first', clientMessageId: 'persistence-replacement-first-client',
+  });
+  await until(() => frames.some((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.health === 'failed'
+      && frame.failureReason === 'context observation persistence unavailable'
+  )));
+
+  const replacement = await Promise.race([
+    service.startNewSession(),
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('session replacement did not abort context persistence retry')),
+        1_000,
+      );
+      if (typeof timer.unref === 'function') timer.unref();
+    }),
+  ]);
+  await service.handleSend({
+    type: 'send', commandId: 'persistence-replacement-next', sessionId: replacement.id,
+    text: 'next', clientMessageId: 'persistence-replacement-next-client',
+  });
+  await until(() => contextRows(replacement.id).length === 1);
+  assert.equal(contextRows(prior.id).length, 0);
+  assert.deepEqual(contextRows(replacement.id)[0]?.payload, {
+    kind: 'context-observation',
+    confidence: 'exact',
+    usedTokens: 2,
+    usableTokens: 8,
+    contextWindowTokens: 10,
+  });
+  raw.exec('DROP TRIGGER fail_context_persistence_for_blocked_session');
+  raw.exec('DROP TABLE context_persistence_blocked_session');
+  await service.dispose();
+});
+
+test('disposal aborts a permanent context persistence retry', async () => {
+  freshDb();
+  const project = newProject('context-persistence-disposal');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: {
+      confidence: 'exact', usedTokens: 1, usableTokens: 8, contextWindowTokens: 10,
+    },
+  });
+  const { service, frames } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TRIGGER fail_all_context_persistence
+    BEFORE INSERT ON conversation_events
+    WHEN NEW.event_type = 'context-observation'
+    BEGIN SELECT RAISE(ABORT, 'forced permanent context persistence failure'); END;
+  `);
+
+  await service.handleSend({
+    type: 'send', commandId: 'persistence-disposal', sessionId: session.id,
+    text: 'first', clientMessageId: 'persistence-disposal-client',
+  });
+  await until(() => frames.some((frame) => (
+    frame.type === 'orchestrator-state'
+      && frame.health === 'failed'
+      && frame.failureReason === 'context observation persistence unavailable'
+  )));
+  const disposed = await Promise.race([
+    service.dispose().then(() => true),
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 1_000);
+      if (typeof timer.unref === 'function') timer.unref();
+    }),
+  ]);
+  assert.equal(disposed, true);
+  assert.equal(contextRows(session.id).length, 0);
+  raw.exec('DROP TRIGGER fail_all_context_persistence');
+});
+
+test('context failure stays typed and cannot rewrite the settled turn', async () => {
+  freshDb();
+  const project = newProject('context-failure');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: async () => { throw new Error('SECRET native context detail'); },
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-failure-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'context-failure-client',
+  });
+  await until(() => contextRows(session.id).length === 1);
+  assert.deepEqual(terminals(session.id), [{
+    kind: 'turn-end', text: '', stopReason: 'complete',
+  }]);
+  assert.deepEqual(contextRows(session.id)[0]?.payload, {
+    kind: 'context-observation',
+    confidence: 'unavailable',
+    reason: 'runtime-unavailable',
+  });
+  assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('SECRET'), false);
+  await service.dispose();
+});
+
+test('malformed runtime context is persisted only as invalid-observation', async () => {
+  freshDb();
+  const project = newProject('context-invalid');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+  });
+  runtime.observeContext = async () => ({
+    confidence: 'exact',
+    usedTokens: 9,
+    usableTokens: 8,
+    contextWindowTokens: 10,
+    nativeCategories: { system: 9 },
+  }) as never;
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-invalid-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'context-invalid-client',
+  });
+  await until(() => contextRows(session.id).length === 1);
+  assert.deepEqual(contextRows(session.id)[0]?.payload, {
+    kind: 'context-observation',
+    confidence: 'unavailable',
+    reason: 'invalid-observation',
+  });
+  assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('nativeCategories'), false);
+  await service.dispose();
+});
+
+test('throwing runtime context accessors degrade without losing telemetry or releasing raw detail', async () => {
+  freshDb();
+  const project = newProject('context-throwing-accessor');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+  });
+  runtime.observeContext = async () => Object.defineProperty({}, 'confidence', {
+    enumerable: true,
+    get: () => { throw new Error('SECRET throwing context getter'); },
+  }) as never;
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-throwing-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'context-throwing-client',
+  });
+  await until(() => contextRows(session.id).length === 1);
+  assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
+  assert.deepEqual(contextRows(session.id)[0]?.payload, {
+    kind: 'context-observation',
+    confidence: 'unavailable',
+    reason: 'invalid-observation',
+  });
+  assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('SECRET'), false);
+  await service.dispose();
+});
+
+test('disposal fences a pending context observation without manufacturing telemetry', async () => {
+  freshDb();
+  const project = newProject('context-disposal');
+  let releaseLate!: () => void;
+  const lateGate = new Promise<void>((resolve) => { releaseLate = resolve; });
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: async () => {
+      await lateGate;
+      return {
+        confidence: 'exact', usedTokens: 1, usableTokens: 8, contextWindowTokens: 10,
+      };
+    },
+  });
+  const { service } = rig(project.id, runtime, { contextObservationTimeoutMs: 1_000 });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-disposal-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'context-disposal-client',
+  });
+  await until(() => terminals(session.id).length === 1);
+  await service.dispose();
+  releaseLate();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(contextRows(session.id).length, 0);
+});
+
+test('session replacement fences a late context observation from the prior runtime', async () => {
+  freshDb();
+  const project = newProject('context-session-replacement');
+  let releaseLate!: () => void;
+  const lateGate = new Promise<void>((resolve) => { releaseLate = resolve; });
+  const priorRuntime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: async () => {
+      await lateGate;
+      return {
+        confidence: 'exact', usedTokens: 1, usableTokens: 8, contextWindowTokens: 10,
+      };
+    },
+  });
+  const replacementRuntime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: {
+      confidence: 'exact', usedTokens: 2, usableTokens: 8, contextWindowTokens: 10,
+    },
+  });
+  let mintCalls = 0;
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt(() => (
+      ++mintCalls === 1 ? priorRuntime : replacementRuntime
+    )),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+    contextObservationTimeoutMs: 5_000,
+  });
+  const prior = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'context-replacement-command', sessionId: prior.id,
+    text: 'go', clientMessageId: 'context-replacement-client',
+  });
+  await until(() => terminals(prior.id).length === 1);
+  const replacement = await service.startNewSession();
+  assert.notEqual(replacement.id, prior.id);
+  await service.handleSend({
+    type: 'send', commandId: 'context-replacement-next-command', sessionId: replacement.id,
+    text: 'next', clientMessageId: 'context-replacement-next-client',
+  });
+  await until(() => replacementRuntime.sentTexts.length === 1, 1_500);
+  await until(() => contextRows(replacement.id).length === 1);
+  assert.deepEqual(replacementRuntime.sentTexts, ['next']);
+  releaseLate();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(contextRows(prior.id).length, 0);
+  await service.dispose();
 });
 
 test('success, API error, and interrupt each persist exactly one terminal', async () => {

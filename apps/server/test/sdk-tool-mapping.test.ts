@@ -171,6 +171,18 @@ test('closed native activity maps safely; reasoning and tool summaries stay drop
   assert.deepEqual(status('requesting'), [{ type: 'activity-state', phase: 'requesting-runtime' }]);
   assert.deepEqual(status('compacting'), [{ type: 'activity-state', phase: 'compacting' }]);
   assert.deepEqual(status(null), []);
+  const compactionFailure = mapSdkMessage(sdk({
+    type: 'system', subtype: 'status', status: null,
+    compact_result: 'failed', compact_error: 'SECRET native compaction error',
+    uuid: 'compact-failed', session_id: 's',
+  }), ACCOUNT, context);
+  assert.deepEqual(compactionFailure, [{
+    type: 'system',
+    subtype: 'runtime-compaction-failed',
+    level: 'warning',
+    message: 'The runtime could not compact the session context.',
+  }]);
+  assert.equal(JSON.stringify(compactionFailure).includes('SECRET'), false);
   assert.deepEqual(mapSdkMessage(sdk({
     type: 'system', subtype: 'thinking_tokens', estimated_tokens: 50,
     estimated_tokens_delta: 5, uuid: 'u', session_id: 's',
@@ -198,6 +210,26 @@ test('closed native activity maps safely; reasoning and tool summaries stay drop
     }), ACCOUNT, context);
     assert.equal(JSON.stringify(mapped).includes('SECRET'), false);
   }
+});
+
+test('compaction boundary preserves only strictly valid known metadata', () => {
+  const context = keys();
+  const map = (compact_metadata: Record<string, unknown>) => mapSdkMessage(sdk({
+    type: 'system', subtype: 'compact_boundary', compact_metadata,
+    uuid: 'compact-boundary', session_id: 's',
+  }), ACCOUNT, context);
+  assert.deepEqual(map({ trigger: 'manual', pre_tokens: 90, post_tokens: 30 }), [
+    { type: 'activity-state', phase: 'compacting' },
+    { type: 'compaction', trigger: 'manual', preTokens: 90, postTokens: 30 },
+  ]);
+  assert.deepEqual(map({ trigger: 'invented', pre_tokens: -1, post_tokens: 2.5 }), [
+    { type: 'activity-state', phase: 'compacting' },
+    { type: 'compaction', trigger: 'unknown', preTokens: null, postTokens: null },
+  ]);
+  assert.deepEqual(map({ trigger: 'auto', pre_tokens: 0 }), [
+    { type: 'activity-state', phase: 'compacting' },
+    { type: 'compaction', trigger: 'auto', preTokens: 0, postTokens: null },
+  ]);
 });
 
 test('permission callback is callback-first safe, idempotent, and keeps provider request ids private', async () => {
