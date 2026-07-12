@@ -113,7 +113,7 @@ dynamic agent routing, and execution slices. *Gate:* every item in
 `docs/phases/phase-00-freeze-and-foundation.md` has positive evidence and the
 planning commit lands cleanly on Next `main`.
 
-**N1 — Baseline characterization and discovery (closing).** Audit
+**N1 — Baseline characterization and discovery (complete 2026-07-12).** Audit
 actual component/data ownership, session/event schemas, browser behavior,
 recovery, permissions, and provider leakage. Complete the isolated preserved/
 current browser baseline and the read-only joint AInativePM domain/code/UI/MCP
@@ -141,9 +141,9 @@ real-browser matrix found no unclassified Next regression in the inspected
 desktop/narrow/stress states: core shell blobs and measured geometry match,
 queue/interrupt/reload/two-tab projections converged under the deterministic
 fixture, and remaining work is explicitly ordered into N4 and later phases.
-This satisfies the evidence portion of the planning/discovery gate; BC-002's
-guarded landing and post-merge receipt close it. It does not promote every
-observed requirement globally or authorize daily-driver migration.
+BC-002's guarded landing and post-merge receipt completed the planning/
+discovery gate. This does not promote every observed requirement globally or
+authorize daily-driver migration.
 
 **N2 — Enforce seams and rebuild the conversation foundation.** Add component
 dependency/ownership guards; replace Claude-first canonical identifiers; make

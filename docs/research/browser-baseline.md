@@ -1,8 +1,7 @@
 # BC-002 reproducible browser baseline
 
-Status: browser evidence, disposable-fixture teardown, final feature-tree CI,
-scope/reference audits, and hostile re-review completed and sealed at
-`871c7986` on 2026-07-12; landing and post-merge verification remain pending.
+Status: passed and landed on 2026-07-12. Evidence sealed at `871c7986`; feature
+tip `5f9325b` landed as `9278a6f`; post-merge CI and push passed.
 
 ## Executive result
 
@@ -22,9 +21,8 @@ semantics, safe agent activity, and provider-neutral transcript provenance. No
 private reasoning, raw native session ID, or raw continuation-attempt ID was
 observed in the rendered UI.
 
-On the browser evidence alone, the remaining N1 characterization gate passes.
-BC-002 is not complete until the pending closeout gates listed below also pass.
-The evidence found three non-N1 follow-ups rather than a Next regression:
+The bounded N1 characterization and all BC-002 closeout gates pass. The evidence
+found three non-N1 follow-ups rather than a Next regression:
 
 - both subjects inherit a very narrow `480px` composer (about `101.197px`);
 - Escape does not dismiss App Settings in either subject, although its Close
@@ -408,7 +406,9 @@ roots, earlier current wrapper roots, and `pc-sdk-test-mo1ykJ`. The detached
 baseline had no tracked or staged diff (only its temporary untracked fixture).
 Git deregistered the detached worktree but reported a nonempty dependency
 residue; the exact now-unregistered path was revalidated and removed, and the
-final worktree list contains only Next `main` and the BC-002 feature worktree.
+fixture-cleanup worktree list contained only Next `main` and the BC-002 feature
+worktree. After landing proof, the clean feature worktree and its exact
+unregistered dependency residue were also removed.
 The stable checkout remained at `c7a7179` with its pre-existing clean
 `main...origin/main [ahead 4]` status.
 
@@ -428,17 +428,18 @@ Completed before this draft:
 - full feature-tree `pnpm ci:check` passed, including every workspace
   typecheck/test, all `331/331` server tests, and the dead-import guard.
 
-Pending and required before completion:
-
-1. seal, guarded-merge, prove ancestry/tree equality, run the post-merge gate,
-   push, and remove the feature worktree.
+Landing closeout also passed: evidence commit `871c7986`, feature tip `5f9325b`,
+landing merge `9278a6f`, and feature/merge tree `75c83dd` have positive ancestry
+and exact tree receipts. Full post-merge `pnpm ci:check` passed (`331/331` server
+tests), `origin/main` reached the exact landing merge, and the feature worktree
+was removed.
 
 ## Gate disposition and next dependency
 
 No subjective visual or behavior decision is required: the inspected shell
 sources and geometry match, and every material observed current delta follows
-accepted requirements. N1 can close when the pending mechanical gates pass. The smallest
-next N4 slice is SF-001 data-directory single-instance admission; SF-002 then
+accepted requirements. N1 is closed. The smallest next N4 slice is SF-001
+data-directory single-instance admission; SF-002 then
 adds cross-process repository exclusion, and `SEC-003` owns least-privilege
 child environments. `OPS-006` loopback binding plus the narrow/accessibility
 findings remain N7 unless explicitly reordered. N5 Codex parity remains after

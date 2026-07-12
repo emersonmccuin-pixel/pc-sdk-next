@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 at BC-002 browser-evidence closeout.
+Updated: 2026-07-12 after BC-002 guarded landing and teardown.
 
 ## Repository
 
@@ -111,11 +111,14 @@ Updated: 2026-07-12 at BC-002 browser-evidence closeout.
 - PM-001 closeout worktree: removed after guarded landing
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
-- Active slice: `docs/execution/slices/BC-002.md`
+- Active slice: none; BC-002 is complete and SF-001 is the next definition
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
-- BC-002 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-bc-002`
+- BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
+- BC-002 feature tip: `5f9325b14ee40085ea2ef1f827a2703163abeb0a`
+- BC-002 landing merge: `9278a6f9e9769b73601c58399554468328b314a1`
+- BC-002 landed tree: `75c83dd3024d47fe73a655a41e46fae604b824ed`
+- BC-002 worktree: removed; feature branch preserved
 
 ## Status
 
@@ -183,19 +186,19 @@ pre-run HEAD/status. Full feature-tree `pnpm ci:check` (`331/331` server tests),
 the exact 14-path scope audit, the 139-reference local-path audit, and
 `git diff --check` pass. The first hostile review's matrix/reproducibility gaps
 were corrected; two final independent re-reviews report no P0/P1/P2 blocker.
-The evidence is sealed at commit `871c7986` with tree `f52848f`. Guarded
-landing, post-merge CI, push, and BC-002 feature-worktree teardown remain the
-active mechanical closeout.
+The evidence commit `871c7986` and feature tip `5f9325b` landed as merge
+`9278a6f`. Feature/merge tree `75c83dd` is identical and ancestry is positive.
+Full post-merge `pnpm ci:check` (`331/331` server tests), push to exact
+`origin/main`, and feature-worktree teardown passed. Git left unregistered
+dependency residue during worktree removal; its exact parent/name/process guard
+passed before recursive removal. N1 is complete.
 
 ## Active action
 
-Finish BC-002 from its recorded worktree: run the final full gate and hostile
-review, seal the evidence, guarded-land it, prove ancestry/tree equality, run
-the post-merge gate, push, and tear down the feature worktree. After that
-positive closeout, define the smallest N4 safety slice as SF-001 data-directory
-single-instance admission. Repository exclusion, child-environment hardening,
-loopback binding, and N7 accessibility remain separate owning slices rather
-than being silently bundled into BC-002.
+From the clean pushed BC-002 closeout, define and execute the smallest N4 safety
+slice as SF-001 data-directory single-instance admission. Repository exclusion,
+child-environment hardening, loopback binding, and N7 accessibility remain
+separate owning slices rather than being silently bundled into SF-001.
 
 ## Startup checks
 
@@ -206,9 +209,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001 feature and closeout worktrees are removed. Keep the PC-SDK Next main
-checkout read-only; all BC-002 mutations stay in its recorded feature worktree
-until guarded landing.
+The PM-001 and BC-002 feature worktrees are removed. Keep the PC-SDK Next main
+checkout read-only; create a recorded SF-001 feature branch/worktree before any
+mutation.
 
 ## Known blockers
 

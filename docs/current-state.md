@@ -96,6 +96,13 @@ only in PC-SDK Next.
 - PM-001 landed tree: `18cfeb9177130f697ad30358d76b5db27104bae4`
 - PM-001 feature worktree: removed after positive ancestry/tree proof; feature
   branch preserved
+- BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
+- BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
+- BC-002 feature tip: `5f9325b14ee40085ea2ef1f827a2703163abeb0a`
+- BC-002 landing merge: `9278a6f9e9769b73601c58399554468328b314a1`
+- BC-002 landed tree: `75c83dd3024d47fe73a655a41e46fae604b824ed`
+- BC-002 feature worktree: removed after positive ancestry/tree proof; feature
+  branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -278,7 +285,7 @@ pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
 domain creation. That bounded uncertainty is retained in the receipt; PM-001
 does not claim the remote stayed unchanged and will not make another live call.
 
-## N1 browser characterization evidence complete
+## Completed N1 browser characterization
 
 `BC-002` compared preserved `e233aa54` and current base `36ac71c` production
 bundles through isolated disposable fixtures. Four desktop/narrow captures and
@@ -304,8 +311,8 @@ had no tracked diff and was removed, and the stable checkout retained its
 pre-run HEAD/status. The full matrix and cleanup boundary are in
 `docs/research/browser-baseline.md` and
 `docs/execution/receipts/BC-002.md`. Together with BC-001 and the accepted
-PM-001 ownership seam, this satisfies the bounded N1 evidence gate; guarded
-landing and the post-merge receipt close N1.
+PM-001 ownership seam, the guarded landing and post-merge receipt close the
+bounded N1 planning/discovery gate.
 
 ## Known architectural gaps
 
