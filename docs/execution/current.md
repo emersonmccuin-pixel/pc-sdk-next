@@ -326,6 +326,12 @@ tip, make landing and abandonment mutually exclusive, and keep legacy
 abandon tool or bundle the broader process-failure gate, recovery-center UI,
 `OPS-006`, or N7.
 
+- DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
+- DL-002 branch: `codex/dl-002-approved-abandonment`
+- DL-002 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-002`
+- DL-002 contract: `docs/execution/slices/DL-002.md`
+
 ## Startup checks
 
 ```text
