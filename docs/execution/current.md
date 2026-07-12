@@ -111,7 +111,11 @@ Updated: 2026-07-12 after BC-002 guarded landing and teardown.
 - PM-001 closeout worktree: removed after guarded landing
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
-- Active slice: none; BC-002 is complete and SF-001 is the next definition
+- Active slice: `docs/execution/slices/SF-001.md`
+- SF-001 base: `5581af7918ac438b51785cb825f216ab3d79d738`
+- SF-001 branch: `codex/sf-001-data-dir-admission`
+- SF-001 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-001`
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
 - BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
@@ -195,10 +199,13 @@ passed before recursive removal. N1 is complete.
 
 ## Active action
 
-From the clean pushed BC-002 closeout, define and execute the smallest N4 safety
-slice as SF-001 data-directory single-instance admission. Repository exclusion,
-child-environment hardening, loopback binding, and N7 accessibility remain
-separate owning slices rather than being silently bundled into SF-001.
+Execute `docs/execution/slices/SF-001.md`: acquire one OS-enforced lifetime
+SQLite admission lock for the canonical data directory before migrations,
+recovery, runtime composition, or listener startup. Prove same-directory
+exclusion, distinct-directory coexistence, graceful handoff, hard-crash
+recovery, alias collision, fail-closed corruption, and launcher-visible typed
+failure. Repository exclusion, child-environment hardening, loopback binding,
+and N7 accessibility remain separate owning slices.
 
 ## Startup checks
 
@@ -210,8 +217,8 @@ git log --oneline --decorate -8
 ```
 
 The PM-001 and BC-002 feature worktrees are removed. Keep the PC-SDK Next main
-checkout read-only; create a recorded SF-001 feature branch/worktree before any
-mutation.
+checkout read-only. SF-001 mutations occur only in its recorded feature
+worktree.
 
 ## Known blockers
 
