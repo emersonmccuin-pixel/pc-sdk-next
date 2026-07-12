@@ -312,10 +312,14 @@ teardown all passed.
 
 ## Active action
 
-Define the bounded N4 delivery-receipt slice for explicit positive no-op
-preparation/readiness and approved abandonment under `WT-002`, `WT-005`, and
-`WT-006`. Start from the actual lifecycle/recovery/UI seams. Do not bundle the
-broader process-failure gate, recovery UI implementation, `OPS-006`, or N7.
+Implement `DL-001` from `docs/execution/slices/DL-001.md`: explicit positive
+preparation/readiness receipts for repository builder runs and continuations,
+with immutable persistence and pre-mint/revival guards. Keep the detached
+reviewer permission/check-out boundary explicit and leave `WT-002` accepted.
+After guarded landing and cleanup, continue directly to the separately scoped
+`DL-002` approved-abandonment receipt and teardown authority slice. Do not
+bundle the broader process-failure gate, recovery UI implementation,
+`OPS-006`, or N7.
 
 ## Startup checks
 
