@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after SEC-003 contract definition and isolated feature-
-worktree preparation.
+Updated: 2026-07-12 after SEC-003 implementation, full feature-tree
+verification, and clean hostile re-review.
 
 ## Repository
 
@@ -137,6 +137,12 @@ worktree preparation.
 - SF-002 feature branch: preserved
 - SF-002 code landing: pushed and re-fetched exactly at the landing merge
   before documentation closeout
+- SEC-003 base: `781e8f5cd8d3666c668b6e3b2c773d4e32ec3141`
+- SEC-003 branch: `codex/sec-003-child-environment`
+- SEC-003 contract commit: `e33c5c2f3b26dcf6746e8c01a1bde6ce531a1fef`
+- SEC-003 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-sec-003`
+- SEC-003 receipt: `docs/execution/receipts/SEC-003.md`
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
 - BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
@@ -279,13 +285,23 @@ The protection is deliberately cooperative. The working PC-SDK does not
 participate, an escaped child is not contained, and the manual stable-vs-Next
 concurrent-write prohibition remains. `OPS-005` stays accepted.
 
+SEC-003's feature implementation is complete and independently re-reviewed.
+Provider runtimes, app-owned Git, setup/readiness/verification/cleanup shells,
+and their descendants now receive one positive OS-essential allowlist instead
+of the server environment. Claude adds only its selected exact credential home
+and the pinned SDK fake-spawn proves the final native map without a provider
+call. Shell selection is pinned independently of ambient `ComSpec`; Git hooks/
+filters and real shell grandchildren cannot observe the host PM/OpenAI/app
+canaries. Explicit MCP consumer env and same-engine restart retain their
+documented separate semantics. Full feature-tree `pnpm ci:check` passes with
+387/387 server tests; three hostile re-reviews report no P0/P1/P2.
+
 ## Active action
 
-Implement and verify `docs/execution/slices/SEC-003.md`: replace broad runtime,
-setup/readiness/verification/cleanup, and Git-child inheritance with one
-provider-neutral positive allowlist while retaining only the selected runtime
-credential home. Do not bundle `OPS-006`, launcher/browser policy, or other N7
-work.
+Seal the SEC-003 feature record, guarded-land it onto exact unchanged `main`,
+prove ancestry/tree equality, run post-merge `pnpm ci:check`, push exact
+`origin/main`, and tear down the feature worktree. Do not bundle `OPS-006`,
+launcher/browser policy, or other N7 work.
 
 ## Startup checks
 
@@ -301,8 +317,9 @@ PC-SDK Next main checkout read-only.
 
 ## Known blockers
 
-No PM-001 blocker remains. Its `get_started` remote-state uncertainty is retained
-in the completion receipt rather than repaired through private-data inspection.
+No SEC-003 blocker remains. No PM-001 blocker remains. Its `get_started`
+remote-state uncertainty is retained in the completion receipt rather than
+repaired through private-data inspection.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.

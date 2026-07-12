@@ -203,14 +203,20 @@ landing are complete.
 | PM-003 | accepted | PM unavailability degrades visibly and never blocks PC-SDK execution. |
 | SEC-001 | accepted | Credentials live in runtime-specific homes or the vault and are excluded from project settings, transcripts, logs, and commits. |
 | SEC-002 | accepted | Tool, filesystem, network, external-side-effect, and landing authority are explicit least-privilege policies with attributable approvals. |
-| SEC-003 | accepted | Runtime and setup subprocess environments are allowlisted or scrubbed so unrelated app secrets such as PM tokens are not inherited. |
+| SEC-003 | verified | Runtime and setup subprocess environments are allowlisted or scrubbed so unrelated app secrets such as PM tokens are not inherited. |
 | UI-001 | accepted | Preserve the existing visual shell unless a documented behavioral requirement requires a change; boundary rewiring is not a redesign license. |
 
-SF-002's narrow cwd-integrity scrub removes the three ambient Git repository
-selectors from direct Git, setup/readiness/verification shell, and provider
-runtime children. It does not implement the general secret/environment
-allowlist required by `SEC-003`, which remains the next safe N4 slice after
-SF-002.
+SEC-003 supersedes SF-002's narrow three-selector scrub with one positive
+OS-essential allowlist at direct Git, setup/readiness/verification/cleanup
+shell, and provider-runtime children. Unknown names, app/PM variables, raw
+provider credentials, Git selectors, and injection controls are absent; the
+Claude adapter adds only its exact selected credential home and rejects a
+missing/malformed home. Git hooks/filters, shell grandchildren, the pinned
+Claude SDK final spawn, explicit MCP stdio attachment semantics, and the sole
+trusted same-engine restart exception have deterministic guards. Full
+feature-tree `pnpm ci:check` passes with 387/387 server tests and independent
+hostile re-review has no remaining P0/P1/P2 finding. Detailed evidence is in
+`docs/execution/receipts/SEC-003.md`.
 
 PM-001 discovery receipt (2026-07-12): the joint source/domain/persistence/
 UI/REST/MCP/PC-SDK inspection began at AInativePM `5033d5e` and was delta-

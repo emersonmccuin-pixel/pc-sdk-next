@@ -10,7 +10,15 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getActiveWorktreeByName, newId } from '@pc/db';
@@ -192,6 +200,49 @@ test('app-owned Git commands ignore ambient selectors and mutate only the agent 
     if (wt) {
       await teardownWorktree(gp.dir, wt.dir, [], wt.repositoryIdentity).catch(() => false);
     }
+    await gp.cleanup();
+  }
+});
+
+test('repository hooks started by app-owned Git cannot observe ambient variables', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const hookDir = join(gp.dir, '.git', 'sec003-hooks');
+  const hookPath = join(hookDir, 'pre-commit');
+  const markerPath = join(gp.dir, '.git', 'sec003-hook.marker');
+  const canaryName = 'PC_SDK_SEC003_GIT_HOOK_CANARY';
+  const priorCanary = process.env[canaryName];
+  try {
+    mkdirSync(hookDir);
+    writeFileSync(
+      hookPath,
+      [
+        '#!/usr/bin/env node',
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(markerPath)}, process.env.${canaryName} ?? 'absent');`,
+        '',
+      ].join('\n'),
+    );
+    chmodSync(hookPath, 0o755);
+    assert.equal((await git(['config', 'core.hooksPath', hookDir], gp.dir)).ok, true);
+
+    process.env[canaryName] = 'must-not-cross-app-owned-git';
+    const committed = await git([
+      '-c',
+      'user.name=PC-SDK Test',
+      '-c',
+      'user.email=test@pc-sdk.invalid',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'SEC-003 hook environment guard',
+    ], gp.dir);
+
+    assert.equal(committed.ok, true, committed.stderr);
+    assert.equal(readFileSync(markerPath, 'utf8'), 'absent', 'the hook ran without the ambient canary');
+  } finally {
+    if (priorCanary === undefined) delete process.env[canaryName];
+    else process.env[canaryName] = priorCanary;
     await gp.cleanup();
   }
 });

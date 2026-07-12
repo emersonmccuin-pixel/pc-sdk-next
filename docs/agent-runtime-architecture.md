@@ -143,8 +143,11 @@ silent fallback or invented context/usage precision.
 ### Claude Agent SDK
 
 - Subscription path: Claude Code login under `CLAUDE_CONFIG_DIR`.
-- Credential rule: scrub `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` so they
-  cannot shadow the selected subscription login.
+- Credential rule: start the native child from the shared positive OS-
+  essential environment allowlist, then add exactly the PC-SDK-selected
+  `CLAUDE_CONFIG_DIR`. Ambient Anthropic/OpenAI keys, auth tokens, endpoints,
+  peer credential homes, app variables, Git selectors, and unknown variables
+  cannot shadow the selected subscription login or select API billing.
 - Native session: Claude SDK session id and `resume`.
 - Instructions/tools: SDK system prompt plus the app-owned MCP/tool bridge.
 - Current state: `ClaudeRuntimeAdapter` is the only Claude SDK importer. It
@@ -180,6 +183,31 @@ silent fallback or invented context/usage precision.
 
 Additional runtimes are allowed only by implementing the same adapter and
 conformance suite. Do not add provider conditionals to core services.
+
+## Child environment boundary
+
+`SEC-003` defines one provider-neutral inherited-environment boundary for
+provider runtimes, app-owned Git, and delivery shell children. It starts from
+an empty object and retains only explicit OS execution, home/config,
+temporary, locale, and terminal names. Windows names are matched case-
+insensitively and an ambiguous duplicate is omitted; POSIX names must match
+exactly. Undefined, NUL-bearing, and exported-shell-function values are also
+omitted. Caller input is never mutated and child failure never retries with
+`process.env`.
+
+An adapter may add only its internally selected credential-home selector after
+that reduction. The Claude session sanitizes both its constructor input and
+the final SDK query options; the pinned SDK fake-spawn guard proves the native
+process receives only that result plus SDK-authored version/entrypoint markers.
+A future Codex adapter must add its selected `CODEX_HOME` through the same
+boundary and conformance suite.
+
+MCP stdio remains a separate explicit-consumer boundary: the MCP SDK supplies
+its small safe default environment and PC-SDK merges only the registered
+server's configured attachment env. Those configured values are intentional
+consumer policy, not ambient inheritance. The trusted same-engine restart must
+retain app configuration and is not an untrusted child; launcher/browser
+separation remains N7 operations work.
 
 ## Sessions and switching
 

@@ -14,7 +14,7 @@ import { isSubscriptionQuotaIdentity } from '@pc/contracts';
 import { getProjectById } from '@pc/db';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import type { ULID } from '@pc/domain';
-import { withoutAmbientGitRepositorySelectors } from '../operations/git-environment.ts';
+import { buildChildEnvironment } from '../operations/child-environment.ts';
 
 export interface Account {
   id: string;
@@ -102,10 +102,9 @@ export class AccountRegistry {
     return selectedDefault;
   }
 
-  /** Build the per-query env for an account. Spreads `process.env` (the SDK
-   *  REPLACES the subprocess env entirely — PATH/HOME must survive), scrubs the
-   *  subscription-shadowing credentials, and points `CLAUDE_CONFIG_DIR` at the
-   *  account's login. */
+  /** Build the per-query env for an account. The SDK replaces the subprocess
+   *  env entirely, so the shared positive allowlist retains only the OS values
+   *  needed to launch it. The selected credential home is then added exactly. */
   buildEnv(
     runtimeId: string,
     accountId: string,
@@ -154,9 +153,10 @@ function credentialHomeKey(runtimeId: string, configDir: string): string {
   return `${runtimeId}\u0000${process.platform === 'win32' ? canonical.toLowerCase() : canonical}`;
 }
 
-/** Pure env builder — extracted so the child-env scrub is unit-testable away
- *  from the registry. Deletes subscription-shadowing credentials and ambient
- *  Git repository selectors, then forces `CLAUDE_CONFIG_DIR`. */
+/** Pure env builder — extracted so account selection is unit-testable away
+ *  from the registry. Starts from the shared positive allowlist, then adds the
+ *  one provider selector chosen by PC-SDK. Ambient provider homes and raw
+ *  credentials never participate in that selection. */
 export function buildAccountEnv(
   configDir: string,
   base: NodeJS.ProcessEnv = process.env,
@@ -168,15 +168,7 @@ export function buildAccountEnv(
     configDir.includes('\u0000') ||
     !isAbsolute(configDir)
   ) throw new Error('runtime credential home must be an absolute canonical path');
-  const env: Record<string, string> = {};
-  const blocked = new Set([
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_AUTH_TOKEN',
-    'CLAUDE_CONFIG_DIR',
-  ]);
-  for (const [key, value] of Object.entries(withoutAmbientGitRepositorySelectors(base))) {
-    if (value !== undefined && !blocked.has(key.toUpperCase())) env[key] = value;
-  }
+  const env = buildChildEnvironment(base);
   env.CLAUDE_CONFIG_DIR = configDir;
   return env;
 }

@@ -17,7 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import {
   createSdkMcpServer,
   query,
@@ -46,6 +46,7 @@ import {
   type SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
+import { buildChildEnvironment } from '../operations/child-environment.ts';
 import type { AccountRegistry } from './account-env.ts';
 import {
   preflightRuntimeSelection,
@@ -118,6 +119,30 @@ export interface ClaudeSessionConfig {
   maxTurns?: number;
   /** Non-interactive dispatch: never block on permissions. */
   bypassPermissions?: boolean;
+}
+
+/** Reduce a caller-provided runtime environment to the shared ambient
+ * allowlist and then restore only the exact credential home selected by the
+ * adapter. Lowercase lookalikes and ambient homes are never normalized or
+ * inferred; a missing or malformed exact selected home is rejected. */
+function buildClaudeQueryEnvironment(
+  base: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const selectedConfigDir = Object.prototype.hasOwnProperty.call(base, 'CLAUDE_CONFIG_DIR')
+    ? base.CLAUDE_CONFIG_DIR
+    : undefined;
+  const env = buildChildEnvironment(base);
+  if (
+    typeof selectedConfigDir === 'string' &&
+    selectedConfigDir.length > 0 &&
+    selectedConfigDir === selectedConfigDir.trim() &&
+    !selectedConfigDir.includes('\u0000') &&
+    isAbsolute(selectedConfigDir)
+  ) {
+    env.CLAUDE_CONFIG_DIR = selectedConfigDir;
+    return env;
+  }
+  throw new Error('Claude runtime credential home is unavailable');
 }
 
 interface StartOptions {
@@ -576,7 +601,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     );
     this.config = {
       ...config,
-      env: { ...config.env },
+      env: buildClaudeQueryEnvironment(config.env),
       continuationAttemptId: this.continuationAttemptId,
       selection: immutableRuntimeSelection(config.selection),
       ...(config.allowedTools ? { allowedTools: [...config.allowedTools] } : {}),
@@ -628,7 +653,10 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     const options: Options = {
       model: this.config.selection.model,
       systemPrompt: this.config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
-      env: this.config.env,
+      // Defense in depth at the final native-query seam. This second pass
+      // prevents a direct session config or late internal mutation from
+      // restoring ambient capabilities after account selection.
+      env: buildClaudeQueryEnvironment(this.config.env),
       cwd: opts.cwd ?? this.config.cwd ?? process.cwd(),
       includePartialMessages: true,
       permissionMode: this.config.bypassPermissions ? 'bypassPermissions' : 'default',

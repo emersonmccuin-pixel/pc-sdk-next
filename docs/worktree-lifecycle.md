@@ -108,10 +108,13 @@ runtime create/resume whenever their configured cwd is Git-backed. This does
 not authorize those runtimes to mutate the main checkout; the existing
 orchestrator and worktree boundaries still apply.
 
-Ambient `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` are removed from
-direct Git subprocesses, setup/readiness/verification shell subprocesses, and
-provider runtime subprocesses. This keeps repository resolution cwd-derived;
-the broader secret/environment allowlist remains owned by `SEC-003`.
+`SEC-003` replaces ambient inheritance at direct Git, setup/readiness/
+verification/cleanup shell, and provider runtime subprocesses with one positive
+OS-essential allowlist. This subsumes the earlier three-selector scrub:
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, app/PM variables, raw provider
+credentials, injection controls, and every unknown name are absent. Git
+filters/hooks/helpers and shell grandchildren inherit the same reduced map.
+The Claude adapter then adds only its selected `CLAUDE_CONFIG_DIR`.
 
 The app-owned `<project>-worktrees` sibling must be a real directory. A symlink
 or Windows junction fails closed before provision, review checkout, teardown,
@@ -134,8 +137,8 @@ The feature worktree/residue and two handoff-recorded stale temp roots were
 removed only after the documented guards; the feature branch was preserved.
 These receipts do not broaden the cooperative boundary.
 
-The next bounded hardening action is `SEC-003` child-environment policy;
-`OPS-006` loopback binding remains in N7.
+SEC-003 is implemented on its isolated feature branch and awaits its closing
+verification/landing receipt. `OPS-006` loopback binding remains in N7.
 
 ## Lifecycle states
 
