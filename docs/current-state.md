@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after PM-001 definition and startup preparation.
+Last updated: 2026-07-12 after PM-001 evidence synthesis.
 
 ## Preserved baseline
 
@@ -231,17 +231,34 @@ Sealed/feature ancestry and exact tree equality were proven, post-merge
 `pnpm ci:check` passed, and the feature worktree plus verified dependency/build
 residue were removed. The feature branch is preserved.
 
-## Active N1 AInativePM discovery
+## Active N1 AInativePM ownership decision
 
-`PM-001` is defined from clean pushed PC-SDK Next base
-`a7c5423cb5a4aa8549521badcfdd320437a74def`. The AInativePM source checkout is
-clean on pushed `main` at `5033d5e` and remains read-only. The slice jointly
-maps AInativePM's generic domain/persistence model, human UI/REST workflows, MCP
-surface, and every existing PC-SDK `pmRef`/MCP touchpoint before proposing an
-ownership and idempotency seam. No integration implementation, remote PM write,
-folder registration, auth/config change, or AInativePM repository mutation is
-authorized. Evidence gathering requires no current product-direction decision;
-the synthesized ownership choice will be surfaced when it is concrete.
+`PM-001` has completed its parallel domain/persistence, UI/REST, MCP, and
+PC-SDK-touchpoint evidence lanes from clean pushed PC-SDK Next base
+`a7c5423cb5a4aa8549521badcfdd320437a74def`. The AInativePM audit began at
+`5033d5e`; concurrent UI-only landings advanced clean pushed `main` to
+`c146162`, and the 24-file `web/**` delta was re-audited before sealing.
+`docs/research/ainativepm-discovery.md` now contains the
+ownership table, interaction sequences, typed port, failure/idempotency matrix,
+deep-link direction, rejected duplications, and dependency-ordered proposal.
+
+The evidence rejects the inherited project-only anchor. It proposes separate
+optional generic PM context and exact external item references. AInativePM owns
+all long-lived management truth; PC-SDK owns all technical execution truth.
+Strict reads and deep links may be automatic. Current PM integration writes are
+blocked because the bridge lacks a positive app policy gate and the PM surface
+lacks general caller idempotency, a durable queryable
+mutation receipt, expected revision, remote-authority/principal fingerprints, and replayable
+events. The one remaining gate is product acceptance or correction of that
+ownership direction; no integration, folder-registration, auth/config, or
+remote PM mutation is authorized by the proposal.
+
+No explicit live mutation tool was called. A source audit after one
+`get_started` call found that the tool invokes first-run domain seeding. Five
+root domains were observed only after that hook ran, so no private DB read or
+pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
+domain creation. That bounded uncertainty is retained in the receipt; PM-001
+does not claim the remote stayed unchanged and will not make another live call.
 
 ## Known architectural gaps
 
@@ -251,8 +268,10 @@ the synthesized ownership choice will be surfaced when it is concrete.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
 - Some older runtime-notice vocabulary remains not yet fully provider-neutral.
-- AInativePM ownership and UI/domain integration have not been jointly audited;
-  the old anchoring proposal is provisional.
+- The AInativePM ownership proposal awaits product acceptance. Typed PM refs,
+  stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
+  attachment, and receipt-safe commands remain unimplemented; automatic PM
+  writes are blocked.
 - Process identity is positive at `/health`, but a data-directory mutex and
   cross-process repository lease do not yet exist; the listener is not yet
   explicitly loopback-bound.

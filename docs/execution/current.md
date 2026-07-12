@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after PM-001 definition and startup preparation.
+Updated: 2026-07-12 after PM-001 evidence synthesis and hostile proposal review.
 
 ## Repository
 
@@ -95,7 +95,8 @@ Updated: 2026-07-12 after PM-001 definition and startup preparation.
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
 - PM-001 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
-- AInativePM read-only source: clean pushed `main` at `5033d5e`
+- AInativePM source: initial snapshot `5033d5e`; final committed boundary
+  `c146162` after audited concurrent UI-only landings
 
 ## Status
 
@@ -117,18 +118,41 @@ isolated desktop/narrow browser QA passed. Post-merge `pnpm ci:check`, sealed an
 feature ancestry, exact feature/merge tree equality, push, and teardown also
 passed. No live provider call was required.
 
-PM-001 is active from the clean pushed RS-004 closeout. It is documentation-only
-and fixes the clean AInativePM source at `5033d5e` for parallel domain,
-UI/REST, MCP, and PC-SDK-touchpoint inspection. No source, database, remote PM,
-configuration, auth, or deployment mutation is in scope.
+PM-001 has completed its parallel domain/persistence, UI/REST, MCP, and
+PC-SDK-touchpoint source lanes from AInativePM `5033d5e`, then revalidated the
+UI/route lane through clean pushed `c146162` after concurrent UI-only landings. The
+evidence-backed proposal rejects the inherited project-only anchor, separates
+optional generic PM context from an exact external item ref, assigns one owner
+to management versus technical truth, blocks present integration writes, and
+defines the authority/identity/idempotency/receipt prerequisites for future
+immutable evidence links. A hostile review found and drove corrections to
+permission authority, provider neutrality, remote/principal identity, stale/
+degraded states, remote ambiguity, migration, local command intent, and REST/
+discussion claims.
+
+AInativePM's final audited commit boundary is `c146162`; PM-001 made no source
+edit. One live `get_started` call was made before source review exposed its
+first-run seeding hook. No pre-call
+snapshot/private DB read can distinguish no-op, marker stamp, or default-domain
+creation, so remote-unchanged is explicitly inconclusive and no further live PM
+call is permitted in this slice.
+
+Final hostile re-review passed with no P0/P1 blocker. `git diff --check`, the
+eight-path scope audit, 23-reference documentation audit, and zero-non-web PM
+delta audit passed. `pnpm ci:check` could not start in this intentionally
+unprepared documentation worktree because `node_modules`/`@types/node` is
+absent; no install/residue was introduced, and the clean base retains its
+post-RS-004 full gate.
 
 ## Next safe action
 
-Run PM-001's three read-only code lanes in parallel, then use bounded read-only
-browser/MCP checks only where code cannot establish behavior. Synthesize the
-domain map, ownership table, sequences, typed port, failure matrix, and rejected
-duplications before bringing the resulting ownership/product choice to the
-user. Do not perform automated PM writes or silently jump to Codex/N5.
+Finish the corrected proposal re-review and documentation checks, seal a clean
+feature checkpoint, then bring exactly one product decision to the user:
+accept/correct the reference-first ownership seam and the recommendation that,
+only after the full safety prerequisites exist, separately keyed positive
+verification and landing receipts may append immutable evidence links while PM
+management transitions stay suggested/explicit. Do not land the proposal,
+perform a PM write, or jump to Codex/N5 before that decision.
 
 ## Startup checks
 
@@ -145,5 +169,9 @@ the PM-001 worktree until guarded landing.
 
 ## Known blockers
 
-No blocker. The Next shortcut code is isolated but has not been installed;
-regular daily driving remains on the original PC-SDK until the migration gate.
+One intentional product blocker remains: PM-001 cannot accept its own ownership
+and future evidence policy. Remote-unchanged is also inconclusive because of the
+`get_started` seeding hook, but no repair/private-data inspection is required to
+evaluate the proposal. The Next shortcut code is isolated but has not been
+installed; regular daily driving remains on the original PC-SDK until the
+migration gate.

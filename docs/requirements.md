@@ -149,3 +149,29 @@ tests passed.
 | SEC-002 | accepted | Tool, filesystem, network, external-side-effect, and landing authority are explicit least-privilege policies with attributable approvals. |
 | SEC-003 | accepted | Runtime and setup subprocess environments are allowlisted or scrubbed so unrelated app secrets such as PM tokens are not inherited. |
 | UI-001 | accepted | Preserve the existing visual shell unless a documented behavioral requirement requires a change; boundary rewiring is not a redesign license. |
+
+PM-001 discovery receipt (2026-07-12): the joint source/domain/persistence/
+UI/REST/MCP/PC-SDK inspection began at AInativePM `5033d5e` and was delta-
+revalidated through clean pushed `c146162` after concurrent UI-only landings;
+the PC-SDK Next base is `a7c5423`. It disproves the project-only anchor and
+proposes separate generic PM context plus exact external item references,
+AInativePM-owned management truth, PC-SDK-owned technical truth, read-only
+automatic behavior, and receipt-gated future commands. The current PM surface
+has no general caller idempotency key, durable queryable mutation receipt,
+expected revision, remote-authority/principal fingerprints, or replayable event cursor, so no
+automatic PM write is approved. The current permission-bypassed generic MCP
+bridge is attribution, not the positive app policy/approval required by
+`SEC-002`, so PM-001 authorizes no direct integration write either. `PM-001`
+through `PM-003` remain `accepted`
+until the product owner accepts or changes the proposed seam; the full evidence
+and one genuine decision are in `docs/research/ainativepm-discovery.md`.
+That decision includes whether, after those prerequisites exist, separately
+keyed positive verification and positive landing receipts may each
+automatically append an immutable deduplicated evidence link while every PM
+management-state transition stays suggested or explicit.
+
+One live `get_started` orientation call was made before source review exposed
+its first-run seeding hook. The five root domains were observed only after the
+hook ran; without a pre-call snapshot or private-data inspection, no-op versus
+marker stamp versus default-domain creation is inconclusive. It does not affect
+the ownership result, but the remote-unchanged acceptance item is not claimed.
