@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { UsageCache } from '../src/usage/cache.ts';
 import { mapOauthUsage, UsagePoller, type OauthUsageResponse } from '../src/usage/poller.ts';
 import { freshDb } from './helpers.ts';
+import { TEST_RUNTIME_ID } from './runtime-fixtures.ts';
 
 const RESPONSE: OauthUsageResponse = {
   five_hour: { utilization: 50.0, resets_at: '2026-07-10T23:00:00.000000+00:00' },
@@ -64,7 +65,7 @@ test('poll records into the cache; unchanged polls skip the outbox', async () =>
   const cache = new UsageCache();
   let fetches = 0;
   const poller = new UsagePoller({
-    accounts: [{ id: 'work', configDir: 'X:/nowhere' }],
+    accounts: [{ id: 'work', runtimeId: TEST_RUNTIME_ID, configDir: 'X:/nowhere' }],
     cache,
     fetchImpl: (async () => {
       fetches++;
@@ -89,7 +90,7 @@ test('expired token degrades: nothing recorded, no throw', async () => {
   freshDb();
   const cache = new UsageCache();
   const poller = new UsagePoller({
-    accounts: [{ id: 'personal', configDir: 'X:/nowhere' }],
+    accounts: [{ id: 'personal', runtimeId: TEST_RUNTIME_ID, configDir: 'X:/nowhere' }],
     cache,
     fetchImpl: (async () => {
       throw new Error('fetch must not run with an expired token');

@@ -11,16 +11,18 @@ function makeSession(over: Partial<ConversationSessionDto> = {}): ConversationSe
   return {
     id: 's1',
     projectId: 'p1',
-    provider: 'claude',
-    providerSessionId: 'uuid-1',
-    model: 'opus',
+    selection: {
+      runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'opus',
+      effort: { kind: 'none' },
+    },
     title: 'Chat',
     status: 'active',
     endedReason: null,
     startedAt: 100,
     endedAt: null,
-    jsonlPath: '/x/y.jsonl',
-    jsonlLineCursor: 5,
+    nativeSessionIdPresent: true,
+    continuationState: 'clean-started',
+    resumeAvailability: { status: 'unavailable', code: 'session-active' },
     ...over,
   };
 }
@@ -33,25 +35,33 @@ test('isConversationKind accepts the three read-surface kinds, rejects others', 
   assert.equal(isConversationKind(7), false);
 });
 
-test('isConversationSessionDto round-trips a mirror of OrchestratorSession', () => {
+test('isConversationSessionDto round-trips provider-neutral stamped and legacy rows', () => {
   assert.equal(isConversationSessionDto(makeSession()), true);
-  assert.equal(isConversationSessionDto(makeSession({ status: 'ended', endedReason: 'pty_exit', endedAt: 200 })), true);
+  assert.equal(isConversationSessionDto(makeSession({
+    status: 'ended', endedReason: 'pty_exit', endedAt: 200,
+    resumeAvailability: { status: 'available' },
+  })), true);
   assert.equal(isConversationSessionDto(makeSession({
     status: 'ended', endedReason: 'account_switched', endedAt: 200,
+    resumeAvailability: { status: 'available' },
   })), true);
-  assert.equal(isConversationSessionDto(makeSession({ providerSessionId: null, model: null, title: null, jsonlPath: null })), true);
+  assert.equal(isConversationSessionDto(makeSession({
+    selection: null, title: null, status: 'ended', endedReason: 'selection_unavailable',
+    nativeSessionIdPresent: true, continuationState: 'legacy-unavailable',
+    resumeAvailability: { status: 'unavailable', code: 'selection-unavailable' },
+    endedAt: 200,
+  })), true);
 });
 
-test('isConversationSessionDto rejects bad status / ended reason / missing cursor', () => {
+test('isConversationSessionDto rejects bad lifecycle, missing selection, and extra data', () => {
   assert.equal(isConversationSessionDto(makeSession({ status: 'paused' as never })), false);
   assert.equal(isConversationSessionDto(makeSession({ endedReason: 'nope' as never })), false);
-  assert.equal(isConversationSessionDto({ ...makeSession(), jsonlLineCursor: undefined }), false);
+  assert.equal(isConversationSessionDto({ ...makeSession(), selection: undefined }), false);
+  assert.equal(isConversationSessionDto({ ...makeSession(), providerSessionId: 'native-secret' }), false);
   assert.equal(isConversationSessionDto(null), false);
 });
 
-test('the DTO does NOT widen the wire: deletedAt is not part of the contract', () => {
-  // A row carrying deletedAt is still a valid DTO (extra keys ignored), but the
-  // contract type has no deletedAt member — guarded structurally by the type.
+test('the DTO is exact: deletedAt is not part of the browser contract', () => {
   const withExtra = { ...makeSession(), deletedAt: 123 } as unknown;
-  assert.equal(isConversationSessionDto(withExtra), true);
+  assert.equal(isConversationSessionDto(withExtra), false);
 });

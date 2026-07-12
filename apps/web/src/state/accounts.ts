@@ -10,6 +10,12 @@
 
 import { create } from 'zustand';
 import { getJson, postJson } from '@/api/http';
+import {
+  isSessionSummary,
+  type SessionChangedFrame,
+  type SessionSummary,
+  type SessionUpdatedFrame,
+} from '@pc/contracts';
 
 export type AccountId = string;
 
@@ -37,12 +43,18 @@ interface AccountsListResponse {
   defaultAccountId: string;
 }
 
+interface AccountSwitchResponse {
+  accountId: string;
+  switched: boolean;
+  session?: SessionSummary | null;
+}
+
 const accountsApi = {
   list: () => getJson<AccountsListResponse>('/api/accounts'),
   getForProject: (projectId: string) =>
     getJson<{ accountId: string }>(`/api/projects/${encodeURIComponent(projectId)}/account`),
   setForProject: (projectId: string, accountId: string) =>
-    postJson<{ accountId: string; switched: boolean }>(
+    postJson<AccountSwitchResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/account`,
       { accountId },
     ),
@@ -52,9 +64,15 @@ export type SwitchStatus = 'idle' | 'pending' | 'error';
 
 interface AccountsState {
   accounts: AccountInfo[];
+  /** Project whose default/stamped session the singleton header represents. */
+  projectId: string | null;
   /** The account shown as active in the header + used for usage display. Seeded
-   *  from the active project; the server is the source of truth. */
+   *  from the active session stamp when present, otherwise the project default. */
   selectedId: AccountId;
+  /** Browser-safe active stamp/provenance. Native identity is presence-only. */
+  activeSession: SessionSummary | null;
+  /** Invalidates a slower project-default read after authoritative session state. */
+  sessionStampVersion: number;
   /** Round-trip state for the header control (positive receipt — no silent fail). */
   status: SwitchStatus;
   /** The account id mid-switch (spinner target), or null. */
@@ -62,6 +80,12 @@ interface AccountsState {
   error: string | null;
   /** Local-only selection (display); the real, server-backed switch is switchAccount. */
   select: (id: AccountId) => void;
+  /** Bind all subsequent reads and socket updates to exactly one project. */
+  bindProject: (projectId: string | null) => void;
+  /** Synchronize the header from a strictly guarded session lifecycle frame. */
+  applySessionChanged: (frame: SessionChangedFrame) => void;
+  /** Apply provenance/identity presence without treating it as a boundary. */
+  applySessionUpdated: (frame: SessionUpdatedFrame) => void;
   /** Load the registry list from the server (replaces the stub). */
   loadRegistry: () => Promise<void>;
   /** Seed selectedId from a project's current default account. */
@@ -73,12 +97,52 @@ interface AccountsState {
 
 export const useAccounts = create<AccountsState>((set, get) => ({
   accounts: DEFAULT_ACCOUNTS,
+  projectId: null,
   selectedId: DEFAULT_ACCOUNTS[0]!.id,
+  activeSession: null,
+  sessionStampVersion: 0,
   status: 'idle',
   pendingId: null,
   error: null,
 
-  select: (selectedId) => set({ selectedId }),
+  select: (selectedId) =>
+    set((state) => state.activeSession?.selection ? state : { selectedId }),
+
+  bindProject: (projectId) =>
+    set((state) => state.projectId === projectId ? state : ({
+      projectId,
+      activeSession: null,
+      sessionStampVersion: state.sessionStampVersion + 1,
+      status: 'idle',
+      pendingId: null,
+      error: null,
+    })),
+
+  applySessionChanged: (frame) =>
+    set((state) => {
+      if (state.projectId !== frame.projectId) return state;
+      const stampedAccountId = frame.session?.selection?.accountId;
+      return {
+        activeSession: frame.session,
+        selectedId: stampedAccountId ?? state.selectedId,
+        // A null snapshot confirms only that no app session is active; it does
+        // not supersede the independent project-default account read.
+        sessionStampVersion: state.sessionStampVersion + (stampedAccountId ? 1 : 0),
+      };
+    }),
+
+  applySessionUpdated: (frame) =>
+    set((state) => {
+      if (
+        state.projectId !== frame.projectId ||
+        state.activeSession?.id !== frame.session.id
+      ) return state;
+      return {
+        activeSession: frame.session,
+        selectedId: frame.session.selection?.accountId ?? state.selectedId,
+        sessionStampVersion: state.sessionStampVersion + 1,
+      };
+    }),
 
   loadRegistry: async () => {
     try {
@@ -95,8 +159,16 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   },
 
   loadForProject: async (projectId) => {
+    get().bindProject(projectId);
+    const versionAtRead = get().sessionStampVersion;
     try {
       const { accountId } = await accountsApi.getForProject(projectId);
+      const current = get();
+      if (
+        current.projectId !== projectId ||
+        current.sessionStampVersion !== versionAtRead ||
+        current.activeSession?.selection
+      ) return;
       set({ selectedId: accountId, status: 'idle', pendingId: null, error: null });
     } catch {
       /* a failed read isn't a switch failure — leave the current selection */
@@ -105,12 +177,26 @@ export const useAccounts = create<AccountsState>((set, get) => ({
 
   switchAccount: async (projectId, accountId) => {
     if (get().status === 'pending') return;
+    get().bindProject(projectId);
     set({ status: 'pending', pendingId: accountId, error: null });
     try {
       const res = await accountsApi.setForProject(projectId, accountId);
-      // Server confirmed. session-changed rides the WS; we just reflect selection.
-      set({ selectedId: res.accountId, status: 'idle', pendingId: null, error: null });
+      if (get().projectId !== projectId) return;
+      const session = res.session && isSessionSummary(res.session) && res.session.projectId === projectId
+        ? res.session
+        : null;
+      // Preserve the positive HTTP receipt while accepting the stamped summary
+      // when supplied. The guarded WS frame remains the reconnect authority.
+      set((state) => ({
+        selectedId: session?.selection?.accountId ?? res.accountId,
+        activeSession: session ?? (res.switched ? null : state.activeSession),
+        sessionStampVersion: state.sessionStampVersion + (res.switched || session ? 1 : 0),
+        status: 'idle',
+        pendingId: null,
+        error: null,
+      }));
     } catch (err) {
+      if (get().projectId !== projectId) return;
       set({ status: 'error', pendingId: null, error: (err as Error).message });
     }
   },

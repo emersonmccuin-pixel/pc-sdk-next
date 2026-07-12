@@ -11,6 +11,7 @@ import {
   enqueueConversationSend,
   getActiveOrchestratorSession,
   getConversationQueueSnapshot,
+  getOrchestratorSession,
   getProjectById,
   getRawDb,
 } from '@pc/db';
@@ -18,7 +19,12 @@ import { AccountRegistry } from '../src/runner/account-env.ts';
 import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
-import { freshDb } from './helpers.ts';
+import { freshDb, until } from './helpers.ts';
+import {
+  TEST_RUNTIME_ID,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 // Response bodies are `unknown` under strict fetch types; tests assert on shapes.
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -27,11 +33,13 @@ const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
 async function boot(): Promise<{ server: RunningServer; base: string; usage: UsageCache }> {
   const usage = new UsageCache();
   const server = await startServer({
-    mintSession: () => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 }),
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 })),
+    ...testSessionSelectionDeps(),
     port: 0,
     instanceId: 'pc-sdk-next-test',
     runRecovery: false,
     accounts: new AccountRegistry(),
+    orchestratorRuntimeId: TEST_RUNTIME_ID,
     usage,
   });
   return { server, base: `http://localhost:${server.port}`, usage };
@@ -111,7 +119,19 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.equal(newSess.ok, true);
     assert.equal(newSess.transition, 'new-session');
     assert.ok(newSess.session.id);
-    assert.ok(newSess.session.status === 'active' || newSess.session.status === 'ended');
+    assert.equal(newSess.session.status, 'active');
+    assert.deepEqual(newSess.session.selection, {
+      runtimeId: TEST_RUNTIME_ID,
+      accountId: 'personal',
+      model: 'opus',
+      effort: { kind: 'none' },
+    });
+    assert.equal(newSess.session.nativeSessionIdPresent, false);
+    assert.equal(newSess.session.continuationState, 'clean-pending');
+    assert.deepEqual(newSess.session.resumeAvailability, {
+      status: 'unavailable', code: 'session-active',
+    });
+    assert.equal('nativeSessionId' in newSess.session, false);
 
     // list sessions → SessionSummary[]
     const sessions = await fetch(`${base}/api/projects/${project.id}/sessions`).then(body);
@@ -187,6 +207,12 @@ test('accounts: registry list; switching a project account ends the session + mi
     // start a session under the current account
     const sess = await fetch(`${base}/api/projects/${pid}/sessions/new`, { method: 'POST' }).then(body);
     const oldSessionId = sess.session.id;
+    const initialService = server.registry.get(pid);
+    assert.equal((await initialService.handleSend({
+      type: 'send', commandId: 'bind-personal-session', sessionId: oldSessionId,
+      text: 'bind the native session', clientMessageId: 'bind-personal-client',
+    })).status, 'applied');
+    await until(() => getOrchestratorSession(oldSessionId)?.nativeIdentityState === 'bound');
 
     // switch account → ends the old session, mints a new one
     const sw = await fetch(`${base}/api/projects/${pid}/account`, {
@@ -197,23 +223,23 @@ test('accounts: registry list; switching a project account ends the session + mi
     assert.equal(sw.accountId, 'work');
     assert.equal(sw.switched, true);
     assert.ok(sw.session && sw.session.id && sw.session.id !== oldSessionId);
+    assert.equal(sw.session.selection.accountId, 'work');
+    assert.equal(sw.session.continuationState, 'clean-pending');
+    assert.equal(sw.session.nativeSessionIdPresent, false);
 
     // the change is persisted as the project default
     assert.equal((await fetch(`${base}/api/projects/${pid}/account`).then(body)).accountId, 'work');
 
     // old session ended, new session active
     const list = await fetch(`${base}/api/projects/${pid}/sessions`).then(body);
-    assert.equal(list.sessions.find((s: { id: string }) => s.id === oldSessionId).status, 'ended');
-    assert.equal(list.sessions.find((s: { id: string; resumable: boolean }) => s.id === oldSessionId).resumable, false);
+    const oldSummary = list.sessions.find((s: { id: string }) => s.id === oldSessionId);
+    assert.equal(oldSummary.status, 'ended');
+    assert.equal(oldSummary.selection.accountId, 'personal');
+    assert.equal(oldSummary.nativeSessionIdPresent, true);
+    assert.equal(oldSummary.continuationState, 'clean-started');
+    assert.deepEqual(oldSummary.resumeAvailability, { status: 'available' });
+    assert.equal(oldSummary.continuationState === 'legacy-unavailable', false);
     assert.equal(list.sessions.find((s: { id: string }) => s.id === sw.session.id).status, 'active');
-
-    // Pre-switch native sessions have no immutable account stamp yet, so they
-    // remain replayable but cannot be resumed under the new credential home.
-    const unsafeResume = await fetch(
-      `${base}/api/projects/${pid}/sessions/${oldSessionId}/resume`,
-      { method: 'POST' },
-    );
-    assert.equal(unsafeResume.status, 404);
 
     // same account again → no-op, no new session
     const noop = await fetch(`${base}/api/projects/${pid}/account`, {
@@ -223,6 +249,21 @@ test('accounts: registry list; switching a project account ends the session + mi
     }).then(body);
     assert.equal(noop.switched, false);
     assert.equal(noop.session, null);
+
+    // Historical account A resumes through its immutable stamp even though the
+    // project default remains B. This is native continuation, never a clean fallback.
+    const resumedResponse = await fetch(
+      `${base}/api/projects/${pid}/sessions/${oldSessionId}/resume`,
+      { method: 'POST' },
+    );
+    assert.equal(resumedResponse.status, 200);
+    const resumed = await body(resumedResponse);
+    assert.equal(resumed.transition, 'resume-session');
+    assert.equal(resumed.session.id, oldSessionId);
+    assert.equal(resumed.session.selection.accountId, 'personal');
+    assert.equal(resumed.session.resumeAvailability.code, 'session-active');
+    assert.equal((await fetch(`${base}/api/projects/${pid}/account`).then(body)).accountId, 'personal');
+    assert.equal(getProjectById(pid)?.settings.defaultAccountId, 'work');
 
     // unknown account → 400
     const bad = await fetch(`${base}/api/projects/${pid}/account`, {
@@ -317,7 +358,7 @@ test('project delete cancels idle FIFO state and fences an already-held service'
     assert.equal(getActiveOrchestratorSession(projectId), null);
     assert.deepEqual(getConversationQueueSnapshot(sessionId).items, []);
 
-    const afterDelete = heldService.handleSend({
+    const afterDelete = await heldService.handleSend({
       type: 'send', commandId: 'delete-fence-after', sessionId,
       text: 'must not execute', clientMessageId: 'delete-fence-after-client',
     });

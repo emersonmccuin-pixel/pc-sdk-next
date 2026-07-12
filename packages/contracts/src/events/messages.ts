@@ -1,6 +1,10 @@
 // Conversation commands, durable queue snapshots, ask/permission, and
 // transport heartbeat. Browser-safe, zero runtime dependencies.
 
+import {
+  RUNTIME_SELECTION_ERROR_CODES,
+  type RuntimeSelectionErrorCode,
+} from '../runtime.ts';
 import type { ULID } from '../shared.ts';
 
 // ── Client → server conversation commands ───────────────────────────────────
@@ -109,7 +113,8 @@ export type ConversationCommandErrorCode =
   | 'not-head'
   | 'no-active-turn'
   | 'interrupt-in-progress'
-  | 'internal';
+  | 'internal'
+  | RuntimeSelectionErrorCode;
 
 export interface ConversationCommandError {
   code: ConversationCommandErrorCode;
@@ -311,6 +316,7 @@ const COMMAND_ERROR_CODES: readonly ConversationCommandErrorCode[] = [
   'no-active-turn',
   'interrupt-in-progress',
   'internal',
+  ...RUNTIME_SELECTION_ERROR_CODES,
 ];
 const QUEUE_ORIGINS: readonly SendQueueItemOrigin[] = ['user', 'agent-envelope'];
 const QUEUE_STATUSES: readonly SendQueueItemStatus[] = [

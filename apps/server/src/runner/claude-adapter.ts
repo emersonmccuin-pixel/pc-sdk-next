@@ -20,6 +20,8 @@ import {
   createSdkMcpServer,
   query,
   tool,
+  type EffortLevel,
+  type ModelInfo,
   type Options,
   type PermissionResult,
   type Query,
@@ -28,6 +30,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import {
   isCanonicalToolName,
+  isRuntimeSelection,
   safeToolSummary,
   type ToolApprovalSnapshot,
   type ToolCallState,
@@ -37,16 +40,23 @@ import {
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 import type { AccountRegistry } from './account-env.ts';
-import type {
-  AgentRuntimeAdapter,
-  AskDecision,
-  AskHandler,
-  CreateRuntimeSession,
-  ResumeRuntimeSession,
-  RuntimeDelta,
-  RuntimeEvent,
-  RuntimeSession,
-  RuntimeUsage,
+import {
+  preflightRuntimeSelection,
+  RuntimeSelectionRejectedError,
+  type AgentRuntimeAdapter,
+  type AskDecision,
+  type AskHandler,
+  type CreateRuntimeSession,
+  type ResumeRuntimeSession,
+  type RuntimeDelta,
+  type RuntimeCapabilities,
+  type RuntimeEvent,
+  type RuntimeModel,
+  type RuntimeModelDiscovery,
+  type RuntimeSelection,
+  type RuntimeSessionReceipt,
+  type RuntimeSession,
+  type RuntimeUsage,
 } from './runtime.ts';
 
 export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
@@ -54,6 +64,9 @@ export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
 /** Native tools auto-allowed for the orchestrator (read-only surface).
  *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
+const CLAUDE_EFFORT_LEVELS = new Set<EffortLevel>(['low', 'medium', 'high', 'xhigh', 'max']);
+
+export type ClaudeQueryFactory = (params: Parameters<typeof query>[0]) => Query;
 
 const DEFAULT_SYSTEM_PROMPT = `You are the orchestrator of a local-first project workspace (PC-SDK).
 You help the user explore and reason about the project in the working directory, using your tools.
@@ -62,9 +75,12 @@ Be direct and terse. Lead with the answer. Read files instead of guessing.`;
 export interface ClaudeSessionConfig {
   /** Per-query env (account-scrubbed; sets CLAUDE_CONFIG_DIR). */
   env: Record<string, string>;
-  /** Account id this session runs under — stamped onto usage snapshots. */
-  accountId: string;
-  model?: string;
+  /** Exact durable attempt identity echoed by every native start receipt. */
+  continuationAttemptId: string;
+  /** Complete immutable app-session selection used for every native query. */
+  selection: RuntimeSelection;
+  /** Adapter-local seam for deterministic discovery/session conformance tests. */
+  queryFactory?: ClaudeQueryFactory;
   systemPrompt?: string;
   /** Working directory for the loop. `start`'s cwd wins; then this; then
    *  `process.cwd()`. */
@@ -509,6 +525,7 @@ export function createClaudePermissionHandler(
 
 export class ClaudeRuntimeSession implements RuntimeSession {
   private readonly config: ClaudeSessionConfig;
+  private readonly continuationAttemptId: string;
   private readonly keys: SdkKeyContext = createSdkKeyContext();
   private started = false;
   private disposed = false;
@@ -517,20 +534,40 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   private q: Query | null = null;
   private promptQueue: AsyncQueue<SDKUserMessage> | null = null;
   private currentTurn: AsyncQueue<RuntimeEvent> | null = null;
-  private pendingInit: RuntimeEvent | null = null;
+  private pendingSessionStarted: RuntimeEvent | null = null;
+  private sessionStartFailure: string | null = null;
   private sdkSessionId: string | null = null;
   private appSessionId = '';
+  private requestedNativeSessionId: string | null = null;
 
   constructor(config: ClaudeSessionConfig) {
-    this.config = config;
+    this.continuationAttemptId = assertExactContinuationAttemptId(
+      config.continuationAttemptId,
+    );
+    this.config = {
+      ...config,
+      env: { ...config.env },
+      continuationAttemptId: this.continuationAttemptId,
+      selection: immutableRuntimeSelection(config.selection),
+      ...(config.allowedTools ? { allowedTools: [...config.allowedTools] } : {}),
+    };
   }
 
   /** Open (or resume) the SDK session loop. The adapter calls this exactly
    *  once before handing the session out. */
   async start(opts: StartOptions): Promise<void> {
     if (this.started) return;
+    if (
+      opts.resumeNativeSessionId !== undefined &&
+      (
+        typeof opts.resumeNativeSessionId !== 'string' ||
+        !opts.resumeNativeSessionId.trim() ||
+        opts.resumeNativeSessionId !== opts.resumeNativeSessionId.trim()
+      )
+    ) throw new Error('runtime native resume identity is invalid');
     this.started = true;
     this.appSessionId = opts.appSessionId;
+    this.requestedNativeSessionId = opts.resumeNativeSessionId ?? null;
 
     const promptQueue = new AsyncQueue<SDKUserMessage>();
     this.promptQueue = promptQueue;
@@ -556,10 +593,10 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       ...new Set([...(this.config.allowedTools ?? BASE_ALLOWED_TOOLS), ...(bridge?.allowedToolNames ?? [])]),
     ];
 
-    const resume = opts.resumeNativeSessionId && opts.resumeNativeSessionId.length > 0 ? opts.resumeNativeSessionId : undefined;
+    const resume = this.requestedNativeSessionId ?? undefined;
 
     const options: Options = {
-      model: this.config.model ?? 'opus',
+      model: this.config.selection.model,
       systemPrompt: this.config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
       env: this.config.env,
       cwd: opts.cwd ?? this.config.cwd ?? process.cwd(),
@@ -567,27 +604,31 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       permissionMode: this.config.bypassPermissions ? 'bypassPermissions' : 'default',
       maxTurns: this.config.maxTurns ?? 30,
       allowedTools,
+      ...(this.config.selection.effort.kind === 'selected'
+        ? { effort: this.config.selection.effort.value as EffortLevel }
+        : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(opts.ask ? { canUseTool: this.makeCanUseTool(opts.ask) } : {}),
       ...(resume ? { resume } : {}),
     };
 
-    this.q = query({ prompt: promptQueue, options });
+    this.q = (this.config.queryFactory ?? query)({ prompt: promptQueue, options });
     void this.consume(this.q);
   }
 
   sendTurn(text: string): AsyncIterable<RuntimeEvent> {
     if (!this.started) throw new Error('ClaudeRuntimeSession.sendTurn before start');
     if (this.disposed) throw new Error('ClaudeRuntimeSession.sendTurn after dispose');
+    if (this.sessionStartFailure) throw new Error(this.sessionStartFailure);
     if (this.queryClosed) throw new Error('Claude runtime query loop is closed');
     if (this.currentTurn) throw new Error('ClaudeRuntimeSession already has an active turn');
     this.turnGeneration += 1;
     resetTurnCorrelation(this.keys);
     const turn = new AsyncQueue<RuntimeEvent>();
     this.currentTurn = turn;
-    if (this.pendingInit) {
-      turn.push(this.pendingInit);
-      this.pendingInit = null;
+    if (this.pendingSessionStarted) {
+      turn.push(this.pendingSessionStarted);
+      this.pendingSessionStarted = null;
     }
     const userMsg = {
       type: 'user',
@@ -609,13 +650,17 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.pendingSessionStarted = null;
     this.promptQueue?.end();
+    this.endCurrentTurnIfOpen('session disposed');
+    const activeQuery = this.q;
     try {
-      await this.q?.interrupt();
+      const interrupt = activeQuery?.interrupt();
+      void interrupt?.catch(() => undefined);
     } catch {
       /* best-effort */
     }
-    this.endCurrentTurnIfOpen('session disposed');
+    closeQuerySafely(activeQuery);
   }
 
   // ── SDK consumption ──────────────────────────────────────────────────────────
@@ -634,23 +679,53 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   }
 
   private route(msg: SDKMessage): void {
-    const anyMsg = msg as { type: string; subtype?: string; session_id?: string; model?: string; permissionMode?: string };
+    if (this.disposed) return;
+    const anyMsg = msg as { type: string; subtype?: string; session_id?: string };
     if (anyMsg.type === 'system' && anyMsg.subtype === 'init') {
-      this.sdkSessionId = anyMsg.session_id ?? null;
+      if (this.sessionStartFailure) return;
+      const nativeSessionId = anyMsg.session_id;
+      if (
+        typeof nativeSessionId !== 'string' ||
+        !nativeSessionId.trim() ||
+        nativeSessionId !== nativeSessionId.trim()
+      ) {
+        this.rejectSessionStart('runtime native session identity unavailable');
+        return;
+      }
+      if (this.requestedNativeSessionId !== null && nativeSessionId !== this.requestedNativeSessionId) {
+        this.rejectSessionStart('runtime native resume receipt mismatch');
+        return;
+      }
+      if (this.sdkSessionId !== null) {
+        if (nativeSessionId !== this.sdkSessionId) {
+          this.rejectSessionStart('runtime native resume receipt mismatch');
+        }
+        return; // exact native init redelivery is already positively receipted
+      }
+      this.sdkSessionId = nativeSessionId;
+      const receipt: RuntimeSessionReceipt = {
+        mode: this.requestedNativeSessionId === null ? 'created' : 'resumed',
+        continuationAttemptId: this.continuationAttemptId,
+        selection: this.config.selection,
+        nativeSessionId,
+        requestedNativeSessionId: this.requestedNativeSessionId,
+      };
       const rm: RuntimeEvent = {
-        type: 'init',
-        nativeSessionId: anyMsg.session_id ?? '',
-        model: anyMsg.model ?? null,
-        permissionMode: anyMsg.permissionMode ?? null,
+        type: 'session-started',
+        receipt,
       };
       if (this.currentTurn) this.currentTurn.push(rm);
-      else this.pendingInit = rm;
+      else this.pendingSessionStarted = rm;
       return;
     }
 
     const turn = this.currentTurn;
     if (!turn) return; // out-of-turn telemetry must not mutate successor-turn correlation
-    const mapped = mapSdkMessage(msg, this.config.accountId, this.keys);
+    if (this.sdkSessionId === null) {
+      this.rejectSessionStart('runtime native session receipt missing');
+      return;
+    }
+    const mapped = mapSdkMessage(msg, this.config.selection.accountId, this.keys);
     if (mapped.length === 0) return;
     for (const rm of mapped) {
       turn.push(rm);
@@ -661,6 +736,28 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         return;
       }
     }
+  }
+
+  private rejectSessionStart(reason: string): void {
+    if (this.sessionStartFailure) return;
+    this.sessionStartFailure = reason;
+    const turn = this.currentTurn;
+    if (turn) {
+      this.currentTurn = null;
+      resetTurnCorrelation(this.keys);
+      turn.push({
+        type: 'result',
+        ok: false,
+        stopReason: null,
+        usage: null,
+        durationMs: null,
+        error: reason,
+        outcome: 'error',
+        numTurns: null,
+      });
+      turn.end();
+    }
+    closeQuerySafely(this.q);
   }
 
   private failCurrentTurn(err: unknown): void {
@@ -782,24 +879,131 @@ export function resolveAnswerDecision(
 export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   private readonly accounts: AccountRegistry;
+  private readonly queryFactory: ClaudeQueryFactory;
 
-  constructor(deps: { accounts: AccountRegistry }) {
+  constructor(deps: { accounts: AccountRegistry; queryFactory?: ClaudeQueryFactory }) {
     this.accounts = deps.accounts;
+    this.queryFactory = deps.queryFactory ?? query;
+  }
+
+  async capabilities(accountId: string): Promise<RuntimeCapabilities> {
+    if (!this.accounts.has(this.id, accountId)) {
+      const unavailable = { status: 'unavailable' as const, code: 'account-unavailable' };
+      return {
+        runtimeId: this.id,
+        accountId,
+        nativeContinuation: unavailable,
+        modelDiscovery: unavailable,
+        effortControl: unavailable,
+      };
+    }
+    return {
+      runtimeId: this.id,
+      accountId,
+      nativeContinuation: { status: 'supported' },
+      modelDiscovery: { status: 'supported' },
+      effortControl: { status: 'supported' },
+    };
+  }
+
+  async listModels(accountId: string): Promise<RuntimeModelDiscovery> {
+    if (!this.accounts.has(this.id, accountId)) {
+      return { status: 'unavailable', code: 'account-unavailable' };
+    }
+    const prompt = new AsyncQueue<SDKUserMessage>();
+    let discoveryQuery: Query | null = null;
+    try {
+      discoveryQuery = this.queryFactory({
+        prompt,
+        options: {
+          env: this.accounts.buildEnv(this.id, accountId),
+          permissionMode: 'dontAsk',
+        },
+      });
+      const nativeModels = await discoveryQuery.supportedModels();
+      const models: RuntimeModel[] = [];
+      for (const nativeModel of nativeModels) {
+        const model = toRuntimeModel(nativeModel);
+        if (!model) return { status: 'unavailable', code: 'invalid-model-discovery' };
+        models.push(model);
+      }
+      if (
+        models.length === 0 ||
+        new Set(models.map((model) => model.id)).size !== models.length
+      ) return { status: 'unavailable', code: 'invalid-model-discovery' };
+      return { status: 'available', models };
+    } catch {
+      // Auth, credential-home, CLI, and control-request failures are expected
+      // availability states. Provider exception text never crosses the seam.
+      return { status: 'unavailable', code: 'account-auth-or-runtime-unavailable' };
+    } finally {
+      prompt.end();
+      closeQuerySafely(discoveryQuery);
+    }
   }
 
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
-    return this.mint(input, undefined);
+    if (!isRuntimeSelection(input?.selection)) {
+      throw new RuntimeSelectionRejectedError('selection-unavailable');
+    }
+    const continuationAttemptId = assertExactContinuationAttemptId(
+      input?.continuationAttemptId,
+    );
+    const capturedInput: CreateRuntimeSession = {
+      ...input,
+      continuationAttemptId,
+      selection: cloneRuntimeSelection(input.selection),
+    };
+    const validation = await preflightRuntimeSelection(
+      this,
+      capturedInput.selection,
+      { mode: 'create' },
+    );
+    if (validation.status === 'invalid') {
+      throw new RuntimeSelectionRejectedError(validation.code);
+    }
+    return this.mint({ ...capturedInput, selection: validation.selection }, undefined);
   }
 
   async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
-    return this.mint(input, input.nativeSessionId);
+    if (!isRuntimeSelection(input?.selection)) {
+      throw new RuntimeSelectionRejectedError('selection-unavailable');
+    }
+    const continuationAttemptId = assertExactContinuationAttemptId(
+      input?.continuationAttemptId,
+    );
+    if (
+      typeof input.nativeSessionId !== 'string' ||
+      !input.nativeSessionId.trim() ||
+      input.nativeSessionId !== input.nativeSessionId.trim()
+    ) {
+      throw new RuntimeSelectionRejectedError('native-session-missing');
+    }
+    const nativeSessionId = input.nativeSessionId;
+    const capturedInput: ResumeRuntimeSession = {
+      ...input,
+      continuationAttemptId,
+      selection: cloneRuntimeSelection(input.selection),
+      nativeSessionId,
+    };
+    const validation = await preflightRuntimeSelection(
+      this,
+      capturedInput.selection,
+      { mode: 'resume', nativeSessionId },
+    );
+    if (validation.status === 'invalid') {
+      throw new RuntimeSelectionRejectedError(validation.code);
+    }
+    return this.mint({ ...capturedInput, selection: validation.selection }, nativeSessionId);
   }
 
   private async mint(input: CreateRuntimeSession, resume: string | undefined): Promise<RuntimeSession> {
+    const selection = cloneRuntimeSelection(input.selection);
     const session = new ClaudeRuntimeSession({
-      env: this.accounts.buildEnv(input.selection.accountId),
-      accountId: input.selection.accountId,
-      model: input.selection.model,
+      env: this.accounts.buildEnv(this.id, selection.accountId),
+      continuationAttemptId: input.continuationAttemptId,
+      selection,
+      queryFactory: this.queryFactory,
       systemPrompt: input.instructions,
       cwd: input.cwd,
       bridge: input.tools,
@@ -815,6 +1019,100 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
     });
     return session;
   }
+}
+
+function assertExactContinuationAttemptId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    value !== value.trim()
+  ) throw new Error('runtime continuation attempt identity is invalid');
+  return value;
+}
+
+function cloneRuntimeSelection(selection: RuntimeSelection): RuntimeSelection {
+  return {
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    model: selection.model,
+    effort: selection.effort.kind === 'selected'
+      ? { kind: 'selected', value: selection.effort.value }
+      : { kind: selection.effort.kind },
+  };
+}
+
+function immutableRuntimeSelection(selection: RuntimeSelection): RuntimeSelection {
+  const cloned = cloneRuntimeSelection(selection);
+  Object.freeze(cloned.effort);
+  return Object.freeze(cloned);
+}
+
+function closeQuerySafely(queryToClose: Query | null): void {
+  try {
+    queryToClose?.close();
+  } catch {
+    // Closing is always best-effort; cleanup errors never rewrite typed state.
+  }
+}
+
+function toRuntimeModel(model: ModelInfo): RuntimeModel | null {
+  const candidate = model as unknown as Record<string, unknown>;
+  if (model === null || typeof model !== 'object' || Array.isArray(model)) return null;
+  if (
+    typeof candidate.value !== 'string' ||
+    !candidate.value.trim() ||
+    candidate.value !== candidate.value.trim() ||
+    typeof candidate.displayName !== 'string' ||
+    !candidate.displayName.trim() ||
+    typeof candidate.description !== 'string'
+  ) return null;
+  const id = candidate.value;
+  const label = candidate.displayName.trim();
+  let resolvedId: string | null = null;
+  if (candidate.resolvedModel !== undefined && candidate.resolvedModel !== null) {
+    if (
+      typeof candidate.resolvedModel !== 'string' ||
+      candidate.resolvedModel !== candidate.resolvedModel.trim()
+    ) return null;
+    resolvedId = candidate.resolvedModel || null;
+  }
+
+  let effort: RuntimeModel['effort'];
+  if (candidate.supportsEffort === true) {
+    const nativeValues = candidate.supportedEffortLevels;
+    if (!Array.isArray(nativeValues)) {
+      effort = { status: 'unavailable', code: 'model-effort-metadata-unavailable' };
+    } else {
+      const values = nativeValues.filter((value): value is EffortLevel => (
+        typeof value === 'string' &&
+        value === value.trim() &&
+        CLAUDE_EFFORT_LEVELS.has(value as EffortLevel)
+      ));
+      if (
+        values.length !== nativeValues.length ||
+        values.length === 0 ||
+        new Set(values).size !== values.length
+      ) {
+        effort = { status: 'unavailable', code: 'model-effort-metadata-unavailable' };
+      } else {
+        effort = { status: 'supported', values };
+      }
+    }
+  } else if (candidate.supportsEffort === false) {
+    effort = { status: 'unsupported', code: 'model-effort-unsupported' };
+  } else if (candidate.supportsEffort === undefined) {
+    effort = { status: 'unavailable', code: 'model-effort-metadata-unavailable' };
+  } else {
+    return null;
+  }
+
+  return {
+    id,
+    resolvedId,
+    label,
+    description: candidate.description,
+    effort,
+  };
 }
 
 // ── native SDK message → RuntimeEvent[] (contract mapping table) ───────────────

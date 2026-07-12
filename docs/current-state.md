@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11 after CF-004 guarded landing.
+Last updated: 2026-07-12 after RS-001 implementation and full verification.
 
 ## Preserved baseline
 
@@ -40,6 +40,8 @@ only in PC-SDK Next.
 - CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
 - CF-004 worktree: removed after positive sealed/feature ancestry proof;
   feature branch preserved
+- RS-001 feature branch: `codex/rs-001-session-selection-stamps`
+- RS-001 sealed implementation: `cb61f255220dd50e95b53418f28e6bdd05f5077c`
 
 Isolation defaults in the planning slice:
 
@@ -63,6 +65,9 @@ Isolation defaults in the planning slice:
   teardown, recovery, and lifecycle tests
 - Global MCP client/bridge foundation and Claude usage observations
 - One-click hidden launcher and boot recovery
+- Canonical pre-listener boot quarantine of queued/failed sends owned by
+  `legacy-unavailable` orchestrator sessions, with queue revision plus
+  `send-state`/outbox evidence committed together
 - Canonical provider-neutral conversation event identity with strict guards,
   conversation-owned transactional sequence allocation, and a dedicated
   atomic publication outbox
@@ -86,8 +91,7 @@ Isolation defaults in the planning slice:
 - Composition-readiness gating for both recovered and freshly admitted sends;
   deleted projects and inactive/deleted sessions cannot mint or claim work
 - Atomic new/resume/account-switch/project-delete conversation transitions,
-  including safe cancellation and rollback. Until immutable account stamps
-  land, pre-account-switch transcripts are view-only/non-resumable.
+  including safe cancellation, rollback, and exact stamped historical resume.
 - Closed app-authored activity phases and a browser-derived elapsed/“still
   waiting” presentation that stays honest without exposing provider reasoning
   or inventing durable status.
@@ -101,19 +105,39 @@ Isolation defaults in the planning slice:
 - Strict exact-shape ingestion for conversation and agent transcript events
   across live sockets and HTTP replay/backfill. Legacy raw tool/system rows stay
   retained as hidden evidence while preserving canonical high-water sequence.
+- Complete immutable runtime/account/model/effort stamps for new orchestrator
+  app sessions, conservative legacy-session quarantine, bind-once native
+  identity, typed continuation provenance, browser-safe resume availability,
+  and non-boundary live provenance convergence without chat reset/replay.
+- Account-scoped Claude capabilities/model discovery and immediate pre-mint
+  validation with no runtime, account, model, effort, continuation, or billing
+  fallback.
+- A fresh persisted continuation-attempt identity for every orchestrator native
+  create/resume mint. Positive receipts and failure callbacks use exact DB CAS,
+  so output from abandoned creates, resumes, restarts, or disposed services
+  cannot advance a successor attempt.
+- Runtime-aware immutable account records and credential-environment isolation;
+  Claude subscription launches scrub API/auth variables that could shadow the
+  selected credential home.
 
 ## Known architectural gaps
 
-- Composition remains fixed to Claude and model defaults; there is no Codex
-  adapter or runtime/model/effort switcher.
-- Orchestrator sessions do not yet durably stamp the full runtime/account/model/
-  effort selection needed for safe provider-neutral resume.
-- Adapter capabilities/model discovery are specified but not implemented.
-- Orchestrator session, account, usage, and some runtime-notice/permission
-  vocabulary remain provider-shaped. Full immutable runtime/account/model/
-  effort stamps and typed capability semantics remain N3 work.
+- Production composition remains fixed to Claude and existing orchestrator
+  defaults; there is no Codex adapter or deliberate runtime/model/effort
+  selector yet.
+- RS-001 completes the orchestrator half of runtime selection. Specialist
+  definitions/runs do not yet persist the same complete effort and durable
+  continuation-attempt stamp, and cross-runtime handoff is not implemented.
+- Existing specialist browser surfaces still expose native session-shaped
+  fields: `AgentRunDto.sessionId` mirrors `ccSessionId`, and
+  `PendingAskDto.ccSessionId` is provider-named. Specialist dispatch also
+  imports/selects `CLAUDE_RUNTIME_ID` outside the composition root. Removing
+  those leaks and routing specialists solely through registry-owned selection
+  remain later N3 work; RS-001's browser-boundary claim covers orchestrator
+  session surfaces only.
 - Usage DTOs are Claude-shaped and do not retain general source semantics,
-  confidence, staleness, or runtime attribution.
+  confidence, staleness, or runtime attribution; some runtime-notice vocabulary
+  is also not yet fully provider-neutral.
 - No honest per-session context-use contract exists yet.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
@@ -126,16 +150,17 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`CF-004` completes `CHAT-007/CHAT-008` on the landed canonical conversation
-foundation. Adversarial coverage spans callback/stream races, result without
-progress, approval timeout/session/runtime denial, restart/kill closure, late
-dispatch initialization, raw exception and tool payload leakage, shuffled/
-duplicate replay, strict HTTP/socket ingestion, and malformed special-tool
-approval. Isolated no-provider visual QA confirmed one safe tool row, visible
-approval waiting, busy composer state, terminal update, and replay-equivalent
-reload without technical data. Final hostile review also forced turn-scoped
-non-evicting native correlation and singleflight paused-run revival so map
-pressure, concurrent answers, kill, or shutdown cannot duplicate/leak a live
-runtime. The next master-plan phase is N3: immutable
-runtime/account/model/effort app-session stamps, capability discovery, honest
-context observation, and provider-neutral quota semantics.
+`RS-001` completes the bounded orchestrator half of `RUN-001` through `RUN-004`
+and `RUN-007`: immutable selection, account-scoped Claude discovery, exact
+create/resume receipts, durable attempt fencing, atomic account/session
+transitions, and honest typed presentation. Hostile coverage includes mutable
+defaults, account A -> B -> resume A, concurrent first sends, async preflight
+races, restart/remint, missing/mismatched/late receipts, disposed service
+output, abandoned attempt success/failure, legacy migration, and raw-SQL state
+guards. Isolated no-provider browser QA confirmed cold-reload provenance,
+view-only unavailable continuation, no native/attempt identity leakage through
+orchestrator session surfaces, clean console, and bounded layout.
+
+Specialist-wide stamps, attributed handoff, Codex, context observation, and
+provider-neutral quota semantics remain later N3 slices; this receipt does not
+claim those global requirements complete.

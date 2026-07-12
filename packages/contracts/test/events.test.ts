@@ -19,6 +19,7 @@ import {
   isUsageSnapshot,
   isMcpServerStatus,
   isSessionChangedFrame,
+  isSessionUpdatedFrame,
   isSessionReplayFrame,
   isOrchestratorStateFrame,
   isAskFrame,
@@ -418,8 +419,15 @@ test('session-changed + orchestrator-state + ask guards', () => {
       projectId: 'p',
       transition: 'new-session',
       session: {
-        id: 's', projectId: 'p', model: null, title: null,
-        status: 'active', resumable: false, startedAt: 1,
+        id: 's', projectId: 'p',
+        selection: {
+          runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'opus',
+          effort: { kind: 'none' },
+        },
+        title: null, status: 'active', nativeSessionIdPresent: false,
+        continuationState: 'clean-pending',
+        resumeAvailability: { status: 'unavailable', code: 'session-active' },
+        startedAt: 1,
       },
     }),
     true,
@@ -432,8 +440,15 @@ test('session-changed + orchestrator-state + ask guards', () => {
     projectId: 'p',
     transition: 'new-session',
     session: {
-      id: 's', projectId: 'foreign', model: null, title: null,
-      status: 'active', resumable: false, startedAt: 1,
+      id: 's', projectId: 'foreign',
+      selection: {
+        runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'opus',
+        effort: { kind: 'none' },
+      },
+      title: null, status: 'active', nativeSessionIdPresent: false,
+      continuationState: 'clean-pending',
+      resumeAvailability: { status: 'unavailable', code: 'session-active' },
+      startedAt: 1,
     },
   }), false);
   assert.equal(isSessionChangedFrame({
@@ -441,9 +456,34 @@ test('session-changed + orchestrator-state + ask guards', () => {
     projectId: 'p',
     transition: 'new-session',
     session: {
-      id: 's', projectId: 'p', model: null, title: null,
-      status: 'active', resumable: true, startedAt: 1,
+      id: 's', projectId: 'p', selection: null, title: null,
+      status: 'active', nativeSessionIdPresent: false,
+      continuationState: 'legacy-unavailable',
+      resumeAvailability: { status: 'unavailable', code: 'selection-unavailable' },
+      startedAt: 1,
     },
+  }), false);
+
+  const sessionUpdated = {
+    type: 'session-updated',
+    projectId: 'p',
+    session: {
+      id: 's', projectId: 'p',
+      selection: {
+        runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'opus',
+        effort: { kind: 'none' },
+      },
+      title: null, status: 'active', nativeSessionIdPresent: true,
+      continuationState: 'clean-started',
+      resumeAvailability: { status: 'unavailable', code: 'session-active' },
+      startedAt: 1,
+    },
+  };
+  assert.equal(isSessionUpdatedFrame(sessionUpdated), true);
+  assert.equal(isSessionUpdatedFrame({ ...sessionUpdated, transition: 'new-session' }), false);
+  assert.equal(isSessionUpdatedFrame({
+    ...sessionUpdated,
+    session: { ...sessionUpdated.session, projectId: 'foreign' },
   }), false);
 
   assert.equal(

@@ -12,13 +12,33 @@
 // variants are dropped inside the adapter (never surfaced as an unknown
 // RuntimeEvent).
 
-import type {
-  ActivityPhase,
-  ToolStateEvent,
-  TurnStopReason,
-  UsageSnapshot,
+import {
+  isRuntimeCapabilities,
+  isRuntimeModelDiscovery,
+  isRuntimeSelection,
+  type ActivityPhase,
+  type RuntimeCapabilities,
+  type RuntimeModel,
+  type RuntimeModelDiscovery,
+  type RuntimeSelection,
+  type RuntimeSelectionErrorCode,
+  type RuntimeSelectionValidation,
+  type RuntimeSessionReceipt,
+  type ToolStateEvent,
+  type TurnStopReason,
+  type UsageSnapshot,
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
+
+export type {
+  RuntimeCapabilities,
+  RuntimeModel,
+  RuntimeModelDiscovery,
+  RuntimeSelection,
+  RuntimeSelectionErrorCode,
+  RuntimeSelectionValidation,
+  RuntimeSessionReceipt,
+} from '@pc/contracts';
 
 /** Per-turn token telemetry (native result usage). Maps to the chat `usage`
  *  event; distinct from the durable per-account `UsageSnapshot`. */
@@ -66,8 +86,9 @@ export type RuntimeResultEvent =
 /** The typed events a runtime session yields for one turn. Adapters mint
  * provider-neutral item ids and reduce native parentage to primary/sidechain. */
 export type RuntimeEvent =
-  // Native session opened/attached — capture `nativeSessionId` for resume.
-  | { type: 'init'; nativeSessionId: string; model: string | null; permissionMode: string | null }
+  // Positive native create/attach observation. Capability support alone is
+  // never treated as proof that this particular native continuation worked.
+  | { type: 'session-started'; receipt: RuntimeSessionReceipt }
   // Public assistant block (text or tool use). Private reasoning is absent.
   | { type: 'assistant-block'; itemId: string; scope: 'primary' | 'sidechain'; block: AssistantBlock }
   // One provider-neutral tool observation. It contains no native id/input/output.
@@ -127,19 +148,6 @@ export interface AskHandle {
 }
 export type AskHandler = (req: AskRequest) => AskHandle;
 
-/** Explicit execution selection — stamped on every app session / agent run.
- *  A running session never silently changes runtime, account, or native
- *  session identity. */
-export interface RuntimeSelection {
-  /** Adapter id, e.g. 'claude-agent-sdk'. */
-  runtimeId: string;
-  /** App account id (credential home resolved by the adapter). */
-  accountId: string;
-  /** Runtime model identifier. */
-  model: string;
-  effort?: string;
-}
-
 /** One live runtime session (adapter-owned native thread/session). Returned
  *  already started — there is no separate start step. */
 export interface RuntimeSession {
@@ -160,6 +168,8 @@ export interface RuntimeSession {
 export interface CreateRuntimeSession {
   appSessionId: string;
   projectId: string;
+  /** Durable attempt identity; every native start receipt must echo it exactly. */
+  continuationAttemptId: string;
   selection: RuntimeSelection;
   /** Charter / system prompt (provider-neutral text). */
   instructions?: string;
@@ -176,7 +186,7 @@ export interface CreateRuntimeSession {
 }
 
 export interface ResumeRuntimeSession extends CreateRuntimeSession {
-  /** Adapter-native session/thread id captured from `init`. */
+  /** Adapter-native session/thread id captured by a positive start receipt. */
   nativeSessionId: string;
 }
 
@@ -184,8 +194,314 @@ export interface ResumeRuntimeSession extends CreateRuntimeSession {
  *  runtime, registered at the composition root. */
 export interface AgentRuntimeAdapter {
   readonly id: string;
+  capabilities(accountId: string): Promise<RuntimeCapabilities>;
+  listModels(accountId: string): Promise<RuntimeModelDiscovery>;
   createSession(input: CreateRuntimeSession): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession>;
+}
+
+export type RuntimeAdapterResolution =
+  | { status: 'resolved'; adapter: AgentRuntimeAdapter }
+  | { status: 'invalid'; code: 'runtime-not-registered' };
+
+export type RuntimeContinuationRequest =
+  | { mode: 'create' }
+  | { mode: 'resume'; nativeSessionId: string };
+
+/** User/default selection request before adapter facts normalize effort into
+ * the explicit durable union. Null is never guessed: it becomes `none` only
+ * on positive support or `unavailable` only on positive non-support. */
+export interface RuntimeSelectionRequest {
+  runtimeId: string;
+  accountId: string;
+  model: string;
+  effort: string | null;
+}
+
+/** Expected selection/preflight failures carry a stable code and never cause
+ * an alternate adapter, model, account, or billing path to be attempted. */
+export class RuntimeSelectionRejectedError extends Error {
+  readonly code: RuntimeSelectionErrorCode;
+
+  constructor(code: RuntimeSelectionErrorCode) {
+    super(`runtime selection rejected: ${code}`);
+    this.name = 'RuntimeSelectionRejectedError';
+    this.code = code;
+  }
+}
+
+export type RuntimeRegistrationErrorCode =
+  | 'invalid-runtime-id'
+  | 'duplicate-runtime-id';
+
+/** Composition-time registry failures are typed startup evidence. They never
+ * replace, overwrite, or fall back from an already registered adapter. */
+export class RuntimeRegistrationError extends Error {
+  readonly code: RuntimeRegistrationErrorCode;
+
+  constructor(code: RuntimeRegistrationErrorCode, runtimeId?: string) {
+    super(runtimeId ? `${code}: ${runtimeId}` : code);
+    this.name = 'RuntimeRegistrationError';
+    this.code = code;
+  }
+}
+
+function invalid(code: RuntimeSelectionErrorCode): RuntimeSelectionValidation {
+  return { status: 'invalid', code };
+}
+
+function cloneRuntimeSelection(selection: RuntimeSelection): RuntimeSelection {
+  return {
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    model: selection.model,
+    effort: selection.effort.kind === 'selected'
+      ? { kind: 'selected', value: selection.effort.value }
+      : { kind: selection.effort.kind },
+  };
+}
+
+function captureRuntimeSelection(value: unknown): RuntimeSelection | null {
+  try {
+    return isRuntimeSelection(value) ? cloneRuntimeSelection(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function cloneRuntimeCapabilities(capabilities: RuntimeCapabilities): RuntimeCapabilities {
+  const cloneState = <T extends RuntimeCapabilities['nativeContinuation']>(state: T): T => (
+    state.status === 'supported'
+      ? { status: 'supported' } as T
+      : { status: state.status, code: state.code } as T
+  );
+  return {
+    runtimeId: capabilities.runtimeId,
+    accountId: capabilities.accountId,
+    nativeContinuation: cloneState(capabilities.nativeContinuation),
+    modelDiscovery: cloneState(capabilities.modelDiscovery),
+    effortControl: cloneState(capabilities.effortControl),
+  };
+}
+
+function captureRuntimeCapabilities(value: unknown): RuntimeCapabilities | null {
+  try {
+    return isRuntimeCapabilities(value) ? cloneRuntimeCapabilities(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function cloneRuntimeModelDiscovery(discovery: RuntimeModelDiscovery): RuntimeModelDiscovery {
+  if (discovery.status !== 'available') {
+    return { status: discovery.status, code: discovery.code };
+  }
+  return {
+    status: 'available',
+    models: discovery.models.map((model) => ({
+      id: model.id,
+      resolvedId: model.resolvedId,
+      label: model.label,
+      description: model.description,
+      effort: model.effort.status === 'supported'
+        ? { status: 'supported', values: [...model.effort.values] }
+        : { status: model.effort.status, code: model.effort.code },
+    })),
+  };
+}
+
+function captureRuntimeModelDiscovery(value: unknown): RuntimeModelDiscovery | null {
+  try {
+    return isRuntimeModelDiscovery(value) ? cloneRuntimeModelDiscovery(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function captureSelectionRequest(
+  request: RuntimeSelectionRequest,
+): RuntimeSelectionRequest | RuntimeSelectionValidation {
+  try {
+    if (request === null || typeof request !== 'object' || Array.isArray(request)) {
+      return invalid('selection-unavailable');
+    }
+    const value = request as unknown as Record<string, unknown>;
+    if (Object.keys(value).some((key) => !['runtimeId', 'accountId', 'model', 'effort'].includes(key))) {
+      return invalid('selection-unavailable');
+    }
+    if (
+      typeof value.runtimeId !== 'string' ||
+      !value.runtimeId.trim() ||
+      value.runtimeId !== value.runtimeId.trim()
+    ) {
+      return invalid('runtime-not-registered');
+    }
+    if (
+      typeof value.accountId !== 'string' ||
+      !value.accountId.trim() ||
+      value.accountId !== value.accountId.trim()
+    ) {
+      return invalid('account-unavailable');
+    }
+    if (
+      typeof value.model !== 'string' ||
+      !value.model.trim() ||
+      value.model !== value.model.trim()
+    ) {
+      return invalid('model-unsupported');
+    }
+    if (value.effort !== null && typeof value.effort !== 'string') {
+      return invalid('effort-value-unsupported');
+    }
+    return {
+      runtimeId: value.runtimeId,
+      accountId: value.accountId,
+      model: value.model,
+      effort: value.effort as string | null,
+    };
+  } catch {
+    return invalid('selection-unavailable');
+  }
+}
+
+function matchingModel(
+  models: RuntimeModel[],
+  selectedModel: string,
+): RuntimeModel | null {
+  const exact = models.find((model) => model.id === selectedModel);
+  if (exact) return exact;
+  const resolved = models.filter((model) => model.resolvedId === selectedModel);
+  return resolved.length === 1 ? resolved[0]! : null;
+}
+
+/** Validate one complete immutable selection against adapter/account facts.
+ * This helper is shared by registry preflight and the adapter's immediate
+ * pre-mint revalidation, closing the validation-to-execution fallback gap. */
+export async function validateRuntimeSelection(
+  adapter: AgentRuntimeAdapter,
+  selection: RuntimeSelection,
+): Promise<RuntimeSelectionValidation> {
+  const captured = captureRuntimeSelection(selection);
+  if (!captured) return invalid('selection-unavailable');
+  if (adapter.id !== captured.runtimeId) return invalid('account-runtime-mismatch');
+
+  let capabilitiesResult: unknown;
+  try {
+    capabilitiesResult = await adapter.capabilities(captured.accountId);
+  } catch {
+    return invalid('capabilities-unavailable');
+  }
+  const capabilities = captureRuntimeCapabilities(capabilitiesResult);
+  if (!capabilities) return invalid('capabilities-unavailable');
+  if (
+    capabilities.runtimeId !== captured.runtimeId ||
+    capabilities.accountId !== captured.accountId
+  ) return invalid('account-runtime-mismatch');
+  if (capabilities.modelDiscovery.status === 'unsupported') {
+    return invalid('model-discovery-unsupported');
+  }
+  if (capabilities.modelDiscovery.status === 'unavailable') {
+    if (capabilities.modelDiscovery.code === 'account-unavailable') {
+      return invalid('account-unavailable');
+    }
+    return invalid('model-discovery-unavailable');
+  }
+
+  let discoveryResult: unknown;
+  try {
+    discoveryResult = await adapter.listModels(captured.accountId);
+  } catch {
+    return invalid('model-discovery-unavailable');
+  }
+  const discovery = captureRuntimeModelDiscovery(discoveryResult);
+  if (!discovery) return invalid('model-discovery-unavailable');
+  if (discovery.status === 'unsupported') return invalid('model-discovery-unsupported');
+  if (discovery.status === 'unavailable') {
+    return invalid(discovery.code === 'account-unavailable'
+      ? 'account-unavailable'
+      : 'model-discovery-unavailable');
+  }
+
+  const model = matchingModel(discovery.models, captured.model);
+  if (!model) return invalid('model-unsupported');
+
+  if (captured.effort.kind === 'selected') {
+    if (capabilities.effortControl.status === 'unsupported' || model.effort.status === 'unsupported') {
+      return invalid('effort-unsupported');
+    }
+    if (capabilities.effortControl.status === 'unavailable' || model.effort.status === 'unavailable') {
+      return invalid('effort-unavailable');
+    }
+    if (!model.effort.values.includes(captured.effort.value)) {
+      return invalid('effort-value-unsupported');
+    }
+  } else if (captured.effort.kind === 'none') {
+    // `none` means effort is positively supported but no override was chosen.
+    if (capabilities.effortControl.status === 'unsupported' || model.effort.status === 'unsupported') {
+      return invalid('effort-unsupported');
+    }
+    if (capabilities.effortControl.status === 'unavailable' || model.effort.status === 'unavailable') {
+      return invalid('effort-unavailable');
+    }
+  } else {
+    // `unavailable` is valid only from positive non-support. It cannot turn
+    // inconclusive metadata or an omitted supported choice into durable truth.
+    if (
+      capabilities.effortControl.status !== 'unsupported' &&
+      model.effort.status !== 'unsupported'
+    ) return invalid('effort-unavailable');
+  }
+
+  return { status: 'valid', selection: captured };
+}
+
+export async function preflightRuntimeSelection(
+  adapter: AgentRuntimeAdapter,
+  selection: RuntimeSelection,
+  continuation: RuntimeContinuationRequest,
+): Promise<RuntimeSelectionValidation> {
+  let capturedContinuation: RuntimeContinuationRequest;
+  if (continuation?.mode === 'create') {
+    capturedContinuation = { mode: 'create' };
+  } else if (continuation?.mode === 'resume') {
+    if (
+      typeof continuation.nativeSessionId !== 'string' ||
+      !continuation.nativeSessionId.trim() ||
+      continuation.nativeSessionId !== continuation.nativeSessionId.trim()
+    ) {
+      return invalid('native-session-missing');
+    }
+    capturedContinuation = {
+      mode: 'resume',
+      nativeSessionId: continuation.nativeSessionId,
+    };
+  } else {
+    return invalid('selection-unavailable');
+  }
+  const validation = await validateRuntimeSelection(adapter, selection);
+  if (validation.status === 'invalid' || capturedContinuation.mode === 'create') return validation;
+
+  let capabilitiesResult: unknown;
+  try {
+    capabilitiesResult = await adapter.capabilities(validation.selection.accountId);
+  } catch {
+    return invalid('capabilities-unavailable');
+  }
+  const capabilities = captureRuntimeCapabilities(capabilitiesResult);
+  if (!capabilities) return invalid('capabilities-unavailable');
+  if (
+    capabilities.runtimeId !== validation.selection.runtimeId ||
+    capabilities.accountId !== validation.selection.accountId
+  ) return invalid('account-runtime-mismatch');
+  if (capabilities.nativeContinuation.status === 'unavailable') {
+    return invalid(capabilities.nativeContinuation.code === 'account-unavailable'
+      ? 'account-unavailable'
+      : 'capabilities-unavailable');
+  }
+  if (capabilities.nativeContinuation.status !== 'supported') {
+    return invalid('native-resume-unsupported');
+  }
+  return validation;
 }
 
 /** Adapter lookup — the ONLY place a runtimeId resolves to a concrete
@@ -194,17 +510,151 @@ export class RuntimeRegistry {
   private readonly adapters = new Map<string, AgentRuntimeAdapter>();
 
   register(adapter: AgentRuntimeAdapter): void {
-    this.adapters.set(adapter.id, adapter);
+    let runtimeId: unknown;
+    try {
+      runtimeId = adapter.id;
+    } catch {
+      throw new RuntimeRegistrationError('invalid-runtime-id');
+    }
+    if (
+      typeof runtimeId !== 'string' ||
+      !runtimeId.trim() ||
+      runtimeId !== runtimeId.trim() ||
+      runtimeId.includes('\u0000')
+    ) {
+      throw new RuntimeRegistrationError('invalid-runtime-id');
+    }
+    if (this.adapters.has(runtimeId)) {
+      throw new RuntimeRegistrationError('duplicate-runtime-id', runtimeId);
+    }
+    this.adapters.set(runtimeId, adapter);
+  }
+
+  resolve(runtimeId: string): RuntimeAdapterResolution {
+    const adapter = this.adapters.get(runtimeId);
+    return adapter
+      ? { status: 'resolved', adapter }
+      : { status: 'invalid', code: 'runtime-not-registered' };
   }
 
   get(runtimeId: string): AgentRuntimeAdapter {
-    const a = this.adapters.get(runtimeId);
-    if (!a) throw new Error(`unknown runtime: ${runtimeId}`);
-    return a;
+    const resolution = this.resolve(runtimeId);
+    if (resolution.status === 'invalid') {
+      throw new RuntimeSelectionRejectedError(resolution.code);
+    }
+    return resolution.adapter;
   }
 
   has(runtimeId: string): boolean {
     return this.adapters.has(runtimeId);
+  }
+
+  async validate(selection: RuntimeSelection): Promise<RuntimeSelectionValidation> {
+    const captured = captureRuntimeSelection(selection);
+    if (!captured) return invalid('selection-unavailable');
+    const resolution = this.resolve(captured.runtimeId);
+    if (resolution.status === 'invalid') return resolution;
+    return validateRuntimeSelection(resolution.adapter, captured);
+  }
+
+  async resolveSelection(
+    request: RuntimeSelectionRequest,
+  ): Promise<RuntimeSelectionValidation> {
+    const captured = captureSelectionRequest(request);
+    if ('status' in captured) return captured;
+    const resolution = this.resolve(captured.runtimeId);
+    if (resolution.status === 'invalid') return resolution;
+    const adapter = resolution.adapter;
+
+    let capabilitiesResult: unknown;
+    try {
+      capabilitiesResult = await adapter.capabilities(captured.accountId);
+    } catch {
+      return invalid('capabilities-unavailable');
+    }
+    const capabilities = captureRuntimeCapabilities(capabilitiesResult);
+    if (!capabilities) return invalid('capabilities-unavailable');
+    if (
+      capabilities.runtimeId !== captured.runtimeId ||
+      capabilities.accountId !== captured.accountId
+    ) return invalid('account-runtime-mismatch');
+    if (capabilities.modelDiscovery.status === 'unsupported') {
+      return invalid('model-discovery-unsupported');
+    }
+    if (capabilities.modelDiscovery.status === 'unavailable') {
+      return invalid(capabilities.modelDiscovery.code === 'account-unavailable'
+        ? 'account-unavailable'
+        : 'model-discovery-unavailable');
+    }
+
+    let discoveryResult: unknown;
+    try {
+      discoveryResult = await adapter.listModels(captured.accountId);
+    } catch {
+      return invalid('model-discovery-unavailable');
+    }
+    const discovery = captureRuntimeModelDiscovery(discoveryResult);
+    if (!discovery) return invalid('model-discovery-unavailable');
+    if (discovery.status === 'unsupported') return invalid('model-discovery-unsupported');
+    if (discovery.status === 'unavailable') {
+      return invalid(discovery.code === 'account-unavailable'
+        ? 'account-unavailable'
+        : 'model-discovery-unavailable');
+    }
+    const model = matchingModel(discovery.models, captured.model);
+    if (!model) return invalid('model-unsupported');
+
+    let effort: RuntimeSelection['effort'];
+    if (captured.effort !== null) {
+      const selectedEffort = captured.effort;
+      if (!selectedEffort || selectedEffort !== selectedEffort.trim()) {
+        return invalid('effort-value-unsupported');
+      }
+      if (
+        capabilities.effortControl.status === 'unsupported' ||
+        model.effort.status === 'unsupported'
+      ) return invalid('effort-unsupported');
+      if (
+        capabilities.effortControl.status === 'unavailable' ||
+        model.effort.status === 'unavailable'
+      ) return invalid('effort-unavailable');
+      if (!model.effort.values.includes(selectedEffort)) {
+        return invalid('effort-value-unsupported');
+      }
+      effort = { kind: 'selected', value: selectedEffort };
+    } else if (
+      capabilities.effortControl.status === 'unsupported' ||
+      model.effort.status === 'unsupported'
+    ) {
+      effort = { kind: 'unavailable' };
+    } else if (
+      capabilities.effortControl.status === 'unavailable' ||
+      model.effort.status === 'unavailable'
+    ) {
+      // Inconclusive facts cannot be promoted into an immutable stamp.
+      return invalid('effort-unavailable');
+    } else {
+      effort = { kind: 'none' };
+    }
+
+    const selection: RuntimeSelection = {
+      runtimeId: captured.runtimeId,
+      accountId: captured.accountId,
+      model: captured.model,
+      effort,
+    };
+    return { status: 'valid', selection };
+  }
+
+  async preflight(
+    selection: RuntimeSelection,
+    continuation: RuntimeContinuationRequest,
+  ): Promise<RuntimeSelectionValidation> {
+    const captured = captureRuntimeSelection(selection);
+    if (!captured) return invalid('selection-unavailable');
+    const resolution = this.resolve(captured.runtimeId);
+    if (resolution.status === 'invalid') return resolution;
+    return preflightRuntimeSelection(resolution.adapter, captured, continuation);
   }
 }
 
@@ -214,8 +664,11 @@ export class RuntimeRegistry {
 export interface MintRuntimeSession {
   projectId: string;
   appSessionId: string;
-  /** Set when re-attaching to an existing native session (resume). */
-  resumeNativeSessionId?: string;
+  /** Durable attempt identity allocated before the runtime is minted. */
+  continuationAttemptId: string;
+  /** Durable app-session stamp; composition must never re-resolve defaults. */
+  selection: RuntimeSelection;
+  continuation: RuntimeContinuationRequest;
   cwd?: string;
   ask?: AskHandler;
 }

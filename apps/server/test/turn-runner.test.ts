@@ -2,22 +2,40 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeToolSummary, type ChatEvent, type ChatDeltaEvent, type ToolStateEvent } from '@pc/contracts';
+import {
+  safeToolSummary,
+  type ChatEvent,
+  type ChatDeltaEvent,
+  type RuntimeSessionReceipt,
+  type ToolStateEvent,
+} from '@pc/contracts';
 import type { RuntimeEvent } from '../src/runner/runtime.ts';
 import { runTurn } from '../src/chat/turn-runner.ts';
+import { TEST_SELECTION } from './runtime-fixtures.ts';
+
+const CREATED_RECEIPT: RuntimeSessionReceipt = {
+  mode: 'created',
+  continuationAttemptId: 'turn-runner-attempt',
+  selection: TEST_SELECTION,
+  nativeSessionId: 'native-turn-runner',
+  requestedNativeSessionId: null,
+};
 
 function collector() {
   const chat: ChatEvent[] = [];
   const deltas: Array<{ itemId: string; deltaIndex: number; event: ChatDeltaEvent }> = [];
   const dropped: string[] = [];
+  const receipts: RuntimeSessionReceipt[] = [];
   return {
     chat,
     deltas,
     dropped,
+    receipts,
     deps: {
       emitChat: (event: ChatEvent) => chat.push(event),
       emitDelta: (itemId: string, deltaIndex: number, event: ChatDeltaEvent) =>
         deltas.push({ itemId, deltaIndex, event }),
+      onRuntimeSessionReceipt: (receipt: RuntimeSessionReceipt) => receipts.push(receipt),
       onDropped: (reason: string) => dropped.push(reason),
     },
   };
@@ -58,7 +76,7 @@ test('success turn maps blocks and ends in exactly one turn-end', async () => {
   const c = collector();
   const term = await runTurn(
     stream([
-      { type: 'init', nativeSessionId: 's1', model: 'opus', permissionMode: 'default' },
+      { type: 'session-started', receipt: CREATED_RECEIPT },
       { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'text', text: 'hi' } },
       { type: 'tool-state', scope: 'primary', event: tool('requested') },
       { type: 'tool-state', scope: 'primary', event: tool('running') },
@@ -77,6 +95,7 @@ test('success turn maps blocks and ends in exactly one turn-end', async () => {
     ['requested', 'running', 'succeeded'],
   );
   assert.ok(c.chat.some((e) => e.kind === 'activity-state' && e.phase === 'responding'));
+  assert.deepEqual(c.receipts, [CREATED_RECEIPT]);
 });
 
 test('error result ends in exactly one turn-failed (api)', async () => {
@@ -240,6 +259,28 @@ test('runtime retry persists only app-authored numeric status', async () => {
     && event.message === 'Retrying the runtime request (attempt 2 of 5).'
     && !('raw' in event)
   )));
+});
+
+test('a receipt after the terminal is never observed', async () => {
+  const c = collector();
+  let iteratorClosed = false;
+  async function* terminalThenReceipt(): AsyncIterable<RuntimeEvent> {
+    try {
+      yield {
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 0, error: null, outcome: 'ok', numTurns: null,
+      };
+      yield { type: 'session-started', receipt: CREATED_RECEIPT };
+    } finally {
+      iteratorClosed = true;
+    }
+  }
+
+  await runTurn(terminalThenReceipt(), c.deps);
+
+  assert.deepEqual(c.receipts, []);
+  assert.equal(iteratorClosed, true);
+  assert.equal(terminals(c.chat).length, 1);
 });
 
 test('visible deltas use the canonical delta emission door', async () => {

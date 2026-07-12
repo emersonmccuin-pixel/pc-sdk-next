@@ -21,6 +21,7 @@ import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import type { MintRuntimeSession, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from '../src/ws/hub.ts';
 import { freshDb, newProject, until } from './helpers.ts';
+import { testSessionSelectionDeps, withRuntimeReceipt } from './runtime-fixtures.ts';
 
 function terminals(sessionId: string): ChatEvent[] {
   return listConversationEvents(sessionId)
@@ -40,7 +41,8 @@ function rig(projectId: ULID, runtime: FakeRuntime) {
   const relay = new ConversationRelay({ hub });
   const service = new SessionService({
     projectId,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: (frame) => hub.broadcast(projectId, frame),
     drainConversationOutbox: () => relay.drain(),
   });
@@ -52,7 +54,6 @@ test('event, sequence, and outbox commit before the one relay path broadcasts', 
   const project = newProject();
   const runtime = new FakeRuntime({
     turns: [[
-      { type: 'init', nativeSessionId: 'native-1', model: 'opus', permissionMode: 'default' },
       { type: 'delta', itemId: 'item-1', scope: 'primary', delta: { kind: 'message-start' } },
       { type: 'delta', itemId: 'item-1', scope: 'primary', delta: { kind: 'text-delta', text: 'hi' } },
       { type: 'assistant-block', itemId: 'item-1', scope: 'primary', block: { kind: 'text', text: 'hi' } },
@@ -60,10 +61,10 @@ test('event, sequence, and outbox commit before the one relay path broadcasts', 
     ]],
   });
   const { service, frames } = rig(project.id, runtime);
-  const session = service.ensureActiveSession();
-  assert.equal(service.handleSend({
+  const session = await service.ensureActiveSession();
+  assert.equal((await service.handleSend({
     type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'hello', clientMessageId: 'cm1',
-  }).status, 'applied');
+  })).status, 'applied');
   await until(() => terminals(session.id).length === 1);
 
   const rows = listConversationEvents(session.id);
@@ -92,15 +93,16 @@ test('post-commit relay failure leaves the outbox pending without failing the de
   const relayErrors: unknown[] = [];
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: (frame) => frames.push(frame),
     drainConversationOutbox: () => { throw new Error('relay unavailable'); },
     onConversationRelayError: (error) => relayErrors.push(error),
   });
-  const session = service.ensureActiveSession();
-  assert.equal(service.handleSend({
+  const session = await service.ensureActiveSession();
+  assert.equal((await service.handleSend({
     type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'go', clientMessageId: 'cm-relay-failure',
-  }).status, 'applied');
+  })).status, 'applied');
   await until(() => terminals(session.id).length === 1);
   assert.deepEqual(runtime.sentTexts, ['go']);
   assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
@@ -115,7 +117,7 @@ test('approval ask still carries an authoritative active turn when canonical rel
   const relayErrors: unknown[] = [];
   const service = new SessionService({
     projectId: project.id,
-    mintSession: (ctx): RuntimeSession => ({
+    mintSession: withRuntimeReceipt((ctx): RuntimeSession => ({
       async *sendTurn() {
         assert.ok(ctx.ask);
         const requested: ToolStateEvent = {
@@ -151,13 +153,14 @@ test('approval ask still carries an authoritative active turn when canonical rel
       },
       interrupt: async () => {},
       dispose: async () => {},
-    }),
+    })),
+    ...testSessionSelectionDeps(),
     broadcast: (frame) => frames.push(frame),
     drainConversationOutbox: () => { throw new Error('relay unavailable from first event'); },
     onConversationRelayError: (error) => relayErrors.push(error),
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'approval-relay-command', sessionId: session.id,
     text: 'go', clientMessageId: 'approval-relay-client',
   });
@@ -223,18 +226,19 @@ test('same-session resume re-emits a still-pending canonical approval after repl
   });
   const service = new SessionService({
     projectId: project.id,
-    mintSession: runtimeFor,
+    mintSession: withRuntimeReceipt(runtimeFor),
+    ...testSessionSelectionDeps(),
     broadcast: (frame) => frames.push(frame),
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'approval-command', sessionId: session.id,
     text: 'needs approval', clientMessageId: 'approval-client',
   });
   await until(() => frames.some((frame) => frame.type === 'ask'));
   const firstAsk = frames.find((frame): frame is AskFrame => frame.type === 'ask')!;
   const beforeResume = frames.length;
-  assert.equal(service.resumeSession(session.id)?.id, session.id);
+  assert.equal((await service.resumeSession(session.id))?.id, session.id);
   const resumed = frames.slice(beforeResume);
   const replayIndex = resumed.findIndex((frame) => frame.type === 'session-replay');
   const queueIndex = resumed.findIndex((frame) => frame.type === 'send-queue-snapshot');
@@ -266,11 +270,12 @@ test('post-send persistence failure quarantines the accepted runtime before a su
   let mintCalls = 0;
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => (++mintCalls === 1 ? firstMint : second),
+    mintSession: withRuntimeReceipt(() => (++mintCalls === 1 ? firstMint : second)),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'failing-command', sessionId: session.id,
     text: 'first', clientMessageId: 'failing-client',
   });
@@ -293,7 +298,7 @@ test('post-send persistence failure quarantines the accepted runtime before a su
   await until(() => firstDisposeCalls === 1);
   assert.deepEqual(first.sentTexts, ['first']);
 
-  service.handleSend({
+  await service.handleSend({
     type: 'send', commandId: 'successor-command', sessionId: session.id,
     text: 'second', clientMessageId: 'successor-client',
   });
@@ -319,13 +324,14 @@ test('runtime startup and synchronous delivery exceptions persist only app-autho
     let mintCalls = 0;
     const service = new SessionService({
       projectId: project.id,
-      mintSession: failure === 'startup'
+      mintSession: withRuntimeReceipt(failure === 'startup'
         ? async () => { throw new Error('SECRET provider startup detail'); }
-        : () => (++mintCalls === 1 ? deadRuntime : successorRuntime),
+        : () => (++mintCalls === 1 ? deadRuntime : successorRuntime)),
+      ...testSessionSelectionDeps(),
       broadcast: () => {},
     });
-    const session = service.ensureActiveSession();
-    service.handleSend({
+    const session = await service.ensureActiveSession();
+    await service.handleSend({
       type: 'send', commandId: `closed-${failure}-command`, sessionId: session.id,
       text: 'go', clientMessageId: `closed-${failure}-client`,
     });
@@ -335,7 +341,7 @@ test('runtime startup and synchronous delivery exceptions persist only app-autho
     }]);
     assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('SECRET'), false);
     if (failure === 'delivery') {
-      service.handleSend({
+      await service.handleSend({
         type: 'send', commandId: 'closed-delivery-successor-command', sessionId: session.id,
         text: 'next', clientMessageId: 'closed-delivery-successor-client',
       });
@@ -359,8 +365,8 @@ test('success, API error, and interrupt each persist exactly one terminal', asyn
         : [{ type: 'assistant-block', itemId: 'item', scope: 'primary', block: { kind: 'text', text: 'working' } } as const, { hang: true } as const];
     const runtime = new FakeRuntime({ turns: [turn] });
     const { service } = rig(project.id, runtime);
-    const session = service.ensureActiveSession();
-    service.handleSend({
+    const session = await service.ensureActiveSession();
+    await service.handleSend({
       type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'go', clientMessageId: 'cm1',
     });
     if (scenario === 'interrupt') {
@@ -390,14 +396,14 @@ test('queued sends drain FIFO and typed agent envelopes remain typed', async () 
     stepDelayMs: 5,
   });
   const { service } = rig(project.id, runtime);
-  const session = service.ensureActiveSession();
-  assert.equal(service.handleSend({
+  const session = await service.ensureActiveSession();
+  assert.equal((await service.handleSend({
     type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'first', clientMessageId: 'cm1',
-  }).status, 'applied');
-  assert.equal(service.handleSend({
+  })).status, 'applied');
+  assert.equal((await service.handleSend({
     type: 'send', commandId: 'cmd2', sessionId: session.id, text: 'second', clientMessageId: 'cm2',
-  }).status, 'applied');
-  service.injectAgentEnvelope({
+  })).status, 'applied');
+  await service.injectAgentEnvelope({
     runId: 'run-1',
     agentName: 'researcher',
     pendingAskId: 'ask-1',

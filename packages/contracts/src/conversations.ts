@@ -1,15 +1,19 @@
 // Conversation contract family (slice 006). Browser-safe, zero runtime deps.
 //
 // Owns `ConversationKind` (the read-surface discriminator across orchestrator
-// sessions, agent runs, and subagent transcripts) and `ConversationSessionDto`
-// (a browser-safe mirror of the @pc/domain `OrchestratorSession`). This slice
-// wires only `'orchestrator-session'` to a live repository; the other kinds are
-// reserved for the later cross-kind transcript convergence.
-//
-// The DTO mirrors the EXISTING wire exactly — `deletedAt` stays server-side and
-// is NOT part of the rail DTO (the session routes never emit it).
+// sessions, agent runs, and subagent transcripts) and the expanded session read
+// DTO. Runtime selection uses the same canonical contract as live session
+// frames; provider labels/native ids never form a parallel browser wire.
 
 import { type ULID } from './shared.ts';
+import {
+  isSessionContinuationState,
+  isSessionResumeAvailability,
+  isSessionSummary,
+  type SessionContinuationState,
+  type SessionResumeAvailability,
+} from './events/session.ts';
+import { isRuntimeSelection, type RuntimeSelection } from './runtime.ts';
 
 export const CONVERSATION_KINDS = [
   'orchestrator-session',
@@ -26,29 +30,27 @@ export const CONVERSATION_SESSION_ENDED_REASONS = [
   'provider_error',
   'provider_session_lost',
   'account_switched',
+  'selection_unavailable',
   'pty_exit',
   'archived',
 ] as const;
 export type ConversationSessionEndedReason =
   (typeof CONVERSATION_SESSION_ENDED_REASONS)[number];
 
-/** Browser-safe mirror of the @pc/domain `OrchestratorSession` (the shape the
- *  `GET /sessions` + `GET /session` routes already emit). `deletedAt` is
- *  intentionally omitted — the routes filter soft-deleted rows and never return
- *  it on the rail DTO. */
+/** Expanded browser-safe session row. Native identity is represented only by
+ *  presence; credentials and adapter-native ids remain server-side. */
 export interface ConversationSessionDto {
   id: ULID;
   projectId: ULID;
-  provider: string;
-  providerSessionId: string | null;
-  model: string | null;
+  selection: RuntimeSelection | null;
   title: string | null;
   status: ConversationSessionStatus;
   endedReason: ConversationSessionEndedReason | null;
   startedAt: number;
   endedAt: number | null;
-  jsonlPath: string | null;
-  jsonlLineCursor: number;
+  nativeSessionIdPresent: boolean;
+  continuationState: SessionContinuationState;
+  resumeAvailability: SessionResumeAvailability;
 }
 
 // ── Guards ───────────────────────────────────────────────────────────────────
@@ -78,21 +80,41 @@ export function isConversationSessionEndedReason(
 export function isConversationSessionDto(value: unknown): value is ConversationSessionDto {
   if (!isRecord(value)) return false;
   return (
+    hasOnlyKeys(value, [
+      'id', 'projectId', 'selection', 'title', 'status', 'endedReason',
+      'startedAt', 'endedAt', 'nativeSessionIdPresent', 'continuationState',
+      'resumeAvailability',
+    ]) &&
     typeof value.id === 'string' &&
     typeof value.projectId === 'string' &&
-    typeof value.provider === 'string' &&
-    (value.providerSessionId === null || typeof value.providerSessionId === 'string') &&
-    (value.model === null || typeof value.model === 'string') &&
+    (value.selection === null || isRuntimeSelection(value.selection)) &&
     (value.title === null || typeof value.title === 'string') &&
     isConversationSessionStatus(value.status) &&
     (value.endedReason === null || isConversationSessionEndedReason(value.endedReason)) &&
     typeof value.startedAt === 'number' &&
     (value.endedAt === null || typeof value.endedAt === 'number') &&
-    (value.jsonlPath === null || typeof value.jsonlPath === 'string') &&
-    typeof value.jsonlLineCursor === 'number'
+    typeof value.nativeSessionIdPresent === 'boolean' &&
+    isSessionContinuationState(value.continuationState) &&
+    isSessionResumeAvailability(value.resumeAvailability) &&
+    isSessionSummary({
+      id: value.id,
+      projectId: value.projectId,
+      selection: value.selection,
+      title: value.title,
+      status: value.status,
+      nativeSessionIdPresent: value.nativeSessionIdPresent,
+      continuationState: value.continuationState,
+      resumeAvailability: value.resumeAvailability,
+      startedAt: value.startedAt,
+    })
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }

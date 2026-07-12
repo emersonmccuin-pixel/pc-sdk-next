@@ -6,9 +6,11 @@
 
 import {
   commitConversationEvent,
+  confirmRuntimeSessionReceipt,
   editQueuedConversationSend,
   enqueueConversationSend,
   failConversationInterrupt,
+  failRuntimeSessionResume,
   getActiveConversationTurn,
   getActiveOrchestratorSession,
   getConversationHighWaterSequence,
@@ -16,12 +18,14 @@ import {
   getOrchestratorSession,
   getTurnInterruptRequest,
   newId,
+  prepareRuntimeSessionCreate,
+  prepareRuntimeSessionResume,
   removeQueuedConversationSend,
   replaceOrchestratorSession,
   requestConversationInterrupt,
   resumeOrchestratorSessionTransition,
+  runtimeSelectionForSession,
   settleConversationTurn,
-  setOrchestratorSessionProvider,
   setOrchestratorSessionTitle,
   type ClaimedConversationTurn,
   type ConversationCommandResult,
@@ -40,16 +44,25 @@ import {
   type OrchestratorStateFrame,
   type QueuedAgentEnvelope,
   type RemoveQueuedMessage,
+  type RuntimeSelection,
+  type RuntimeSelectionErrorCode,
+  type RuntimeSelectionValidation,
   type SendMessage,
   type SendQueueSnapshotFrame,
   type ServerFrame,
   type SessionChangedFrame,
   type SessionReplayFrame,
   type SessionSummary,
+  type SessionUpdatedFrame,
   type UsageSnapshot,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { RuntimeSession, RuntimeSessionFactory } from '../runner/runtime.ts';
+import {
+  RuntimeSelectionRejectedError,
+  type RuntimeContinuationRequest,
+  type RuntimeSession,
+  type RuntimeSessionFactory,
+} from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
 import { replayConversationEvents } from './replay.ts';
 import { SendQueue } from './send-queue.ts';
@@ -71,6 +84,13 @@ export interface SessionServiceDeps {
   projectId: ULID;
   broadcast: (frame: ServerFrame) => void;
   mintSession: RuntimeSessionFactory;
+  resolveNewSessionSelection: (
+    input: { projectId: ULID; accountId?: string },
+  ) => Promise<RuntimeSelectionValidation>;
+  preflightRuntimeSession: (
+    selection: RuntimeSelection,
+    continuation: RuntimeContinuationRequest,
+  ) => Promise<RuntimeSelectionValidation>;
   drainConversationOutbox?: () => void;
   onConversationRelayError?: (error: unknown) => void;
   cwd?: string;
@@ -87,7 +107,17 @@ export interface SessionServiceDeps {
 interface RuntimeReady {
   sessionId: string;
   turnId: string;
-  promise: Promise<RuntimeSession>;
+  promise: Promise<RuntimeAcquisition>;
+}
+
+interface RuntimeAcquisition {
+  runtime: RuntimeSession;
+  receiptRequired: boolean;
+  receiptConfirmed: boolean;
+  /** A lifecycle-foreign or older-generation receipt cannot fail this attempt. */
+  receiptFailureSuppressed: boolean;
+  continuationAttemptId: string | null;
+  continuation: RuntimeContinuationRequest | null;
 }
 
 interface InterruptControl {
@@ -120,6 +150,8 @@ export class SessionService {
   private readonly projectId: ULID;
   private readonly broadcast: (frame: ServerFrame) => void;
   private readonly mintSession: RuntimeSessionFactory;
+  private readonly resolveNewSessionSelection: SessionServiceDeps['resolveNewSessionSelection'];
+  private readonly preflightRuntimeSession: SessionServiceDeps['preflightRuntimeSession'];
   private readonly drainConversationOutbox: () => void;
   private readonly onConversationRelayError: (error: unknown) => void;
   private readonly cwd?: string;
@@ -134,6 +166,7 @@ export class SessionService {
   private runtimeRev: number | null = null;
   private runtimeReady: RuntimeReady | null = null;
   private runtimeQuarantine: Promise<void> = Promise.resolve();
+  private sessionTransitionTail: Promise<void> = Promise.resolve();
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
   private disposed = false;
@@ -151,6 +184,8 @@ export class SessionService {
     this.projectId = deps.projectId;
     this.broadcast = deps.broadcast;
     this.mintSession = deps.mintSession;
+    this.resolveNewSessionSelection = deps.resolveNewSessionSelection;
+    this.preflightRuntimeSession = deps.preflightRuntimeSession;
     this.drainConversationOutbox = deps.drainConversationOutbox ?? (() => {});
     this.onConversationRelayError = deps.onConversationRelayError ?? ((error) => {
       console.warn('[pc-sdk][conversation-relay] post-commit drain failed:', error);
@@ -195,13 +230,14 @@ export class SessionService {
 
   /** Called by the registry at boot and after every queue-affecting command. */
   kick(): void {
+    if (this.disposed) return;
     if (this.queueDrainEnabled) this.sendQueue.kick();
   }
 
   /** One-way composition readiness gate. Durable admission remains available
    * before this call, but no provider work may start. */
   enableQueueDrain(): void {
-    if (this.queueDrainEnabled) return;
+    if (this.disposed || this.queueDrainEnabled) return;
     this.queueDrainEnabled = true;
     this.sendQueue.kick();
   }
@@ -209,6 +245,7 @@ export class SessionService {
   // ── durable conversation commands ─────────────────────────────────────────
 
   async handleConversationCommand(command: ConversationCommand): Promise<ConversationCommandResult> {
+    if (this.disposed) return sessionChanged(null);
     switch (command.type) {
       case 'send':
         return this.handleSend(command);
@@ -222,13 +259,36 @@ export class SessionService {
     }
   }
 
-  handleSend(command: SendMessage): ConversationCommandResult {
-    let session = this.session;
+  async handleSend(command: SendMessage): Promise<ConversationCommandResult> {
+    if (this.disposed) return sessionChanged(null);
+    const session = this.session;
     if (command.sessionId === null) {
       if (session) return sessionChanged(session.id);
-      session = this.startNewSession();
-    } else if (!session || session.id !== command.sessionId) {
+      // Creating the initial session and admitting its send are one serialized
+      // operation. Otherwise two first sends can each replace the session,
+      // cancel the earlier FIFO item, and resolve mutable defaults twice.
+      return this.withSessionTransition(async () => {
+        if (this.disposed) return sessionChanged(null);
+        const initialSession = this.session ?? await this.replaceSession('new session started');
+        if (!this.session || this.session.id !== initialSession.id) {
+          return sessionChanged(this.session?.id ?? null);
+        }
+        return this.enqueueUserSend(initialSession, command);
+      });
+    }
+    if (!session || session.id !== command.sessionId) {
       return sessionChanged(session?.id ?? null);
+    }
+    if (!this.session || this.session.id !== session.id) return sessionChanged(this.session?.id ?? null);
+    return this.enqueueUserSend(session, command);
+  }
+
+  private enqueueUserSend(
+    session: OrchestratorSessionRow,
+    command: SendMessage,
+  ): ConversationCommandResult {
+    if (this.disposed || !this.session || this.session.id !== session.id) {
+      return sessionChanged(this.disposed ? null : this.session?.id ?? null);
     }
     const result = enqueueConversationSend({
       projectId: this.projectId,
@@ -274,8 +334,13 @@ export class SessionService {
     return result;
   }
 
-  injectAgentEnvelope(input: InjectAgentEnvelopeInput): ConversationCommandResult {
-    const session = this.ensureActiveSession();
+  async injectAgentEnvelope(input: InjectAgentEnvelopeInput): Promise<ConversationCommandResult> {
+    if (this.disposed) return sessionChanged(null);
+    const session = await this.ensureActiveSession();
+    if (this.disposed || !this.session || this.session.id !== session.id) {
+      if (this.disposed) return sessionChanged(null);
+      return sessionChanged(this.session?.id ?? null);
+    }
     const agentEnvelope: QueuedAgentEnvelope = {
       runId: input.runId,
       agentName: input.agentName,
@@ -381,7 +446,7 @@ export class SessionService {
       ]);
       if (outcome.kind === 'stopped') return;
       if (outcome.kind === 'error') throw outcome.error;
-      runtime = outcome.value;
+      runtime = outcome.value.runtime;
     }
 
     // The target can terminate while runtime startup is awaited. Its atomic
@@ -477,36 +542,55 @@ export class SessionService {
 
   // ── session lifecycle ──────────────────────────────────────────────────────
 
-  ensureActiveSession(): OrchestratorSessionRow {
+  async ensureActiveSession(): Promise<OrchestratorSessionRow> {
+    if (this.disposed) throw new Error('session service is disposed');
     if (this.session) return this.session;
-    return this.startNewSession();
+    return this.withSessionTransition(async () => {
+      if (this.disposed) throw new Error('session service is disposed');
+      if (this.session) return this.session;
+      return this.replaceSession('new session started');
+    });
   }
 
   canSwitchSession(): boolean {
     return !this.session || getActiveConversationTurn(this.session.id) === null;
   }
 
-  startNewSession(): OrchestratorSessionRow {
-    return this.replaceSession('new session started');
+  async startNewSession(): Promise<OrchestratorSessionRow> {
+    return this.withSessionTransition(() => this.replaceSession('new session started'));
   }
 
-  /** Account default + session boundary are one DB transition. Every prior
-   * session is retained for replay but marked non-resumable because its native
-   * account stamp does not exist yet. */
-  switchAccountSession(accountId: string): OrchestratorSessionRow {
-    return this.replaceSession('account switched', accountId);
+  /** Account default + a newly stamped session boundary are one DB transition.
+   * Prior stamped sessions retain their original account and remain eligible
+   * for separately preflighted historical resume. */
+  async switchAccountSession(accountId: string): Promise<OrchestratorSessionRow> {
+    return this.withSessionTransition(() => this.replaceSession('account switched', accountId));
   }
 
-  private replaceSession(reason: string, accountId?: string): OrchestratorSessionRow {
+  private async replaceSession(reason: string, accountId?: string): Promise<OrchestratorSessionRow> {
+    if (this.disposed) throw new Error('session service is disposed');
+    const generation = this.lifecycleGeneration;
+    const resolved = await this.resolveNewSessionSelection({
+      projectId: this.projectId,
+      ...(accountId ? { accountId } : {}),
+    });
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      throw new Error('session service was disposed during selection resolution');
+    }
+    if (resolved.status === 'invalid') throw new RuntimeSelectionRejectedError(resolved.code);
+    if (accountId !== undefined && resolved.selection.accountId !== accountId) {
+      throw new RuntimeSelectionRejectedError('account-runtime-mismatch');
+    }
+    if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
     const replacement = replaceOrchestratorSession({
       projectId: this.projectId,
       expectedSessionId: this.session?.id ?? null,
+      selection: resolved.selection,
       queueCancellationReason: reason,
-      ...(accountId
+      ...(accountId !== undefined
         ? {
             endedReason: 'account_switched' as const,
             settingsPatch: { defaultAccountId: accountId },
-            invalidatePriorSessions: true,
           }
         : {}),
     });
@@ -518,12 +602,15 @@ export class SessionService {
     return this.session;
   }
 
-  resumeSession(sessionId: ULID): OrchestratorSessionRow | null {
+  async resumeSession(sessionId: ULID): Promise<OrchestratorSessionRow | null> {
+    return this.withSessionTransition(() => this.resumeSessionUnserialized(sessionId));
+  }
+
+  private async resumeSessionUnserialized(sessionId: ULID): Promise<OrchestratorSessionRow | null> {
+    if (this.disposed) throw new Error('session service is disposed');
+    const generation = this.lifecycleGeneration;
     const target = getOrchestratorSession(sessionId);
-    if (
-      !target || target.projectId !== this.projectId ||
-      target.endedReason === 'account_switched'
-    ) return null;
+    if (!target || target.projectId !== this.projectId) return null;
     if (this.session?.id === sessionId) {
       this.broadcast(this.sessionChangedFrame('resume-session'));
       this.broadcast(this.orchestratorStateFrame());
@@ -532,6 +619,16 @@ export class SessionService {
       for (const ask of this.askRegistry.snapshot()) this.broadcast(ask);
       return this.session;
     }
+    const selection = runtimeSelectionForSession(target);
+    const staticError = this.staticResumeError(target, selection);
+    if (staticError) throw new RuntimeSelectionRejectedError(staticError);
+    const continuation = { mode: 'resume' as const, nativeSessionId: target.nativeSessionId! };
+    const preflight = await this.preflightRuntimeSession(selection!, continuation);
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      throw new Error('session service was disposed during resume preflight');
+    }
+    if (preflight.status === 'invalid') throw new RuntimeSelectionRejectedError(preflight.code);
+    if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
     const resumed = resumeOrchestratorSessionTransition({
       projectId: this.projectId,
       expectedSessionId: this.session?.id ?? null,
@@ -549,6 +646,59 @@ export class SessionService {
     return this.session;
   }
 
+  private async withSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
+    const prior = this.sessionTransitionTail;
+    let release!: () => void;
+    this.sessionTransitionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  activeRuntimeSelection(): RuntimeSelection | null {
+    return this.session ? runtimeSelectionForSession(this.session) : null;
+  }
+
+  async resumeAvailabilityCode(
+    session: OrchestratorSessionRow,
+    preflightCache?: Map<string, Promise<RuntimeSelectionValidation>>,
+  ): Promise<RuntimeSelectionErrorCode | null> {
+    const selection = runtimeSelectionForSession(session);
+    const staticError = this.staticResumeError(session, selection);
+    if (staticError) return staticError;
+    const key = runtimeSelectionCacheKey(selection!);
+    let pending = preflightCache?.get(key);
+    if (!pending) {
+      pending = this.preflightRuntimeSession(selection!, {
+        mode: 'resume',
+        nativeSessionId: session.nativeSessionId!,
+      });
+      preflightCache?.set(key, pending);
+    }
+    const validation = await pending;
+    return validation.status === 'invalid' ? validation.code : null;
+  }
+
+  private staticResumeError(
+    session: OrchestratorSessionRow,
+    selection: RuntimeSelection | null,
+  ): RuntimeSelectionErrorCode | null {
+    if (session.status === 'active') return 'session-active';
+    if (!selection) return 'selection-unavailable';
+    if (
+      session.nativeIdentityState !== 'bound' ||
+      typeof session.nativeSessionId !== 'string' ||
+      session.nativeSessionId.trim().length === 0
+    ) return 'native-session-missing';
+    if (session.continuationState === 'resume-failed') return 'resume-failed';
+    return null;
+  }
+
   private teardownRunner(reason: string): void {
     this.askRegistry.clear(reason);
     const runtime = this.runtime;
@@ -556,7 +706,13 @@ export class SessionService {
     this.runtimeSessionId = null;
     this.runtimeReady = null;
     this.setHealth('idle');
-    if (runtime) void runtime.dispose().catch(() => {});
+    if (runtime) {
+      const prior = this.runtimeQuarantine;
+      this.runtimeQuarantine = Promise.all([
+        prior,
+        runtime.dispose().catch(() => {}),
+      ]).then(() => {});
+    }
   }
 
   async dispose(): Promise<void> {
@@ -586,7 +742,7 @@ export class SessionService {
 
   // ── claimed turn delivery ──────────────────────────────────────────────────
 
-  private async ensureRuntime(session: OrchestratorSessionRow): Promise<RuntimeSession> {
+  private async ensureRuntime(session: OrchestratorSessionRow): Promise<RuntimeAcquisition> {
     if (this.disposed) throw new Error('session service is disposed');
     const generation = this.lifecycleGeneration;
     await this.runtimeQuarantine;
@@ -595,35 +751,109 @@ export class SessionService {
     }
     const rev = this.orchestratorRev?.() ?? null;
     if (this.runtime && this.runtimeSessionId === session.id) {
-      if (rev === null || rev === this.runtimeRev) return this.runtime;
+      if (rev === null || rev === this.runtimeRev) {
+        return {
+          runtime: this.runtime,
+          receiptRequired: false,
+          receiptConfirmed: true,
+          receiptFailureSuppressed: false,
+          continuationAttemptId: null,
+          continuation: null,
+        };
+      }
       const old = this.runtime;
       this.runtime = null;
       this.runtimeSessionId = null;
-      void old.dispose().catch(() => {});
+      await old.dispose().catch(() => {});
     } else if (this.runtime) {
       const old = this.runtime;
       this.runtime = null;
       this.runtimeSessionId = null;
-      void old.dispose().catch(() => {});
+      await old.dispose().catch(() => {});
+    }
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      throw new Error('session service was disposed during runtime replacement');
     }
     this.setHealth('starting');
     this.broadcast(this.orchestratorStateFrame());
-    const resume = session.providerSessionId || undefined;
-    const runtime = await this.mintSession({
-      projectId: this.projectId,
-      appSessionId: session.id,
-      resumeNativeSessionId: resume,
-      cwd: this.cwd,
-      ask: this.askRegistry.ask,
-    });
+    const selection = runtimeSelectionForSession(session);
+    if (!selection) throw new RuntimeSelectionRejectedError('selection-unavailable');
+    let continuation: RuntimeContinuationRequest;
+    let continuationAttemptId: string;
+    if (
+      session.nativeIdentityState === 'bound' &&
+      typeof session.nativeSessionId === 'string' &&
+      session.nativeSessionId.trim().length > 0
+    ) {
+      continuation = { mode: 'resume', nativeSessionId: session.nativeSessionId };
+      const validation = await this.preflightRuntimeSession(selection, continuation);
+      if (this.disposed || generation !== this.lifecycleGeneration) {
+        throw new Error('session service was disposed during runtime resume preflight');
+      }
+      if (validation.status === 'invalid') {
+        if (session.continuationState === 'resume-pending') {
+          this.markRuntimeResumeFailed(session, session.continuationAttemptId);
+        }
+        throw new RuntimeSelectionRejectedError(validation.code);
+      }
+      const prepared = prepareRuntimeSessionResume(session.id);
+      if (!prepared || !prepared.continuationAttemptId) {
+        throw new RuntimeSelectionRejectedError('resume-failed');
+      }
+      Object.assign(session, prepared);
+      if (this.session?.id === session.id) this.session = prepared;
+      continuationAttemptId = prepared.continuationAttemptId;
+    } else if (
+      session.nativeIdentityState === 'unbound' &&
+      session.nativeSessionId === null &&
+      session.continuationState === 'clean-pending'
+    ) {
+      continuation = { mode: 'create' };
+      const prepared = prepareRuntimeSessionCreate(session.id);
+      if (!prepared || !prepared.continuationAttemptId) {
+        throw new RuntimeSelectionRejectedError('selection-unavailable');
+      }
+      Object.assign(session, prepared);
+      if (this.session?.id === session.id) this.session = prepared;
+      continuationAttemptId = prepared.continuationAttemptId;
+    } else {
+      throw new RuntimeSelectionRejectedError('native-session-missing');
+    }
+    let runtime: RuntimeSession;
+    try {
+      runtime = await this.mintSession({
+        projectId: this.projectId,
+        appSessionId: session.id,
+        continuationAttemptId,
+        selection,
+        continuation,
+        cwd: this.cwd,
+        ask: this.askRegistry.ask,
+      });
+    } catch (error) {
+      if (continuation.mode === 'resume') {
+        this.markRuntimeResumeFailed(session, continuationAttemptId);
+      }
+      throw error;
+    }
     if (this.disposed || generation !== this.lifecycleGeneration) {
       await runtime.dispose().catch(() => {});
+      if (continuation.mode === 'resume') {
+        this.markRuntimeResumeFailed(session, continuationAttemptId);
+      }
       throw new Error('session service was disposed during runtime startup');
     }
     this.runtime = runtime;
     this.runtimeSessionId = session.id;
     this.runtimeRev = rev;
-    return runtime;
+    return {
+      runtime,
+      receiptRequired: true,
+      receiptConfirmed: false,
+      receiptFailureSuppressed: false,
+      continuationAttemptId,
+      continuation,
+    };
   }
 
   private async deliver(turn: ClaimedConversationTurn): Promise<void> {
@@ -644,11 +874,12 @@ export class SessionService {
     let runtimeAccepted = false;
     let runtimeAcquired = false;
     let terminalSettled = false;
+    let acquisition: RuntimeAcquisition | null = null;
     const ready = this.ensureRuntime(session);
     this.runtimeReady = { sessionId: session.id, turnId: turn.turnId, promise: ready };
     try {
       const outcome = await Promise.race([
-        ready.then((runtime) => ({ runtime })),
+        ready.then((value) => ({ value })),
         this.disposedSignal.then(() => null),
       ]);
       if (!outcome) {
@@ -657,7 +888,8 @@ export class SessionService {
         void ready.catch(() => {});
         return;
       }
-      const runtime = outcome.runtime;
+      acquisition = outcome.value;
+      const runtime = acquisition.runtime;
       runtimeAcquired = true;
       if (this.disposed) return;
       this.setHealth('busy');
@@ -668,13 +900,20 @@ export class SessionService {
         kind: 'activity-state',
         phase: 'requesting-runtime',
       }, { itemId: newId() });
-      await runTurn(stream, this.turnDeps(turn, session, () => {
+      await runTurn(stream, this.turnDeps(turn, session, acquisition, () => {
         terminalSettled = true;
       }));
       if (!terminalSettled) {
         this.settleInfrastructureFailure(turn, 'runtime ended without a durable terminal', runtimeAccepted);
       }
     } catch (error) {
+      if (
+        acquisition?.continuation?.mode === 'resume' &&
+        acquisition.receiptRequired &&
+        !acquisition.receiptConfirmed
+      ) {
+        this.markRuntimeResumeFailed(session, acquisition.continuationAttemptId);
+      }
       if (!terminalSettled) {
         // Provider/runtime exception text is diagnostic evidence, not product
         // copy. Keep durable conversation and queue state app-authored.
@@ -692,6 +931,25 @@ export class SessionService {
         this.broadcast(this.orchestratorStateFrame());
       }
     }
+  }
+
+  private markRuntimeResumeFailed(
+    session: OrchestratorSessionRow,
+    continuationAttemptId: string | null,
+  ): void {
+    if (!continuationAttemptId) return;
+    if (!failRuntimeSessionResume(session.id, continuationAttemptId)) return;
+    if (session.continuationAttemptId !== continuationAttemptId) return;
+    session.continuationState = 'resume-failed';
+    let currentUpdated = false;
+    if (
+      this.session?.id === session.id &&
+      this.session.continuationAttemptId === continuationAttemptId
+    ) {
+      this.session.continuationState = 'resume-failed';
+      currentUpdated = true;
+    }
+    if (currentUpdated) this.broadcastSessionUpdated();
   }
 
   private settleInfrastructureFailure(
@@ -716,19 +974,36 @@ export class SessionService {
   private turnDeps(
     turn: ClaimedConversationTurn,
     session: OrchestratorSessionRow,
+    acquisition: RuntimeAcquisition,
     onTerminal: () => void,
   ): TurnRunnerDeps {
     return {
       emitChat: (event, identity) => {
         if (event.kind === 'turn-end' || event.kind === 'turn-failed') {
-          const outcome = event.kind === 'turn-end'
+          const terminalEvent = acquisition.receiptRequired && !acquisition.receiptConfirmed
+            ? {
+                kind: 'turn-failed' as const,
+                error: 'runtime session start was not positively confirmed',
+                source: 'internal' as const,
+              }
+            : event;
+          if (terminalEvent !== event) {
+            if (
+              acquisition.continuation?.mode === 'resume' &&
+              !acquisition.receiptFailureSuppressed
+            ) {
+              this.markRuntimeResumeFailed(session, acquisition.continuationAttemptId);
+            }
+            this.quarantineRuntime(session.id, turn.turnId);
+          }
+          const outcome = terminalEvent.kind === 'turn-end'
             ? 'completed'
-            : event.source === 'abort'
+            : terminalEvent.source === 'abort'
               ? 'aborted'
               : 'turn-failed';
           if (settleConversationTurn({
             turnId: turn.turnId,
-            terminalEvent: event,
+            terminalEvent,
             terminalOutcome: outcome,
             queueStatus: 'accepted',
           })) {
@@ -755,15 +1030,37 @@ export class SessionService {
           streamId: itemId,
           deltaIndex,
         }),
-      onNativeSessionId: (id, model) => {
-        if (session.providerSessionId === id) return;
-        setOrchestratorSessionProvider(session.id, { providerSessionId: id, model });
-        session.providerSessionId = id;
-        session.model = model;
-        if (this.session?.id === session.id) {
-          this.session.providerSessionId = id;
-          this.session.model = model;
+      onRuntimeSessionReceipt: (receipt) => {
+        // Runtime disposal is not proof that a provider stream stopped. A
+        // receipt emitted after the lifecycle fence is stale and must not bind
+        // or advance durable native identity.
+        if (
+          this.disposed ||
+          this.runtime !== acquisition.runtime ||
+          this.runtimeSessionId !== session.id ||
+          receipt.continuationAttemptId !== acquisition.continuationAttemptId
+        ) {
+          acquisition.receiptFailureSuppressed = true;
+          throw new Error('runtime session receipt arrived outside its active attempt');
         }
+        const confirmation = confirmRuntimeSessionReceipt({ sessionId: session.id, receipt });
+        if (confirmation.status === 'rejected') {
+          if (confirmation.reason === 'continuation-attempt-mismatch') {
+            acquisition.receiptFailureSuppressed = true;
+          }
+          if (
+            acquisition.continuation?.mode === 'resume' &&
+            !acquisition.receiptFailureSuppressed
+          ) {
+            this.markRuntimeResumeFailed(session, acquisition.continuationAttemptId);
+          }
+          this.quarantineRuntime(session.id, turn.turnId);
+          throw new Error(`runtime session receipt rejected: ${confirmation.reason}`);
+        }
+        acquisition.receiptConfirmed = true;
+        Object.assign(session, confirmation.session);
+        if (this.session?.id === session.id) this.session = confirmation.session;
+        if (!confirmation.duplicate) this.broadcastSessionUpdated();
       },
       onRateLimit: (snapshot) => this.onRateLimit?.(snapshot),
       onDropped: (reason, message) => {
@@ -809,19 +1106,35 @@ export class SessionService {
   private sessionSummary(): SessionSummary | null {
     const session = this.session;
     if (!session) return null;
+    const selection = runtimeSelectionForSession(session);
+    if (!selection) return null;
     return {
       id: session.id,
       projectId: session.projectId,
-      model: session.model,
+      selection,
       title: session.title,
       status: session.status === 'ended' ? 'ended' : 'active',
-      resumable: session.status === 'ended' && session.endedReason !== 'account_switched',
+      nativeSessionIdPresent:
+        typeof session.nativeSessionId === 'string' && session.nativeSessionId.trim().length > 0,
+      continuationState: session.continuationState,
+      resumeAvailability: { status: 'unavailable', code: 'session-active' },
       startedAt: session.startedAt,
     };
   }
 
   private sessionChangedFrame(transition: 'new-session' | 'resume-session'): SessionChangedFrame {
     return { type: 'session-changed', projectId: this.projectId, transition, session: this.sessionSummary() };
+  }
+
+  private broadcastSessionUpdated(): void {
+    const session = this.sessionSummary();
+    if (!session) return;
+    const frame: SessionUpdatedFrame = {
+      type: 'session-updated',
+      projectId: this.projectId,
+      session,
+    };
+    this.broadcast(frame);
   }
 
   private sessionReplayFrame(): SessionReplayFrame {
@@ -867,6 +1180,16 @@ export class SessionService {
     this.health = health;
     if (health !== 'failed') this.failureReason = null;
   }
+}
+
+function runtimeSelectionCacheKey(selection: RuntimeSelection): string {
+  return JSON.stringify([
+    selection.runtimeId,
+    selection.accountId,
+    selection.model,
+    selection.effort.kind,
+    selection.effort.kind === 'selected' ? selection.effort.value : null,
+  ]);
 }
 
 function summarize(message: unknown): string {

@@ -26,6 +26,10 @@ import { mountAccounts } from './accounts.ts';
 import type { AccountRegistry } from '../runner/account-env.ts';
 import type { DispatchService } from '../dispatch/service.ts';
 import type { UsageCache } from '../usage/cache.ts';
+import {
+  RuntimeSelectionRejectedError,
+  type RuntimeSelectionValidation,
+} from '../runner/runtime.ts';
 
 export interface HttpDeps {
   registry: SessionRegistry;
@@ -33,6 +37,7 @@ export interface HttpDeps {
   instanceId?: string;
   /** Account switcher registry (accounts + usage endpoints mount when set). */
   accounts?: AccountRegistry;
+  orchestratorRuntimeId?: string;
   usage?: UsageCache;
   /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
   dispatch?: DispatchService;
@@ -82,36 +87,60 @@ export function createHttpApp(deps: HttpDeps): Hono {
   if (deps.dispatch) mountAgentRuns(app, { dispatch: deps.dispatch });
 
   // ── Sessions ────────────────────────────────────────────────────────────────
-  app.get('/api/projects/:id/sessions', (c) => {
+  app.get('/api/projects/:id/sessions', async (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
+    const service = deps.registry.get(projectId);
+    const preflightCache = new Map<string, Promise<RuntimeSelectionValidation>>();
+    const sessions = await Promise.all(
+      listOrchestratorSessionsForProject(projectId).map(async (session) =>
+        toSessionSummary(
+          session,
+          await service.resumeAvailabilityCode(session, preflightCache),
+        ),
+      ),
+    );
     return c.json({
       ok: true,
-      sessions: listOrchestratorSessionsForProject(projectId).map(toSessionSummary),
+      sessions,
     });
   });
 
-  app.post('/api/projects/:id/sessions/new', (c) => {
+  app.post('/api/projects/:id/sessions/new', async (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
     const service = deps.registry.get(projectId);
     if (!service.canSwitchSession()) {
       return c.json({ ok: false, error: 'interrupt the active turn and wait for confirmation before switching sessions' }, 409);
     }
-    const session = service.startNewSession();
-    return c.json({ ok: true, transition: 'new-session', session: toSessionSummary(session) }, 201);
+    try {
+      const session = await service.startNewSession();
+      return c.json({ ok: true, transition: 'new-session', session: toSessionSummary(session) }, 201);
+    } catch (error) {
+      if (error instanceof RuntimeSelectionRejectedError) {
+        return c.json({ ok: false, error: { code: error.code } }, 422);
+      }
+      throw error;
+    }
   });
 
-  app.post('/api/projects/:id/sessions/:sid/resume', (c) => {
+  app.post('/api/projects/:id/sessions/:sid/resume', async (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
     const service = deps.registry.get(projectId);
     if (!service.canSwitchSession()) {
       return c.json({ ok: false, error: 'interrupt the active turn and wait for confirmation before switching sessions' }, 409);
     }
-    const session = service.resumeSession(c.req.param('sid') as ULID);
-    if (!session) return c.json({ ok: false, error: 'session not found' }, 404);
-    return c.json({ ok: true, transition: 'resume-session', session: toSessionSummary(session) });
+    try {
+      const session = await service.resumeSession(c.req.param('sid') as ULID);
+      if (!session) return c.json({ ok: false, error: 'session not found' }, 404);
+      return c.json({ ok: true, transition: 'resume-session', session: toSessionSummary(session) });
+    } catch (error) {
+      if (error instanceof RuntimeSelectionRejectedError) {
+        return c.json({ ok: false, error: { code: error.code } }, 409);
+      }
+      throw error;
+    }
   });
 
   app.get('/api/projects/:id/sessions/:sid/events', (c) => {
@@ -130,7 +159,15 @@ export function createHttpApp(deps: HttpDeps): Hono {
 
   // ── Accounts + usage ────────────────────────────────────────────────────────
   if (deps.accounts) {
-    mountAccounts(app, { accounts: deps.accounts, registry: deps.registry, usage: deps.usage });
+    if (!deps.orchestratorRuntimeId) {
+      throw new Error('orchestratorRuntimeId is required when account routes are mounted');
+    }
+    mountAccounts(app, {
+      accounts: deps.accounts,
+      registry: deps.registry,
+      runtimeId: deps.orchestratorRuntimeId,
+      usage: deps.usage,
+    });
   }
 
   // ── Pasted images ─────────────────────────────────────────────────────────

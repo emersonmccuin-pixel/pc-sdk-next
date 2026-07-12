@@ -17,6 +17,11 @@ import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import type { RuntimeEvent, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { freshDb, newProject, sleep, until } from './helpers.ts';
+import {
+  TEST_SELECTION,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 function events(sessionId: string): ChatEvent[] {
   return listConversationEvents(sessionId).map((row) => row.payload as ChatEvent);
@@ -31,7 +36,8 @@ function serviceFor(projectId: ULID, runtime: FakeRuntime): SessionService {
   const relay = new ConversationRelay({ hub });
   return new SessionService({
     projectId,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
     drainConversationOutbox: () => relay.drain(),
   });
@@ -53,13 +59,14 @@ test('confirmed interrupt-and-send releases exactly the edited FIFO head', async
     await nativeInterrupt();
   };
   const service = serviceFor(project.id, runtime);
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'send-1', sessionId: session.id, text: 'first', clientMessageId: 'cm-1',
   });
   await until(() => getActiveConversationTurn(session.id) !== null);
+  await until(() => runtime.sentTexts.length === 1);
 
-  const queued = service.handleSend({
+  const queued = await service.handleSend({
     type: 'send', commandId: 'send-2', sessionId: session.id, text: 'old second', clientMessageId: 'cm-2',
   });
   assert.equal(queued.status, 'applied');
@@ -88,6 +95,7 @@ test('confirmed interrupt-and-send releases exactly the edited FIFO head', async
   // Transport replay is receipt-only; it cannot repeat the provider action.
   const duplicate = await service.handleConversationCommand(request);
   assert.equal(duplicate.status, 'duplicate');
+  await until(() => interrupts === 1);
   assert.equal(interrupts, 1);
 
   await until(() => terminals(session.id).length === 2);
@@ -107,8 +115,8 @@ test('native interrupt rejection durably fails the request and blocks its replac
     throw new Error('SECRET native interrupt rejection detail');
   };
   const service = serviceFor(project.id, runtime);
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'send-1', sessionId: session.id, text: 'first', clientMessageId: 'cm-1',
   });
   await until(() => getActiveConversationTurn(session.id) !== null);
@@ -158,12 +166,13 @@ test('abort-like stream exception cannot confirm an interrupt or release its rep
   };
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
     interruptTimeoutMs: 1_000,
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'false-abort-send', sessionId: session.id,
     text: 'first', clientMessageId: 'false-abort-client',
   });
@@ -241,12 +250,13 @@ test('interrupt receipt is immediate and an inconclusive native attempt is quara
   let mintCount = 0;
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => mintCount++ === 0 ? firstRuntime : successor,
+    mintSession: withRuntimeReceipt(() => mintCount++ === 0 ? firstRuntime : successor),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
     interruptTimeoutMs: 15,
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'quarantine-send-1', sessionId: session.id,
     text: 'first', clientMessageId: 'quarantine-client-1',
   });
@@ -259,7 +269,7 @@ test('interrupt receipt is immediate and an inconclusive native attempt is quara
   });
   assert.equal(receipt.status, 'applied');
   assert.equal(interruptResolved, false, 'sender receipt cannot await native interruption');
-  service.handleSend({
+  await service.handleSend({
     type: 'send', commandId: 'quarantine-send-2', sessionId: session.id,
     text: 'second', clientMessageId: 'quarantine-client-2',
   });
@@ -283,16 +293,18 @@ test('service shutdown fails an uncertain interrupt before runtime disposal can 
   runtime.interrupt = () => new Promise<void>(() => {});
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
     interruptTimeoutMs: 5_000,
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'shutdown-send', sessionId: session.id,
     text: 'first', clientMessageId: 'shutdown-client',
   });
   await until(() => getActiveConversationTurn(session.id) !== null);
+  await until(() => runtime.sentTexts.length === 1);
   const active = getActiveConversationTurn(session.id)!;
   const receipt = await service.handleConversationCommand({
     type: 'interrupt-and-send', requestId: 'shutdown-interrupt', sessionId: session.id,
@@ -327,22 +339,27 @@ test('projection callback failure cannot strand a committed interrupt request', 
     interrupts += 1;
     await nativeInterrupt();
   };
-  let failBroadcast = false;
+  let failNextBroadcast = false;
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => runtime,
+    mintSession: withRuntimeReceipt(() => runtime),
+    ...testSessionSelectionDeps(),
     broadcast: () => {
-      if (failBroadcast) throw new Error('socket send failed');
+      if (failNextBroadcast) {
+        failNextBroadcast = false;
+        throw new Error('socket send failed');
+      }
     },
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send', commandId: 'projection-send', sessionId: session.id,
     text: 'first', clientMessageId: 'projection-client',
   });
   await until(() => getActiveConversationTurn(session.id) !== null);
+  await until(() => runtime.sentTexts.length === 1);
   const active = getActiveConversationTurn(session.id)!;
-  failBroadcast = true;
+  failNextBroadcast = true;
   await assert.rejects(
     service.handleConversationCommand({
       type: 'interrupt', requestId: 'projection-interrupt', sessionId: session.id,
@@ -353,7 +370,6 @@ test('projection callback failure cannot strand a committed interrupt request', 
   await until(() => getTurnInterruptRequest('projection-interrupt')?.status !== 'requested');
   assert.equal(interrupts, 1);
   assert.equal(getTurnInterruptRequest('projection-interrupt')?.status, 'confirmed');
-  failBroadcast = false;
   await service.dispose();
 });
 
@@ -370,7 +386,7 @@ test('websocket hub isolates a throwing socket from durable projection fanout', 
 test('registry drains durable queued work only after the explicit boot-readiness kick', async () => {
   freshDb();
   const project = newProject();
-  const session = createOrchestratorSession({ projectId: project.id, providerSessionId: '' });
+  const session = createOrchestratorSession({ projectId: project.id, selection: TEST_SELECTION });
   const queued = enqueueConversationSend({
     projectId: project.id,
     conversationId: session.id,
@@ -389,10 +405,11 @@ test('registry drains durable queued work only after the explicit boot-readiness
   const registry = new SessionRegistry({
     hub,
     conversationRelay: relay,
-    mintSession: () => {
+    mintSession: withRuntimeReceipt(() => {
       mintCalls += 1;
       return runtime;
-    },
+    }),
+    ...testSessionSelectionDeps(),
   });
   await Promise.resolve();
   await Promise.resolve();
@@ -413,14 +430,15 @@ test('fresh sends admitted during boot remain durable but cannot mint until read
   let mintCalls = 0;
   const registry = new SessionRegistry({
     hub: new ProjectWebSocketHub<ULID>(),
-    mintSession: () => {
+    mintSession: withRuntimeReceipt(() => {
       mintCalls += 1;
       return runtime;
-    },
+    }),
+    ...testSessionSelectionDeps(),
   });
   const service = registry.get(project.id);
-  const session = service.ensureActiveSession();
-  const receipt = service.handleSend({
+  const session = await service.ensureActiveSession();
+  const receipt = await service.handleSend({
     type: 'send', commandId: 'boot-live-send', sessionId: session.id,
     text: 'wait for composition', clientMessageId: 'boot-live-client',
   });
@@ -440,7 +458,7 @@ test('fresh sends admitted during boot remain durable but cannot mint until read
 test('session switching cancels queued rows, but refuses an active claimed turn', async () => {
   freshDb();
   const project = newProject();
-  const session = createOrchestratorSession({ projectId: project.id, providerSessionId: '' });
+  const session = createOrchestratorSession({ projectId: project.id, selection: TEST_SELECTION });
   enqueueConversationSend({
     projectId: project.id,
     conversationId: session.id,
@@ -451,10 +469,10 @@ test('session switching cancels queued rows, but refuses an active claimed turn'
     origin: 'user',
   });
   const service = serviceFor(project.id, new FakeRuntime());
-  const same = service.resumeSession(session.id);
+  const same = await service.resumeSession(session.id);
   assert.equal(same?.id, session.id);
   assert.equal(getConversationQueueSnapshot(session.id).items[0]?.status, 'queued');
-  const replacement = service.startNewSession();
+  const replacement = await service.startNewSession();
   assert.notEqual(replacement.id, session.id);
   const cancellation = events(session.id).filter(
     (event): event is Extract<ChatEvent, { kind: 'send-state' }> =>
@@ -464,14 +482,17 @@ test('session switching cancels queued rows, but refuses an active claimed turn'
 
   const hung = new FakeRuntime({ turns: [[{ hang: true }]] });
   const activeService = serviceFor(newProject('active').id, hung);
-  const activeSession = activeService.ensureActiveSession();
-  activeService.handleSend({
+  const activeSession = await activeService.ensureActiveSession();
+  await activeService.handleSend({
     type: 'send', commandId: 'active-send', sessionId: activeSession.id, text: 'busy', clientMessageId: 'active-cm',
   });
   await until(() => getActiveConversationTurn(activeSession.id) !== null);
   assert.equal(activeService.canSwitchSession(), false);
-  assert.throws(() => activeService.startNewSession(), /cannot switch sessions while a turn is active/);
-  assert.equal(activeService.resumeSession(activeSession.id)?.id, activeSession.id);
+  await assert.rejects(
+    activeService.startNewSession(),
+    /runtime selection rejected: session-active/,
+  );
+  assert.equal((await activeService.resumeSession(activeSession.id))?.id, activeSession.id);
   assert.equal(getActiveConversationTurn(activeSession.id)?.sessionId, activeSession.id);
   await activeService.dispose();
   await service.dispose();
@@ -486,11 +507,12 @@ test('dispose fences a turn whose runtime mint resolves after shutdown', async (
   });
   const service = new SessionService({
     projectId: project.id,
-    mintSession: () => mintPending,
+    mintSession: withRuntimeReceipt(() => mintPending),
+    ...testSessionSelectionDeps(),
     broadcast: () => {},
   });
-  const session = service.ensureActiveSession();
-  service.handleSend({
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
     type: 'send',
     commandId: 'dispose-send',
     sessionId: session.id,

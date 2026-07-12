@@ -6,9 +6,13 @@ import { useEffect, useRef, useState } from 'react';
 
 import {
   canResumeSession,
+  sessionContinuationLabel,
+  sessionResumeLabel,
+  sessionSelectionLabel,
   sessionsApi,
   type SessionSummary,
   type SessionTransition,
+  useSessionNav,
 } from '@/state/sessions';
 import { useRailMode } from '@/store/rail-mode';
 import { useViewingSession } from '@/store/viewing-session';
@@ -34,6 +38,7 @@ export function SessionSwitcher({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const sessionUpdatedNonce = useSessionNav((s) => s.nonce);
   const setRailMode = useRailMode((s) => s.setMode);
   const setViewing = useViewingSession((s) => s.setViewing);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -57,7 +62,7 @@ export function SessionSwitcher({
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, sessionUpdatedNonce]);
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
@@ -123,6 +128,9 @@ export function SessionSwitcher({
           const when = formatStarted(s.startedAt);
           const isResuming = resumingId === s.id;
           const canActivate = isActive || canResumeSession(s);
+          const selection = sessionSelectionLabel(s);
+          const continuation = sessionContinuationLabel(s);
+          const availability = isActive ? 'live' : sessionResumeLabel(s);
           return (
             <button
               key={s.id}
@@ -131,7 +139,11 @@ export function SessionSwitcher({
                 if (canActivate) void handleResume(s.id);
               }}
               disabled={!canActivate || (resumingId !== null && !isResuming)}
-              title={canActivate ? 'Make this the live session' : 'View-only: project account changed'}
+              title={[
+                isActive ? 'Live session' : canResumeSession(s) ? 'Resume this session' : availability,
+                selection,
+                continuation,
+              ].join('\n')}
               className={`block w-full border-l-2 px-3 py-1.5 text-left text-xs hover:bg-muted ${
                 isActive ? 'border-primary bg-muted/40 text-primary' : 'border-transparent text-foreground/90'
               }`}
@@ -142,11 +154,11 @@ export function SessionSwitcher({
                 )}
                 <span className="truncate">{title}</span>
               </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground">
-                {when}
-                {isActive && ' · live'}
-                {!isActive && !s.resumable && ' · account changed · view only'}
-                {isResuming && ' · resuming…'}
+              <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={selection}>
+                {selection}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {when} · {continuation} · {isResuming ? 'resuming…' : availability}
               </div>
             </button>
           );

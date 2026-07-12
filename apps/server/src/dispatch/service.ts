@@ -48,6 +48,7 @@ import {
 } from '@pc/app-services';
 import {
   conversationFamilyForEvent,
+  runtimeSelectionsEqual,
   type ChatEvent,
   type Contract,
   type Deliverable as ContractDeliverable,
@@ -103,6 +104,14 @@ import {
 const WALL_CLOCK_DEFAULT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_MODEL = 'sonnet';
 const DEFAULT_AGENT_MAX_TURNS = 100;
+
+/** Specialist effort persistence is widened in a later N3 slice. Until then,
+ * preserve the existing pod value explicitly; null means no override, never a
+ * provider fallback. Adapter validation still rejects an incompatible model. */
+function specialistEffort(value: string | null | undefined): RuntimeSelection['effort'] {
+  const selected = value?.trim();
+  return selected ? { kind: 'selected', value: selected } : { kind: 'none' };
+}
 /** Full-review policy (docs/worktree-lifecycle.md 'Full independent review'). */
 const REVIEWER_POD_NAME = 'contract-reviewer';
 /** Bounded Review/Fix loop (doc: "A bounded retry/escalation policy prevents
@@ -197,6 +206,8 @@ interface AgentEnvelope {
 interface LiveRun {
   session: RuntimeSession;
   selection: RuntimeSelection;
+  /** Process-local correlation until specialist attempt stamps land in N3. */
+  continuationAttemptId: string;
   wallClock: ReturnType<typeof setTimeout>;
 }
 
@@ -346,11 +357,12 @@ export class DispatchService {
     const runId = newId() as ULID;
     const ccPlaceholder = randomUUID();
     const now = Date.now();
-    const account = this.deps.accounts.resolveForProject(input.projectId);
+    const account = this.deps.accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
     const selection: RuntimeSelection = {
       runtimeId: CLAUDE_RUNTIME_ID,
       accountId: account.id,
       model: pod.model ?? DEFAULT_AGENT_MODEL,
+      effort: specialistEffort(pod.effort),
     };
 
     // Repo isolation invariant: provision BEFORE the agent starts; a provision
@@ -573,11 +585,13 @@ export class DispatchService {
 
     const runId = newId() as ULID;
     const now = Date.now();
-    const account = this.deps.accounts.resolveForProject(input.projectId);
+    const runtimeId = parent.runtimeId ?? CLAUDE_RUNTIME_ID;
+    const account = this.deps.accounts.resolveForProject(input.projectId, runtimeId);
     const selection: RuntimeSelection = {
-      runtimeId: parent.runtimeId ?? CLAUDE_RUNTIME_ID,
+      runtimeId,
       accountId: parent.accountId ?? account.id,
       model: parent.model ?? bundle.agent.model ?? DEFAULT_AGENT_MODEL,
+      effort: specialistEffort(bundle.agent.effort),
     };
 
     const publication = this.gateway.commitRunChange({
@@ -757,9 +771,11 @@ export class DispatchService {
     );
 
     const adapter = this.deps.runtimes.get(input.selection.runtimeId);
+    const continuationAttemptId = randomUUID();
     const sessionInput = {
       appSessionId: input.runId,
       projectId: input.projectId,
+      continuationAttemptId,
       selection: input.selection,
       instructions,
       cwd,
@@ -783,6 +799,7 @@ export class DispatchService {
     const liveRun: LiveRun = {
       session,
       selection: input.selection,
+      continuationAttemptId,
       wallClock: setTimeout(() => {
         void this.killRun(input.projectId, input.runId, {
           failureCause: 'wall-clock-timeout',
@@ -858,13 +875,19 @@ export class DispatchService {
       );
       const selection: RuntimeSelection = {
         runtimeId: run.runtimeId ?? CLAUDE_RUNTIME_ID,
-        accountId: run.accountId ?? this.deps.accounts.resolveForProject(run.projectId).id,
+        accountId: run.accountId ?? this.deps.accounts.resolveForProject(
+          run.projectId,
+          run.runtimeId ?? CLAUDE_RUNTIME_ID,
+        ).id,
         model: run.model ?? bundle.agent.model ?? DEFAULT_AGENT_MODEL,
+        effort: specialistEffort(bundle.agent.effort),
       };
       const adapter = this.deps.runtimes.get(selection.runtimeId);
+      const continuationAttemptId = randomUUID();
       const session = await adapter.resumeSession({
         appSessionId: run.id,
         projectId: run.projectId,
+        continuationAttemptId,
         selection,
         instructions,
         cwd,
@@ -884,6 +907,7 @@ export class DispatchService {
       const liveRun: LiveRun = {
         session,
         selection,
+        continuationAttemptId,
         // A revived run gets a fresh wall clock from the moment of revival —
         // the original timer died with the old process along with everything
         // else in `this.live`.
@@ -965,7 +989,7 @@ export class DispatchService {
       emitDelta: () => {
         /* agent transcripts are persisted-event only; the modal heals over HTTP */
       },
-      onNativeSessionId: (nativeId) => {
+      onRuntimeSessionReceipt: (receipt) => {
         // Provider output may arrive after kill/dispose. A late init is not a
         // positive receipt that a terminal run restarted; ignore it before it
         // can rewrite the native id or announce `running` over cancellation.
@@ -977,7 +1001,11 @@ export class DispatchService {
           || current.status === 'failed'
           || current.status === 'cancelled'
         ) return;
-        setAgentRunCcSession(runId, nativeId);
+        if (
+          receipt.continuationAttemptId !== liveRun.continuationAttemptId
+          || !runtimeSelectionsEqual(receipt.selection, liveRun.selection)
+        ) return;
+        setAgentRunCcSession(runId, receipt.nativeSessionId);
         if (!markedRunning) {
           markedRunning = true;
           this.announce(runId, 'running', { readyAt: Date.now() });
@@ -1990,11 +2018,12 @@ export class DispatchService {
     const checkout = await provisionReviewCheckout(project.folderPath, runId, sealedCommit);
     if (!checkout.ok) return parkForOrchestrator(`review checkout provisioning failed: ${checkout.error}`);
     const now = Date.now();
-    const account = this.deps.accounts.resolveForProject(projectId);
+    const account = this.deps.accounts.resolveForProject(projectId, CLAUDE_RUNTIME_ID);
     const selection: RuntimeSelection = {
       runtimeId: CLAUDE_RUNTIME_ID,
       accountId: account.id,
       model: bundle.agent.model ?? DEFAULT_AGENT_MODEL,
+      effort: specialistEffort(bundle.agent.effort),
     };
     const spec = reviewVerdictExpectedOutput();
     const reviewContract = this.contracts.create({
@@ -2374,7 +2403,7 @@ export class DispatchService {
       return;
     }
     try {
-      this.ctx.registry.get(projectId).injectAgentEnvelope({
+      void this.ctx.registry.get(projectId).injectAgentEnvelope({
         runId: envelope.runId,
         agentName: envelope.agentName,
         pendingAskId: envelope.pendingAskId,
@@ -2383,6 +2412,8 @@ export class DispatchService {
         detail: envelope.text,
         envelope: envelope.text,
         clientMessageId,
+      }).catch((err) => {
+        console.error(`[pc-sdk][dispatch] envelope delivery failed for ${projectId}:`, err);
       });
     } catch (err) {
       console.error(`[pc-sdk][dispatch] envelope delivery failed for ${projectId}:`, err);

@@ -47,6 +47,13 @@ import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import type { McpManager } from '../src/mcp/manager.ts';
 import { freshDb, newProject, until } from './helpers.ts';
+import {
+  TEST_SELECTION,
+  testCapabilities,
+  testModelDiscovery,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 // Mirrors the MAX_AUTO_CONTINUES constant in dispatch/service.ts (not
 // exported — the ceiling is an implementation detail; tests assert against
@@ -83,12 +90,27 @@ class FakeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   created: CreateRuntimeSession[] = [];
   constructor(private readonly turns: ScriptedTurn[]) {}
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.created.push(input);
-    return new FakeRuntime({ turns: this.turns });
+    return withRuntimeReceipt(() => new FakeRuntime({ turns: this.turns }))({
+      projectId: input.projectId,
+      appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'create' },
+    });
   }
-  async resumeSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
-    return this.createSession(input);
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    this.created.push(input);
+    return withRuntimeReceipt(() => new FakeRuntime({ turns: this.turns }))({
+      projectId: input.projectId,
+      appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
   }
 }
 
@@ -106,7 +128,6 @@ class LateAfterDisposeRuntime implements RuntimeSession {
       safeSummary: safeToolSummary('Read'),
       approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
     };
-    yield { type: 'init', nativeSessionId: 'late-runtime', model: null, permissionMode: null } as const;
     yield { type: 'tool-state', scope: 'primary', event: requested } as const;
     yield {
       type: 'tool-state', scope: 'primary',
@@ -116,7 +137,14 @@ class LateAfterDisposeRuntime implements RuntimeSession {
       },
     } as const;
     await this.disposed;
-    yield { type: 'init', nativeSessionId: 'late-runtime-after-kill', model: null, permissionMode: null } as const;
+    yield {
+      type: 'session-started',
+      receipt: {
+        mode: 'created', selection: TEST_SELECTION,
+        continuationAttemptId: 'late-attempt-after-kill',
+        nativeSessionId: 'late-runtime-after-kill', requestedNativeSessionId: null,
+      },
+    } as const;
     yield {
       type: 'tool-state', scope: 'primary',
       event: {
@@ -137,8 +165,23 @@ class LateAfterDisposeRuntime implements RuntimeSession {
 class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   constructor(private readonly runtime: RuntimeSession) {}
-  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
-  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
+  async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
+    return withRuntimeReceipt(() => this.runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection, continuation: { mode: 'create' },
+    });
+  }
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return withRuntimeReceipt(() => this.runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
+  }
 }
 
 class DeferredRuntime implements RuntimeSession {
@@ -160,14 +203,28 @@ class DeferredCreateAdapter implements AgentRuntimeAdapter {
   readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
   private resolveMint!: (session: RuntimeSession) => void;
   private readonly mint = new Promise<RuntimeSession>((resolve) => { this.resolveMint = resolve; });
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
 
-  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
+  async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.markStarted();
-    return this.mint;
+    const runtime = await this.mint;
+    return withRuntimeReceipt(() => runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection, continuation: { mode: 'create' },
+    });
   }
 
-  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> {
-    return this.createSession(_input);
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    this.markStarted();
+    const runtime = await this.mint;
+    return withRuntimeReceipt(() => runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
   }
 
   resolve(session: RuntimeSession): void { this.resolveMint(session); }
@@ -182,7 +239,11 @@ function rig(adapter: AgentRuntimeAdapter): DispatchService {
     mcp: {} as McpManager,
   });
   const hub = new ProjectWebSocketHub<ULID>();
-  const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
+  const registry = new SessionRegistry({
+    hub,
+    ...testSessionSelectionDeps(),
+    mintSession: withRuntimeReceipt(() => new FakeRuntime()),
+  });
   dispatch.attach({ registry, hub, serverPort: 1 });
   return dispatch;
 }
@@ -280,10 +341,9 @@ test('a killed (cancelled) run never auto-continues', async () => {
   freshDb();
   seedStockAgents();
   const project = newProject();
-  // Hang forever — the run is only ended by killRun. `init` first so the run
-  // actually reaches 'running' (onSdkSessionId fires the announce).
+  // Hang forever — the run is only ended by killRun. The adapter wrapper's
+  // positive session receipt moves the run to `running` before the tool state.
   const hangingTurn: ScriptedTurn = [
-    { type: 'init', nativeSessionId: 'sdk-1', model: null, permissionMode: null },
     {
       type: 'tool-state', scope: 'primary',
       event: {
@@ -353,11 +413,12 @@ test('runtime output with a fresh call id after kill cannot reopen a terminal ag
     (row.payload as { kind?: string; state?: string }).kind === 'tool-state'
     && (row.payload as { state?: string }).state === 'running'
   )));
+  const liveNativeSessionId = getAgentRunRow(runId)!.ccSessionId;
   assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
   await runtime.lateDelivered;
   const cancelled = getAgentRunRow(runId)!;
   assert.equal(cancelled.status, 'cancelled');
-  assert.equal(cancelled.ccSessionId, 'late-runtime', 'late init cannot replace the last live native id');
+  assert.equal(cancelled.ccSessionId, liveNativeSessionId, 'late init cannot replace the last live native id');
   const callIds = listConversationEvents(runId)
     .map((row) => row.payload)
     .filter((event): event is ToolStateEvent => (

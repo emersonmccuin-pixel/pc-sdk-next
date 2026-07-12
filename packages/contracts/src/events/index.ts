@@ -8,7 +8,11 @@ export * from './resources.ts';
 export * from './agent.ts';
 
 import type { ConversationEventFrame } from './chat.ts';
-import type { SessionChangedFrame, SessionReplayFrame } from './session.ts';
+import type {
+  SessionChangedFrame,
+  SessionReplayFrame,
+  SessionUpdatedFrame,
+} from './session.ts';
 import type {
   ConversationCommandReceiptFrame,
   SendQueueSnapshotFrame,
@@ -23,6 +27,7 @@ import type { AgentEventFrame, OrchestratorStateFrame } from './agent.ts';
 export type ServerFrame =
   | ConversationEventFrame
   | SessionChangedFrame
+  | SessionUpdatedFrame
   | SessionReplayFrame
   | ConversationCommandReceiptFrame
   | SendQueueSnapshotFrame

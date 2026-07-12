@@ -9,6 +9,9 @@ import { useEffect, useState } from 'react';
 import type { Project } from '@/features/projects/client';
 import {
   canResumeSession,
+  sessionContinuationLabel,
+  sessionResumeLabel,
+  sessionSelectionLabel,
   sessionsApi,
   type SessionSummary,
   type SessionTransition,
@@ -72,12 +75,7 @@ export function SessionsRail({
     return () => {
       cancelled = true;
     };
-  }, [project?.id]);
-
-  useEffect(() => {
-    if (!project) return;
-    sessionsApi.listSessions(project.id).then(setSessions).catch(() => {});
-  }, [sessionChangedNonce, project?.id]);
+  }, [project?.id, sessionChangedNonce]);
 
   if (!project) {
     return (
@@ -107,6 +105,9 @@ export function SessionsRail({
           const isViewing = viewing === s.id;
           const isLive = isActive && viewing === null;
           const isResuming = resumingId === s.id;
+          const selection = sessionSelectionLabel(s);
+          const continuation = sessionContinuationLabel(s);
+          const availability = isActive ? 'live' : sessionResumeLabel(s);
           return (
             <div
               key={s.id}
@@ -120,7 +121,7 @@ export function SessionsRail({
             >
               <button
                 onClick={() => setViewing(project.slug, isActive ? null : s.id)}
-                title={titleForSession(s)}
+                title={[titleForSession(s), selection, continuation, availability].join('\n')}
                 className={
                   'min-w-0 flex-1 px-3 py-1.5 text-left text-xs ' +
                   (isViewing || isLive ? 'text-primary' : 'text-foreground/80')
@@ -132,10 +133,12 @@ export function SessionsRail({
                   )}
                   <span className="truncate">{titleForSession(s)}</span>
                 </div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground">
-                  {formatStarted(s.startedAt)}
-                  {isLive ? ' · live' : isViewing ? ' · viewing' : ''}
-                  {!isActive && !s.resumable ? ' · account changed · view only' : ''}
+                <div className="mt-0.5 truncate text-[10px] text-muted-foreground" title={selection}>
+                  {selection}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {formatStarted(s.startedAt)} · {continuation} · {availability}
+                  {isViewing && !isLive ? ' · viewing' : ''}
                 </div>
               </button>
               {!isActive && canResumeSession(s) && (

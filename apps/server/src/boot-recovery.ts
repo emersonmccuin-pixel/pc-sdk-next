@@ -25,6 +25,7 @@
 // Never silently resume, never fake success. Idempotent.
 
 import {
+  cancelLegacyUnavailableSessionQueues,
   closeOpenConversationToolCalls,
   commitConversationEvent,
   getActiveConversationTurn,
@@ -80,11 +81,13 @@ export interface BootRecoveryResult {
   scanned: number;
   recovered: string[];
   failedRuns: string[];
+  cancelledLegacyQueueItemIds: string[];
 }
 
 /** Scan every project's active session; close out crashed turns. Returns the
  *  recovered session ids. */
 export function runBootRecovery(): BootRecoveryResult {
+  const cancelledLegacyQueueItemIds = cancelLegacyUnavailableSessionQueues();
   const recovered: string[] = [];
   const projects = listProjects();
   const activeSessions = projects.flatMap((project) => {
@@ -126,7 +129,7 @@ export function runBootRecovery(): BootRecoveryResult {
   }
 
   const failedRuns = recoverAgentRuns();
-  return { scanned, recovered, failedRuns };
+  return { scanned, recovered, failedRuns, cancelledLegacyQueueItemIds };
 }
 
 /** Fail every non-terminal agent run that did NOT itself deliver loudly

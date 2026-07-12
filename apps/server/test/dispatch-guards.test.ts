@@ -48,6 +48,12 @@ import { runBootRecovery } from '../src/boot-recovery.ts';
 import type { McpManager } from '../src/mcp/manager.ts';
 import { git } from '../src/dispatch/worktrees.ts';
 import { freshDb, newGitProject, newProject, until } from './helpers.ts';
+import {
+  testCapabilities,
+  testModelDiscovery,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 const OK_RESULT = {
   type: 'result',
@@ -68,17 +74,28 @@ class FakeAdapter implements AgentRuntimeAdapter {
    *  reach the FakeRuntime a revival produced. */
   runtimes: FakeRuntime[] = [];
   constructor(private readonly turns: ScriptedTurn[], private readonly stepDelayMs = 0) {}
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.created.push(input);
     const rt = new FakeRuntime({ turns: this.turns, stepDelayMs: this.stepDelayMs });
     this.runtimes.push(rt);
-    return rt;
+    return withRuntimeReceipt(() => rt)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection, continuation: { mode: 'create' },
+    });
   }
   async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
     this.resumed.push(input);
     const rt = new FakeRuntime({ turns: this.turns, stepDelayMs: this.stepDelayMs });
     this.runtimes.push(rt);
-    return rt;
+    return withRuntimeReceipt(() => rt)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
   }
 }
 
@@ -89,6 +106,8 @@ class DeferredResumeAdapter implements AgentRuntimeAdapter {
   readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
   private resolveResume!: (session: RuntimeSession) => void;
   private readonly resumedSession = new Promise<RuntimeSession>((resolve) => { this.resolveResume = resolve; });
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
 
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
     throw new Error('create is not expected in a paused-run revival');
@@ -97,7 +116,13 @@ class DeferredResumeAdapter implements AgentRuntimeAdapter {
   async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
     this.resumed.push(input);
     this.markStarted();
-    return this.resumedSession;
+    const runtime = await this.resumedSession;
+    return withRuntimeReceipt(() => runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
   }
 
   resolve(session: RuntimeSession): void { this.resolveResume(session); }
@@ -118,6 +143,8 @@ class TrackingRuntime implements RuntimeSession {
 
 class ThrowingCreateAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
     throw new Error('SECRET provider create detail');
   }
@@ -135,8 +162,23 @@ class ThrowingSendRuntime implements RuntimeSession {
 class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   constructor(private readonly runtime: RuntimeSession) {}
-  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
-  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
+  async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
+    return withRuntimeReceipt(() => this.runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection, continuation: { mode: 'create' },
+    });
+  }
+  async resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return withRuntimeReceipt(() => this.runtime)({
+      projectId: input.projectId, appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation: { mode: 'resume', nativeSessionId: input.nativeSessionId },
+    });
+  }
 }
 
 function rig(
@@ -152,7 +194,11 @@ function rig(
     ...opts,
   });
   const hub = new ProjectWebSocketHub<ULID>();
-  const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
+  const registry = new SessionRegistry({
+    hub,
+    ...testSessionSelectionDeps(),
+    mintSession: withRuntimeReceipt(() => new FakeRuntime()),
+  });
   dispatch.attach({ registry, hub, serverPort: 1 });
   return dispatch;
 }
@@ -354,7 +400,6 @@ test('submitDeliverable rejects a late repo seal when kill wins during async Git
   let deferNextStatus = true;
   const dispatch = rig(
     new FakeAdapter([[
-      { type: 'init', nativeSessionId: 'repo-runtime', model: null, permissionMode: null },
       { hang: true },
     ]]),
     {
