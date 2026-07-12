@@ -1,6 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 with SF-002 verified and ready to seal/land.
+Updated: 2026-07-12 after SF-002 guarded landing, push, and feature-worktree
+cleanup.
 
 ## Repository
 
@@ -121,16 +122,21 @@ Updated: 2026-07-12 with SF-002 verified and ready to seal/land.
 - SF-001 feature record: `8b6a08dcde66cb190dcbb96edf500c7276f91cb2`
 - SF-001 landing merge: `a8b52c666d3fc3284b94f441ce602b908689539a`
 - SF-001 landed tree: `e7d6dc7d8318f40be698b0564b8f5d65874187d7`
-- Active slice: `docs/execution/slices/SF-002.md`
+- Completed slice: `docs/execution/slices/SF-002.md`
 - SF-002 base: `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`
 - SF-002 branch: `codex/sf-002-repository-lease`
 - SF-002 contract commit: `0be8912`
-- SF-002 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002`
+- SF-002 feature worktree: removed after positive landing/tree proof; exact
+  residue removed after a zero-process guard
 - SF-002 receipt: `docs/execution/receipts/SF-002.md`
-- SF-002 verification: both independent hostile re-reviews and full
-  feature-tree `pnpm ci:check` green
-- SF-002 seal/landing/push/teardown: pending
+- SF-002 sealed feature record:
+  `e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`
+- SF-002 landing merge: `a91bb6c8619672f316109d08719b1afea8a918f4`
+- SF-002 exact feature/merge tree:
+  `897142ece8cfa7c27195d7f93f17f4a06e4f78f5`
+- SF-002 feature branch: preserved
+- SF-002 code landing: pushed and re-fetched exactly at the landing merge
+  before documentation closeout
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
 - BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
@@ -233,8 +239,8 @@ Feature record `8b6a08d` landed as `a8b52c6` with exact feature/merge tree
 `origin/main` push, feature-worktree deregistration, and guarded residual
 dependency/build cleanup all passed.
 
-SF-002's cooperative engine-lifetime repository lease is verified and ready to
-seal/land on its feature branch. Canonical Git common-directory identity keys a
+SF-002's cooperative engine-lifetime repository lease is complete,
+guarded-landed, and pushed. Canonical Git common-directory identity keys a
 protocol-stable kernel witness plus repository-local zero-wait SQLite
 admission. Project creation authoritatively rechecks `init-empty`,
 `init-in-place`, and `attach-to-git`: initialization claims a crash-visible
@@ -259,22 +265,25 @@ cleanup, migration diagnostics, actual-path/mutation-door audits,
 `git diff --check`, and full feature-tree `pnpm ci:check` pass. Both independent
 hostile re-reviews are clean after fixes with no remaining P0/P1/P2 blocker.
 
+Sealed feature record `e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`
+landed as `a91bb6c8619672f316109d08719b1afea8a918f4`. Contract and feature ancestry
+are positive; feature and merge trees equal
+`897142ece8cfa7c27195d7f93f17f4a06e4f78f5`. Post-merge `pnpm ci:check`
+remained green with 370/370 server tests. The code landing was pushed and
+re-fetched exactly at the landing merge before documentation closeout. The
+feature worktree was deregistered, its exact residue
+removed after a zero-process guard, two handoff-recorded stale temp roots were
+removed, and the feature branch was preserved.
+
 The protection is deliberately cooperative. The working PC-SDK does not
 participate, an escaped child is not contained, and the manual stable-vs-Next
 concurrent-write prohibition remains. `OPS-005` stays accepted.
 
 ## Active action
 
-Seal and land `docs/execution/slices/SF-002.md` without widening it: audit the
-final complete diff and actual paths, record the sealed feature commit/tree,
-guarded-merge into current `main`, prove ancestry and exact tree equality, run
-post-merge `pnpm ci:check`, push exact `origin/main`, and remove the feature
-worktree only after positive landing proof. Do not claim any of those receipts
-before the corresponding action succeeds.
-
-After SF-002 is landed and torn down, the next safe N4 action is to contract a
-bounded `SEC-003` runtime/setup child-environment allowlist/scrub slice. Do not
-bundle `OPS-006`: the master plan retains loopback listener binding in N7.
+Define a bounded `SEC-003` runtime/setup child-environment allowlist/scrub slice
+with explicit acceptance criteria. Do not bundle `OPS-006`: the master plan
+retains loopback listener binding in N7.
 
 ## Startup checks
 
@@ -285,10 +294,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001, BC-002, and SF-001 feature worktrees are removed. Keep the PC-SDK
-Next main checkout read-only. SF-002 closing work remains in
-`E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002` on
-`codex/sf-002-repository-lease`.
+The PM-001, BC-002, SF-001, and SF-002 feature worktrees are removed. Keep the
+PC-SDK Next main checkout read-only.
 
 ## Known blockers
 
@@ -296,5 +303,4 @@ No PM-001 blocker remains. Its `get_started` remote-state uncertainty is retaine
 in the completion receipt rather than repaired through private-data inspection.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
-product-direction or verification blocker; only seal/landing/push/teardown
-receipts remain, and none may be inferred before success.
+product-direction, verification, or landing blocker.

@@ -1,6 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 with SF-002 verified and ready to seal/land.
+Last updated: 2026-07-12 after SF-002 guarded landing, push, and feature-
+worktree cleanup.
 
 ## Preserved baseline
 
@@ -117,11 +118,15 @@ only in PC-SDK Next.
 - SF-002 base: `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`
 - SF-002 feature branch: `codex/sf-002-repository-lease`
 - SF-002 contract commit: `0be8912`
-- SF-002 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002`
-- SF-002 implementation: both independent hostile re-reviews and full
-  feature-tree `pnpm ci:check` green; seal, guarded landing, push, and teardown
-  pending
+- SF-002 sealed feature record:
+  `e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`
+- SF-002 landing merge: `a91bb6c8619672f316109d08719b1afea8a918f4`
+- SF-002 exact feature/merge tree:
+  `897142ece8cfa7c27195d7f93f17f4a06e4f78f5`
+- SF-002 code landing: pushed and re-fetched exactly at the landing merge
+  before documentation closeout
+- SF-002 feature worktree: deregistered after proof; exact residue removed
+  after a zero-process guard; feature branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -149,11 +154,10 @@ Isolation defaults in the planning slice:
 - Pre-migration canonical data-directory admission through a kernel IPC witness
   plus a dedicated SQLite ownership transaction, with typed launcher failure,
   crash release, and replacement handoff gated on positive acquisition
-- On the verified SF-002 feature branch, cooperative engine-lifetime repository
-  admission keyed by canonical Git common-directory identity, with immutable
+- SF-002 provides cooperative engine-lifetime repository admission keyed by
+  canonical Git common-directory identity, with immutable
   run receipts and guards across every Git-backed runtime, mutation, landing,
-  cleanup, and recovery door; it is ready to seal/land, while guarded landing
-  to `main` is still pending
+  cleanup, and recovery door; guarded-landed and pushed to `origin/main`
 - Canonical pre-listener boot quarantine of queued/failed sends owned by
   `legacy-unavailable` orchestrator sessions, with queue revision plus
   `send-state`/outbox evidence committed together
@@ -378,7 +382,7 @@ server tests), and push to exact `origin/main` passed. The feature worktree was
 deregistered after that proof. Git left only clean-worktree dependency/build
 residue; its exact parent/name/process guard passed before recursive removal.
 
-## Verified N4 repository-admission feature (ready to seal/land)
+## Completed N4 repository-admission feature
 
 `SF-002` implements the cooperative repository half of `OPS-005` from clean
 pushed base `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`. For every configured
@@ -419,11 +423,21 @@ cleanup, migration diagnostics, actual-path/mutation-door audits,
 hostile re-reviews are clean after fixes with no remaining P0/P1/P2 blocker.
 The evidence is `docs/execution/receipts/SF-002.md`.
 
+Sealed feature record `e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`
+guarded-landed as `a91bb6c8619672f316109d08719b1afea8a918f4`.
+Contract and feature ancestry are positive and the feature/merge trees equal
+`897142ece8cfa7c27195d7f93f17f4a06e4f78f5`. Post-merge `pnpm ci:check`
+passed with 370/370 server tests. The code landing was pushed and re-fetched
+exactly at the merge before documentation closeout. The feature worktree was
+deregistered, its exact residue removed after a zero-
+process guard, two handoff-recorded stale temp roots removed, and the feature
+branch preserved.
+
 This is not universal repository exclusion. The preserved working PC-SDK,
 manual Git/IDE processes, and unrelated tools do not participate, and a child
 that survives a hard-killed server is not contained. The manual
 working-PC-SDK/Next concurrent-write prohibition remains. `OPS-005` stays
-accepted, and no sealed/landing/push/teardown receipt is claimed yet.
+accepted despite the completed cooperative landing.
 
 ## Known architectural gaps
 
@@ -439,7 +453,7 @@ accepted, and no sealed/landing/push/teardown receipt is claimed yet.
   writes are blocked.
 - Process identity is positive at `/health`; SF-001 enforces canonical
   data-directory single-engine admission; and SF-002's cooperative repository
-  lease is verified and ready to seal/land. Nonparticipating stable/manual
+  lease is guarded-landed and pushed. Nonparticipating stable/manual
   tools and escaped repository children remain outside that proof. The listener
   is not yet explicitly loopback-bound.
 - Runtime/setup subprocesses still inherit a broad server environment after

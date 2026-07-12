@@ -37,8 +37,13 @@ filesystem aliases, permission/corruption failure, startup ordering, shutdown
 admission gating, and launcher-visible typed failure are guarded.
 
 SF-002 feature verification receipt (2026-07-12): the separate repository half
-is verified and ready to seal/land on `codex/sf-002-repository-lease`; both
-independent hostile re-reviews and full feature-tree `pnpm ci:check` are green.
+is complete, guarded-landed, and pushed. Both independent hostile re-reviews,
+feature-tree and post-merge `pnpm ci:check`, contract/feature ancestry, and
+exact feature/merge tree equality are green. The sealed feature record is
+`e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`, landing merge is
+`a91bb6c8619672f316109d08719b1afea8a918f4`, and exact tree is
+`897142ece8cfa7c27195d7f93f17f4a06e4f78f5`; the code landing was pushed and
+re-fetched exactly at that merge before documentation closeout.
 Cooperating updated engines use a protocol-stable kernel witness plus
 repository-local zero-wait SQLite admission keyed by the native real Git common
 directory. Immutable project/run receipts and expected-identity checks cover
@@ -63,8 +68,10 @@ the full server suite is 370/370 and full feature-tree `pnpm ci:check` is green.
 PC-SDK and unrelated Git/IDE tools do not participate, and a repository child
 that survives a hard-killed server is not contained. The manual prohibition on
 simultaneous write-capable working-PC-SDK/Next use against one external
-repository remains in force. No landing claim is made until the SF-002 closing
-receipt is complete.
+repository remains in force. The feature worktree and guarded residue are
+removed, two handoff-recorded stale temp roots are removed, and the feature
+branch is preserved; these landing receipts do not change the accepted global
+status.
 
 ## Runtime sessions and selection
 
@@ -183,7 +190,7 @@ without blocking unrelated repositories. Boot and landing require the exact
 durable identity, and project creation cannot silently reinterpret init as
 attach. `WT-004` stays `accepted` because the broader N4 process-failure gate
 and nonparticipant/escaped-child boundaries remain incomplete; SF-002 seal and
-landing are also still pending.
+landing are complete.
 
 ## Integrations, security, and product boundaries
 
@@ -203,7 +210,7 @@ SF-002's narrow cwd-integrity scrub removes the three ambient Git repository
 selectors from direct Git, setup/readiness/verification shell, and provider
 runtime children. It does not implement the general secret/environment
 allowlist required by `SEC-003`, which remains the next safe N4 slice after
-SF-002 lands.
+SF-002.
 
 PM-001 discovery receipt (2026-07-12): the joint source/domain/persistence/
 UI/REST/MCP/PC-SDK inspection began at AInativePM `5033d5e` and was delta-
