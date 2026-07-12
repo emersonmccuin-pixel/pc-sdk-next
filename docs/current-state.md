@@ -86,6 +86,10 @@ only in PC-SDK Next.
 - PM-001 sealed proposal checkpoint:
   `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
 - PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
+- PM-001 accepted-decision commit:
+  `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
+- PM-001 accepted-decision tree:
+  `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
 
 Isolation defaults in the planning slice:
 

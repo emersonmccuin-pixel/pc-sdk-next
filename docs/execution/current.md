@@ -98,6 +98,10 @@ Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
 - PM-001 sealed proposal checkpoint:
   `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
 - PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
+- PM-001 accepted-decision commit:
+  `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
+- PM-001 accepted-decision tree:
+  `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
 
@@ -149,8 +153,8 @@ post-RS-004 full gate.
 
 ## Next safe action
 
-Record the accepted PM-001 decision, revalidate the clean feature tip, create
-the feature record, guarded-land to `main`, push, and tear down. Then define the
+Revalidate the clean accepted-decision feature tip, guarded-land to `main`, push,
+and tear down. Then define the
 next safe N1 slice from the remaining characterization/backlog gate. Do not
 perform a PM write or jump to Codex/N5 as part of PM-001 closeout.
 
