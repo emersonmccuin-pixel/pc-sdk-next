@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-004 provisioning.
+Updated: 2026-07-11 after CF-004 guarded landing and teardown.
 
 ## Repository
 
@@ -34,24 +34,33 @@ Updated: 2026-07-11 after CF-004 provisioning.
 - CF-003 landing merge: `f76579686d2fc5df66e6eac4adcff0344b656256`
 - CF-003 closeout landing:
   `8ad3437d5acef31f6f4aa99a3b50f282f124446c`
-- Active slice: `docs/execution/slices/CF-004.md`
-- CF-004 branch: `codex/cf-004-safe-activity-tools`
-- CF-004 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-004`
+- Completed slice: `docs/execution/slices/CF-004.md`
+- CF-004 feature branch: `codex/cf-004-safe-activity-tools` (preserved)
+- CF-004 feature worktree: removed after positive landing proof; ignored
+  dependency residue at the deregistered path was verified and removed
 - CF-004 base: `8ad3437d5acef31f6f4aa99a3b50f282f124446c`
+- CF-004 sealed implementation:
+  `b1a377e7a75007e29a51e36dcdd5f283aaa1378f`
+- CF-004 feature record: `3e80d8fdcae208dabcf46bd01538418e8dc89ad4`
+- CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
 
 ## Status
 
-CF-003 is complete and pushed. CF-004 is provisioned from its clean landing tip,
-with locked dependencies and baseline workspace typecheck green. Independent
-read-only audits found no product-direction blocker. Implementation is active.
+CF-004 is complete: closed honest activity, guarded safe tool lifecycle,
+replayable approval state, strict live/HTTP transcript ingestion, and terminal
+closure across normal, error, interrupt, recovery, kill, and shutdown paths are
+verified and guarded-landed. The sealed implementation and feature record are
+both proven ancestors of the landing merge; the landed tree exactly matches the
+fully verified feature tree. The feature worktree is torn down. There is no
+user-direction blocker.
 
 ## Next safe action
 
-Implement the bounded CF-004 contract: closed honest activity, one safe guarded
-tool lifecycle with canonical call identity and replayable approval state, and
-terminal closure before every turn terminal/recovery. Keep the production
-permission-bypass policy unchanged and keep runtime selection/Codex in N3.
+Define and provision the first bounded N3 slice: immutable runtime/account/
+model/effort selection stamps on app sessions plus the minimum capability
+contract needed to make continuation and selection changes honest. Prove the
+shape with Claude before Codex, and keep context/quota widening out until the
+session-selection invariant is guarded.
 
 ## Startup checks
 
@@ -62,8 +71,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Startup checks and required reads are complete. Continue only in the recorded
-CF-004 feature worktree; the main checkout remains read-only.
+Run startup checks and read the N3 master-plan/runtime/account boundaries before
+provisioning a new run-owned worktree. The main checkout remains read-only.
 
 ## Known blockers
 
