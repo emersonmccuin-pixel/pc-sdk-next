@@ -6,6 +6,7 @@ import {
   CLIENT_MESSAGE_TYPES,
   RESOURCE_ENTITIES,
   conversationFamilyForEvent,
+  isAgentEventFrame,
   isChatEvent,
   isClientMessage,
   isConversationCommandReceiptFrame,
@@ -23,11 +24,14 @@ import {
   isAskFrame,
   isSendQueueItem,
   isSendQueueSnapshotFrame,
+  safeToolSummary,
+  toolStateTransitionError,
   type ChatEvent,
   type ConversationEventFrame,
   type ResourceFrame,
   type SendQueueItem,
   type ServerFrame,
+  type ToolStateEvent,
 } from '../src/index.ts';
 
 const USER_QUEUE_ITEM: SendQueueItem = {
@@ -64,13 +68,109 @@ test('isConversationEventFrame enforces canonical identity', () => {
   assert.equal(isConversationEventFrame({ ...frame, family: 'user' }), false);
   assert.equal(isConversationEventFrame({ ...frame, sequence: 0 }), false);
   assert.equal(isConversationEventFrame({ ...frame, itemId: '' }), false);
+  assert.equal(isConversationEventFrame({ ...frame, nativeToolUseId: 'native-secret' }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: { ...frame.event, rawThinking: 'SECRET' },
+  }), false);
   assert.equal(isConversationEventFrame(null), false);
 });
 
+test('every canonical ChatEvent shape rejects undeclared provider fields', () => {
+  const events: ChatEvent[] = [
+    { kind: 'user', text: 'hello' },
+    { kind: 'assistant-text', text: 'hi', midLoop: false },
+    { kind: 'turn-end', text: 'done', stopReason: 'complete' },
+    { kind: 'turn-failed', error: 'failed', source: 'internal' },
+    { kind: 'activity-state', phase: 'responding' },
+    {
+      kind: 'tool-state',
+      callId: 'call-1',
+      name: 'Read',
+      state: 'requested',
+      safeSummary: safeToolSummary('Read'),
+      approval: { status: 'unknown', source: null, requestId: null },
+      outcome: null,
+    },
+    {
+      kind: 'usage',
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      model: null,
+    },
+    { kind: 'turn-duration', durationMs: 10 },
+    { kind: 'session-state', state: 'running', permissionMode: null },
+    { kind: 'system', subtype: 'notice', level: 'info', message: 'safe' },
+    { kind: 'compaction', trigger: 'auto', preTokens: 10, postTokens: 3 },
+    { kind: 'sidechain', role: 'assistant', text: 'safe' },
+    { kind: 'agent-dispatch', runId: 'run-1', agentName: 'reviewer' },
+    {
+      kind: 'agent-envelope',
+      runId: 'run-1',
+      agentName: 'reviewer',
+      status: 'done',
+      summary: 'review complete',
+      detail: 'passed',
+      envelope: 'safe envelope',
+    },
+    { kind: 'send-state', queueRevision: 1, item: USER_QUEUE_ITEM },
+    {
+      kind: 'interrupt-state',
+      requestId: 'interrupt-1',
+      targetTurnId: 'turn-1',
+      replacementQueueItemId: null,
+      state: 'failed',
+      terminalEventId: null,
+      result: null,
+      failure: { code: 'runtime-failed', message: 'safe failure' },
+    },
+    { kind: 'retract', streamIds: ['stream-1'] },
+  ];
+
+  assert.equal(events.length, CHAT_EVENT_KINDS.length);
+  for (const event of events) {
+    assert.equal(isChatEvent(event), true, `${event.kind} is valid`);
+    assert.equal(isChatEvent({ ...event, rawProviderPayload: 'SECRET' }), false, `${event.kind} is closed`);
+  }
+  const interrupt = events.find((event) => event.kind === 'interrupt-state');
+  assert.ok(interrupt?.kind === 'interrupt-state' && interrupt.failure);
+  assert.equal(isChatEvent({
+    ...interrupt,
+    failure: { ...interrupt.failure, raw: 'SECRET' },
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'send-state',
+    queueRevision: 1,
+    item: { ...USER_QUEUE_ITEM, raw: 'SECRET' },
+  }), false);
+});
+
+test('agent-event frames admit only strict canonical transcript events', () => {
+  const frame = {
+    type: 'agent-event',
+    projectId: 'p',
+    runId: 'run-1',
+    dedupId: 'event-1',
+    event: { kind: 'assistant-text', text: 'safe', midLoop: false },
+  };
+  assert.equal(isAgentEventFrame(frame), true);
+  assert.equal(isAgentEventFrame({ ...frame, nativeSessionId: 'SECRET' }), false);
+  assert.equal(isAgentEventFrame({
+    ...frame,
+    event: { ...frame.event, rawThinking: 'SECRET' },
+  }), false);
+  assert.equal(isAgentEventFrame({ ...frame, dedupId: '' }), false);
+});
+
 test('every ChatEvent kind is registered', () => {
-  assert.equal(CHAT_EVENT_KINDS.length, 18);
+  assert.equal(CHAT_EVENT_KINDS.length, 17);
   for (const k of CHAT_EVENT_KINDS) assert.equal(isChatEventKind(k), true);
   assert.equal(isChatEventKind('jsonl-user'), false); // old wire kind is dead
+  for (const retired of ['tool-call', 'tool-result', 'tool-denied']) {
+    assert.equal(isChatEventKind(retired), false);
+  }
 });
 
 test('stream deltas use the same sequenced envelope and require stream order', () => {
@@ -93,6 +193,140 @@ test('stream deltas use the same sequenced envelope and require stream order', (
   assert.equal(isConversationEventFrame({ ...frame, deltaIndex: -1 }), false);
   assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'stream-delta', delta: { kind: 'text-delta' } } }), false);
   assert.equal(isConversationEventFrame({ ...frame, event: { kind: 'stream-delta', delta: { kind: 'nope' } } }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: { kind: 'stream-delta', delta: { kind: 'tool-input-delta', partialJson: '{"token":"secret"}' } },
+  }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: {
+      kind: 'stream-delta',
+      delta: { kind: 'text-delta', text: 'safe', toolUseId: 'native', partialJson: 'SECRET' },
+    },
+  }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: { kind: 'stream-delta', delta: { kind: 'message-start', raw: 'SECRET' } },
+  }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: { kind: 'stream-delta', delta: { kind: 'text-delta', text: 'safe' }, raw: 'SECRET' },
+  }), false);
+});
+
+test('safe activity and tool lifecycle are closed, input-free, and transition guarded', () => {
+  const requested: ToolStateEvent = {
+    kind: 'tool-state',
+    callId: 'call-1',
+    name: 'mcp__pc__pc_read_project',
+    state: 'requested',
+    safeSummary: safeToolSummary('mcp__pc__pc_read_project'),
+    approval: { status: 'unknown', source: null, requestId: null },
+    outcome: null,
+  };
+  const approvalNeeded: ToolStateEvent = {
+    ...requested,
+    state: 'approval-needed',
+    approval: { status: 'pending', source: null, requestId: 'approval-1' },
+  };
+  const running: ToolStateEvent = {
+    ...requested,
+    state: 'running',
+    approval: { status: 'allowed', source: 'user', requestId: 'approval-1' },
+  };
+  const succeeded: ToolStateEvent = { ...running, state: 'succeeded' };
+  const failed: ToolStateEvent = {
+    ...running,
+    state: 'failed',
+    outcome: { reason: 'tool-error' },
+  };
+  const denied: ToolStateEvent = {
+    ...requested,
+    state: 'denied',
+    approval: { status: 'denied', source: 'timeout', requestId: 'approval-1' },
+  };
+  for (const event of [requested, approvalNeeded, running, succeeded, failed, denied]) {
+    assert.equal(isChatEvent(event), true);
+    assert.equal(conversationFamilyForEvent(event), 'tool');
+    assert.equal('input' in event, false);
+    assert.equal('result' in event, false);
+  }
+  for (const phase of ['turn-starting', 'requesting-runtime', 'responding', 'retrying', 'compacting'] as const) {
+    const event: ChatEvent = { kind: 'activity-state', phase };
+    assert.equal(isChatEvent(event), true);
+    assert.equal(conversationFamilyForEvent(event), 'activity');
+  }
+  assert.equal(isChatEvent({ kind: 'activity-state', phase: 'thinking' }), false);
+  assert.equal(isChatEvent({ ...requested, safeSummary: 'Reading secrets' }), false);
+  assert.equal(isChatEvent({ ...requested, input: { token: 'secret' } }), false);
+  assert.equal(isChatEvent({ ...requested, result: 'secret' }), false);
+  assert.equal(isChatEvent({ ...requested, toolUseId: 'native-id' }), false);
+  assert.equal(isChatEvent({ ...requested, state: 'running' }), false);
+  assert.equal(isChatEvent({ ...running, state: 'failed', outcome: null }), false);
+  assert.equal(isChatEvent({ ...succeeded, outcome: { reason: 'tool-error' } }), false);
+
+  assert.equal(toolStateTransitionError(null, requested), null);
+  assert.equal(toolStateTransitionError(requested, approvalNeeded), null);
+  assert.equal(toolStateTransitionError(approvalNeeded, running), null);
+  assert.equal(toolStateTransitionError(running, succeeded), null);
+  assert.equal(toolStateTransitionError(running, failed), null);
+  assert.equal(toolStateTransitionError(approvalNeeded, denied), null);
+  assert.equal(toolStateTransitionError(requested, succeeded), 'invalid-transition');
+  assert.equal(toolStateTransitionError(succeeded, failed), 'post-terminal');
+  assert.equal(toolStateTransitionError(approvalNeeded, {
+    ...running,
+    approval: { status: 'allowed', source: 'user', requestId: 'different' },
+  }), 'approval-request-changed');
+  assert.equal(toolStateTransitionError(requested, running), 'approval-provenance-invalid');
+  assert.equal(toolStateTransitionError(requested, {
+    ...requested,
+    state: 'running',
+    approval: { status: 'not-required', source: 'runtime', requestId: null },
+  }), null);
+  assert.equal(toolStateTransitionError(requested, denied), 'approval-provenance-invalid');
+  assert.equal(toolStateTransitionError(requested, {
+    ...denied,
+    approval: { status: 'denied', source: 'runtime', requestId: null },
+  }), null);
+  assert.equal(toolStateTransitionError(requested, {
+    ...failed,
+    approval: { status: 'allowed', source: 'user', requestId: 'fabricated' },
+    outcome: { reason: 'turn-ended' },
+  }), 'approval-provenance-changed');
+
+  const frame: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'tool-event-1',
+    projectId: 'p',
+    conversationId: 's',
+    sessionId: 's',
+    sequence: 1,
+    family: 'tool',
+    turnId: 'turn-1',
+    itemId: 'call-1',
+    occurredAt: 1,
+    event: requested,
+  };
+  assert.equal(isConversationEventFrame(frame), true);
+  assert.equal(isConversationEventFrame({ ...frame, itemId: 'native-tool-id' }), false);
+  assert.equal(isConversationEventFrame({ ...frame, turnId: undefined }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    family: 'activity',
+    event: { kind: 'activity-state', phase: 'responding' },
+    itemId: 'activity-1',
+    turnId: undefined,
+  }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    family: 'control',
+    event: { kind: 'turn-end', text: '', stopReason: 'complete' },
+    itemId: 'terminal-1',
+    turnId: undefined,
+  }), true);
+  assert.equal(isChatEvent({
+    kind: 'system', subtype: 'notice', level: 'info', message: 'safe', raw: { secret: true },
+  }), false);
 });
 
 test('ResourceEntity is a closed set (guard rule 7)', () => {
@@ -242,8 +476,19 @@ test('session-changed + orchestrator-state + ask guards', () => {
   assert.equal(isOrchestratorStateFrame({ ...idleState, queueDepth: Number.NaN }), false);
 
   assert.equal(
-    isAskFrame({ type: 'ask', projectId: 'p', askId: 'a1', sessionId: null, toolName: 'Bash', toolUseId: 'tu1', toolInput: {} }),
+    isAskFrame({ type: 'ask', projectId: 'p', askId: 'a1', sessionId: null, toolName: 'Bash', callId: 'call-1', toolInput: {} }),
     true,
+  );
+  assert.equal(
+    isAskFrame({ type: 'ask', projectId: 'p', askId: 'a1', sessionId: null, toolName: 'Bash', callId: '', toolInput: {} }),
+    false,
+  );
+  assert.equal(
+    isAskFrame({
+      type: 'ask', projectId: 'p', askId: 'a1', sessionId: null,
+      toolName: 'Bash', callId: 'call-1', toolInput: {}, toolUseId: 'native-secret',
+    }),
+    false,
   );
 });
 
@@ -452,6 +697,26 @@ test('session replay validates every canonical event identity', () => {
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 'other', highWaterSequence: 1, events: [event],
   }), false);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1,
+    events: [event], raw: 'SECRET',
+  }), false);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 0, events: [event],
+  }), false);
+
+  // Migration 0009 cannot safely infer turn ownership for legacy terminals.
+  // They remain valid replay evidence even though the DB new-write door now
+  // requires every new terminal to carry a non-empty turn id.
+  const legacyTerminal: ConversationEventFrame = {
+    type: 'conversation-event', eventId: 'legacy-terminal', projectId: 'p', conversationId: 's',
+    sessionId: 's', sequence: 2, family: 'control', itemId: 'legacy-terminal', occurredAt: 2,
+    event: { kind: 'turn-end', text: 'legacy answer', stopReason: 'complete' },
+  };
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 2,
+    events: [event, legacyTerminal],
+  }), true);
 });
 
 // Compile-time smoke: a ServerFrame narrows on `type`.

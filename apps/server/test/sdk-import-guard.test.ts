@@ -19,7 +19,7 @@ function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) walk(full, out);
-    else if (full.endsWith('.ts')) out.push(full);
+    else if (full.endsWith('.ts') || full.endsWith('.tsx')) out.push(full);
   }
   return out;
 }
@@ -34,8 +34,8 @@ test('only runner/claude-adapter.ts imports the Claude Agent SDK', () => {
   assert.deepEqual(importers, ['runner/claude-adapter.ts'], `unexpected SDK importers: ${importers.join(', ')}`);
 });
 
-test('canonical contracts and browser contain no provider-native chat vocabulary', () => {
-  const forbidden = /\b(?:sdkUuid|sdkSessionId|chat-delta|thinking-delta|ThinkingBubble|end_turn)\b|kind:\s*['"]thinking['"]|case\s+['"]thinking['"]/;
+test('canonical contracts and browser contain no provider-native or retired raw-tool vocabulary', () => {
+  const forbidden = /\b(?:sdkUuid|sdkSessionId|chat-delta|thinking-delta|ThinkingBubble|end_turn|toolUseId|toolUseID|tool_use_id|tool-input-delta|input_json_delta|partial_json)\b|(?:kind|case)\s*:?\s*['"](?:thinking|tool-call|tool-result|tool-denied)['"]/;
   const offenders: string[] = [];
   for (const root of [join(REPO, 'packages', 'contracts', 'src'), join(REPO, 'apps', 'web', 'src')]) {
     for (const file of walk(root)) {

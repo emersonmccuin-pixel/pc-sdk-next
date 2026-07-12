@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-conversation-events-'));
 process.env.PC_DATA_DIR = tmpDir;
 
 const {
   closeDb,
+  closeOpenConversationToolCalls,
   commitConversationEvent,
   countConversationEvents,
   getConversationHighWaterSequence,
@@ -20,6 +22,37 @@ const {
   markConversationEventsRelayed,
   runMigrations,
 } = await import('../src/index.ts');
+
+function toolEvent(
+  conversationId: string,
+  callId: string,
+  event: ToolStateEvent,
+  turnId = 'turn-1',
+) {
+  return commitConversationEvent({
+    projectId: 'p1',
+    conversationId,
+    sessionId: conversationId,
+    family: 'tool',
+    event,
+    turnId,
+    itemId: callId,
+    occurredAt: 1000,
+    deliveryKind: 'chat',
+  });
+}
+
+function requested(callId: string, name = 'Read'): ToolStateEvent {
+  return {
+    kind: 'tool-state',
+    callId,
+    name,
+    state: 'requested',
+    safeSummary: safeToolSummary(name),
+    approval: { status: 'unknown', source: null, requestId: null },
+    outcome: null,
+  };
+}
 
 before(() => runMigrations());
 after(() => {
@@ -106,6 +139,41 @@ test('project mismatch and invalid delta identity fail closed without consuming 
   assert.throws(() => commit('delta', 'empty-turn', { turnId: '' }), /turnId/);
   assert.throws(() => commit('delta', 'bad-time', { occurredAt: Number.NaN }), /occurredAt/);
   assert.equal(commit('delta', 'good').event.sequence, 1);
+
+  const noTurnTool = requested('call-no-turn');
+  assert.throws(() => commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'no-turn-tool',
+    sessionId: 'no-turn-tool',
+    family: 'tool',
+    event: noTurnTool,
+    itemId: noTurnTool.callId,
+    occurredAt: 1000,
+    deliveryKind: 'chat',
+  }), /requires a non-empty turnId/);
+  assert.throws(() => commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'no-turn-activity',
+    sessionId: 'no-turn-activity',
+    family: 'activity',
+    event: { kind: 'activity-state', phase: 'responding' },
+    itemId: 'activity-no-turn',
+    occurredAt: 1000,
+    deliveryKind: 'chat',
+  }), /requires a non-empty turnId/);
+  assert.throws(() => commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'no-turn-terminal',
+    sessionId: 'no-turn-terminal',
+    family: 'control',
+    event: { kind: 'turn-failed', error: 'ended', source: 'internal' },
+    itemId: 'terminal-no-turn',
+    occurredAt: 1000,
+    deliveryKind: 'chat',
+  }), /requires a non-empty turnId/);
+  assert.equal(getConversationHighWaterSequence('no-turn-tool'), 0);
+  assert.equal(getConversationHighWaterSequence('no-turn-activity'), 0);
+  assert.equal(getConversationHighWaterSequence('no-turn-terminal'), 0);
 });
 
 test('legacy-hidden evidence is retained raw but never appears in product replay', () => {
@@ -117,4 +185,162 @@ test('legacy-hidden evidence is retained raw but never appears in product replay
   assert.equal(listConversationEvents('legacy').length, 0);
   assert.equal(listConversationEventsRaw('legacy').length, 1);
   assert.equal(listConversationEventsRaw('legacy')[0]!.projectionState, 'legacy-hidden');
+});
+
+test('tool lifecycle is guarded transactionally and terminal state is immutable', () => {
+  const first = requested('call-direct');
+  const running: ToolStateEvent = {
+    ...first,
+    state: 'running',
+    approval: { status: 'not-required', source: 'policy', requestId: null },
+  };
+  const succeeded: ToolStateEvent = { ...running, state: 'succeeded' };
+  assert.equal(toolEvent('tool-direct', first.callId, first).event.sequence, 1);
+  assert.equal(toolEvent('tool-direct', first.callId, running).event.sequence, 2);
+  assert.equal(toolEvent('tool-direct', first.callId, succeeded).event.sequence, 3);
+  assert.throws(
+    () => toolEvent('tool-direct', first.callId, { ...running, state: 'failed', outcome: { reason: 'tool-error' } }),
+    /post-terminal/,
+  );
+  assert.throws(
+    () => toolEvent('tool-direct', first.callId, { ...first, name: 'Write', safeSummary: safeToolSummary('Write') }),
+    /identity-changed/,
+  );
+  assert.equal(getConversationHighWaterSequence('tool-direct'), 3, 'rejected transitions consume no sequence');
+
+  const approval = requested('call-approval', 'Bash');
+  const pending: ToolStateEvent = {
+    ...approval,
+    state: 'approval-needed',
+    approval: { status: 'pending', source: null, requestId: 'approval-1' },
+  };
+  const allowed: ToolStateEvent = {
+    ...approval,
+    state: 'running',
+    approval: { status: 'allowed', source: 'user', requestId: 'approval-1' },
+  };
+  toolEvent('tool-approval', approval.callId, approval);
+  toolEvent('tool-approval', approval.callId, pending);
+  assert.throws(
+    () => toolEvent('tool-approval', approval.callId, {
+      ...allowed,
+      approval: { status: 'allowed', source: 'user', requestId: 'approval-other' },
+    }),
+    /approval-request-changed/,
+  );
+  toolEvent('tool-approval', approval.callId, allowed);
+});
+
+test('closing open tools is idempotent and emits terminal evidence through the outbox', () => {
+  const waiting = requested('call-waiting', 'Write');
+  const pending: ToolStateEvent = {
+    ...waiting,
+    state: 'approval-needed',
+    approval: { status: 'pending', source: null, requestId: 'approval-waiting' },
+  };
+  const runningStart = requested('call-running', 'Read');
+  const running: ToolStateEvent = {
+    ...runningStart,
+    state: 'running',
+    approval: { status: 'not-required', source: 'runtime', requestId: null },
+  };
+  toolEvent('tool-close', waiting.callId, waiting, 'turn-close');
+  toolEvent('tool-close', waiting.callId, pending, 'turn-close');
+  toolEvent('tool-close', runningStart.callId, runningStart, 'turn-close');
+  toolEvent('tool-close', runningStart.callId, running, 'turn-close');
+
+  assert.equal(closeOpenConversationToolCalls({
+    conversationId: 'tool-close',
+    turnId: 'turn-close',
+    reason: 'runtime-lost',
+    deliveryKind: 'chat',
+    occurredAt: 2000,
+  }), 2);
+  assert.equal(closeOpenConversationToolCalls({
+    conversationId: 'tool-close',
+    turnId: 'turn-close',
+    reason: 'runtime-lost',
+    deliveryKind: 'chat',
+    occurredAt: 2001,
+  }), 0);
+  const terminal = listConversationEvents('tool-close')
+    .map((row) => row.payload)
+    .filter((event): event is ToolStateEvent => (
+      typeof event === 'object' && event !== null && (event as { kind?: string }).kind === 'tool-state'
+    ))
+    .slice(-2);
+  assert.deepEqual(terminal.map((event) => event.state), ['denied', 'failed']);
+  assert.deepEqual(terminal[0]!.approval, {
+    status: 'denied', source: 'session', requestId: 'approval-waiting',
+  });
+  assert.deepEqual(terminal[1]!.outcome, { reason: 'runtime-lost' });
+  assert.equal(
+    listUnrelayedConversationEvents().filter((entry) => entry.event.conversationId === 'tool-close').length,
+    6,
+  );
+});
+
+test('a terminal event closes open tools atomically before its own sequence', () => {
+  const start = requested('call-terminal-atomic');
+  const running: ToolStateEvent = {
+    ...start,
+    state: 'running',
+    approval: { status: 'not-required', source: 'runtime', requestId: null },
+  };
+  toolEvent('terminal-atomic', start.callId, start, 'turn-terminal-atomic');
+  toolEvent('terminal-atomic', start.callId, running, 'turn-terminal-atomic');
+
+  const terminal = () => commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'terminal-atomic',
+    sessionId: 'terminal-atomic',
+    family: 'control',
+    event: { kind: 'turn-failed', error: 'runtime ended', source: 'internal' },
+    turnId: 'turn-terminal-atomic',
+    itemId: 'terminal-item',
+    occurredAt: 3000,
+    deliveryKind: 'agent',
+  });
+
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TRIGGER fail_atomic_terminal_outbox
+    BEFORE INSERT ON conversation_outbox
+    WHEN NEW.delivery_kind = 'agent'
+    BEGIN SELECT RAISE(ABORT, 'forced atomic terminal failure'); END;
+  `);
+  assert.throws(terminal, /forced atomic terminal failure/);
+  raw.exec('DROP TRIGGER fail_atomic_terminal_outbox');
+  assert.deepEqual(
+    listConversationEvents('terminal-atomic').map((row) => row.eventType),
+    ['tool-state', 'tool-state'],
+  );
+
+  terminal();
+  const events = listConversationEvents('terminal-atomic');
+  assert.deepEqual(events.map((row) => row.eventType), [
+    'tool-state', 'tool-state', 'tool-state', 'turn-failed',
+  ]);
+  assert.deepEqual(events[2]!.payload, {
+    ...running,
+    state: 'failed',
+    outcome: { reason: 'turn-ended' },
+  });
+  const lateTool = requested('call-after-terminal');
+  assert.throws(
+    () => toolEvent('terminal-atomic', lateTool.callId, lateTool, 'turn-terminal-atomic'),
+    /turn already terminal/,
+  );
+  assert.throws(() => commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'terminal-atomic',
+    sessionId: 'terminal-atomic',
+    family: 'activity',
+    event: { kind: 'activity-state', phase: 'responding' },
+    turnId: 'turn-terminal-atomic',
+    itemId: 'late-activity',
+    occurredAt: 3001,
+    deliveryKind: 'agent',
+  }), /turn already terminal/);
+  assert.equal(getConversationHighWaterSequence('terminal-atomic'), 4);
 });

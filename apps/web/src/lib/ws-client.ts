@@ -9,6 +9,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import {
   isAskFrame,
+  isAgentEventFrame,
   isConversationCommandReceiptFrame,
   isConversationEventFrame,
   isLiveResetFrame,
@@ -22,7 +23,6 @@ import type {
   ClientMessage,
   InterruptReplacement,
   ResourceFrame,
-  ServerFrame,
 } from '@pc/contracts';
 
 import { useAgentEventStore } from '@/state/agent-event-store';
@@ -229,8 +229,7 @@ export class ProjectSocket {
       useChatStore.getState().ingest(frame);
       return;
     }
-    const serverFrame = frame as ServerFrame;
-    switch (serverFrame.type) {
+    switch (type) {
       case 'server-pong':
         break; // liveness already registered
       case 'orchestrator-state':
@@ -251,7 +250,9 @@ export class ProjectSocket {
       case 'agent-event':
         // Latency-class agent transcript stream (Channel 3) — live buffer only;
         // missed frames heal on modal open via the HTTP backfill.
-        useAgentEventStore.getState().applyAgentEventFrame(serverFrame);
+        if (isAgentEventFrame(frame)) {
+          useAgentEventStore.getState().applyAgentEventFrame(frame);
+        }
         break;
       default:
         break;

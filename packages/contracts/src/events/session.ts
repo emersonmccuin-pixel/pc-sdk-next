@@ -39,6 +39,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
 export function isSessionSummary(value: unknown): value is SessionSummary {
   return (
     isRecord(value) &&
@@ -69,6 +74,7 @@ export function isSessionChangedFrame(value: unknown): value is SessionChangedFr
 export function isSessionReplayFrame(value: unknown): value is SessionReplayFrame {
   if (
     !isRecord(value) ||
+    !hasOnlyKeys(value, ['type', 'projectId', 'sessionId', 'highWaterSequence', 'events']) ||
     value.type !== 'session-replay' ||
     typeof value.projectId !== 'string' || value.projectId.length === 0 ||
     typeof value.sessionId !== 'string' || value.sessionId.length === 0 ||
@@ -78,6 +84,10 @@ export function isSessionReplayFrame(value: unknown): value is SessionReplayFram
   ) return false;
   return value.events.every((event) => {
     if (!isConversationEventFrame(event)) return false;
-    return event.projectId === value.projectId && event.sessionId === value.sessionId;
+    return (
+      event.projectId === value.projectId &&
+      event.sessionId === value.sessionId &&
+      event.sequence <= (value.highWaterSequence as number)
+    );
   });
 }

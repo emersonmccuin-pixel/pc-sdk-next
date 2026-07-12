@@ -1,20 +1,22 @@
-// Pure timeline builder: canonical stable events → render items.
-// by toolUseId, groups consecutive tool calls (collapsible), promotes
-// Edit/Write/NotebookEdit to standalone diff cards, coalesces sub-agent
-// (sidechain) steps. Control/telemetry kinds (usage, turn-duration,
-// session-state, retract) fold into aggregates and never render.
+// Pure timeline builder: canonical stable events → render items. Tool lifecycle
+// observations update one safe row by callId. Control and telemetry kinds fold
+// into aggregates and never render.
 
-import type { ChatEvent, ConversationEventFrame } from '@pc/contracts';
-
-const HIGHLIGHT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+import type {
+  ChatEvent,
+  ConversationEventFrame,
+  ToolApprovalSnapshot,
+  ToolCallState,
+  ToolTerminalReason,
+} from '@pc/contracts';
 
 export interface ToolCall {
-  toolUseId: string;
+  callId: string;
   name: string;
-  input: unknown;
-  result: unknown;
-  isError: boolean;
-  ended: boolean;
+  safeSummary: string;
+  state: ToolCallState;
+  approval: ToolApprovalSnapshot;
+  outcome: { reason: ToolTerminalReason } | null;
 }
 
 export interface SidechainStep {
@@ -26,8 +28,6 @@ export type RenderItem =
   | { kind: 'user'; key: string; text: string; pending?: never }
   | { kind: 'assistant'; key: string; text: string; midLoop: boolean }
   | { kind: 'tool-group'; key: string; calls: ToolCall[] }
-  | { kind: 'edit'; key: string; call: ToolCall }
-  | { kind: 'denied'; key: string; name: string; reason: string }
   | { kind: 'dispatch'; key: string; runId: string; agentName: string }
   | {
       kind: 'agent-run';
@@ -61,7 +61,7 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
 
   const flushTools = () => {
     if (toolBuffer.length > 0) {
-      items.push({ kind: 'tool-group', key: `tg-${toolBuffer[0]!.toolUseId}`, calls: toolBuffer });
+      items.push({ kind: 'tool-group', key: `tg-${toolBuffer[0]!.callId}`, calls: toolBuffer });
       toolBuffer = [];
     }
   };
@@ -93,44 +93,30 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
       continue;
     }
     // Any non-sidechain event closes an open sub-agent run.
-    if (ev.kind !== 'tool-call' && ev.kind !== 'tool-result') flushSidechain();
+    if (ev.kind !== 'tool-state') flushSidechain();
 
     switch (ev.kind) {
-      case 'tool-call': {
+      case 'tool-state': {
+        const existing = callById.get(ev.callId);
+        if (existing) {
+          existing.state = ev.state;
+          existing.approval = ev.approval;
+          existing.outcome = ev.outcome;
+          break;
+        }
+        // The reducer/persistence guards enforce requested-first. This
+        // defensive branch keeps direct callers fail-closed too.
+        if (ev.state !== 'requested') break;
         const call: ToolCall = {
-          toolUseId: ev.toolUseId,
+          callId: ev.callId,
           name: ev.name,
-          input: ev.input,
-          result: undefined,
-          isError: false,
-          ended: false,
+          safeSummary: ev.safeSummary,
+          state: ev.state,
+          approval: ev.approval,
+          outcome: ev.outcome,
         };
-        callById.set(ev.toolUseId, call);
-        if (HIGHLIGHT_TOOLS.has(ev.name)) {
-          flushTools();
-          items.push({ kind: 'edit', key: `edit-${key}`, call });
-        } else {
-          toolBuffer.push(call);
-        }
-        break;
-      }
-      case 'tool-result': {
-        const call = callById.get(ev.toolUseId);
-        if (call) {
-          call.result = ev.result;
-          call.isError = ev.isError;
-          call.ended = true;
-        } else {
-          // Orphan result (no prior call frame) — surface it standalone.
-          toolBuffer.push({
-            toolUseId: ev.toolUseId,
-            name: ev.toolUseId,
-            input: null,
-            result: ev.result,
-            isError: ev.isError,
-            ended: true,
-          });
-        }
+        callById.set(ev.callId, call);
+        toolBuffer.push(call);
         break;
       }
       case 'user':
@@ -140,10 +126,6 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
       case 'assistant-text':
         flushTools();
         items.push({ kind: 'assistant', key, text: ev.text, midLoop: ev.midLoop });
-        break;
-      case 'tool-denied':
-        flushTools();
-        items.push({ kind: 'denied', key, name: ev.name, reason: ev.reason });
         break;
       case 'agent-dispatch':
         flushTools();
@@ -193,6 +175,7 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
       case 'usage':
       case 'turn-duration':
       case 'session-state':
+      case 'activity-state':
       case 'send-state':
       case 'interrupt-state':
       case 'retract':

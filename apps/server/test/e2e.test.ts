@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
+import { safeToolSummary } from '@pc/contracts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { freshDb, newProject, sleep } from './helpers.ts';
@@ -48,8 +49,27 @@ const SCRIPT = [[
   { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'Hel' } },
   { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'lo' } },
   { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'text', text: 'Hello' } },
-  { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'tool_use', toolUseId: 't1', name: 'Read', input: { path: 'x' } } },
-  { type: 'tool-result', itemId: 'u2', scope: 'primary', toolUseId: 't1', result: 'contents', isError: false },
+  {
+    type: 'tool-state', scope: 'primary', event: {
+      kind: 'tool-state', callId: 'call-1', name: 'Read', state: 'requested',
+      safeSummary: safeToolSummary('Read'),
+      approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
+    },
+  },
+  {
+    type: 'tool-state', scope: 'primary', event: {
+      kind: 'tool-state', callId: 'call-1', name: 'Read', state: 'running',
+      safeSummary: safeToolSummary('Read'),
+      approval: { status: 'not-required', source: 'runtime', requestId: null }, outcome: null,
+    },
+  },
+  {
+    type: 'tool-state', scope: 'primary', event: {
+      kind: 'tool-state', callId: 'call-1', name: 'Read', state: 'succeeded',
+      safeSummary: safeToolSummary('Read'),
+      approval: { status: 'not-required', source: 'runtime', requestId: null }, outcome: null,
+    },
+  },
   { type: 'assistant-block', itemId: 'u3', scope: 'primary', block: { kind: 'text', text: 'Done' } },
   { type: 'result', ok: true, stopReason: 'complete', usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0, model: 'opus' }, durationMs: 12, error: null, outcome: 'ok', numTurns: null },
 ]] as never;
@@ -85,7 +105,10 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
     const liveChat = c1.frames.filter((f) => f.type === 'conversation-event');
     // The turn produced its content + exactly one turn-end.
     assert.equal(liveChat.filter((f) => f.event?.kind === 'turn-end').length, 1);
-    assert.ok(liveChat.some((f) => f.event?.kind === 'tool-result'));
+    assert.deepEqual(
+      liveChat.filter((f) => f.event?.kind === 'tool-state').map((f) => f.event?.state),
+      ['requested', 'running', 'succeeded'],
+    );
     assert.ok(liveChat.some((f) => f.event?.kind === 'user'));
 
     c1.close();

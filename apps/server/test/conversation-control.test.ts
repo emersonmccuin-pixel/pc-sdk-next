@@ -104,7 +104,7 @@ test('native interrupt rejection durably fails the request and blocks its replac
   const project = newProject();
   const runtime = new FakeRuntime({ turns: [[{ hang: true }]] });
   runtime.interrupt = async () => {
-    throw new Error('native interrupt rejected');
+    throw new Error('SECRET native interrupt rejection detail');
   };
   const service = serviceFor(project.id, runtime);
   const session = service.ensureActiveSession();
@@ -127,10 +127,13 @@ test('native interrupt rejection durably fails the request and blocks its replac
       event.kind === 'interrupt-state' && event.state === 'failed',
   );
   assert.equal(failed?.failure?.code, 'runtime-interrupt-failed');
+  assert.equal(failed?.failure?.message, 'the runtime did not accept the interruption request');
   const replacement = getConversationQueueSnapshot(session.id).items.find(
     (item) => item.clientMessageId === 'cm-replacement',
   );
   assert.equal(replacement?.status, 'failed');
+  assert.equal(JSON.stringify(events(session.id)).includes('SECRET'), false);
+  assert.equal(JSON.stringify(getConversationQueueSnapshot(session.id)).includes('SECRET'), false);
   assert.deepEqual(runtime.sentTexts, ['first']);
   // Restore a successful interrupt so disposal can release the fake hung turn.
   runtime.interrupt = FakeRuntime.prototype.interrupt.bind(runtime);

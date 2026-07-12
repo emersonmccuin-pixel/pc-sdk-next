@@ -6,7 +6,7 @@
 // should fold into whatever shared renderer it exposes instead of keeping two
 // pipelines. Until then this is the one place agent transcripts render from.
 
-import type { ChatEvent } from '@pc/contracts';
+import { isChatEvent } from '@pc/contracts';
 
 export type RowTone = 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'muted';
 
@@ -37,22 +37,8 @@ export function Row({
   );
 }
 
-export function safeJson(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-export function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max) + `\n… (${s.length - max} more chars)`;
-}
-
-export function TranscriptRow({ event }: { event: ChatEvent }) {
+export function TranscriptRow({ event }: { event: unknown }) {
+  if (!isChatEvent(event)) return null;
   switch (event.kind) {
     case 'user':
       return (
@@ -83,26 +69,24 @@ export function TranscriptRow({ event }: { event: ChatEvent }) {
           <div className="whitespace-pre-wrap text-destructive">{event.error}</div>
         </Row>
       );
-    case 'tool-call':
+    case 'tool-state':
       return (
-        <Row label={`tool: ${event.name}`} tone="tool">
-          <pre className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-            {truncate(safeJson(event.input), 800)}
-          </pre>
+        <Row
+          label={`tool · ${event.state}`}
+          tone={event.state === 'failed' || event.state === 'denied' ? 'error' : 'tool'}
+        >
+          <div className="text-foreground">{event.safeSummary}</div>
+          <div className="font-mono text-[10px] text-muted-foreground">
+            call {event.callId.slice(0, 8)} · approval {event.approval.status}
+            {event.approval.source ? `/${event.approval.source}` : ''}
+            {event.outcome ? ` · ${event.outcome.reason}` : ''}
+          </div>
         </Row>
       );
-    case 'tool-result':
+    case 'activity-state':
       return (
-        <Row label={event.isError ? 'tool result · error' : 'tool result'} tone={event.isError ? 'error' : 'tool'}>
-          <pre className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-            {truncate(safeJson(event.result), 800)}
-          </pre>
-        </Row>
-      );
-    case 'tool-denied':
-      return (
-        <Row label={`tool denied: ${event.name}`} tone="error">
-          <div className="text-destructive">{event.reason}</div>
+        <Row label="activity" tone="muted">
+          <div className="text-muted-foreground">{event.phase.replaceAll('-', ' ')}</div>
         </Row>
       );
     case 'usage':
@@ -167,12 +151,6 @@ export function TranscriptRow({ event }: { event: ChatEvent }) {
         </Row>
       );
     default:
-      return (
-        <Row label="event" tone="muted">
-          <pre className="whitespace-pre-wrap font-mono text-[10px] text-muted-foreground">
-            {truncate(safeJson(event), 400)}
-          </pre>
-        </Row>
-      );
+      return null;
   }
 }

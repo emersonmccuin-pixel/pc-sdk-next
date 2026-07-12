@@ -142,6 +142,8 @@ export type {
 
 // conversation replay store (chat events in SQLite; replay = a query).
 export {
+  closeOpenConversationToolCalls,
+  closeOpenConversationToolCallsInDb,
   commitConversationEvent,
   commitConversationEventInDb,
   countConversationEvents,
@@ -153,6 +155,7 @@ export {
   markConversationEventsRelayed,
 } from './repos/conversation-events.ts';
 export type {
+  CloseOpenConversationToolCallsInput,
   CommitConversationEventInput,
   CommitConversationEventResult,
   ConversationDeliveryKind,

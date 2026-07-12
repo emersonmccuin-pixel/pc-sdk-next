@@ -1,11 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getActiveConversationTurn, listConversationEvents, listUnrelayedConversationEvents } from '@pc/db';
-import type { ChatEvent, ConversationEventFrame, ServerFrame } from '@pc/contracts';
+import {
+  getActiveConversationTurn,
+  getRawDb,
+  listConversationEvents,
+  listUnrelayedConversationEvents,
+} from '@pc/db';
+import {
+  safeToolSummary,
+  type AskFrame,
+  type ChatEvent,
+  type ConversationEventFrame,
+  type ServerFrame,
+  type ToolStateEvent,
+} from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { ConversationRelay } from '../src/chat/conversation-relay.ts';
 import { SessionService } from '../src/chat/session-service.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
+import type { MintRuntimeSession, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from '../src/ws/hub.ts';
 import { freshDb, newProject, until } from './helpers.ts';
 
@@ -93,6 +106,246 @@ test('post-commit relay failure leaves the outbox pending without failing the de
   assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
   assert.ok(listUnrelayedConversationEvents().length > 0);
   assert.ok(relayErrors.length > 0);
+});
+
+test('approval ask still carries an authoritative active turn when canonical relay fails from the first event', async () => {
+  freshDb();
+  const project = newProject('approval-relay-gap');
+  const frames: ServerFrame[] = [];
+  const relayErrors: unknown[] = [];
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: (ctx): RuntimeSession => ({
+      async *sendTurn() {
+        assert.ok(ctx.ask);
+        const requested: ToolStateEvent = {
+          kind: 'tool-state', callId: 'call-relay-gap', name: 'Bash', state: 'requested',
+          safeSummary: safeToolSummary('Bash'),
+          approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
+        };
+        const ask = ctx.ask({
+          toolName: requested.name, callId: requested.callId, toolInput: {},
+          appSessionId: ctx.appSessionId,
+        });
+        yield { type: 'tool-state', scope: 'primary', event: requested };
+        yield {
+          type: 'tool-state', scope: 'primary',
+          event: {
+            ...requested, state: 'approval-needed',
+            approval: { status: 'pending', source: null, requestId: ask.requestId },
+          },
+        };
+        const decision = await ask.decision;
+        assert.equal(decision.behavior, 'allow');
+        assert.equal(decision.decidedBy, 'user');
+        const running: ToolStateEvent = {
+          ...requested, state: 'running',
+          approval: { status: 'allowed', source: 'user', requestId: ask.requestId },
+        };
+        yield { type: 'tool-state', scope: 'primary', event: running };
+        yield { type: 'tool-state', scope: 'primary', event: { ...running, state: 'succeeded' } };
+        yield {
+          type: 'result', ok: true, stopReason: 'complete', usage: null,
+          durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+        };
+      },
+      interrupt: async () => {},
+      dispose: async () => {},
+    }),
+    broadcast: (frame) => frames.push(frame),
+    drainConversationOutbox: () => { throw new Error('relay unavailable from first event'); },
+    onConversationRelayError: (error) => relayErrors.push(error),
+  });
+  const session = service.ensureActiveSession();
+  service.handleSend({
+    type: 'send', commandId: 'approval-relay-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'approval-relay-client',
+  });
+  await until(() => frames.some((frame) => frame.type === 'ask'));
+  const ask = frames.find((frame): frame is AskFrame => frame.type === 'ask')!;
+  const active = frames.filter((frame) => frame.type === 'orchestrator-state').at(-1);
+  assert.ok(active?.type === 'orchestrator-state' && active.activeTurnId);
+  assert.equal(frames.some((frame) => frame.type === 'conversation-event'), false);
+  assert.ok(relayErrors.length > 0);
+  assert.equal(service.handleAskReply(ask.askId, 'allow'), true);
+  await until(() => terminals(session.id).length === 1);
+  await service.dispose();
+});
+
+test('same-session resume re-emits a still-pending canonical approval after replay', async () => {
+  freshDb();
+  const project = newProject('approval-resume');
+  const frames: ServerFrame[] = [];
+  const runtimeFor = (ctx: MintRuntimeSession): RuntimeSession => ({
+    async *sendTurn() {
+      assert.ok(ctx.ask);
+      const request = ctx.ask({
+        toolName: 'Bash', callId: 'call-approval', toolInput: { command: 'echo safe' },
+        appSessionId: ctx.appSessionId,
+      });
+      const requested: ToolStateEvent = {
+        kind: 'tool-state', callId: 'call-approval', name: 'Bash', state: 'requested',
+        safeSummary: safeToolSummary('Bash'),
+        approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
+      };
+      yield { type: 'tool-state', scope: 'primary', event: requested };
+      yield {
+        type: 'tool-state', scope: 'primary',
+        event: {
+          ...requested, state: 'approval-needed',
+          approval: { status: 'pending', source: null, requestId: request.requestId },
+        },
+      };
+      const decision = await request.decision;
+      if (decision.behavior === 'allow') {
+        const running: ToolStateEvent = {
+          ...requested, state: 'running',
+          approval: { status: 'allowed', source: 'user', requestId: request.requestId },
+        };
+        yield { type: 'tool-state', scope: 'primary', event: running };
+        yield { type: 'tool-state', scope: 'primary', event: { ...running, state: 'succeeded' } };
+      } else {
+        yield {
+          type: 'tool-state', scope: 'primary',
+          event: {
+            ...requested, state: 'denied',
+            approval: { status: 'denied', source: decision.decidedBy, requestId: request.requestId },
+          },
+        };
+      }
+      yield {
+        type: 'result', ok: true, stopReason: 'complete', usage: null,
+        durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+      };
+    },
+    interrupt: async () => {},
+    dispose: async () => {},
+  });
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: runtimeFor,
+    broadcast: (frame) => frames.push(frame),
+  });
+  const session = service.ensureActiveSession();
+  service.handleSend({
+    type: 'send', commandId: 'approval-command', sessionId: session.id,
+    text: 'needs approval', clientMessageId: 'approval-client',
+  });
+  await until(() => frames.some((frame) => frame.type === 'ask'));
+  const firstAsk = frames.find((frame): frame is AskFrame => frame.type === 'ask')!;
+  const beforeResume = frames.length;
+  assert.equal(service.resumeSession(session.id)?.id, session.id);
+  const resumed = frames.slice(beforeResume);
+  const replayIndex = resumed.findIndex((frame) => frame.type === 'session-replay');
+  const queueIndex = resumed.findIndex((frame) => frame.type === 'send-queue-snapshot');
+  const askIndex = resumed.findIndex((frame) => frame.type === 'ask');
+  assert.ok(replayIndex >= 0 && queueIndex > replayIndex && askIndex > queueIndex);
+  assert.deepEqual(resumed[askIndex], firstAsk);
+
+  assert.equal(service.handleAskReply(firstAsk.askId, 'allow'), true);
+  await until(() => terminals(session.id).length === 1);
+  await service.dispose();
+});
+
+test('post-send persistence failure quarantines the accepted runtime before a successor turn', async () => {
+  freshDb();
+  const project = newProject('runtime-quarantine');
+  const first = new FakeRuntime({ turns: [[{ hang: true }]] });
+  let firstDisposeCalls = 0;
+  const disposeFirst = first.dispose.bind(first);
+  first.dispose = async () => {
+    firstDisposeCalls += 1;
+    await disposeFirst();
+  };
+  const second = new FakeRuntime({ turns: [[{
+    type: 'result', ok: true, stopReason: 'complete', usage: null,
+    durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+  }]] });
+  let releaseFirst!: (runtime: RuntimeSession) => void;
+  const firstMint = new Promise<RuntimeSession>((resolve) => { releaseFirst = resolve; });
+  let mintCalls = 0;
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: () => (++mintCalls === 1 ? firstMint : second),
+    broadcast: () => {},
+  });
+  const session = service.ensureActiveSession();
+  service.handleSend({
+    type: 'send', commandId: 'failing-command', sessionId: session.id,
+    text: 'first', clientMessageId: 'failing-client',
+  });
+  await until(() => getActiveConversationTurn(session.id) !== null);
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TRIGGER fail_requesting_runtime_activity
+    BEFORE INSERT ON conversation_events
+    WHEN NEW.event_type = 'activity-state'
+      AND json_extract(NEW.payload, '$.phase') = 'requesting-runtime'
+    BEGIN SELECT RAISE(ABORT, 'forced post-send persistence failure'); END;
+  `);
+  releaseFirst(first);
+  await until(() => terminals(session.id).length === 1);
+  assert.deepEqual(terminals(session.id), [{
+    kind: 'turn-failed', error: 'runtime delivery failed', source: 'internal',
+  }]);
+  assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('forced post-send persistence failure'), false);
+  raw.exec('DROP TRIGGER fail_requesting_runtime_activity');
+  await until(() => firstDisposeCalls === 1);
+  assert.deepEqual(first.sentTexts, ['first']);
+
+  service.handleSend({
+    type: 'send', commandId: 'successor-command', sessionId: session.id,
+    text: 'second', clientMessageId: 'successor-client',
+  });
+  await until(() => terminals(session.id).length === 2);
+  assert.equal(mintCalls, 2);
+  assert.deepEqual(second.sentTexts, ['second']);
+  await service.dispose();
+});
+
+test('runtime startup and synchronous delivery exceptions persist only app-authored prose', async () => {
+  for (const failure of ['startup', 'delivery'] as const) {
+    freshDb();
+    const project = newProject(`closed-${failure}-error`);
+    const deadRuntime: RuntimeSession = {
+      sendTurn: () => { throw new Error('SECRET provider send detail'); },
+      interrupt: async () => {},
+      dispose: async () => {},
+    };
+    const successorRuntime = new FakeRuntime({ turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]] });
+    let mintCalls = 0;
+    const service = new SessionService({
+      projectId: project.id,
+      mintSession: failure === 'startup'
+        ? async () => { throw new Error('SECRET provider startup detail'); }
+        : () => (++mintCalls === 1 ? deadRuntime : successorRuntime),
+      broadcast: () => {},
+    });
+    const session = service.ensureActiveSession();
+    service.handleSend({
+      type: 'send', commandId: `closed-${failure}-command`, sessionId: session.id,
+      text: 'go', clientMessageId: `closed-${failure}-client`,
+    });
+    await until(() => terminals(session.id).length === 1);
+    assert.deepEqual(terminals(session.id), [{
+      kind: 'turn-failed', error: 'runtime failed to start', source: 'internal',
+    }]);
+    assert.equal(JSON.stringify(listConversationEvents(session.id)).includes('SECRET'), false);
+    if (failure === 'delivery') {
+      service.handleSend({
+        type: 'send', commandId: 'closed-delivery-successor-command', sessionId: session.id,
+        text: 'next', clientMessageId: 'closed-delivery-successor-client',
+      });
+      await until(() => terminals(session.id).length === 2);
+      assert.equal(mintCalls, 2);
+      assert.deepEqual(successorRuntime.sentTexts, ['next']);
+      assert.equal(terminals(session.id)[1]?.kind, 'turn-end');
+    }
+    await service.dispose();
+  }
 });
 
 test('success, API error, and interrupt each persist exactly one terminal', async () => {

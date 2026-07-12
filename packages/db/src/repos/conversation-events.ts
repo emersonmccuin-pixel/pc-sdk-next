@@ -1,12 +1,15 @@
 // Canonical conversation persistence. Sequence allocation, immutable event
 // insert, and publication-outbox insert are one SQLite transaction.
 
-import { and, asc, count, eq, gt, isNull, max, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, max, sql } from 'drizzle-orm';
 import {
   conversationFamilyForEvent,
   isConversationEvent,
+  isTerminalToolState,
+  toolStateTransitionError,
   type ConversationEvent,
   type ConversationFamily,
+  type ToolStateEvent,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 
@@ -46,6 +49,15 @@ export interface ConversationOutboxEntry {
   event: ConversationEventRow;
 }
 
+export interface CloseOpenConversationToolCallsInput {
+  conversationId: string;
+  /** Omit to close every open call in the conversation (agent-run recovery). */
+  turnId?: string;
+  reason: 'turn-ended' | 'runtime-lost';
+  deliveryKind: ConversationDeliveryKind;
+  occurredAt?: number;
+}
+
 export function commitConversationEvent(
   input: CommitConversationEventInput,
 ): CommitConversationEventResult {
@@ -60,6 +72,17 @@ export function commitConversationEventInDb(
   tx: DbTransaction,
 ): CommitConversationEventResult {
   validateConversationEventInput(input);
+  validateTurnIsOpenInDb(input, tx);
+  validateToolTransitionInDb(input, tx);
+  if (input.event.kind === 'turn-end' || input.event.kind === 'turn-failed') {
+    closeOpenConversationToolCallsInDb({
+      conversationId: input.conversationId,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      reason: 'turn-ended',
+      deliveryKind: input.deliveryKind,
+      occurredAt: input.occurredAt,
+    }, tx);
+  }
   const cursor = tx
     .insert(conversationSequences)
     .values({
@@ -118,6 +141,148 @@ export function commitConversationEventInDb(
   return { event: row, outboxSequence: outbox.outboxSequence };
 }
 
+function validateTurnIsOpenInDb(
+  input: CommitConversationEventInput,
+  tx: DbTransaction,
+): void {
+  if (input.event.kind !== 'activity-state' && input.event.kind !== 'tool-state') return;
+  const terminal = tx
+    .select({ eventId: conversationEvents.eventId })
+    .from(conversationEvents)
+    .where(and(
+      eq(conversationEvents.conversationId, input.conversationId),
+      eq(conversationEvents.turnId, input.turnId!),
+      inArray(conversationEvents.eventType, ['turn-end', 'turn-failed']),
+      eq(conversationEvents.projectionState, 'visible'),
+    ))
+    .limit(1)
+    .get();
+  if (terminal) throw new Error(`turn already terminal: ${input.turnId}`);
+}
+
+function validateToolTransitionInDb(
+  input: CommitConversationEventInput,
+  tx: DbTransaction,
+): void {
+  if (input.event.kind !== 'tool-state') return;
+  if (input.itemId !== input.event.callId) {
+    throw new Error(`tool item/call identity mismatch: ${input.event.callId}`);
+  }
+  const previous = tx
+    .select()
+    .from(conversationEvents)
+    .where(and(
+      eq(conversationEvents.conversationId, input.conversationId),
+      eq(conversationEvents.itemId, input.event.callId),
+      eq(conversationEvents.eventType, 'tool-state'),
+      eq(conversationEvents.projectionState, 'visible'),
+    ))
+    .orderBy(desc(conversationEvents.sequence))
+    .limit(1)
+    .get();
+  if (previous) {
+    if (
+      previous.projectId !== input.projectId ||
+      previous.sessionId !== input.sessionId ||
+      previous.turnId !== (input.turnId ?? null)
+    ) {
+      throw new Error(`tool ownership changed: ${input.event.callId}`);
+    }
+    const priorEvent = previous.payload;
+    if (!isConversationEvent(priorEvent) || priorEvent.kind !== 'tool-state') {
+      throw new Error(`invalid prior tool event: ${input.event.callId}`);
+    }
+    const transitionError = toolStateTransitionError(priorEvent, input.event);
+    if (transitionError) {
+      throw new Error(`invalid tool transition ${input.event.callId}: ${transitionError}`);
+    }
+    return;
+  }
+  const transitionError = toolStateTransitionError(null, input.event);
+  if (transitionError) {
+    throw new Error(`invalid tool transition ${input.event.callId}: ${transitionError}`);
+  }
+}
+
+/** Close every nonterminal call through the same event/outbox transaction.
+ * Turn settlement calls the in-DB variant before its terminal event; boot
+ * recovery for lost specialist runs uses the public wrapper. */
+export function closeOpenConversationToolCalls(
+  input: CloseOpenConversationToolCallsInput,
+): number {
+  return getDb().transaction((tx) => closeOpenConversationToolCallsInDb(input, tx));
+}
+
+export function closeOpenConversationToolCallsInDb(
+  input: CloseOpenConversationToolCallsInput,
+  tx: DbTransaction,
+): number {
+  const where = input.turnId === undefined
+    ? and(
+        eq(conversationEvents.conversationId, input.conversationId),
+        eq(conversationEvents.eventType, 'tool-state'),
+        eq(conversationEvents.projectionState, 'visible'),
+      )
+    : and(
+        eq(conversationEvents.conversationId, input.conversationId),
+        eq(conversationEvents.turnId, input.turnId),
+        eq(conversationEvents.eventType, 'tool-state'),
+        eq(conversationEvents.projectionState, 'visible'),
+      );
+  const rows = tx
+    .select()
+    .from(conversationEvents)
+    .where(where)
+    .orderBy(asc(conversationEvents.sequence))
+    .all();
+  const latest = new Map<string, ConversationEventRow>();
+  for (const row of rows) latest.set(row.itemId, row);
+  const open = [...latest.values()]
+    .filter((row) => {
+      const event = row.payload;
+      return isConversationEvent(event) && event.kind === 'tool-state' && !isTerminalToolState(event.state);
+    })
+    .sort((left, right) => left.sequence - right.sequence);
+  const occurredAt = input.occurredAt ?? Date.now();
+  for (const row of open) {
+    const previous = row.payload as ToolStateEvent;
+    let event: ToolStateEvent;
+    if (previous.state === 'approval-needed') {
+      if (previous.approval.status !== 'pending') {
+        throw new Error(`invalid pending approval snapshot: ${previous.callId}`);
+      }
+      event = {
+          ...previous,
+          state: 'denied',
+          approval: {
+            status: 'denied',
+            source: 'session',
+            requestId: previous.approval.requestId,
+          },
+          outcome: null,
+        };
+    } else {
+      event = {
+          ...previous,
+          state: 'failed',
+          outcome: { reason: input.reason },
+        };
+    }
+    commitConversationEventInDb({
+      projectId: row.projectId,
+      conversationId: row.conversationId,
+      sessionId: row.sessionId,
+      family: 'tool',
+      event,
+      turnId: row.turnId,
+      itemId: event.callId,
+      occurredAt,
+      deliveryKind: input.deliveryKind,
+    }, tx);
+  }
+  return open.length;
+}
+
 function validateConversationEventInput(input: CommitConversationEventInput): void {
   if (!input.projectId || !input.conversationId || !input.sessionId || !input.itemId) {
     throw new Error('projectId, conversationId, sessionId, and itemId are required');
@@ -137,6 +302,15 @@ function validateConversationEventInput(input: CommitConversationEventInput): vo
   if (input.family !== conversationFamilyForEvent(input.event)) {
     throw new Error(`conversation family mismatch for ${input.event.kind}`);
   }
+  if (
+    (
+      input.event.kind === 'activity-state'
+      || input.event.kind === 'tool-state'
+      || input.event.kind === 'turn-end'
+      || input.event.kind === 'turn-failed'
+    )
+    && !input.turnId
+  ) throw new Error(`${input.event.kind} requires a non-empty turnId`);
   const hasDeltaIndex = input.deltaIndex !== undefined && input.deltaIndex !== null;
   if (input.event.kind === 'stream-delta') {
     if (!hasDeltaIndex || !Number.isSafeInteger(input.deltaIndex) || input.deltaIndex! < 0 || !input.streamId) {

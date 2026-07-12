@@ -78,6 +78,13 @@
       "when": 1783752000000,
       "tag": "0010_durable_send_control",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1783753200000,
+      "tag": "0011_safe_activity_tool_lifecycle",
+      "breakpoints": true
     }
   ]
 }

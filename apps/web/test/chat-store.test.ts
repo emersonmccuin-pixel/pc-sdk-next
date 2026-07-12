@@ -1,14 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type {
-  ChatEvent,
-  ConversationEvent,
-  ConversationEventFrame,
-  SendQueueItem,
-  SessionReplayFrame,
+import {
+  conversationFamilyForEvent,
+  safeToolSummary,
+  type AskFrame,
+  type ChatEvent,
+  type ConversationEvent,
+  type ConversationEventFrame,
+  type SendQueueItem,
+  type SessionReplayFrame,
+  type ToolStateEvent,
 } from '../../../packages/contracts/src/events/index.ts';
 import {
   addOptimistic,
+  answerAsk,
+  applyAsk,
   applyConversationCommandReceipt,
   applyConversationEvent,
   applyReplay,
@@ -26,6 +32,7 @@ import {
   type PersistentSequence,
 } from '../src/features/chat/persistent-sequence.ts';
 import { sha256 } from '../src/features/chat/sha256.ts';
+import { indexEntries } from '../src/features/chat/persistent-index.ts';
 
 const SID = 'session-1';
 
@@ -41,8 +48,8 @@ function frame(
     conversationId: SID,
     sessionId: SID,
     sequence,
-    family: event.kind === 'user' ? 'user' : event.kind === 'stream-delta' ? 'assistant' : 'control',
-    itemId: `item-${sequence}`,
+    family: conversationFamilyForEvent(event),
+    itemId: event.kind === 'tool-state' ? event.callId : `item-${sequence}`,
     occurredAt: sequence,
     event,
     ...extra,
@@ -62,6 +69,29 @@ function usage(tokens: number): ChatEvent {
 
 function seed(): ChatState {
   return initialChatState(SID);
+}
+
+function tool(
+  state: ToolStateEvent['state'],
+  over: Partial<ToolStateEvent> = {},
+): ToolStateEvent {
+  const approval: ToolStateEvent['approval'] = state === 'requested'
+    ? { status: 'unknown', source: null, requestId: null }
+    : state === 'approval-needed'
+      ? { status: 'pending', source: null, requestId: 'approval-1' }
+      : state === 'denied'
+        ? { status: 'denied', source: 'user', requestId: 'approval-1' }
+        : { status: 'not-required', source: 'runtime', requestId: null };
+  return {
+    kind: 'tool-state',
+    callId: 'call-1',
+    name: 'Read',
+    state,
+    safeSummary: safeToolSummary('Read'),
+    approval,
+    outcome: state === 'failed' ? { reason: 'tool-error' } : null,
+    ...over,
+  };
 }
 
 function queueItem(overrides: Partial<SendQueueItem> = {}): SendQueueItem {
@@ -98,6 +128,12 @@ function projectionView(state: ChatState) {
     frames,
     projectedFrames,
     aggregates: state.aggregates,
+    toolStates: indexEntries(state.toolStates),
+    currentActivity: state.currentActivity,
+    terminalTurns: indexEntries(state.terminalTurns),
+    asks: state.asks,
+    pendingAsks: state.pendingAsks,
+    answeredAsks: state.answeredAsks,
     deltas: state.deltas,
     conflicts: state.integrityConflicts,
     highWaterSequence: state.highWaterSequence,
@@ -138,6 +174,237 @@ test('projector receipt digests use the standard SHA-256 identity', () => {
     sha256('abc'),
     'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
   );
+});
+
+test('tool lifecycle projection accepts one guarded path and rejects regressions without replacement', () => {
+  const turnId = 'turn-tools';
+  let state = applyConversationEvent(seed(), frame(1, tool('requested'), { turnId }));
+  const acceptedRequested = indexEntries(state.toolStates)[0]![1];
+  state = applyConversationEvent(state, frame(2, tool('requested'), {
+    eventId: 'duplicate-state-new-event', turnId,
+  }));
+  assert.deepEqual(indexEntries(state.toolStates)[0]![1], acceptedRequested);
+  assert.ok(state.integrityConflicts.includes('tool:call-1:invalid-transition'));
+
+  state = applyConversationEvent(state, frame(3, tool('running'), { turnId }));
+  assert.equal(indexEntries(state.toolStates)[0]![1].state, 'running');
+  state = applyConversationEvent(state, frame(4, tool('running', {
+    name: 'Write', safeSummary: safeToolSummary('Write'),
+  }), { turnId }));
+  assert.equal(indexEntries(state.toolStates)[0]![1].name, 'Read');
+  assert.ok(state.integrityConflicts.includes('tool:call-1:identity-changed'));
+
+  state = applyConversationEvent(state, frame(5, tool('succeeded'), { turnId }));
+  assert.equal(indexEntries(state.toolStates)[0]![1].state, 'succeeded');
+  state = applyConversationEvent(state, frame(6, tool('running'), { turnId }));
+  assert.equal(indexEntries(state.toolStates)[0]![1].state, 'succeeded');
+  assert.ok(state.integrityConflicts.includes('tool:call-1:post-terminal'));
+  assert.deepEqual(
+    sequenceToArray(state.projectedFrames)
+      .filter((event) => event.event.kind === 'tool-state')
+      .map((event) => (event.event as ToolStateEvent).state),
+    ['requested', 'running', 'succeeded'],
+  );
+});
+
+test('terminal with an open tool records corruption but never invents browser success/failure', () => {
+  const turnId = 'turn-open';
+  let state = applyConversationEvent(seed(), frame(1, tool('requested'), { turnId }));
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'turn-failed', error: 'broken producer', source: 'internal',
+  }, { turnId }));
+  assert.equal(indexEntries(state.toolStates)[0]![1].state, 'requested');
+  assert.equal(state.currentActivity, null);
+  assert.ok(state.integrityConflicts.includes(`turn:${turnId}:open-tool:call-1`));
+
+  state = applyConversationEvent(state, frame(3, tool('requested', {
+    callId: 'call-after-terminal',
+  }), { turnId }));
+  state = applyConversationEvent(state, frame(4, {
+    kind: 'activity-state', phase: 'responding',
+  }, { turnId }));
+  assert.equal(indexEntries(state.toolStates).some(([callId]) => callId === 'call-after-terminal'), false);
+  assert.ok(state.integrityConflicts.includes('tool:call-after-terminal:post-terminal'));
+  assert.ok(state.integrityConflicts.includes('activity:event-4:post-terminal'));
+});
+
+test('activity and tool state converge across ordered, shuffled, and replay paths', () => {
+  const turnId = 'turn-converge';
+  const events = [
+    frame(1, { kind: 'activity-state', phase: 'turn-starting' }, { turnId, occurredAt: 100 }),
+    frame(2, { kind: 'activity-state', phase: 'requesting-runtime' }, { turnId, occurredAt: 90 }),
+    frame(3, tool('requested'), { turnId, occurredAt: 110 }),
+    frame(4, tool('running'), { turnId, occurredAt: 105 }),
+    frame(5, tool('succeeded'), { turnId, occurredAt: 120 }),
+    frame(6, { kind: 'activity-state', phase: 'responding' }, { turnId, occurredAt: 115 }),
+  ];
+  let ordered = seed();
+  for (const event of events) ordered = applyConversationEvent(ordered, event);
+  let shuffled = seed();
+  for (const event of [events[5]!, events[2]!, events[0]!, events[4]!, events[1]!, events[3]!]) {
+    shuffled = applyConversationEvent(shuffled, event);
+  }
+  const replay = applyReplay(seed(), {
+    type: 'session-replay',
+    projectId: 'project-1',
+    sessionId: SID,
+    highWaterSequence: 6,
+    events: [events[4]!, events[1]!, events[5]!, events[0]!, events[3]!, events[2]!],
+  });
+  assert.deepEqual(projectionView(shuffled), projectionView(ordered));
+  assert.deepEqual(projectionView(replay), projectionView(ordered));
+  assert.equal(ordered.currentActivity?.source.kind, 'activity');
+  assert.equal(ordered.currentActivity?.sequence, 6, 'sequence wins even when timestamps reverse');
+  assert.equal(ordered.currentActivity?.startedAt, 100);
+});
+
+test('approval asks require the matching canonical pending state and remain until lifecycle advances', () => {
+  const turnId = 'turn-approval';
+  let state = applyConversationEvent(seed(), frame(1, tool('requested', { name: 'Bash', safeSummary: safeToolSummary('Bash') }), { turnId }));
+  state = applyConversationEvent(state, frame(2, tool('approval-needed', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'approval-1', callId: 'call-1', toolName: 'Bash', toolInput: {},
+  };
+  state = applyAsk(state, { ...ask, sessionId: 'other' });
+  state = applyAsk(state, { ...ask, callId: 'other-call' });
+  assert.equal(state.asks.length, 0);
+  state = applyAsk(state, ask);
+  assert.equal(state.asks.length, 1);
+  state = answerAsk(state, ask.askId, 'allow');
+  assert.equal(state.asks.length, 1, 'answer disables but does not remove projection authority');
+  assert.equal(state.answeredAsks[ask.askId], 'allow');
+
+  state = applyConversationEvent(state, frame(3, tool('running', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+    approval: { status: 'allowed', source: 'user', requestId: 'approval-1' },
+  }), { turnId }));
+  assert.equal(state.asks.length, 0);
+  assert.equal(state.answeredAsks[ask.askId], undefined);
+  assert.equal(applyAsk(state, ask), state, 'stale ask cannot reopen a running call');
+
+  const replay = applyReplay(state, {
+    type: 'session-replay', projectId: 'project-1', sessionId: SID,
+    highWaterSequence: 2,
+    events: [
+      frame(1, tool('requested', { name: 'Bash', safeSummary: safeToolSummary('Bash') }), { turnId }),
+      frame(2, tool('approval-needed', { name: 'Bash', safeSummary: safeToolSummary('Bash') }), { turnId }),
+    ],
+  });
+  assert.equal(replay.asks.length, 0);
+  assert.equal(applyAsk(replay, ask).asks.length, 1, 'server re-emission restores unresolved approval');
+});
+
+test('an ask arriving before approval evidence waits and becomes actionable only after canonical state', () => {
+  const turnId = 'turn-ask-race';
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'approval-1', callId: 'call-1', toolName: 'Bash', toolInput: {},
+  };
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'activity-state', phase: 'turn-starting',
+  }, { turnId }));
+  state = applyAsk(state, ask);
+  assert.equal(state.asks.length, 0);
+  assert.equal(state.pendingAsks.length, 1);
+  state = applyConversationEvent(state, frame(2, tool('requested', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  assert.equal(state.asks.length, 0);
+  state = applyConversationEvent(state, frame(3, tool('approval-needed', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  assert.equal(state.pendingAsks.length, 0);
+  assert.deepEqual(state.asks, [ask]);
+});
+
+test('authoritative active turn buffers an ask before any canonical evidence is relayed', () => {
+  const turnId = 'turn-relay-gap';
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'approval-relay-gap', callId: 'call-relay-gap', toolName: 'Bash', toolInput: {},
+  };
+  let state = applyAsk(seed(), ask, turnId);
+  assert.equal(state.asks.length, 0);
+  assert.deepEqual(state.pendingAsks, [ask]);
+  state = applyConversationEvent(state, frame(1, tool('requested', {
+    callId: 'call-relay-gap', name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  state = applyConversationEvent(state, frame(2, tool('approval-needed', {
+    callId: 'call-relay-gap', name: 'Bash', safeSummary: safeToolSummary('Bash'),
+    approval: { status: 'pending', source: null, requestId: 'approval-relay-gap' },
+  }), { turnId }));
+  assert.equal(state.pendingAsks.length, 0);
+  assert.deepEqual(state.asks, [ask]);
+});
+
+test('terminal state rejects a delayed approval card even if corrupt evidence left the tool open', () => {
+  const turnId = 'turn-stale-ask';
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'approval-1', callId: 'call-1', toolName: 'Bash', toolInput: {},
+  };
+  let state = applyConversationEvent(seed(), frame(1, tool('requested', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  state = applyConversationEvent(state, frame(2, tool('approval-needed', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  state = applyConversationEvent(state, frame(3, {
+    kind: 'turn-failed', error: 'corrupt producer', source: 'internal',
+  }, { turnId }));
+  assert.equal(state.currentActivity, null);
+  assert.equal(applyAsk(state, ask), state);
+
+  const answeredEmpty = { ...state, answeredAsks: { [ask.askId]: '' } };
+  assert.equal(applyAsk(answeredEmpty, ask), answeredEmpty, 'empty answers remain acknowledged');
+});
+
+test('idle state clears a late unmatched approval buffered after terminal delivery', () => {
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'late-approval', callId: 'late-call', toolName: 'Bash', toolInput: {},
+  };
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'session-state', state: 'running', permissionMode: null,
+  }));
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'turn-failed', error: 'ended', source: 'internal',
+  }, { turnId: 'turn-ended' }));
+  state = applyAsk(state, ask);
+  assert.equal(state.asks.length, 0);
+  assert.equal(state.pendingAsks.length, 1);
+  state = applyConversationEvent(state, frame(3, {
+    kind: 'session-state', state: 'idle', permissionMode: null,
+  }));
+  assert.equal(state.pendingAsks.length, 0);
+});
+
+test('idle state clears an actionable approval card and its local answer state', () => {
+  const turnId = 'turn-idle-approval';
+  const ask: AskFrame = {
+    type: 'ask', projectId: 'project-1', sessionId: SID,
+    askId: 'idle-approval', callId: 'call-1', toolName: 'Bash', toolInput: {},
+  };
+  let state = applyConversationEvent(seed(), frame(1, tool('requested', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+  }), { turnId }));
+  state = applyConversationEvent(state, frame(2, tool('approval-needed', {
+    name: 'Bash', safeSummary: safeToolSummary('Bash'),
+    approval: { status: 'pending', source: null, requestId: ask.askId },
+  }), { turnId }));
+  state = applyAsk(state, ask);
+  state = answerAsk(state, ask.askId, '');
+  assert.deepEqual(state.asks, [ask]);
+  assert.equal(Object.prototype.hasOwnProperty.call(state.answeredAsks, ask.askId), true);
+  state = applyConversationEvent(state, frame(3, {
+    kind: 'session-state', state: 'idle', permissionMode: null,
+  }));
+  assert.deepEqual(state.asks, []);
+  assert.deepEqual(state.pendingAsks, []);
+  assert.deepEqual(state.answeredAsks, {});
 });
 
 test('shuffled live delivery produces the same complete state as server order', () => {
@@ -491,7 +758,7 @@ test('completion and terminal compaction are stream-scoped then exhaustive', () 
 
   const terminal = reduceConversationEvent(completed.state, frame(4, {
     kind: 'turn-end', text: '', stopReason: 'complete',
-  }, { itemId: 'turn-terminal', family: 'control' }));
+  }, { itemId: 'turn-terminal', family: 'control', turnId: 'turn-streams' }));
   assert.equal(terminal.work.compactedDeltaPayloads, 1);
   assert.deepEqual(terminal.state.deltas, {});
   const late = applyConversationEvent(terminal.state, frame(5, {

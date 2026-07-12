@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 
-import type { ConversationEventFrame } from '@pc/contracts';
+import type { SessionReplayFrame } from '@pc/contracts';
 import { buildRenderItems } from './chat-render';
 import { RenderItemView, AssistantBubble } from './Bubbles';
 import { AskCard } from './AskCard';
@@ -70,7 +70,7 @@ export function ChatTimeline({
             <div key={ask.askId} className="border border-accent/40 bg-accent/5 px-3 py-2">
               <AskCard
                 toolName={ask.toolName}
-                toolUseId={ask.toolUseId}
+                callId={ask.callId}
                 toolInput={ask.toolInput}
                 answered={state.answeredAsks[ask.askId]}
                 onReply={(answer) => onAskReply?.(ask.askId, answer)}
@@ -86,16 +86,10 @@ export function ChatTimeline({
 
 /** Read-only timeline for a past session fetched over HTTP: reuses the exact
  *  render pipeline by seeding a bare ChatState from the fetched frames. */
-export function PastSessionTimeline({ frames }: { frames: ConversationEventFrame[] }) {
+export function PastSessionTimeline({ replay }: { replay: SessionReplayFrame }) {
   const state = useMemo<ChatState>(
-    () => applyReplay(initialChatState(), {
-      type: 'session-replay',
-      projectId: frames[0]?.projectId ?? '',
-      sessionId: frames[0]?.sessionId ?? '',
-      highWaterSequence: frames.reduce((highest, frame) => Math.max(highest, frame.sequence), 0),
-      events: frames,
-    }),
-    [frames],
+    () => applyReplay(initialChatState(), replay),
+    [replay],
   );
   return <ChatTimeline state={state} readOnly />;
 }

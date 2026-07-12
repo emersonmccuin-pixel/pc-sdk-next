@@ -174,7 +174,7 @@ export class SessionService {
       onError: (error) => {
         console.error(`[pc-sdk][send-queue] drain failed for project ${this.projectId}:`, error);
         this.health = 'failed';
-        this.failureReason = error instanceof Error ? error.message : String(error);
+        this.failureReason = 'conversation queue failed';
         this.broadcast(this.orchestratorStateFrame());
       },
     });
@@ -188,6 +188,7 @@ export class SessionService {
     if (this.session) {
       frames.push(this.sessionReplayFrame());
       frames.push(this.sendQueueSnapshotFrame());
+      frames.push(...this.askRegistry.snapshot());
     }
     return frames;
   }
@@ -354,10 +355,10 @@ export class SessionService {
     };
     this.interruptControls.set(requestId, control);
     void this.driveInterruptAttempt(requestId, session, targetTurnId, control)
-      .catch((error) => {
+      .catch(() => {
         this.failInterruptRequest(requestId, {
           code: 'runtime-interrupt-failed',
-          message: error instanceof Error ? error.message : String(error),
+          message: 'the runtime did not accept the interruption request',
         });
       });
   }
@@ -528,6 +529,7 @@ export class SessionService {
       this.broadcast(this.orchestratorStateFrame());
       this.broadcast(this.sessionReplayFrame());
       this.broadcast(this.sendQueueSnapshotFrame());
+      for (const ask of this.askRegistry.snapshot()) this.broadcast(ask);
       return this.session;
     }
     const resumed = resumeOrchestratorSessionTransition({
@@ -640,6 +642,7 @@ export class SessionService {
     }
 
     let runtimeAccepted = false;
+    let runtimeAcquired = false;
     let terminalSettled = false;
     const ready = this.ensureRuntime(session);
     this.runtimeReady = { sessionId: session.id, turnId: turn.turnId, promise: ready };
@@ -655,11 +658,16 @@ export class SessionService {
         return;
       }
       const runtime = outcome.runtime;
+      runtimeAcquired = true;
       if (this.disposed) return;
       this.setHealth('busy');
       this.broadcast(this.orchestratorStateFrame());
       const stream = runtime.sendTurn(turn.text);
       runtimeAccepted = true;
+      this.persistAndPublish(turn, {
+        kind: 'activity-state',
+        phase: 'requesting-runtime',
+      }, { itemId: newId() });
       await runTurn(stream, this.turnDeps(turn, session, () => {
         terminalSettled = true;
       }));
@@ -668,10 +676,13 @@ export class SessionService {
       }
     } catch (error) {
       if (!terminalSettled) {
+        // Provider/runtime exception text is diagnostic evidence, not product
+        // copy. Keep durable conversation and queue state app-authored.
         this.settleInfrastructureFailure(
           turn,
-          error instanceof Error ? error.message : String(error),
+          runtimeAccepted ? 'runtime delivery failed' : 'runtime failed to start',
           runtimeAccepted,
+          runtimeAcquired,
         );
       }
     } finally {
@@ -687,7 +698,10 @@ export class SessionService {
     turn: ClaimedConversationTurn,
     message: string,
     runtimeAccepted = false,
+    quarantineRuntime = runtimeAccepted,
   ): void {
+    this.askRegistry.clear('turn failed');
+    if (quarantineRuntime) this.quarantineRuntime(turn.sessionId, turn.turnId);
     settleConversationTurn({
       turnId: turn.turnId,
       terminalEvent: { kind: 'turn-failed', error: message, source: 'internal' },
@@ -719,6 +733,7 @@ export class SessionService {
             queueStatus: 'accepted',
           })) {
             onTerminal();
+            this.askRegistry.clear('turn ended');
             this.stopSettledInterruptControls(turn.turnId);
             this.publishCommittedEvents();
           }
@@ -728,6 +743,11 @@ export class SessionService {
           itemId: identity?.itemId ?? newId(),
           streamId: identity?.streamId,
         });
+        if (
+          event.kind === 'tool-state' &&
+          event.state === 'approval-needed' &&
+          event.approval.status === 'pending'
+        ) this.askRegistry.publish(event.approval.requestId);
       },
       emitDelta: (itemId, deltaIndex, delta) =>
         this.persistAndPublish(turn, { kind: 'stream-delta', delta }, {

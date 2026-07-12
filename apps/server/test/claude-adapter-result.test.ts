@@ -51,9 +51,13 @@ test('subtype error_max_budget_usd -> outcome budget-exhausted', () => {
 });
 
 test('subtype error_during_execution -> outcome error', () => {
-  const rm = mapResult({ subtype: 'error_during_execution', num_turns: 3 }) as { outcome: string; numTurns: number | null };
+  const rm = mapResult({
+    subtype: 'error_during_execution', num_turns: 3, errors: ['SECRET technical failure'],
+  }) as { outcome: string; numTurns: number | null; error: string | null };
   assert.equal(rm.outcome, 'error');
   assert.equal(rm.numTurns, 3);
+  assert.equal(rm.error, 'runtime execution failed');
+  assert.equal(JSON.stringify(rm).includes('SECRET'), false);
 });
 
 test('only documented native terminal reasons map to outcome aborted', () => {
@@ -77,4 +81,13 @@ test('only documented native terminal reasons map to outcome aborted', () => {
 test('missing num_turns -> numTurns null', () => {
   const rm = mapResult({ subtype: 'success' }) as { numTurns: number | null };
   assert.equal(rm.numTurns, null);
+});
+
+test('missing or malformed success discriminator fails closed', () => {
+  for (const subtype of [undefined, null, 42]) {
+    const rm = mapResult({ subtype }) as { ok: boolean; outcome: string; error: string | null };
+    assert.equal(rm.ok, false);
+    assert.equal(rm.outcome, 'error');
+    assert.equal(rm.error, 'runtime execution failed');
+  }
 });

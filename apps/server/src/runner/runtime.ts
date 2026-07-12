@@ -12,7 +12,12 @@
 // variants are dropped inside the adapter (never surfaced as an unknown
 // RuntimeEvent).
 
-import type { TurnStopReason, UsageSnapshot } from '@pc/contracts';
+import type {
+  ActivityPhase,
+  ToolStateEvent,
+  TurnStopReason,
+  UsageSnapshot,
+} from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 
 /** Per-turn token telemetry (native result usage). Maps to the chat `usage`
@@ -27,15 +32,36 @@ export interface RuntimeUsage {
 
 /** One block of an assistant message. */
 export type AssistantBlock =
-  | { kind: 'text'; text: string }
-  | { kind: 'tool_use'; toolUseId: string; name: string; input: unknown };
+  { kind: 'text'; text: string };
 
 /** Streaming-delta payload. */
 export type RuntimeDelta =
   | { kind: 'message-start' }
   | { kind: 'text-delta'; text: string }
-  | { kind: 'tool-input-delta'; toolUseId?: string; partialJson: string }
   | { kind: 'message-end' };
+
+interface RuntimeResultBase {
+  type: 'result';
+  stopReason: TurnStopReason | null;
+  usage: RuntimeUsage | null;
+  durationMs: number | null;
+  /** Turn count when the runtime reports it, else null. */
+  numTurns: number | null;
+}
+
+/** A terminal receipt is deliberately discriminated: adapters cannot claim a
+ * successful turn while also classifying it as an error (or vice versa). */
+export type RuntimeResultEvent =
+  | (RuntimeResultBase & {
+      ok: true;
+      error: null;
+      outcome: 'ok';
+    })
+  | (RuntimeResultBase & {
+      ok: false;
+      error: string | null;
+      outcome: 'error' | 'aborted' | 'budget-exhausted';
+    });
 
 /** The typed events a runtime session yields for one turn. Adapters mint
  * provider-neutral item ids and reduce native parentage to primary/sidechain. */
@@ -44,40 +70,27 @@ export type RuntimeEvent =
   | { type: 'init'; nativeSessionId: string; model: string | null; permissionMode: string | null }
   // Public assistant block (text or tool use). Private reasoning is absent.
   | { type: 'assistant-block'; itemId: string; scope: 'primary' | 'sidechain'; block: AssistantBlock }
-  // Tool result (NOT a chat user bubble).
+  // One provider-neutral tool observation. It contains no native id/input/output.
   | {
-      type: 'tool-result';
-      itemId: string;
+      type: 'tool-state';
       scope: 'primary' | 'sidechain';
-      toolUseId: string;
-      result: unknown;
-      isError: boolean;
+      event: ToolStateEvent;
+    }
+  // Closed safe operational activity. Turn-starting is app-owned at claim.
+  | {
+      type: 'activity-state';
+      phase: Exclude<ActivityPhase, 'turn-starting'>;
     }
   // Streaming delta (main thread only).
   | { type: 'delta'; itemId: string; scope: 'primary' | 'sidechain'; delta: RuntimeDelta }
   // Turn terminal. Native terminal vocabulary is classified by the adapter.
-  | {
-      type: 'result';
-      ok: boolean;
-      stopReason: TurnStopReason | null;
-      usage: RuntimeUsage | null;
-      durationMs: number | null;
-      /** Present when `ok === false`. */
-      error: string | null;
-      /** Provider-neutral terminal classification — computed by the adapter so
-       *  no Claude subtype (e.g. 'error_max_turns') leaks past it. */
-      outcome: 'ok' | 'error' | 'aborted' | 'budget-exhausted';
-      /** Turn count when the runtime reports it, else null. */
-      numTurns: number | null;
-    }
+  | RuntimeResultEvent
   // Session-state transitions.
   | { type: 'session-state'; state: 'idle' | 'running' | 'requires_action'; permissionMode: string | null }
   // Context compaction.
   | { type: 'compaction'; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
-  // Permission denied for a tool call.
-  | { type: 'permission-denied'; toolUseId: string; toolName: string; reason: string }
-  // Provider retry → system (level warning).
-  | { type: 'api-retry'; message: string; attempt: number | null }
+  // Provider retry normalized to numeric facts; native error prose is absent.
+  | { type: 'api-retry'; attempt: number | null; maxRetries: number | null }
   // Durable per-account usage snapshot.
   | { type: 'rate-limit'; snapshot: UsageSnapshot }
   // Generic runtime notice surfaced as a system chat event.
@@ -86,7 +99,6 @@ export type RuntimeEvent =
       subtype: string;
       level: 'info' | 'notice' | 'warning' | 'error';
       message: string;
-      raw?: unknown;
     }
   // Retract already-delivered events by frame key (model-refusal fallback).
   | { type: 'supersedes'; streamIds: string[] };
@@ -95,17 +107,25 @@ export type RuntimeEvent =
  *  app resolves it (or a watchdog denies it). */
 export interface AskRequest {
   toolName: string;
-  toolUseId: string;
+  /** Adapter-minted canonical identity; native ids never cross this seam. */
+  callId: string;
   toolInput: unknown;
   appSessionId: string;
 }
 export interface AskDecision {
   behavior: 'allow' | 'deny';
+  decidedBy: 'user' | 'timeout' | 'session';
   message?: string;
   updatedInput?: Record<string, unknown>;
   rawAnswer?: string; // literal browser reply, for answer-style tools
 }
-export type AskHandler = (req: AskRequest) => Promise<AskDecision>;
+export interface AskHandle {
+  requestId: string;
+  decision: Promise<AskDecision>;
+  /** Idempotently resolve a still-open request as session-attributed denial. */
+  cancel: () => void;
+}
+export type AskHandler = (req: AskRequest) => AskHandle;
 
 /** Explicit execution selection — stamped on every app session / agent run.
  *  A running session never silently changes runtime, account, or native

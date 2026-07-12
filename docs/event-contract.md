@@ -1,6 +1,6 @@
 # Event contract — PC-SDK Next
 
-As built after `CF-003`, 2026-07-11. This document records the implemented
+As built after `CF-004`, 2026-07-11. This document records the implemented
 browser wire and its persistence/publication semantics. The executable source
 is `packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.
@@ -38,6 +38,8 @@ order:
 2. `orchestrator-state`
 3. `session-replay` when an active session exists
 4. `send-queue-snapshot` when an active session exists
+5. each still-pending, process-local approval `ask` after its matching
+   canonical `approval-needed` state is present in replay
 
 The client then subscribes to the independent resource cursor. Heartbeat and
 reconnect behavior are unchanged: `client-ping`/`server-pong`, bounded backoff,
@@ -89,7 +91,16 @@ independently so a later attributed handoff may intentionally group successor
 sessions without changing the event contract.
 
 The strict frame guard validates identity, sequence, family/event agreement,
-payload shape, and stream-order fields before browser ingestion.
+payload shape, and stream-order fields before browser ingestion. Activity and
+tool frames require a non-empty turn ID. The DB new-write door also requires
+one on every modern turn terminal; the wire guard still accepts a null-turn
+legacy terminal because migration `0009` could not safely infer ownership for
+historical rows that may contain duplicate terminals.
+
+The envelope and every event variant are exact-key shapes. Undeclared native
+IDs, raw provider payloads, private-reasoning fields, and nested extras fail the
+guard instead of riding along on an otherwise valid event. The same rule
+applies to queue items embedded in `send-state`.
 
 ### Stable event payloads
 
@@ -101,9 +112,22 @@ type ChatEvent =
       stopReason: 'complete' | 'max-output' | 'stop-sequence'
         | 'tool-use' | 'other' | null }
   | { kind: 'turn-failed'; error: string; source: 'api' | 'abort' | 'internal' }
-  | { kind: 'tool-call'; toolUseId: string; name: string; input: unknown }
-  | { kind: 'tool-result'; toolUseId: string; result: unknown; isError: boolean }
-  | { kind: 'tool-denied'; toolUseId: string; name: string; reason: string }
+  | { kind: 'activity-state'
+      phase: 'turn-starting' | 'requesting-runtime' | 'responding'
+        | 'retrying' | 'compacting' }
+  | { kind: 'tool-state'; callId: string; name: string
+      state: 'requested' | 'approval-needed' | 'running'
+        | 'succeeded' | 'failed' | 'denied'
+      safeSummary: string
+      approval:
+        | { status: 'unknown'; source: null; requestId: null }
+        | { status: 'not-required'; source: 'policy' | 'runtime'; requestId: null }
+        | { status: 'pending'; source: null; requestId: string }
+        | { status: 'allowed'; source: 'user'; requestId: string }
+        | { status: 'allowed'; source: 'runtime'; requestId: null }
+        | { status: 'denied'; source: 'user' | 'timeout' | 'session'; requestId: string }
+        | { status: 'denied'; source: 'runtime'; requestId: null }
+      outcome: { reason: 'tool-error' | 'turn-ended' | 'runtime-lost' } | null }
   | { kind: 'usage'; inputTokens: number; outputTokens: number
       cacheCreationTokens: number; cacheReadTokens: number; model: string | null }
   | { kind: 'turn-duration'; durationMs: number | null }
@@ -111,7 +135,7 @@ type ChatEvent =
       permissionMode: string | null }
   | { kind: 'system'; subtype: string
       level: 'info' | 'notice' | 'warning' | 'error'
-      message: string; raw?: unknown }
+      message: string }
   | { kind: 'compaction'; trigger: 'manual' | 'auto'
       preTokens: number; postTokens: number | null }
   | { kind: 'sidechain'; role: 'user' | 'assistant' | 'tool'; text: string }
@@ -129,9 +153,21 @@ type ChatEvent =
   | { kind: 'retract'; streamIds: string[] }
 ```
 
-The canonical `activity` family is reserved for the next safe-activity slice;
-there is no private-reasoning payload in the public union. Tool and activity
-lifecycle enrichment remains explicitly outside CF-003.
+Activity is a closed set of app-authored operational facts. It never contains
+thinking text/tokens or arbitrary provider status prose. Tool events require a
+non-empty `turnId`, use one adapter-minted `callId` as `itemId`, and carry only
+a bounded canonical name, deterministic `safeSummary`, lifecycle state,
+approval provenance, and closed terminal reason. Raw tool input, output,
+provider error text, and native identifiers are absent.
+
+Normal tool transitions are `requested -> running -> succeeded|failed`,
+`requested -> approval-needed -> running -> succeeded|failed`, and denial from
+the requested or approval-needed state. User-attributed permission requires the
+matching prior app request ID. A positive result may synthesize `running`;
+turn/restart closure may exceptionally fail an unexecuted request or running
+call with `turn-ended`/`runtime-lost`, while a pending approval becomes
+session-denied. Persistence and browser projection share the transition guard,
+and terminal calls cannot reopen.
 
 Every turn ends in exactly one `turn-end` or `turn-failed`. A runtime error,
 abort, thrown stream, or stream that closes without a terminal result receives
@@ -148,7 +184,6 @@ type ChatStreamEvent = {
   delta:
     | { kind: 'message-start' }
     | { kind: 'text-delta'; text: string }
-    | { kind: 'tool-input-delta'; toolUseId?: string; partialJson: string }
     | { kind: 'message-end' }
 }
 ```
@@ -184,6 +219,14 @@ event/outbox insert inside its SQLite transaction, so its DB truth and
 canonical notification cannot diverge. A partial unique terminal index keeps
 one `turn-end` or `turn-failed` row per modern turn.
 
+Migration `0011_safe_activity_tool_lifecycle.sql` retains legacy raw tool
+call/result/denial, streamed tool-input, and pre-CF-004 provider-authored system
+rows as `legacy-hidden` evidence. The earlier system producers included raw API
+retry metadata, provider status/error prose, and local-command output, none of
+which satisfies the new closed event. Hidden rows keep their original
+sequence/high-water positions but never enter product replay or the strict
+browser contract.
+
 ### Browser projection
 
 The browser's pure projector keeps received high-water separate from the
@@ -215,8 +258,23 @@ the full prior history inside the projector.
 - Deterministic work receipts characterize accepted-event visits, history
   visits, fallback rebuilds, and compacted payloads without timing-sensitive
   performance assertions.
+- Tool projection is one guarded record per `callId`; invalid, regressive,
+  conflicting, or post-terminal observations remain evidence but cannot
+  replace the accepted lifecycle. A browser never invents a tool terminal.
+- Current activity follows server sequence. Elapsed time and the bounded
+  “Still waiting” label are local display derivations from server timestamps,
+  never durable claims or ordering evidence.
+- Approval cards become actionable only when session/call/name/request identity
+  matches a live canonical `approval-needed` state. Out-of-order cards wait
+  ephemerally for that evidence; terminal/idle/replay resets clear stale cards.
 
 ### Session replay
+
+Past-session HTTP responses are converted to this same guarded
+`session-replay` envelope before projection. The browser binds the requested
+project/session identity, validates every nested exact-shape event, and retains
+the server-provided `highWaterSequence`; it never recomputes high-water from
+only the visible rows because hidden legacy evidence may occupy sequence slots.
 
 ```ts
 interface SessionReplayFrame {
@@ -278,8 +336,14 @@ active turn; the request ID is also the command ID.
     createdAt: number; updatedAt: number }> }
 
 { type: 'ask'; projectId: ULID; askId: ULID; sessionId: string | null
-  toolName: string; toolUseId: string; toolInput: unknown }
+  toolName: string; callId: string; toolInput: unknown }
 ```
+
+Ask input is transient but still globally bounded/redacted before delivery.
+Question and plan presentations normalize to non-empty visible strings. A
+malformed or empty special-tool payload renders deny-only, and the runtime
+adapter independently refuses to authorize it even if a client forges an
+allow-style reply.
 
 The command receipt is sender-only transport feedback. Non-rejected receipts
 must carry their command-specific durable identities; canonical `send-state`
@@ -289,9 +353,11 @@ unique, and lower queue revisions never overwrite a newer browser projection.
 
 FIFO position never changes on edit. Claiming the head atomically freezes its
 delivery revision, creates the one active turn, and appends `send-state`, the
-canonical user or typed agent-envelope event, and `session-state: running`
-before provider work begins. Terminal settlement atomically appends the one
-turn terminal, queue outcome, correlated interrupt outcome, and idle state.
+canonical user or typed agent-envelope event, `session-state: running`, and
+`activity-state: turn-starting` before provider work begins. Terminal
+settlement first closes every open tool in the same transaction, then appends
+the one turn terminal, queue outcome, correlated interrupt outcome, and idle
+state.
 Restart marks an uncertain delivering row failed and never re-sends it; queued
 rows survive and drain without a connected browser. A failed interrupt-linked
 replacement retains its request identity and failure evidence but is explicitly
@@ -368,7 +434,10 @@ event/outbox transaction, but their compact live frame remains HTTP-healed:
 ```
 
 `dedupId` is the canonical conversation event ID. Opening the run view fetches
-the durable transcript and merges by that identity.
+the durable transcript and merges by that identity. Both the live frame and
+each HTTP backfill entry cross exact-key guards backed by `isChatEvent`; the
+store/merge layer checks again defensively. Invalid events are omitted, and the
+transcript renderer has no raw-JSON fallback for unhandled canonical kinds.
 
 Orchestrator health remains latest-wins process state:
 
@@ -387,13 +456,15 @@ native-to-canonical ID map and emits canonical runtime events:
 | Native observation | Canonical result |
 | --- | --- |
 | initialization | adapter-owned native session ID for resume metadata |
-| main assistant text/tool block | canonical item ID plus `assistant-text` or `tool-call` |
-| main tool result | canonical item ID plus `tool-result` |
+| main assistant text/tool block | canonical item ID plus `assistant-text` or safe `tool-state: requested` |
+| tool progress/result | adapter-correlated `running` then `succeeded`/`failed`, with no input/output |
+| permission callback/native denial | canonical approval request/provenance and `running` or `denied` |
 | main visible stream event | canonical item ID plus persisted ordered delta |
-| private thinking block/delta | dropped before the canonical runtime seam |
+| private thinking, tool-input delta, tool summary, local-command output | dropped before the canonical runtime seam |
 | sidechain block/delta/result | dropped from orchestrator chat |
 | result | usage/duration plus exactly one turn terminal |
-| session/compaction/permission/retry/system | mapped canonical stable event |
+| requesting/retry/compaction | closed app-authored activity; numeric retry facts only |
+| arbitrary provider status/error prose | dropped or replaced with fixed app-authored notice |
 | supersession | `retract` with canonical stream IDs |
 | unknown native variant | dropped/logged by the adapter; loop continues |
 
@@ -429,10 +500,34 @@ a conversation message identifier.
     never confirm interruption or permit a second uncertain native attempt.
 16. Session/account/project lifecycle transitions either commit their queue and
     session effects together or preserve the complete prior state.
+17. Activity/tool events require a turn identity. Tool item/call/name/summary/
+    turn identity and approval provenance are immutable and transactionally
+    guarded before sequence allocation.
+18. Every open tool closes before its conversation or agent-run terminal.
+    Restart, kill, paused-run revival, persistence failure, and runtime loss
+    cannot stamp a terminal state ahead of that closure.
+19. `tool_called` verification counts one positive `running` receipt per
+    canonical call, never request, denial, exceptional closure, or repeated
+    lifecycle observations.
+20. Pending approval waiters register synchronously, publish only after the
+    canonical pending state commits, replay after reconnect/same-session reset,
+    and carry user/timeout/session/runtime denial provenance. Their ephemeral
+    input projection has global character/node/depth/item bounds and redacts
+    common secret keys and token forms before it crosses to the browser.
+21. Native item/call correlation is retained for the whole active turn and is
+    cleared only at a turn boundary. Map pressure never evicts an open call or
+    lets a late observation mint a second canonical identity. Native permission
+    request receipts remain idempotent for the runtime-session lifetime and are
+    bound to the exact active turn generation and primary/sidechain scope; a
+    cached or pending decision can never authorize a successor turn.
+22. A provider sidechain cannot open an approval whose canonical lifecycle is
+    intentionally omitted from the orchestrator transcript; such requests are
+    denied immediately as unsupported. Paused-run boot recovery and an incoming
+    answer share one provider-resume attempt, and kill/shutdown disposes any
+    late candidate before it can install or leave a wall clock armed.
 
 ## Deliberately unfinished boundaries
 
-- safe operational activity and complete tool lifecycle families;
 - immutable runtime/account/model/effort app-session stamps;
 - provider-neutral context and usage observations;
 - Codex adapter and conformance.

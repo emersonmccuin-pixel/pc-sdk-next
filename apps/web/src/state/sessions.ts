@@ -12,7 +12,12 @@
 
 import { create } from 'zustand';
 import { getJson, postJson } from '@/api/http';
-import type { ConversationEventFrame, SessionSummary, ULID } from '@pc/contracts';
+import {
+  isSessionReplayFrame,
+  type SessionReplayFrame,
+  type SessionSummary,
+  type ULID,
+} from '@pc/contracts';
 
 export type { SessionSummary } from '@pc/contracts';
 
@@ -23,6 +28,34 @@ export function canResumeSession(session: SessionSummary): boolean {
 export interface SessionTransition {
   transition: 'new-session' | 'resume-session';
   session: SessionSummary;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Convert the HTTP checkpoint into the same strict envelope used by live replay. */
+export function parseSessionEventsResponse(
+  value: unknown,
+  projectId: string,
+  sessionId: string,
+): SessionReplayFrame {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !['ok', 'events', 'highWaterSequence'].includes(key)) ||
+    value.ok !== true
+  ) {
+    throw new Error('invalid session events response');
+  }
+  const replay: unknown = {
+    type: 'session-replay',
+    projectId,
+    sessionId,
+    highWaterSequence: value.highWaterSequence,
+    events: value.events,
+  };
+  if (!isSessionReplayFrame(replay)) throw new Error('invalid session events response');
+  return replay;
 }
 
 export const sessionsApi = {
@@ -46,9 +79,9 @@ export const sessionsApi = {
   /** Past-session viewing: the same canonical event shape as live, rendered read-only
    *  through the same pipeline. */
   sessionEvents: (projectId: ULID, sessionId: string) =>
-    getJson<{ ok: true; events: ConversationEventFrame[]; highWaterSequence: number }>(
+    getJson<unknown>(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/events`,
-    ).then((r) => r.events),
+    ).then((response) => parseSessionEventsResponse(response, projectId, sessionId)),
 };
 
 interface SessionNavState {

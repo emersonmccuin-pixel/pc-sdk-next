@@ -3,8 +3,16 @@
 // frames for this run — both keyed by the SAME dedupId scheme, so a frame
 // that arrived live before the backfill request resolved doesn't double up.
 
-import type { AgentEventFrame, ChatEvent } from '@pc/contracts';
-import type { AgentRunEventEntry, AgentRunTranscriptStatus } from './client';
+import {
+  isAgentEventFrame,
+  type AgentEventFrame,
+  type ChatEvent,
+} from '@pc/contracts';
+import {
+  isAgentRunEventEntry,
+  type AgentRunEventEntry,
+  type AgentRunTranscriptStatus,
+} from './client';
 
 export interface AgentTranscriptItem {
   key: string;
@@ -27,8 +35,11 @@ export function mergeAgentTranscriptEvents(input: {
     out.push({ key: dedupId, event });
   }
 
-  for (const entry of input.backfillEvents) push(entry.dedupId, entry.event);
+  for (const entry of input.backfillEvents) {
+    if (isAgentRunEventEntry(entry)) push(entry.dedupId, entry.event);
+  }
   for (const frame of input.liveEvents) {
+    if (!isAgentEventFrame(frame)) continue;
     if (frame.runId !== input.runId) continue;
     push(frame.dedupId, frame.event);
   }
