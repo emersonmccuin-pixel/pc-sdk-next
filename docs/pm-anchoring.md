@@ -1,44 +1,92 @@
-# PM anchoring — provisional inherited hypothesis
+# PM context and references
 
-Status: deferred. This predates the decision to inspect AInativePM's code,
-domain, MCP surface, and UI jointly. Nothing below is approved for
-implementation until `docs/research/ainativepm-discovery.md` completes and the
-ownership seam is accepted. In particular, “no PM-side work needed” is an old
-assumption, not a fact.
+Status: accepted ownership direction as of 2026-07-12. The inherited project-
+anchor implementation is superseded. Implementation remains phase- and
+receipt-gated.
 
-Goal: a PC-SDK project knows which AInativePM project it belongs to, so every PM action in chat lands in the right place without saying "in project X" each time.
+Authority: `docs/research/ainativepm-discovery.md` contains the source receipts,
+ownership table, failure matrix, typed port, and accepted product decision.
 
-## Previously observed AInativePM capabilities (must be revalidated)
+## Verdict on the inherited design
 
-1. **Folder binding** — `get_started(cwd)` auto-resolves a registered folder to its PM project; `register_folder` creates the binding. Server-side, survives everything.
-2. **Token-per-project PATs** — a token can carry a default PM project; every tool call on that token defaults there. Strongest isolation, but per-project tokens = per-project MCP attachments (Phase 4 manager territory).
-3. **`project_id` on every tool** — explicit override always works.
+The old design treated every PC-SDK project as belonging to one AInativePM
+project and proposed a PC-SDK setting, prompt instruction, per-project PAT, and
+automatic folder registration as enforcement. Joint source/UI/MCP inspection
+shows that model is materially wrong.
 
-## Design: anchor = a project setting + two enforcement layers
+| Inherited claim | Evidence verdict | Replacement |
+| --- | --- | --- |
+| Every anchor is an AInativePM project | Rejected. Folder targets and human domains may be a project, Space, or Room; the technical run normally serves one exact item. | Separate an optional generic PM context target from an exact contract/run item reference. |
+| Folder binding is a project backstop | Rejected as enforcement. It is user-scoped PM state, can target project/container, is independently mutable, and sibling worktrees do not inherit an exact-path binding. | Query it as an orientation hint; do not write or mirror it automatically. |
+| A per-project PAT is isolation | Rejected. A PAT authenticates the full user and only supplies a limited default-project hint. | Security comes from a vault-backed connection, pinned remote authority/principal, tool/consumer policy, and PM authorization—not a default. |
+| The PAT default applies to every tool | Rejected. Only selected create/list/next-action handlers consume it. | Send explicit typed item/container parameters when an authorized action requires them. |
+| Every tool accepts `project_id` | Rejected. Generic operations are variously item-, parent-, subtree-, container-, or global-scoped. | Use the narrow PM adapter operation, not a universal project override. |
+| A `list-projects` MCP tool drives a picker | Rejected. The canonical query is `list_items(type='project')`; no `list-projects` tool exists. | Adapter queries return strict provider-neutral observations. |
+| PC-SDK setting is truth; folder registration is derived | Rejected. AInativePM owns durable folder registrations and another same-user client can change them. | Do not create a competing folder map. Explicit PC-SDK context is only a local preference; resolved PM registration remains a fresh observation. |
+| Prompt text enforces the target | Rejected. Instructions orient a model but do not constrain authorization or tool scope. | Enforce scope through typed ports, explicit refs, connection/principal identity, permissions, and receipts. |
+| Anchor becomes `contract.pmRef` | Rejected. A context container and the exact long-lived work item are different identities. | Contract/run stores an immutable exact external item reference. |
 
-**Store:** `projects.settings.pmAnchor = { pmProjectId, pmProjectName, anchoredAt }` (null = unanchored). Rides the existing `project` resource event (signal-only refetch) — no new wire types.
+## Accepted replacement
 
-**Layer 1 — runtime-neutral instruction composition (primary):** when a session
-starts for an anchored project, PC-SDK adds one app-owned instruction to the
-orchestrator's instruction package: `PM project: <name> (<id>). Default every
-AInativePM tool call to this project_id.` The selected runtime adapter compiles
-that package into its native instruction surface (Claude system prompt today;
-Codex developer/model instructions later). The anchor rule must not be
-implemented inside either provider adapter.
+```text
+PC-SDK project
+  -> optional PM context target
+     { system, immutable connection, authority/principal verification,
+       workspace-or-container item, source }
+     used only for orientation/query defaults
 
-**Layer 2 — folder binding (backstop):** at anchor time the server calls AInativePM `register_folder(project.folderPath → pmProjectId)` through the MCP client. Then *anything* running in that folder resolves the same project even without the instruction line. Write-capable specialists always run in worktrees, whose cwd differs by design; Layer 1 and the contract anchor cover them. Do not weaken worktree isolation or copy PM credentials merely to inherit the folder binding.
+PC-SDK contract/run
+  -> exact external PM item reference
+     { system, immutable connection, authority/principal verification, item id }
+     immutable across continuations and independent review
+```
 
-**UX:** Project Settings panel gets an "Anchor to PM project" row: a picker listing PM projects (server fetches via the existing MCP client → AInativePM list-projects tool), pick one → saved + folder registered → row shows the anchored name with a re-anchor/unanchor control. PM down ⇒ picker shows the degraded state, existing anchor keeps working (prompt injection needs no live PM).
+AInativePM owns item identity/type, hierarchy, lifecycle, assignment,
+membership, decisions/context, files/links, rules, views/templates, calendar,
+and folder registrations. PC-SDK owns sessions, contracts, run progress, asks,
+worktrees, verification, review, landing, and technical evidence. Each side may
+hold a stable deep link to the other's truth; neither copies the other's state
+machine.
 
-## Phasing
+The context target never automatically becomes the contract item reference. A
+folder/path/remote match can be absent, ambiguous, stale, or unavailable. Those
+are visible states, not reasons to register a folder or guess a target.
+Current remote-only resolution cannot expose duplicate matches, so it remains
+unsupported until AInativePM offers an ambiguity-preserving query.
 
-- **v1 (small, next build slot):** settings field + HTTP route + picker UI + app-owned instruction injection + `register_folder` call. ~1 agent-day. Implement it above the runtime adapter so the existing Claude path and future Codex path receive the same rule.
-- **v2 (Phase 3 dispatch):** dispatched specialists inherit the anchor through the canonical instruction package — `contract.pmRef` defaults to the anchored project; verification/landing receipts can reference PM items under it.
-- **v3 (Phase 4 manager):** optional per-project PAT (token-per-project) as an MCP attachment policy — real isolation instead of convention, managed in the MCP manager UI.
+## Write boundary
 
-## Rules
+Automatic behavior is read-only: health, context resolution, exact item query,
+deep-link construction, parent-reference inheritance, and invalidation/refetch.
 
-- Anchor is a default, never a cage — explicit `project_id` in chat always wins.
-- Degrade, never block: PM unreachable ⇒ anchoring UI shows it; chat unaffected.
-- One source of truth: the setting. The folder binding is derived; re-anchor re-registers.
-- Runtime-independent: changing Claude/Codex/account/model does not change the anchor or its enforcement policy.
+PM creation, folder registration, evidence attachment, lifecycle transition,
+assignment, context, archive, or administration is never a hidden side effect.
+This accepted direction authorizes no current PM write: the generic bridge
+bypasses app permissions and therefore supplies attribution but not authority.
+A future interactive action requires an explicit originating user request/approval plus
+a positive app policy receipt and visible lifecycle. Background integration
+writes remain blocked until AInativePM also provides caller idempotency keys,
+durable positive receipts/query-by-key, expected-version conflict handling,
+remote-authority/principal pinning, and durable event or query-heal semantics.
+
+PC-SDK completion, cancellation, verification, or landing never implies a PM
+stage change. The UI may suggest a PM action after technical evidence exists.
+The approved future first automatic operation after all receipt prerequisites
+land is an immutable, deduplicated evidence link from separately keyed positive
+verification and positive landing receipts; neither changes PM management
+state.
+
+## Deep-link direction
+
+- PC-SDK -> AInativePM uses the stable universal `#/item/<id>` Story route.
+- AInativePM -> PC-SDK uses a future stable run/deliverable route. PC-SDK does
+  not yet have one, so that prerequisite lands before reciprocal evidence.
+- PM holds a URL/reference and short human context at most. PC-SDK retains the
+  transcript, diff, verification, and Git receipts.
+
+## Implementation gate
+
+No prior anchoring phase or estimate remains valid. The accepted implementation
+order is recorded in `docs/research/ainativepm-discovery.md`. No PM-side write,
+folder registration, token change, or compatibility shim is authorized by this
+document; those remain blocked behind their own future slice and receipts.

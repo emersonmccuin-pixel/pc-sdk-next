@@ -38,7 +38,7 @@ Runtime / Git / DB / MCP / PM adapters
 | Workspaces | Worktree provision, prepare, readiness, lease, reconciliation | Review decision and merge authority | Workspace lifecycle service and receipts |
 | Landing | Per-repository queue, current-base validation, merge, ancestry proof, teardown | Agent execution | Landing commands and merge/teardown receipts |
 | MCP registry | Servers, vault refs, health, tool cache, attachment policy | Provider-native delivery details | Registry queries/events and adapter-ready attachment package |
-| PM integration | Translation between external PM references/events and PC-SDK execution | AInativePM's domain model | PM port with idempotent commands and typed degraded state |
+| PM integration | Typed external context/item references, authoritative-at-observation queries, deep links, authority/principal/connection attribution, and future mutation receipts | AInativePM's item/type/hierarchy/lifecycle/assignment/context/membership/files/rules/views/templates/calendar/folder-registration state; PC-SDK run truth | Query/command/event-separated PM port; typed unavailable/stale/not-found-or-inaccessible states; receipt-gated commands; invalidation hints |
 | Usage/context | Provider observations, normalization, confidence, staleness | Runtime routing decisions unless policy explicitly consumes it | Usage/context snapshots and events |
 | Resources | Attachments, artifacts, diffs, retention and access policy | General file browsing | Resource commands and references |
 | Notifications | Durable attention state and one-shot delivery policy | Run or contract truth | Attention commands/events and delivery receipts |
@@ -55,6 +55,25 @@ Runtime / Git / DB / MCP / PM adapters
 5. Timeouts produce typed failure or uncertainty, never inferred success.
 6. External systems degrade independently.
 7. Every write is attributable to user, orchestrator, specialist, reviewer, or deterministic service.
+
+Accepted PM-specific rules (PM-001 product decision, 2026-07-12):
+
+1. Optional project PM context and an exact contract/run PM item reference are
+   separate types. Context may target a project or generic container; it never
+   silently becomes the work-item reference.
+2. AInativePM owns long-lived management truth. PC-SDK owns technical execution
+   truth. Each may reference or deep-link to the other; neither copies the
+   other's state machine.
+3. External reads distinguish unavailable, malformed, stale, archived, and
+   not-found-or-inaccessible from an authoritative empty result. Current PM SSE
+   is only a refetch hint because it has no durable cursor/replay.
+4. A PM mutation is automatable only when caller idempotency, positive durable
+   receipt lookup, expected-version conflict handling, remote-authority/principal pinning, and
+   attributable authority are positively available. Timeout is `unknown` and
+   cannot trigger a blind retry.
+5. PC-SDK verification, landing, cancellation, or completion never implies a PM
+   lifecycle transition. PM archive/deletion/access loss never erases PC-SDK
+   contract, run, artifact, or Git evidence.
 
 ## Primary end-to-end flows
 

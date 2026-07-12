@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-004 guarded landing and teardown.
+Last updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
 
 ## Preserved baseline
 
@@ -79,6 +79,17 @@ only in PC-SDK Next.
   `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
 - RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
+- PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
+- PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
+- PM-001 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 sealed proposal checkpoint:
+  `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
+- PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
+- PM-001 accepted-decision commit:
+  `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
+- PM-001 accepted-decision tree:
+  `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
 
 Isolation defaults in the planning slice:
 
@@ -227,6 +238,36 @@ Sealed/feature ancestry and exact tree equality were proven, post-merge
 `pnpm ci:check` passed, and the feature worktree plus verified dependency/build
 residue were removed. The feature branch is preserved.
 
+## Accepted N1 AInativePM ownership decision
+
+`PM-001` has completed its parallel domain/persistence, UI/REST, MCP, and
+PC-SDK-touchpoint evidence lanes from clean pushed PC-SDK Next base
+`a7c5423cb5a4aa8549521badcfdd320437a74def`. The AInativePM audit began at
+`5033d5e`; concurrent UI-only landings advanced clean pushed `main` to
+`c146162`, and the 24-file `web/**` delta was re-audited before sealing.
+`docs/research/ainativepm-discovery.md` now contains the
+ownership table, interaction sequences, typed port, failure/idempotency matrix,
+deep-link direction, rejected duplications, and dependency-ordered proposal.
+
+The evidence rejects the inherited project-only anchor. It proposes separate
+optional generic PM context and exact external item references. AInativePM owns
+all long-lived management truth; PC-SDK owns all technical execution truth.
+Strict reads and deep links may be automatic. Current PM integration writes are
+blocked because the bridge lacks a positive app policy gate and the PM surface
+lacks general caller idempotency, a durable queryable
+mutation receipt, expected revision, remote-authority/principal fingerprints, and replayable
+events. The product owner accepted that ownership direction and its future
+immutable verification/landing evidence policy on 2026-07-12. No current
+integration, folder-registration, auth/config, or remote PM mutation is
+authorized by the decision.
+
+No explicit live mutation tool was called. A source audit after one
+`get_started` call found that the tool invokes first-run domain seeding. Five
+root domains were observed only after that hook ran, so no private DB read or
+pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
+domain creation. That bounded uncertainty is retained in the receipt; PM-001
+does not claim the remote stayed unchanged and will not make another live call.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -235,8 +276,10 @@ residue were removed. The feature branch is preserved.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
 - Some older runtime-notice vocabulary remains not yet fully provider-neutral.
-- AInativePM ownership and UI/domain integration have not been jointly audited;
-  the old anchoring proposal is provisional.
+- The accepted AInativePM seam remains unimplemented. Typed PM refs,
+  stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
+  attachment, and receipt-safe commands remain unimplemented; automatic PM
+  writes are blocked.
 - Process identity is positive at `/health`, but a data-directory mutex and
   cross-process repository lease do not yet exist; the listener is not yet
   explicitly loopback-bound.

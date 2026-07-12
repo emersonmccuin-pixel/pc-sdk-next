@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-004 guarded landing and teardown.
+Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
 
 ## Repository
 
@@ -90,6 +90,20 @@ Updated: 2026-07-12 after RS-004 guarded landing and teardown.
   `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
 - RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
+- Active slice: `docs/execution/slices/PM-001.md`
+- PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
+- PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
+- PM-001 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 sealed proposal checkpoint:
+  `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
+- PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
+- PM-001 accepted-decision commit:
+  `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
+- PM-001 accepted-decision tree:
+  `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
+- AInativePM source: initial snapshot `5033d5e`; final committed boundary
+  `c146162` after audited concurrent UI-only landings
 
 ## Status
 
@@ -111,13 +125,38 @@ isolated desktop/narrow browser QA passed. Post-merge `pnpm ci:check`, sealed an
 feature ancestry, exact feature/merge tree equality, push, and teardown also
 passed. No live provider call was required.
 
+PM-001 has completed its parallel domain/persistence, UI/REST, MCP, and
+PC-SDK-touchpoint source lanes from AInativePM `5033d5e`, then revalidated the
+UI/route lane through clean pushed `c146162` after concurrent UI-only landings. The
+evidence-backed proposal rejects the inherited project-only anchor, separates
+optional generic PM context from an exact external item ref, assigns one owner
+to management versus technical truth, blocks present integration writes, and
+defines the authority/identity/idempotency/receipt prerequisites for future
+immutable evidence links. A hostile review found and drove corrections to
+permission authority, provider neutrality, remote/principal identity, stale/
+degraded states, remote ambiguity, migration, local command intent, and REST/
+discussion claims.
+
+AInativePM's final audited commit boundary is `c146162`; PM-001 made no source
+edit. One live `get_started` call was made before source review exposed its
+first-run seeding hook. No pre-call
+snapshot/private DB read can distinguish no-op, marker stamp, or default-domain
+creation, so remote-unchanged is explicitly inconclusive and no further live PM
+call is permitted in this slice.
+
+Final hostile re-review passed with no P0/P1 blocker. `git diff --check`, the
+eight-path scope audit, 23-reference documentation audit, and zero-non-web PM
+delta audit passed. `pnpm ci:check` could not start in this intentionally
+unprepared documentation worktree because `node_modules`/`@types/node` is
+absent; no install/residue was introduced, and the clean base retains its
+post-RS-004 full gate.
+
 ## Next safe action
 
-Define `PM-001` as the deferred read-only N1 AInativePM domain/code/UI/MCP
-discovery and ownership/idempotency proposal. Confirm the local repository and
-remote MCP/UI surfaces in scope, gather evidence in parallel, and bring only
-the resulting ownership/product choice to the user. Do not perform automated PM
-writes or silently jump to Codex/N5.
+Revalidate the clean accepted-decision feature tip, guarded-land to `main`, push,
+and tear down. Then define the
+next safe N1 slice from the remaining characterization/backlog gate. Do not
+perform a PM write or jump to Codex/N5 as part of PM-001 closeout.
 
 ## Startup checks
 
@@ -128,11 +167,14 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-No implementation worktree is active after RS-004 teardown. Create a fresh
-`codex/pm-001-*` sibling worktree from the pushed closeout landing before any
-tracked mutation; keep the main checkout read-only.
+The isolated PM-001 worktree is active for documentation only. Keep the PC-SDK
+Next and AInativePM main checkouts read-only; all tracked PM-001 changes stay in
+the PM-001 worktree until guarded landing.
 
 ## Known blockers
 
-No blocker. The Next shortcut code is isolated but has not been installed;
-regular daily driving remains on the original PC-SDK until the migration gate.
+No product blocker remains for PM-001. Remote-unchanged is inconclusive because
+of the `get_started` seeding hook, but no repair/private-data inspection is
+required for the accepted ownership decision. The Next shortcut code is
+isolated but has not been installed; regular daily driving remains on the
+original PC-SDK until the migration gate.
