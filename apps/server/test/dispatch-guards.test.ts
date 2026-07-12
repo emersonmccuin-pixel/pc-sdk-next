@@ -993,21 +993,17 @@ test('boot recovery quarantines a migrated legacy paused run while preserving re
     cleanStatus: true,
   };
   const preparationReceipt = {
-    phase: 'preparation',
-    ok: true,
-    steps: [],
-    finishedAt: 20,
-  };
+    phase: 'preparation', outcome: 'not-required',
+    reason: 'no-commands-configured', ok: true, steps: [], finishedAt: 20,
+  } as const;
   const readinessReceipt = {
-    phase: 'readiness',
-    ok: true,
-    steps: [],
-    finishedAt: 21,
-  };
+    phase: 'readiness', outcome: 'not-required',
+    reason: 'no-commands-configured', ok: true, steps: [], finishedAt: 21,
+  } as const;
 
-  // Migration 0013 is the only code allowed to create this quarantined shape.
-  // Drop its post-migration admission trigger in this isolated test DB so the
-  // exact output of that migration can be exercised through real boot code.
+  // Migration 0013 is the only code allowed to create this quarantined stamp
+  // shape. DL-001 phase evidence is canonical because boot must still be able
+  // to project and loudly quarantine the unavailable selection.
   const raw = getRawDb();
   raw.exec('DROP TRIGGER agent_runs_complete_stamp_insert_guard');
   raw.prepare(`INSERT INTO agent_runs (

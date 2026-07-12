@@ -155,8 +155,16 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
           {run.status === 'failed' && run.failureReason && (
             <div className="mt-1 text-[11px] text-destructive">{run.failureReason}</div>
           )}
-          <PhaseReceiptDetails receipt={run.preparationReceipt ?? null} />
-          <PhaseReceiptDetails receipt={run.readinessReceipt ?? null} />
+          <PhaseReceiptDetails
+            phase="preparation"
+            applicable={run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
+            receipt={run.preparationReceipt ?? null}
+          />
+          <PhaseReceiptDetails
+            phase="readiness"
+            applicable={run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
+            receipt={run.readinessReceipt ?? null}
+          />
           <LandingReceiptDetails contract={contract} />
         </header>
 
@@ -186,19 +194,47 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
 
 /** Collapsed preparation/readiness receipt summary — per-step command + exit
  *  + duration, with the bounded output tails one more click in. */
-function PhaseReceiptDetails({ receipt }: { receipt: WorktreePhaseReceiptDto | null }) {
-  if (!receipt) return null;
+export function PhaseReceiptDetails({
+  phase,
+  applicable,
+  receipt,
+}: {
+  phase: WorktreePhaseReceiptDto['phase'];
+  applicable: boolean;
+  receipt: WorktreePhaseReceiptDto | null;
+}) {
+  if (!applicable) return null;
+  if (!receipt) {
+    return (
+      <div className="mt-1 border border-border/60 bg-card/40 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+        {phase} · <span className="text-destructive">unavailable</span>
+      </div>
+    );
+  }
+  const noOp = receipt.outcome === 'not-required';
+  const noOpLabel = noOp
+    ? receipt.reason === 'existing-worktree-preparation'
+      ? `existing worktree reused from parent ${receipt.inheritedFromRunId.slice(0, 8)}`
+      : 'no commands configured'
+    : null;
   return (
     <details className="mt-1 border border-border/60 bg-card/40 px-2 py-1">
       <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
         {receipt.phase} ·{' '}
-        <span className={receipt.ok ? 'text-primary' : 'text-destructive'}>
-          {receipt.ok ? 'ok' : 'failed'}
-        </span>{' '}
-        · {receipt.steps.length} step{receipt.steps.length === 1 ? '' : 's'}
+        {noOp ? (
+          <span className="text-primary">not required · {noOpLabel}</span>
+        ) : (
+          <>
+            <span className={receipt.ok ? 'text-primary' : 'text-destructive'}>
+              {receipt.ok ? 'ok' : 'failed'}
+            </span>{' '}
+            · {receipt.steps.length} step{receipt.steps.length === 1 ? '' : 's'}
+          </>
+        )}
       </summary>
-      <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto">
-        {receipt.steps.map((step, i) => (
+      {receipt.outcome === 'executed' && (
+        <ul className="mt-1 max-h-48 space-y-1 overflow-y-auto">
+          {receipt.steps.map((step, i) => (
           <li key={i} className="font-mono text-[10px]">
             <div className="flex items-baseline justify-between gap-2">
               <span className="min-w-0 flex-1 truncate text-foreground" title={step.command}>
@@ -226,8 +262,9 @@ function PhaseReceiptDetails({ receipt }: { receipt: WorktreePhaseReceiptDto | n
               </details>
             )}
           </li>
-        ))}
-      </ul>
+          ))}
+        </ul>
+      )}
     </details>
   );
 }

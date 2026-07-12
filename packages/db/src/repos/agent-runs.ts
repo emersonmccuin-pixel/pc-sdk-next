@@ -23,6 +23,9 @@ import {
   PRESERVED_LIFECYCLE_STATES,
   RUN_LIFECYCLE_STATES,
   canTransition,
+  isPositivePreparationReceiptForRun,
+  isPositiveWorktreePhaseReceipt,
+  isWorktreePhaseReceipt,
   isSpecialistExecutionSnapshot,
   type AgentRunFailureCause,
   type AgentRunRow,
@@ -334,17 +337,44 @@ export function markAgentRunDelivered(id: ULID, at: number): void {
     .run();
 }
 
-/** Persist a preparation/readiness receipt (docs/worktree-lifecycle.md).
- *  Bumps rev — the receipt rides the run DTO, so the frame must out-version
- *  the prior delivery. Last write wins (continuations re-run readiness). */
+/** Persist one immutable preparation/readiness receipt.
+ *
+ * First-write wins and only while the exact run is still queued in its
+ * preparing lifecycle state. A provider runtime can never append evidence
+ * after it starts. A continuation gets its own row, so it never replaces its
+ * parent's readiness evidence. Bumps rev because the receipt rides the
+ * versioned run DTO. */
 export function setAgentRunPhaseReceipt(
   id: ULID,
   receipt: WorktreePhaseReceipt,
-): void {
+): boolean {
+  if (!isWorktreePhaseReceipt(receipt)) return false;
+  const current = getAgentRunRow(id);
+  if (!current) return false;
+  if (receipt.phase === 'preparation') {
+    if (receipt.ok && !isPositivePreparationReceiptForRun(receipt, current.continues)) {
+      return false;
+    }
+    // Failed command evidence is valid only for a fresh preparation phase;
+    // continuations never re-run setup in an existing worktree.
+    if (current.continues !== null && receipt.outcome === 'executed') return false;
+  } else if (!isPositiveWorktreePhaseReceipt(current.preparationReceipt, 'preparation')) {
+    return false;
+  } else if (!isPositivePreparationReceiptForRun(current.preparationReceipt, current.continues)) {
+    return false;
+  }
+  const receiptColumn = receipt.phase === 'preparation'
+    ? agentRuns.preparationReceipt
+    : agentRuns.readinessReceipt;
   const patch: Partial<AgentRunRow> =
     receipt.phase === 'preparation' ? { preparationReceipt: receipt } : { readinessReceipt: receipt };
   patch.rev = REV_INC;
-  getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, id)).run();
+  return getDb().update(agentRuns).set(patch).where(and(
+    eq(agentRuns.id, id),
+    eq(agentRuns.status, 'queued'),
+    eq(agentRuns.lifecycleState, 'preparing'),
+    isNull(receiptColumn),
+  )).run().changes === 1;
 }
 
 /** Point read by ULID. `pc_continue_agent` calls this to validate the

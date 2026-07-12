@@ -274,6 +274,30 @@ test('toAgentRunDto exposes safe immutable selection and presence-only native pr
   assert.equal(dto.rev, 2);
 });
 
+test('toAgentRunDto projects exact executed and not-required phase outcomes', () => {
+  const preparationReceipt: NonNullable<AgentRunRow['preparationReceipt']> = {
+    phase: 'preparation',
+    outcome: 'not-required',
+    reason: 'no-commands-configured',
+    ok: true,
+    steps: [],
+    finishedAt: 200,
+  };
+  const readinessReceipt: NonNullable<AgentRunRow['readinessReceipt']> = {
+    phase: 'readiness',
+    outcome: 'executed',
+    ok: true,
+    steps: [{
+      command: 'pnpm test', exitCode: 0, durationMs: 10,
+      stdoutTail: '', stderrTail: '', timedOut: false,
+    }],
+    finishedAt: 220,
+  };
+  const dto = toAgentRunDto(makeRow({ preparationReceipt, readinessReceipt }));
+  assert.deepEqual(dto.preparationReceipt, preparationReceipt);
+  assert.deepEqual(dto.readinessReceipt, readinessReceipt);
+});
+
 test('toAgentRunDto fails closed on corrupt nested execution receipts', () => {
   const corruptRows = [
     makeRow({
@@ -289,6 +313,8 @@ test('toAgentRunDto fails closed on corrupt nested execution receipts', () => {
     makeRow({
       preparationReceipt: {
         phase: 'preparation',
+        outcome: 'not-required',
+        reason: 'no-commands-configured',
         ok: true,
         steps: [],
         finishedAt: 200,
@@ -298,6 +324,7 @@ test('toAgentRunDto fails closed on corrupt nested execution receipts', () => {
     makeRow({
       readinessReceipt: {
         phase: 'readiness',
+        outcome: 'executed',
         ok: true,
         steps: [{
           command: 'pnpm test',

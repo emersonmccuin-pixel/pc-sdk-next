@@ -113,6 +113,13 @@
       "when": 1783933200000,
       "tag": "0015_repository_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1783936800000,
+      "tag": "0016_phase_receipt_outcomes",
+      "breakpoints": true
     }
   ]
 }

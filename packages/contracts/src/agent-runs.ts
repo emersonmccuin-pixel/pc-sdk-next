@@ -6,7 +6,7 @@
 // payload for the `agent-run` entity. Agent-run resource events are
 // PROJECT-scoped; the frame's `version` carries `agent_runs.rev`.
 
-import { type ULID } from './shared.ts';
+import { isUlid, type ULID } from './shared.ts';
 import { isRuntimeSelection, type RuntimeSelection } from './runtime.ts';
 import {
   isSessionContinuationState,
@@ -93,12 +93,42 @@ export interface WorktreeCommandStepDto {
   timedOut: boolean;
 }
 
-export interface WorktreePhaseReceiptDto {
-  phase: 'preparation' | 'readiness';
+export type WorktreePhaseDto = 'preparation' | 'readiness';
+
+export interface WorktreePhaseExecutedReceiptDto {
+  phase: WorktreePhaseDto;
+  outcome: 'executed';
   ok: boolean;
   steps: WorktreeCommandStepDto[];
   finishedAt: number;
 }
+
+export interface WorktreePhaseNoCommandsReceiptDto {
+  phase: WorktreePhaseDto;
+  outcome: 'not-required';
+  reason: 'no-commands-configured';
+  ok: true;
+  steps: [];
+  finishedAt: number;
+}
+
+export interface WorktreePhaseExistingWorktreeReceiptDto {
+  phase: 'preparation';
+  outcome: 'not-required';
+  reason: 'existing-worktree-preparation';
+  inheritedFromRunId: ULID;
+  ok: true;
+  steps: [];
+  finishedAt: number;
+}
+
+export type WorktreePhaseNotRequiredReceiptDto =
+  | WorktreePhaseNoCommandsReceiptDto
+  | WorktreePhaseExistingWorktreeReceiptDto;
+
+export type WorktreePhaseReceiptDto =
+  | WorktreePhaseExecutedReceiptDto
+  | WorktreePhaseNotRequiredReceiptDto;
 
 /** Browser-safe mirror of the agent-run row. */
 export interface AgentRunDto {
@@ -127,7 +157,9 @@ export interface AgentRunDto {
   /** Monotonic write counter (agent_runs.rev). */
   rev: number;
   /** Provisioning receipts (docs/worktree-lifecycle.md). Additive surface —
-   *  absent/null on non-repo, profile-less, and legacy rows. */
+   *  new repository builders carry both phase receipts, including explicit
+   *  no-ops. Absent/null remains only for non-repo, detached-review, and
+   *  historical/incomplete rows. */
   gitReceipt?: WorktreeGitReceiptDto | null;
   preparationReceipt?: WorktreePhaseReceiptDto | null;
   readinessReceipt?: WorktreePhaseReceiptDto | null;
@@ -282,26 +314,61 @@ function isCommandStep(value: unknown): value is WorktreeCommandStepDto {
       'timedOut',
     ]) &&
     typeof value.command === 'string' &&
-    typeof value.exitCode === 'number' &&
-    typeof value.durationMs === 'number' &&
+    value.command.length > 0 &&
+    value.command === value.command.trim() &&
+    Number.isSafeInteger(value.exitCode) &&
+    Number.isSafeInteger(value.durationMs) &&
+    (value.durationMs as number) >= 0 &&
     typeof value.stdoutTail === 'string' &&
     typeof value.stderrTail === 'string' &&
     typeof value.timedOut === 'boolean';
 }
 
+export function isWorktreePhaseReceiptDto(
+  value: unknown,
+  phase?: WorktreePhaseDto,
+): value is WorktreePhaseReceiptDto {
+  if (!isRecord(value) || (value.phase !== 'preparation' && value.phase !== 'readiness')) {
+    return false;
+  }
+  if (phase !== undefined && value.phase !== phase) return false;
+  if (!Number.isSafeInteger(value.finishedAt) || (value.finishedAt as number) < 0) return false;
+
+  if (value.outcome === 'executed') {
+    if (!hasOnlyKeys(value, ['phase', 'outcome', 'ok', 'steps', 'finishedAt'])) return false;
+    if (typeof value.ok !== 'boolean' || !Array.isArray(value.steps) || value.steps.length === 0) {
+      return false;
+    }
+    if (!value.steps.every(isCommandStep)) return false;
+    const commandsPassed = value.steps.every((step) => step.exitCode === 0 && !step.timedOut);
+    return value.ok === commandsPassed;
+  }
+
+  if (value.outcome !== 'not-required' || value.ok !== true || !Array.isArray(value.steps) || value.steps.length !== 0) {
+    return false;
+  }
+  if (value.reason === 'no-commands-configured') {
+    return hasOnlyKeys(value, ['phase', 'outcome', 'reason', 'ok', 'steps', 'finishedAt']);
+  }
+  return value.phase === 'preparation' &&
+    value.reason === 'existing-worktree-preparation' &&
+    hasOnlyKeys(value, [
+      'phase',
+      'outcome',
+      'reason',
+      'inheritedFromRunId',
+      'ok',
+      'steps',
+      'finishedAt',
+    ]) &&
+    isUlid(value.inheritedFromRunId);
+}
+
 function isOptionalPhaseReceipt(
   value: unknown,
-  phase: WorktreePhaseReceiptDto['phase'],
+  phase: WorktreePhaseDto,
 ): boolean {
-  return value === undefined || value === null || (
-    isRecord(value) &&
-    hasOnlyKeys(value, ['phase', 'ok', 'steps', 'finishedAt']) &&
-    value.phase === phase &&
-    typeof value.ok === 'boolean' &&
-    Array.isArray(value.steps) &&
-    value.steps.every(isCommandStep) &&
-    typeof value.finishedAt === 'number'
-  );
+  return value === undefined || value === null || isWorktreePhaseReceiptDto(value, phase);
 }
 
 export function isAgentRunChangedLivePayload(

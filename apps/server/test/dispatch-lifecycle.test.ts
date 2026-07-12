@@ -225,8 +225,8 @@ test('happy-path auto-land stamps provisioning → building → verifying → �
     // Polling may skip transient hops (merging/merged) — subsequence order +
     // deterministic landmarks are the observable contract; the gateway guard
     // already proves each ACTUAL hop was legal (else 'completed' is unreachable).
-    assertSubsequence(o.seen, ['provisioning', 'building', 'verifying', 'merging', 'merged', 'tearing-down', 'completed']);
-    for (const landmark of ['provisioning', 'building', 'verifying', 'completed'] as const) {
+    assertSubsequence(o.seen, ['provisioning', 'preparing', 'ready', 'building', 'verifying', 'merging', 'merged', 'tearing-down', 'completed']);
+    for (const landmark of ['provisioning', 'ready', 'building', 'verifying', 'completed'] as const) {
       assert.ok(o.seen.includes(landmark), `landmark '${landmark}' missing — observed: ${o.seen.join(' → ')}`);
     }
   } finally {
@@ -277,7 +277,7 @@ test('default-review park stamps merge-ready; reject → review-rejected; accept
     await o.untilState('completed');
     assert.equal(getContract(contractId)!.landingStatus, 'landed');
     assert.equal(getContract(contractId)!.landingAuthorizer, 'orchestrator');
-    assertSubsequence(o.seen, ['provisioning', 'building', 'verifying', 'merge-ready', 'review-rejected', 'merging', 'merged', 'tearing-down', 'completed']);
+    assertSubsequence(o.seen, ['provisioning', 'preparing', 'ready', 'building', 'verifying', 'merge-ready', 'review-rejected', 'merging', 'merged', 'tearing-down', 'completed']);
   } finally {
     await gp.cleanup();
   }

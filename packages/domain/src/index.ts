@@ -124,10 +124,17 @@ export {
   withSettingsDefaults,
 } from './settings.ts';
 export type {
+  CreateNotRequiredWorktreePhaseReceiptInput,
   RepositoryIdentityReceipt,
   Worktree,
   WorktreeCommandStep,
   WorktreeGitReceipt,
+  WorktreePhase,
+  WorktreePhaseExecutedReceipt,
+  WorktreePhaseExistingWorktreeReceipt,
+  WorktreePhaseNoCommandsReceipt,
+  WorktreePhaseNotRequiredReason,
+  WorktreePhaseNotRequiredReceipt,
   WorktreePhaseReceipt,
   WorktreeProfile,
   WorktreeProfileParse,
@@ -135,7 +142,11 @@ export type {
   WorktreeStrandedReason,
 } from './worktree.ts';
 export {
+  createNotRequiredWorktreePhaseReceipt,
+  isPositiveWorktreePhaseReceipt,
+  isPositivePreparationReceiptForRun,
   isRepositoryIdentityReceipt,
+  isWorktreePhaseReceipt,
   parseWorktreeProfile,
   REPOSITORY_IDENTITY_PROTOCOL,
   WORKTREE_BASE_BRANCH_RE,

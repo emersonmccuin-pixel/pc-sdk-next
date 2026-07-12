@@ -132,6 +132,9 @@ export const agentRuns = sqliteTable(
     /** Provisioning receipts (docs/worktree-lifecycle.md, migration 0004).
      *  NULL = non-repo run / profile-less phase / pre-receipt row. */
     gitReceipt: text('git_receipt', { mode: 'json' }).$type<WorktreeGitReceipt | null>(),
+    /** New repository builders persist both receipts before runtime mint;
+     * NULL is retained only for non-repo/detached-review and historical or
+     * interrupted rows whose positive phase evidence is unavailable. */
     preparationReceipt: text('preparation_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
     readinessReceipt: text('readiness_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
     selectionState: text('selection_state', {
