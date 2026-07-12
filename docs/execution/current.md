@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-003 sealed implementation and verification.
+Updated: 2026-07-12 after RS-003 guarded landing and teardown.
 
 ## Repository
 
@@ -65,34 +65,37 @@ Updated: 2026-07-12 after RS-003 sealed implementation and verification.
 - RS-002 feature record: `bc3d90630519b6780a0f300b062c0fd3f9b18963`
 - RS-002 landing merge: `3a274034499f9454e059ded091b79276394780af`
 - RS-002 landed tree: `ca01b1badca3d93ad979b9cf8c261cbb7e671955`
-- Active slice: `docs/execution/slices/RS-003.md`
+- Completed slice: `docs/execution/slices/RS-003.md`
 - RS-003 base: `ff5b04bbb799293b31800267f061dcc6edb13742`
 - RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
-- RS-003 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
 - RS-003 sealed implementation:
   `2f10a96ae0c56747ff25d868d15514bbef7359d3`
 - RS-003 sealed tree: `01285d07cc23b2652b41d4c277628199da0e324c`
+- RS-003 feature record: `b79f84b130702f7c523fe20a32c71c5236eb9fb9`
+- RS-003 landing merge: `9fde98518aca92742040ed8e0e82a4825f258f5a`
+- RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
+- RS-003 feature worktree: removed after positive landing/tree proof; verified
+  dependency residue was removed
 
 ## Status
 
-RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-003
-implementation is sealed and verification-complete at
-`2f10a96ae0c56747ff25d868d15514bbef7359d3`. Exact specialist snapshots,
-selection/attempt/native identity, continuation/revival/reviewer behavior,
-legacy quarantine, safe browser/MCP projection, landing/reviewer races, and
-recovery CAS are covered. Full `pnpm ci:check`, production web build, isolated
-browser QA, hostile review, and the 50-path/provider-boundary audit passed.
-Guarded landing, push, and teardown remain. Quota normalization is next and
+RS-001 through RS-003 are complete, guarded-landed, pushed, and torn down.
+RS-003 landed as `9fde98518aca92742040ed8e0e82a4825f258f5a`.
+Exact specialist snapshots, selection/attempt/native identity, continuation/
+revival/reviewer behavior, legacy quarantine, safe browser/MCP projection,
+landing/reviewer races, and recovery CAS are covered. Full pre- and post-merge
+`pnpm ci:check`, production web build, isolated browser QA, hostile review, and
+the 50-path/provider-boundary audit passed. Quota normalization is next and
 there is no user-direction blocker.
 
 ## Next safe action
 
-Record the RS-003 sealed verification receipt, then guarded-merge the feature
-tip into current clean `main`. Prove feature/sealed ancestry and exact tree
-equality, rerun the post-merge workspace gate, push `origin/main`, and remove
-the feature worktree only after positive landing proof. Then define and begin
-the provider-neutral subscription-quota slice.
+Define RS-004 as the bounded provider-neutral subscription-quota slice from
+clean pushed base `9fde98518aca92742040ed8e0e82a4825f258f5a`.
+Replace Claude-shaped quota DTO/source assumptions with explicit runtime/account
+attribution, source semantics (`used`/`remaining`), normalized used fraction,
+window, observation time, confidence, and staleness. Preserve context as a
+separate resource and do not add Codex or selector UI in the same slice.
 
 ## Startup checks
 
@@ -103,9 +106,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The RS-003 feature worktree is sealed and final-gate green. All tracked RS-003
-mutation remains there until guarded landing; the main checkout remains
-read-only.
+No implementation worktree is active after RS-003 teardown. Create a fresh
+`codex/rs-004-*` sibling worktree from the pushed landing merge before any
+tracked mutation; keep the main checkout read-only.
 
 ## Known blockers
 

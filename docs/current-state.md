@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-003 sealed implementation and verification.
+Last updated: 2026-07-12 after RS-003 guarded landing and teardown.
 
 ## Preserved baseline
 
@@ -62,8 +62,11 @@ only in PC-SDK Next.
 - RS-003 sealed implementation:
   `2f10a96ae0c56747ff25d868d15514bbef7359d3`
 - RS-003 sealed tree: `01285d07cc23b2652b41d4c277628199da0e324c`
-- RS-003 active worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
+- RS-003 feature record: `b79f84b130702f7c523fe20a32c71c5236eb9fb9`
+- RS-003 landing merge: `9fde98518aca92742040ed8e0e82a4825f258f5a`
+- RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
+- RS-003 feature worktree: removed after positive sealed/feature ancestry and
+  exact tree-equality proof; verified dependency residue was removed
 
 Isolation defaults in the planning slice:
 
@@ -157,7 +160,7 @@ Isolation defaults in the planning slice:
   unavailable, and compaction states; and a shared context-used bar that never
   renders a percentage without fresh accepted evidence.
 
-## Completed N3 specialist-selection slice (awaiting guarded landing)
+## Completed N3 specialist-selection slice
 
 `RS-003` completed its implementation and verification gate from clean pushed
 base `ff5b04bbb799293b31800267f061dcc6edb13742`. The sealed implementation is
@@ -172,8 +175,12 @@ races, mutable continuation scope, stale legacy contract recovery, reconnect
 resurrection, foreign-project resource ingress, impossible provenance, and raw
 malformed MCP response relay. Full `pnpm ci:check`, the 319-test server suite,
 production web build, final source/path audits, and isolated no-provider browser
-QA passed. Guarded landing, push, and worktree teardown remain; quota
-normalization is the next safe slice and needs no product direction.
+QA passed. The feature record `b79f84b130702f7c523fe20a32c71c5236eb9fb9`
+was guarded-merged as `9fde98518aca92742040ed8e0e82a4825f258f5a`
+and pushed to `origin/main`. Sealed and feature ancestry plus exact tree equality
+were proven, the post-merge workspace gate passed, and the feature worktree and
+verified residue were removed. Quota normalization is the next safe slice and
+needs no product direction.
 
 ## Known architectural gaps
 
