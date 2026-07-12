@@ -12,7 +12,7 @@ import {
   listProjects,
   reorderProjects,
   setProjectFocus,
-  softDeleteProject,
+  softDeleteProjectConversationState,
   updateProjectMeta,
   updateProjectNotes,
 } from '@pc/db';
@@ -23,6 +23,7 @@ import {
   parseUpdateProjectRequest,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
+import type { SessionRegistry } from '../chat/registry.ts';
 import { toProjectDto } from './dto.ts';
 
 function slugify(name: string): string {
@@ -44,7 +45,7 @@ function uniqueSlug(name: string): string {
   return slug;
 }
 
-export function mountProjects(app: Hono): void {
+export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): void {
   app.get('/api/projects', (c) => {
     const includeDeleted = c.req.query('include_deleted') === '1';
     return c.json({ projects: listProjects({ includeDeleted }).map(toProjectDto) });
@@ -91,10 +92,18 @@ export function mountProjects(app: Hono): void {
     return c.json({ ok: true, project: toProjectDto(updated) });
   });
 
-  app.delete('/api/projects/:id', (c) => {
-    const deleted = softDeleteProject(c.req.param('id') as ULID);
-    if (!deleted) return c.json({ ok: false, error: 'not found' }, 404);
-    return c.json({ ok: true, project: toProjectDto(deleted) });
+  app.delete('/api/projects/:id', async (c) => {
+    const projectId = c.req.param('id') as ULID;
+    const result = softDeleteProjectConversationState(projectId);
+    if (result.status === 'not-found') return c.json({ ok: false, error: 'not found' }, 404);
+    if (result.status === 'active-turn') {
+      return c.json({
+        ok: false,
+        error: 'interrupt the active turn and wait for confirmation before deleting the project',
+      }, 409);
+    }
+    await deps.registry.disposeProject(projectId);
+    return c.json({ ok: true, project: toProjectDto(result.project) });
   });
 
   app.patch('/api/projects/:id/notes', async (c) => {

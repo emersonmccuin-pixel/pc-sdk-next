@@ -7,7 +7,7 @@
 // (the durable `usage` resource events heal live sockets; this heals cold HTTP).
 
 import type { Hono } from 'hono';
-import { getProjectById, updateProjectMeta } from '@pc/db';
+import { getProjectById } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import type { AccountRegistry } from '../runner/account-env.ts';
 import type { SessionRegistry } from '../chat/registry.ts';
@@ -44,10 +44,14 @@ export function mountAccounts(app: Hono, deps: AccountsHttpDeps): void {
     if (!deps.accounts.has(accountId)) return c.json({ error: 'unknown account' }, 400);
 
     const current = deps.accounts.resolveForProject(projectId).id;
-    updateProjectMeta(projectId, { settings: { defaultAccountId: accountId } });
+    const service = deps.registry.get(projectId);
+    if (current !== accountId && !service.canSwitchSession()) {
+      return c.json({ error: 'interrupt the active turn and wait for confirmation before switching accounts' }, 409);
+    }
     // Switching accounts can't continue the old session (it lives in the other
-    // config dir) — mint a fresh one so the next turn runs under the new login.
-    const session = current !== accountId ? deps.registry.get(projectId).startNewSession() : null;
+    // config dir). The account setting, old-session invalidation, queue
+    // cancellation, and replacement row commit atomically.
+    const session = current !== accountId ? service.switchAccountSession(accountId) : null;
     return c.json({ accountId, switched: current !== accountId, session });
   });
 

@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
   CHAT_EVENT_KINDS,
+  CLIENT_MESSAGE_TYPES,
   RESOURCE_ENTITIES,
+  conversationFamilyForEvent,
+  isChatEvent,
+  isClientMessage,
+  isConversationCommandReceiptFrame,
   isConversationEventFrame,
   isChatEventKind,
+  isQueuedAgentEnvelope,
   isResourceEntity,
   isResourceFrame,
   isLiveResetFrame,
@@ -16,10 +22,28 @@ import {
   isOrchestratorStateFrame,
   isAskFrame,
   isSendQueueItem,
+  isSendQueueSnapshotFrame,
+  type ChatEvent,
   type ConversationEventFrame,
   type ResourceFrame,
+  type SendQueueItem,
   type ServerFrame,
 } from '../src/index.ts';
+
+const USER_QUEUE_ITEM: SendQueueItem = {
+  id: 'queue-1',
+  clientMessageId: 'client-1',
+  origin: 'user',
+  enqueuePosition: 1,
+  revision: 1,
+  deliveryRevision: null,
+  text: 'hi',
+  status: 'queued',
+  interruptRequestId: null,
+  failureReason: null,
+  createdAt: 1,
+  updatedAt: 2,
+};
 
 test('isConversationEventFrame enforces canonical identity', () => {
   const frame: ConversationEventFrame = {
@@ -44,7 +68,7 @@ test('isConversationEventFrame enforces canonical identity', () => {
 });
 
 test('every ChatEvent kind is registered', () => {
-  assert.equal(CHAT_EVENT_KINDS.length, 16);
+  assert.equal(CHAT_EVENT_KINDS.length, 18);
   for (const k of CHAT_EVENT_KINDS) assert.equal(isChatEventKind(k), true);
   assert.equal(isChatEventKind('jsonl-user'), false); // old wire kind is dead
 });
@@ -153,34 +177,267 @@ test('isUsageSnapshot + isMcpServerStatus', () => {
   assert.equal(isMcpServerStatus({ id: 'm1', name: 'x', status: 'flaky' }), false);
 });
 
-test('session-changed + orchestrator-state + ask + send-queue-item guards', () => {
+test('session-changed + orchestrator-state + ask guards', () => {
   assert.equal(
     isSessionChangedFrame({
       type: 'session-changed',
       projectId: 'p',
       transition: 'new-session',
-      session: { id: 's', projectId: 'p', model: null, title: null, status: 'active', startedAt: 1 },
+      session: {
+        id: 's', projectId: 'p', model: null, title: null,
+        status: 'active', resumable: false, startedAt: 1,
+      },
     }),
     true,
   );
   assert.equal(isSessionChangedFrame({ type: 'session-changed', projectId: 'p', transition: 'x', session: null }), false);
+  assert.equal(isSessionChangedFrame({ type: 'session-changed', transition: 'new-session', session: null }), false);
+  assert.equal(isSessionChangedFrame({ type: 'session-changed', projectId: '', transition: 'new-session', session: null }), false);
+  assert.equal(isSessionChangedFrame({
+    type: 'session-changed',
+    projectId: 'p',
+    transition: 'new-session',
+    session: {
+      id: 's', projectId: 'foreign', model: null, title: null,
+      status: 'active', resumable: false, startedAt: 1,
+    },
+  }), false);
+  assert.equal(isSessionChangedFrame({
+    type: 'session-changed',
+    projectId: 'p',
+    transition: 'new-session',
+    session: {
+      id: 's', projectId: 'p', model: null, title: null,
+      status: 'active', resumable: true, startedAt: 1,
+    },
+  }), false);
 
   assert.equal(
-    isOrchestratorStateFrame({ type: 'orchestrator-state', projectId: 'p', sessionId: null, health: 'busy', queueDepth: 0, failureReason: null }),
+    isOrchestratorStateFrame({
+      type: 'orchestrator-state',
+      projectId: 'p',
+      sessionId: 's',
+      activeTurnId: 'turn-1',
+      health: 'busy',
+      queueDepth: 0,
+      failureReason: null,
+    }),
     true,
   );
-  assert.equal(isOrchestratorStateFrame({ type: 'orchestrator-state', projectId: 'p', sessionId: null, health: 'exploded', queueDepth: 0, failureReason: null }), false);
+  const idleState = {
+    type: 'orchestrator-state',
+    projectId: 'p',
+    sessionId: null,
+    activeTurnId: null,
+    health: 'idle',
+    queueDepth: 0,
+    failureReason: null,
+  };
+  assert.equal(isOrchestratorStateFrame(idleState), true);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, projectId: '' }), false);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, activeTurnId: '' }), false);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, health: 'exploded' }), false);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, queueDepth: -1 }), false);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, queueDepth: 0.5 }), false);
+  assert.equal(isOrchestratorStateFrame({ ...idleState, queueDepth: Number.NaN }), false);
 
   assert.equal(
     isAskFrame({ type: 'ask', projectId: 'p', askId: 'a1', sessionId: null, toolName: 'Bash', toolUseId: 'tu1', toolInput: {} }),
     true,
   );
+});
 
+test('client message guards close every durable send and interrupt command shape', () => {
+  const messages = [
+    { type: 'send', commandId: 'cmd-1', sessionId: null, text: 'first', clientMessageId: 'client-1' },
+    { type: 'edit-queued-message', commandId: 'cmd-2', sessionId: 's', queueItemId: 'q', expectedRevision: 2, text: 'second' },
+    { type: 'remove-queued-message', commandId: 'cmd-3', sessionId: 's', queueItemId: 'q', expectedRevision: 2 },
+    { type: 'interrupt', requestId: 'request-1', sessionId: 's', targetTurnId: 'turn-1' },
+    {
+      type: 'interrupt-and-send', requestId: 'request-2', sessionId: 's', targetTurnId: 'turn-1',
+      replacement: { kind: 'new', clientMessageId: 'client-2', text: 'replacement' },
+    },
+    {
+      type: 'interrupt-and-send', requestId: 'request-3', sessionId: 's', targetTurnId: 'turn-1',
+      replacement: { kind: 'queued', queueItemId: 'q', expectedRevision: 2 },
+    },
+    { type: 'ask-reply', askId: 'ask-1', answer: '' },
+    { type: 'subscribe', lastVersion: '8' },
+    { type: 'client-ping', nonce: 'nonce-1', sentAt: 10 },
+  ];
+
+  assert.deepEqual(CLIENT_MESSAGE_TYPES, [
+    'send',
+    'edit-queued-message',
+    'remove-queued-message',
+    'interrupt',
+    'interrupt-and-send',
+    'ask-reply',
+    'subscribe',
+    'client-ping',
+  ]);
+  for (const message of messages) assert.equal(isClientMessage(message), true);
+
+  assert.equal(isClientMessage({ ...messages[0], commandId: '' }), false);
+  assert.equal(isClientMessage({ ...messages[1], expectedRevision: 0 }), false);
+  assert.equal(isClientMessage({ ...messages[2], queueItemId: '' }), false);
+  assert.equal(isClientMessage({ ...messages[3], targetTurnId: '' }), false);
+  assert.equal(isClientMessage({ ...messages[4], replacement: { kind: 'new', clientMessageId: '', text: 'x' } }), false);
+  assert.equal(isClientMessage({ ...messages[4], replacement: { kind: 'queued', queueItemId: 'q', expectedRevision: -1 } }), false);
+  assert.equal(isClientMessage({ ...messages[4], replacement: { kind: 'later' } }), false);
+  assert.equal(isClientMessage({ type: 'interrupt', sessionId: 's', targetTurnId: 'turn-1' }), false);
+  assert.equal(isClientMessage({ type: 'legacy-send', text: 'nope' }), false);
+});
+
+test('conversation command receipts require typed status/error consistency', () => {
+  const applied = {
+    type: 'conversation-command-receipt',
+    projectId: 'p',
+    sessionId: 's',
+    commandId: 'cmd-1',
+    command: 'send',
+    status: 'applied',
+    queueItemId: 'q',
+    revision: 1,
+    error: null,
+  };
+  const rejected = {
+    ...applied,
+    commandId: 'cmd-2',
+    command: 'edit-queued-message',
+    status: 'rejected',
+    error: { code: 'revision-conflict', message: 'stale revision', currentRevision: 2 },
+  };
+  assert.equal(isConversationCommandReceiptFrame(applied), true);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, status: 'duplicate' }), true);
+  assert.equal(isConversationCommandReceiptFrame(rejected), true);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, command: 'ask-reply' }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, status: 'received' }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, revision: 0 }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, queueItemId: undefined }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, revision: undefined }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, command: 'interrupt' }), false);
+  assert.equal(isConversationCommandReceiptFrame({
+    ...applied,
+    command: 'interrupt',
+    queueItemId: undefined,
+    revision: undefined,
+    interruptRequestId: 'interrupt-1',
+  }), true);
+  assert.equal(isConversationCommandReceiptFrame({
+    ...applied,
+    command: 'interrupt-and-send',
+    interruptRequestId: 'interrupt-1',
+  }), true);
+  assert.equal(isConversationCommandReceiptFrame({ ...rejected, error: { ...rejected.error, code: 'unknown' } }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...applied, error: { code: 'internal', message: 'bad' } }), false);
+  assert.equal(isConversationCommandReceiptFrame({ ...rejected, error: null }), false);
+});
+
+test('durable send queue item and reconnect snapshot guards are closed', () => {
+  assert.equal(isSendQueueItem(USER_QUEUE_ITEM), true);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, origin: 'system' }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, enqueuePosition: 0 }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, revision: 0 }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, deliveryRevision: 0 }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, status: 'delivered_to_pty' }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, interruptRequestId: '' }), false);
+  assert.equal(isSendQueueItem({ ...USER_QUEUE_ITEM, createdAt: Number.NaN }), false);
+
+  const envelope = {
+    runId: 'run-1',
+    agentName: 'reviewer',
+    pendingAskId: 'ask-1',
+    status: 'waiting',
+    summary: 'Review pending',
+    detail: 'Waiting for verification.',
+  };
+  assert.equal(isQueuedAgentEnvelope(envelope), true);
+  assert.equal(isQueuedAgentEnvelope({ ...envelope, status: 'running' }), false);
+  assert.equal(isQueuedAgentEnvelope({ ...envelope, agentName: '' }), false);
+
+  const snapshot = {
+    type: 'send-queue-snapshot',
+    projectId: 'p',
+    sessionId: 's',
+    queueRevision: 4,
+    items: [USER_QUEUE_ITEM],
+  };
+  assert.equal(isSendQueueSnapshotFrame(snapshot), true);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, projectId: '' }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, sessionId: '' }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, queueRevision: -1 }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, queueRevision: 1.5 }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, items: [{ ...USER_QUEUE_ITEM, status: 'unknown' }] }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, items: [{ ...USER_QUEUE_ITEM, status: 'accepted' }] }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, items: [USER_QUEUE_ITEM, { ...USER_QUEUE_ITEM, text: 'duplicate id' }] }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, items: [USER_QUEUE_ITEM, { ...USER_QUEUE_ITEM, id: 'q2' }] }), false);
+  assert.equal(isSendQueueSnapshotFrame({ ...snapshot, items: [USER_QUEUE_ITEM, { ...USER_QUEUE_ITEM, id: 'q2', clientMessageId: 'c2' }] }), false);
+});
+
+test('canonical send and interrupt lifecycle events enforce family and positive receipts', () => {
+  const sendState: ChatEvent = { kind: 'send-state', queueRevision: 1, item: USER_QUEUE_ITEM };
+  assert.equal(isChatEvent(sendState), true);
+  assert.equal(conversationFamilyForEvent(sendState), 'user');
   assert.equal(
-    isSendQueueItem({ id: 'i1', clientMessageId: 'c1', text: 'hi', status: 'queued', failureReason: null, createdAt: 1, updatedAt: 2 }),
-    true,
+    conversationFamilyForEvent({ ...sendState, item: { ...USER_QUEUE_ITEM, origin: 'agent-envelope' } }),
+    'agent',
   );
-  assert.equal(isSendQueueItem({ id: 'i1', clientMessageId: 'c1', text: 'hi', status: 'delivered_to_pty', failureReason: null, createdAt: 1, updatedAt: 2 }), false);
+  assert.equal(isChatEvent({ ...sendState, queueRevision: 0 }), false);
+
+  const requested: ChatEvent = {
+    kind: 'interrupt-state',
+    requestId: 'request-1',
+    targetTurnId: 'turn-1',
+    replacementQueueItemId: 'queue-1',
+    state: 'requested',
+    terminalEventId: null,
+    result: null,
+    failure: null,
+  };
+  const confirmed: ChatEvent = {
+    ...requested,
+    state: 'confirmed',
+    terminalEventId: 'event-1',
+    result: 'aborted',
+  };
+  const failedBeforeTerminal: ChatEvent = {
+    ...requested,
+    state: 'failed',
+    failure: { code: 'runtime-interrupt-failed', message: 'adapter rejected request' },
+  };
+  const failedAtTerminal: ChatEvent = {
+    ...failedBeforeTerminal,
+    terminalEventId: 'event-2',
+    result: 'completed',
+  };
+  assert.equal(isChatEvent(requested), true);
+  assert.equal(isChatEvent(confirmed), true);
+  assert.equal(isChatEvent(failedBeforeTerminal), true);
+  assert.equal(isChatEvent(failedAtTerminal), true);
+  assert.equal(conversationFamilyForEvent(requested), 'control');
+  assert.equal(isChatEvent({ ...requested, terminalEventId: 'event-1' }), false);
+  assert.equal(isChatEvent({ ...confirmed, result: 'completed' }), false);
+  assert.equal(isChatEvent({ ...confirmed, failure: { code: 'x', message: 'x' } }), false);
+  assert.equal(isChatEvent({ ...failedBeforeTerminal, result: 'turn-failed' }), false);
+  assert.equal(isChatEvent({ ...failedAtTerminal, terminalEventId: null }), false);
+  assert.equal(isChatEvent({ ...failedAtTerminal, result: 'aborted' }), false);
+  assert.equal(isChatEvent({ ...failedBeforeTerminal, failure: null }), false);
+
+  const eventFrame: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'event-3',
+    projectId: 'p',
+    conversationId: 's',
+    sessionId: 's',
+    sequence: 3,
+    family: 'control',
+    itemId: 'request-1',
+    occurredAt: 3,
+    event: requested,
+  };
+  assert.equal(isConversationEventFrame(eventFrame), true);
+  assert.equal(isConversationEventFrame({ ...eventFrame, family: 'system' }), false);
 });
 
 test('session replay validates every canonical event identity', () => {
@@ -200,7 +457,15 @@ test('session replay validates every canonical event identity', () => {
 // Compile-time smoke: a ServerFrame narrows on `type`.
 test('ServerFrame union is inhabited', () => {
   const frames: ServerFrame[] = [
-    { type: 'orchestrator-state', projectId: 'p', sessionId: null, health: 'idle', queueDepth: 0, failureReason: null },
+    {
+      type: 'orchestrator-state',
+      projectId: 'p',
+      sessionId: null,
+      activeTurnId: null,
+      health: 'idle',
+      queueDepth: 0,
+      failureReason: null,
+    },
   ];
   assert.equal(frames.length, 1);
 });

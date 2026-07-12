@@ -7,6 +7,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  enqueueConversationSend,
+  getActiveOrchestratorSession,
+  getConversationQueueSnapshot,
+  getProjectById,
+  getRawDb,
+} from '@pc/db';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
@@ -197,7 +204,16 @@ test('accounts: registry list; switching a project account ends the session + mi
     // old session ended, new session active
     const list = await fetch(`${base}/api/projects/${pid}/sessions`).then(body);
     assert.equal(list.sessions.find((s: { id: string }) => s.id === oldSessionId).status, 'ended');
+    assert.equal(list.sessions.find((s: { id: string; resumable: boolean }) => s.id === oldSessionId).resumable, false);
     assert.equal(list.sessions.find((s: { id: string }) => s.id === sw.session.id).status, 'active');
+
+    // Pre-switch native sessions have no immutable account stamp yet, so they
+    // remain replayable but cannot be resumed under the new credential home.
+    const unsafeResume = await fetch(
+      `${base}/api/projects/${pid}/sessions/${oldSessionId}/resume`,
+      { method: 'POST' },
+    );
+    assert.equal(unsafeResume.status, 404);
 
     // same account again → no-op, no new session
     const noop = await fetch(`${base}/api/projects/${pid}/account`, {
@@ -215,6 +231,98 @@ test('accounts: registry list; switching a project account ends the session + mi
       body: JSON.stringify({ accountId: 'nope' }),
     });
     assert.equal(bad.status, 400);
+  } finally {
+    await server.close();
+  }
+});
+
+test('account switch rolls back setting, queue, and old session when replacement creation fails', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const dir = mkdtempSync(join(tmpdir(), 'pc-acct-rollback-'));
+  try {
+    const created = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Acct rollback', folder_path: dir, mode: 'init-empty' }),
+    }).then(body);
+    const projectId = created.project.id;
+    const started = await fetch(
+      `${base}/api/projects/${projectId}/sessions/new`,
+      { method: 'POST' },
+    ).then(body);
+    const sessionId = started.session.id;
+    assert.equal(enqueueConversationSend({
+      projectId,
+      conversationId: sessionId,
+      sessionId,
+      commandId: 'account-rollback-send',
+      clientMessageId: 'account-rollback-client',
+      text: 'preserve me',
+      origin: 'user',
+    }).status, 'applied');
+
+    const raw = getRawDb();
+    raw.exec(`
+      CREATE TEMP TRIGGER fail_account_replacement
+      BEFORE INSERT ON orchestrator_sessions
+      BEGIN SELECT RAISE(ABORT, 'forced account replacement failure'); END;
+    `);
+    const failed = await fetch(`${base}/api/projects/${projectId}/account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: 'work' }),
+    });
+    raw.exec('DROP TRIGGER fail_account_replacement');
+    assert.equal(failed.status, 500);
+
+    assert.equal(getProjectById(projectId)?.settings.defaultAccountId, null);
+    assert.equal(getActiveOrchestratorSession(projectId)?.id, sessionId);
+    assert.equal(getConversationQueueSnapshot(sessionId).items[0]?.status, 'queued');
+  } finally {
+    await server.close();
+  }
+});
+
+test('project delete cancels idle FIFO state and fences an already-held service', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const dir = mkdtempSync(join(tmpdir(), 'pc-delete-fence-'));
+  try {
+    const created = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Delete fence', folder_path: dir, mode: 'init-empty' }),
+    }).then(body);
+    const projectId = created.project.id;
+    const started = await fetch(
+      `${base}/api/projects/${projectId}/sessions/new`,
+      { method: 'POST' },
+    ).then(body);
+    const sessionId = started.session.id;
+    const heldService = server.registry.get(projectId);
+    assert.equal(enqueueConversationSend({
+      projectId,
+      conversationId: sessionId,
+      sessionId,
+      commandId: 'delete-fence-send',
+      clientMessageId: 'delete-fence-client',
+      text: 'cancel me',
+      origin: 'user',
+    }).status, 'applied');
+
+    const deleted = await fetch(`${base}/api/projects/${projectId}`, { method: 'DELETE' });
+    assert.equal(deleted.status, 200);
+    assert.equal(getProjectById(projectId), null);
+    assert.equal(getActiveOrchestratorSession(projectId), null);
+    assert.deepEqual(getConversationQueueSnapshot(sessionId).items, []);
+
+    const afterDelete = heldService.handleSend({
+      type: 'send', commandId: 'delete-fence-after', sessionId,
+      text: 'must not execute', clientMessageId: 'delete-fence-after-client',
+    });
+    assert.equal(afterDelete.status, 'rejected');
+    assert.equal(afterDelete.error?.code, 'session-changed');
   } finally {
     await server.close();
   }

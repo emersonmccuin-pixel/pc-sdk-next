@@ -56,9 +56,22 @@ test('subtype error_during_execution -> outcome error', () => {
   assert.equal(rm.numTurns, 3);
 });
 
-test('an abort-ish subtype -> outcome aborted', () => {
-  const rm = mapResult({ subtype: 'aborted' }) as { outcome: string };
-  assert.equal(rm.outcome, 'aborted');
+test('only documented native terminal reasons map to outcome aborted', () => {
+  for (const terminal_reason of ['aborted_streaming', 'aborted_tools']) {
+    const rm = mapResult({ subtype: 'error_during_execution', terminal_reason }) as {
+      ok: boolean;
+      outcome: string;
+    };
+    assert.equal(rm.ok, false);
+    assert.equal(rm.outcome, 'aborted');
+  }
+  const inventedSubtype = mapResult({ subtype: 'aborted' }) as { outcome: string };
+  assert.equal(inventedSubtype.outcome, 'error');
+  const abortText = mapResult({
+    subtype: 'error_during_execution',
+    errors: ['AbortError: transport aborted independently'],
+  }) as { outcome: string };
+  assert.equal(abortText.outcome, 'error');
 });
 
 test('missing num_turns -> numTurns null', () => {

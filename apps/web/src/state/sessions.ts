@@ -16,6 +16,10 @@ import type { ConversationEventFrame, SessionSummary, ULID } from '@pc/contracts
 
 export type { SessionSummary } from '@pc/contracts';
 
+export function canResumeSession(session: SessionSummary): boolean {
+  return session.status === 'ended' && session.resumable;
+}
+
 export interface SessionTransition {
   transition: 'new-session' | 'resume-session';
   session: SessionSummary;

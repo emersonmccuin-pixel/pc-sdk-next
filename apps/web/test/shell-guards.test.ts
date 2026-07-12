@@ -4,6 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { TABS, COMMAND_TABS } from '../src/components/tabs-config.ts';
 import { useUsageStore } from '../src/state/usage-store.ts';
@@ -35,4 +36,21 @@ test('usage store keeps the newest snapshot per account', () => {
   setSnapshot(snap('personal', 200)); // fresher — wins
   assert.equal(useUsageStore.getState().byAccount.personal?.updatedAt, 200);
   clear();
+});
+
+test('project transitions blank singleton chat state before paint and remount the composer', () => {
+  const socketSource = readFileSync(
+    new URL('../src/lib/ws-client.ts', import.meta.url),
+    'utf8',
+  );
+  const surfaceSource = readFileSync(
+    new URL('../src/features/chat/ChatSurface.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(socketSource, /useLayoutEffect\(\(\) => \{/);
+  const reset = socketSource.indexOf('useChatStore.getState().reset();');
+  const connect = socketSource.indexOf('const socket = new ProjectSocket(projectId);', reset);
+  assert.ok(reset >= 0 && connect > reset, 'chat state resets before the successor socket starts');
+  assert.match(socketSource, /resetProjectState\(\)/);
+  assert.match(surfaceSource, /<ChatComposer\s+key=\{project\.id\}/);
 });

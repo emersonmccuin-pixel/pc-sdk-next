@@ -26,6 +26,7 @@
 
 import {
   commitConversationEvent,
+  getActiveConversationTurn,
   getActiveOrchestratorSession,
   listConversationEvents,
   listNonTerminalAgentRuns,
@@ -33,6 +34,7 @@ import {
   listProjects,
   markPendingAskCancelled,
   newId,
+  recoverActiveConversationTurns,
 } from '@pc/db';
 import { AgentRunMutationGateway, ContractService } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
@@ -82,11 +84,27 @@ export interface BootRecoveryResult {
  *  recovered session ids. */
 export function runBootRecovery(): BootRecoveryResult {
   const recovered: string[] = [];
-  let scanned = 0;
-  for (const project of listProjects()) {
+  const projects = listProjects();
+  const activeSessions = projects.flatMap((project) => {
     const session = getActiveOrchestratorSession(project.id);
-    if (!session) continue;
-    scanned++;
+    if (!session) return [];
+    return [{ project, session, durableTurnId: getActiveConversationTurn(session.id)?.id ?? null }];
+  });
+  const scanned = activeSessions.length;
+
+  // The durable queue owns modern turn recovery: terminal + failed delivery +
+  // interrupt settlement + idle commit atomically. Keep the historical event
+  // scan below only for pre-CF-003 rows that have no conversation_turn record.
+  const recoveredTurnIds = new Set(recoverActiveConversationTurns());
+  for (const { project, session, durableTurnId } of activeSessions) {
+    if (durableTurnId && recoveredTurnIds.has(durableTurnId)) {
+      recovered.push(session.id);
+      console.warn(
+        `[pc-sdk][boot-recovery] session ${session.id} (project ${project.id}) had durable turn ${durableTurnId} in flight — ` +
+          'settled failed with an uncertain-delivery receipt.',
+      );
+      continue;
+    }
     if (!hasOpenTurn(session.id)) continue;
     append(session.id, project.id, {
       kind: 'turn-failed',

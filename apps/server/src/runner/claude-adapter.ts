@@ -233,11 +233,11 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   }
 
   async interrupt(): Promise<void> {
-    try {
-      await this.q?.interrupt();
-    } catch {
-      /* positive receipt: the turn stream still terminates via a result/abort */
-    }
+    if (!this.q) throw new Error('Claude runtime is not ready to interrupt');
+    // Command completion is not abort confirmation, but adapter rejection is
+    // still meaningful negative evidence and must reach the durable interrupt
+    // lifecycle instead of being swallowed.
+    await this.q.interrupt();
   }
 
   async dispose(): Promise<void> {
@@ -300,7 +300,6 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     if (!turn) return;
     this.currentTurn = null;
     const message = err instanceof Error ? err.message : String(err);
-    const abort = /abort/i.test(message);
     turn.push({
       type: 'result',
       ok: false,
@@ -310,7 +309,8 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       error: message,
       // A genuine stream break is a real failure, never mistaken for turn-budget
       // exhaustion (which only ever comes from a native `result` message).
-      outcome: abort ? 'aborted' : 'error',
+      // Query-loop exception text is not typed native abort evidence.
+      outcome: 'error',
       numTurns: null,
     });
     turn.end();
@@ -560,10 +560,15 @@ function translateUuids(uuids: unknown[], keys: SdkKeyContext): string[] {
 /** Provider-neutral terminal classification for a native `result` message —
  *  the ONLY place an SDK subtype (e.g. 'error_max_turns') is interpreted; it
  *  must never leak past this function. */
-function classifyResultOutcome(subtype: string): 'ok' | 'error' | 'aborted' | 'budget-exhausted' {
+function classifyResultOutcome(
+  subtype: string,
+  terminalReason: unknown,
+): 'ok' | 'error' | 'aborted' | 'budget-exhausted' {
+  // Installed SDK result subtypes do not contain an abort variant. These two
+  // documented terminal_reason values are the positive native evidence.
+  if (terminalReason === 'aborted_streaming' || terminalReason === 'aborted_tools') return 'aborted';
   if (subtype === 'success') return 'ok';
   if (subtype === 'error_max_turns' || subtype === 'error_max_budget_usd') return 'budget-exhausted';
-  if (/abort/i.test(subtype)) return 'aborted';
   return 'error';
 }
 
@@ -589,8 +594,8 @@ function classifyStopReason(
 
 function mapResult(m: Record<string, unknown>): RuntimeEvent {
   const subtype = String(m.subtype ?? 'success');
-  const ok = subtype === 'success';
-  const outcome = classifyResultOutcome(subtype);
+  const outcome = classifyResultOutcome(subtype, m.terminal_reason);
+  const ok = subtype === 'success' && outcome === 'ok';
   const usage = toRuntimeUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
   const durationMs = typeof m.duration_ms === 'number' ? m.duration_ms : null;
   const stopReason = classifyStopReason(m.stop_reason);

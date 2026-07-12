@@ -84,6 +84,20 @@ test('canonical aborted outcome maps to turn-failed source abort', async () => {
   assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'aborted', numTurns: null });
 });
 
+test('abort-like exception text is internal failure, never interruption evidence', async () => {
+  const c = collector();
+  async function* throwsAbortText(): AsyncIterable<RuntimeEvent> {
+    throw new Error('AbortError: transport aborted independently');
+  }
+  const term = await runTurn(throwsAbortText(), c.deps);
+  assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'error', numTurns: null });
+  assert.deepEqual(terminals(c.chat), [{
+    kind: 'turn-failed',
+    error: 'AbortError: transport aborted independently',
+    source: 'internal',
+  }]);
+});
+
 test('stream ending with no result still terminates (internal) — rule 3', async () => {
   const c = collector();
   const term = await runTurn(

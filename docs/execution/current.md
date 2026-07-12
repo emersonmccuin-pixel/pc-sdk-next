@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-002 guarded landing and teardown.
+Updated: 2026-07-11 after CF-003 provisioning.
 
 ## Repository
 
@@ -22,21 +22,25 @@ Updated: 2026-07-11 after CF-002 guarded landing and teardown.
   `9ebf2c6284bebdae43f9263193999764a0c8413b`
 - CF-002 feature record: `8a4be486c14fab994335469edcb4838ebac55a36`
 - CF-002 landing merge: `77688fd1f1e5afe35d496e439a2743f59302fa31`
+- CF-002 closeout landing: `a5943690ddbcbbf11ce3838ffc6dcfc950b90b41`
+- Active slice: `docs/execution/slices/CF-003.md`
+- Active branch/worktree: `codex/cf-003-durable-send-control` at
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-003`
+- CF-003 base: `a5943690ddbcbbf11ce3838ffc6dcfc950b90b41`
 
 ## Status
 
-CF-002 is complete, guarded-landed, positively ancestry-proven, and torn down.
-Ordered live projection is indexed/incremental, stable history uses bounded
-persistent chunks, completed raw deltas compact to digest receipts, and replay
-has one checkpoint-aware normalization path. Focused web checks and the full
-`pnpm ci:check` pass; generated and final diff audits have no remaining finding.
+CF-002 is complete, pushed, positively ancestry-proven, and torn down. CF-003 is
+provisioned for the next accepted N2 behavior: durable revisioned FIFO sends,
+restart recovery, and positive interruption receipts including fail-closed
+interrupt-and-send gating. Existing architecture documents already fix these
+product semantics; no user-direction blocker is open.
 
 ## Next safe action
 
-Provision the next bounded conversation slice from clean current `main`:
-durable FIFO queued-send state, restart recovery, explicit queue revisions, and
-positive interruption receipts. Keep safe activity/tool lifecycle and runtime
-selection outside that slice.
+Implement and verify CF-003 exactly as bounded, then seal, guarded-land, prove,
+teardown, and push. Keep safe activity/tool lifecycle and runtime selection out
+of this slice.
 
 ## Startup checks
 

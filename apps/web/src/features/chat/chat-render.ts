@@ -193,6 +193,8 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
       case 'usage':
       case 'turn-duration':
       case 'session-state':
+      case 'send-state':
+      case 'interrupt-state':
       case 'retract':
         break;
     }

@@ -126,8 +126,9 @@ export interface RuntimeSession {
   /** Send one user turn; yields RuntimeEvents until the turn's `result`. The
    *  iterable completes when the turn ends. */
   sendTurn(text: string): AsyncIterable<RuntimeEvent>;
-  /** Abort the in-flight turn. Positive receipt: the current `sendTurn` stream
-   *  ends (with a `result` `ok:false` or by throwing an abort). */
+  /** Request abortion of the in-flight turn. Promise resolution acknowledges
+   *  native command acceptance only; it never proves abortion. The exact
+   *  correlated `sendTurn` terminal is the positive abort receipt. */
   interrupt(): Promise<void>;
   /** Tear the session down (ends the native loop). Idempotent. */
   dispose(): Promise<void>;

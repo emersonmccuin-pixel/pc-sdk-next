@@ -36,6 +36,9 @@ test('isConversationKind accepts the three read-surface kinds, rejects others', 
 test('isConversationSessionDto round-trips a mirror of OrchestratorSession', () => {
   assert.equal(isConversationSessionDto(makeSession()), true);
   assert.equal(isConversationSessionDto(makeSession({ status: 'ended', endedReason: 'pty_exit', endedAt: 200 })), true);
+  assert.equal(isConversationSessionDto(makeSession({
+    status: 'ended', endedReason: 'account_switched', endedAt: 200,
+  })), true);
   assert.equal(isConversationSessionDto(makeSession({ providerSessionId: null, model: null, title: null, jsonlPath: null })), true);
 });
 

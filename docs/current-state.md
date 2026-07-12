@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11 after CF-001 sealed verification.
+Last updated: 2026-07-11 after CF-003 sealed verification.
 
 ## Preserved baseline
 
@@ -28,6 +28,8 @@ only in PC-SDK Next.
 - CF-001 landing merge: `6ea518bc6b520934aece30cbea94d201f4334b0b`
 - CF-001 worktree: removed after positive sealed-commit and feature-tip
   ancestry proof; feature branch preserved
+- CF-002 sealed implementation: `9ebf2c6284bebdae43f9263193999764a0c8413b`
+- CF-002 closeout landing: `a5943690ddbcbbf11ce3838ffc6dcfc950b90b41`
 
 Isolation defaults in the planning slice:
 
@@ -65,6 +67,17 @@ Isolation defaults in the planning slice:
 - Adapter-local native message correlation; canonical terminal outcomes and
   stop reasons; historical private reasoning retained only as hidden migration
   evidence with no producer or render path
+- Durable revisioned FIFO sends with atomic queue/event/outbox transitions,
+  strict sender receipts, reconnect snapshots, restart re-drive, immutable
+  claimed revisions, and visible edit/remove controls
+- Durable requested/confirmed/failed interruption state: linked replacements
+  release only on the exact typed abort terminal; timeout, shutdown, normal
+  completion, stream failure, and restart uncertainty fail closed
+- Composition-readiness gating for both recovered and freshly admitted sends;
+  deleted projects and inactive/deleted sessions cannot mint or claim work
+- Atomic new/resume/account-switch/project-delete conversation transitions,
+  including safe cancellation and rollback. Until immutable account stamps
+  land, pre-account-switch transcripts are view-only/non-resumable.
 
 ## Known architectural gaps
 
@@ -76,8 +89,6 @@ Isolation defaults in the planning slice:
 - Orchestrator session, account, usage, and some runtime-notice/permission
   vocabulary remain provider-shaped. Full immutable runtime/account/model/
   effort stamps and typed capability semantics remain N3 work.
-- User send queue ordering works in-process but the queue is not durable across
-  restart.
 - Usage DTOs are Claude-shaped and do not retain general source semantics,
   confidence, staleness, or runtime attribution.
 - No honest per-session context-use contract exists yet.
@@ -95,12 +106,12 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`CF-002` completes the bounded projector scale/compaction pass on top of the
-landed `CF-001` canonical conversation foundation. A deterministic 4,160-event
-characterization proves zero live history scans/rebuilds and positive release of
-all 4,096 completed raw delta payloads. A separate 4,096-event stable-heavy case
-proves bounded 32-entry persistent history chunks with no projector history
-copies; shuffled live/replay equivalence, post-compaction conflicts, hidden
-replay gaps, and prior-state immutability have guard tests. The next safe
-conversation slice is durable queued-send state and positive interruption
-receipts.
+`CF-003` completes durable queued-send and positive interruption semantics on
+the landed CF-001/CF-002 conversation foundation. Adversarial probes cover
+restart/shutdown uncertainty, delayed runtime startup, boot readiness, stale
+CAS and duplicate commands, socket failure, false abort classification, late
+session-global native interruption, deleted projects, and atomic account/
+session transitions. The compact existing composer shell exposes FIFO state,
+edit/remove, interrupt-and-send, failure evidence, and safe view-only history.
+The next safe conversation slice is `CHAT-007/CHAT-008`: typed honest activity
+and complete tool-call lifecycle without private reasoning.

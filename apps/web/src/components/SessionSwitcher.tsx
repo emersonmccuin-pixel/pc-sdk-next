@@ -4,7 +4,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { sessionsApi, type SessionSummary, type SessionTransition } from '@/state/sessions';
+import {
+  canResumeSession,
+  sessionsApi,
+  type SessionSummary,
+  type SessionTransition,
+} from '@/state/sessions';
 import { useRailMode } from '@/store/rail-mode';
 import { useViewingSession } from '@/store/viewing-session';
 
@@ -117,12 +122,16 @@ export function SessionSwitcher({
           const title = s.title?.trim() || 'Untitled session';
           const when = formatStarted(s.startedAt);
           const isResuming = resumingId === s.id;
+          const canActivate = isActive || canResumeSession(s);
           return (
             <button
               key={s.id}
               type="button"
-              onClick={() => void handleResume(s.id)}
-              disabled={resumingId !== null && !isResuming}
+              onClick={() => {
+                if (canActivate) void handleResume(s.id);
+              }}
+              disabled={!canActivate || (resumingId !== null && !isResuming)}
+              title={canActivate ? 'Make this the live session' : 'View-only: project account changed'}
               className={`block w-full border-l-2 px-3 py-1.5 text-left text-xs hover:bg-muted ${
                 isActive ? 'border-primary bg-muted/40 text-primary' : 'border-transparent text-foreground/90'
               }`}
@@ -136,6 +145,7 @@ export function SessionSwitcher({
               <div className="mt-0.5 text-[10px] text-muted-foreground">
                 {when}
                 {isActive && ' · live'}
+                {!isActive && !s.resumable && ' · account changed · view only'}
                 {isResuming && ' · resuming…'}
               </div>
             </button>

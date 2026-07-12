@@ -143,6 +143,7 @@ export type {
 // conversation replay store (chat events in SQLite; replay = a query).
 export {
   commitConversationEvent,
+  commitConversationEventInDb,
   countConversationEvents,
   getConversationHighWaterSequence,
   hasConversationEvents,
@@ -158,6 +159,42 @@ export type {
   ConversationEventRow,
   ConversationOutboxEntry,
 } from './repos/conversation-events.ts';
+
+export {
+  cancelQueuedConversationSends,
+  claimNextConversationTurn,
+  editQueuedConversationSend,
+  enqueueConversationSend,
+  failConversationInterrupt,
+  getActiveConversationTurn,
+  getConversationQueueSnapshot,
+  getTurnInterruptRequest,
+  listProjectsWithQueuedConversationSends,
+  recoverActiveConversationTurns,
+  replaceOrchestratorSession,
+  resumeOrchestratorSessionTransition,
+  removeQueuedConversationSend,
+  requestConversationInterrupt,
+  settleConversationTurn,
+  softDeleteProjectConversationState,
+} from './repos/conversation-queue.ts';
+export type {
+  ClaimedConversationTurn,
+  ConversationCommandResult,
+  ConversationQueueItemRow,
+  ConversationQueueRevisionRow,
+  ConversationTurnRow,
+  EditQueuedConversationSendInput,
+  EnqueueConversationSendInput,
+  RemoveQueuedConversationSendInput,
+  ReplaceOrchestratorSessionInput,
+  ReplaceOrchestratorSessionResult,
+  ResumeOrchestratorSessionInput,
+  RequestConversationInterruptInput,
+  SettleConversationTurnInput,
+  SoftDeleteProjectConversationResult,
+  TurnInterruptRequestRow,
+} from './repos/conversation-queue.ts';
 
 export {
   createPendingAsk,

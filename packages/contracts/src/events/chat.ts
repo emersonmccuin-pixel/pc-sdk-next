@@ -3,6 +3,7 @@
 // private reasoning content never cross this contract.
 
 import type { ULID } from '../shared.ts';
+import { isSendQueueItem, type SendQueueItem } from './messages.ts';
 
 export type ConversationFamily =
   | 'user'
@@ -76,6 +77,17 @@ export type ChatEvent =
       detail: string;
       envelope: string;
     }
+  | { kind: 'send-state'; queueRevision: number; item: SendQueueItem }
+  | {
+      kind: 'interrupt-state';
+      requestId: string;
+      targetTurnId: string;
+      replacementQueueItemId: string | null;
+      state: 'requested' | 'confirmed' | 'failed';
+      terminalEventId: string | null;
+      result: 'aborted' | 'completed' | 'turn-failed' | 'recovered' | null;
+      failure: { code: string; message: string } | null;
+    }
   | { kind: 'retract'; streamIds: string[] };
 
 export type ChatEventKind = ChatEvent['kind'];
@@ -96,6 +108,8 @@ export const CHAT_EVENT_KINDS = [
   'sidechain',
   'agent-dispatch',
   'agent-envelope',
+  'send-state',
+  'interrupt-state',
   'retract',
 ] as const satisfies readonly ChatEventKind[];
 
@@ -263,6 +277,46 @@ export function isChatEvent(value: unknown): value is ChatEvent {
         typeof value.detail === 'string' &&
         typeof value.envelope === 'string'
       );
+    case 'send-state':
+      return (
+        Number.isSafeInteger(value.queueRevision) &&
+        (value.queueRevision as number) > 0 &&
+        isSendQueueItem(value.item)
+      );
+    case 'interrupt-state': {
+      const shape = (
+        nonEmptyString(value.requestId) &&
+        nonEmptyString(value.targetTurnId) &&
+        (value.replacementQueueItemId === null || nonEmptyString(value.replacementQueueItemId)) &&
+        (value.state === 'requested' || value.state === 'confirmed' || value.state === 'failed') &&
+        (value.terminalEventId === null || nonEmptyString(value.terminalEventId)) &&
+        (
+          value.result === null ||
+          value.result === 'aborted' ||
+          value.result === 'completed' ||
+          value.result === 'turn-failed' ||
+          value.result === 'recovered'
+        ) &&
+        (
+          value.failure === null ||
+          (isRecord(value.failure) && nonEmptyString(value.failure.code) && typeof value.failure.message === 'string')
+        )
+      );
+      if (!shape) return false;
+      if (value.state === 'requested') {
+        return value.terminalEventId === null && value.result === null && value.failure === null;
+      }
+      if (value.state === 'confirmed') {
+        return nonEmptyString(value.terminalEventId) && value.result === 'aborted' && value.failure === null;
+      }
+      if (value.failure === null) return false;
+      if (value.terminalEventId === null) return value.result === null;
+      return (
+        value.result === 'completed' ||
+        value.result === 'turn-failed' ||
+        value.result === 'recovered'
+      );
+    }
     case 'retract':
       return Array.isArray(value.streamIds) && value.streamIds.every(nonEmptyString);
     default:
@@ -291,6 +345,8 @@ export function conversationFamilyForEvent(event: ConversationEvent): Conversati
     case 'agent-envelope':
     case 'sidechain':
       return 'agent';
+    case 'send-state':
+      return event.item.origin === 'user' ? 'user' : 'agent';
     case 'usage':
     case 'turn-duration':
       return 'telemetry';

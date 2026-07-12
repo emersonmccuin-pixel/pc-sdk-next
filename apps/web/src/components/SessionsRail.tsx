@@ -7,7 +7,12 @@
 import { useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import { sessionsApi, type SessionSummary, type SessionTransition } from '@/state/sessions';
+import {
+  canResumeSession,
+  sessionsApi,
+  type SessionSummary,
+  type SessionTransition,
+} from '@/state/sessions';
 import { useViewingSession } from '@/store/viewing-session';
 
 interface SessionsRailProps {
@@ -130,9 +135,10 @@ export function SessionsRail({
                 <div className="mt-0.5 text-[10px] text-muted-foreground">
                   {formatStarted(s.startedAt)}
                   {isLive ? ' · live' : isViewing ? ' · viewing' : ''}
+                  {!isActive && !s.resumable ? ' · account changed · view only' : ''}
                 </div>
               </button>
-              {!isActive && (
+              {!isActive && canResumeSession(s) && (
                 <button
                   data-testid="session-resume"
                   onClick={() => handleResume(s.id)}

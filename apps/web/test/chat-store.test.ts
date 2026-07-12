@@ -4,11 +4,15 @@ import type {
   ChatEvent,
   ConversationEvent,
   ConversationEventFrame,
+  SendQueueItem,
   SessionReplayFrame,
 } from '../../../packages/contracts/src/events/index.ts';
 import {
+  addOptimistic,
+  applyConversationCommandReceipt,
   applyConversationEvent,
   applyReplay,
+  applySendQueueSnapshot,
   initialChatState,
   reduceConversationEvent,
   reduceReplay,
@@ -58,6 +62,24 @@ function usage(tokens: number): ChatEvent {
 
 function seed(): ChatState {
   return initialChatState(SID);
+}
+
+function queueItem(overrides: Partial<SendQueueItem> = {}): SendQueueItem {
+  return {
+    id: 'queue-1',
+    clientMessageId: 'client-1',
+    origin: 'user',
+    enqueuePosition: 1,
+    revision: 1,
+    deliveryRevision: null,
+    text: 'queued text',
+    status: 'queued',
+    interruptRequestId: null,
+    failureReason: null,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
 }
 
 function containsText(value: unknown, marker: string, seen = new WeakSet<object>()): boolean {
@@ -560,4 +582,228 @@ test('persistent projector indexes keep prior states immutable and branch determ
   assert.equal(streamed.deltas['stream-a']?.text, 'first second');
   assert.equal(completed.deltas['stream-a'], undefined);
   assert.deepEqual(base, untouched);
+});
+
+test('durable send-state drives the FIFO tray and reconciles optimistic content', () => {
+  let state = addOptimistic(seed(), 'command-1', 'client-1', 'queued text');
+  state = applyConversationEvent(state, frame(1, {
+    kind: 'send-state',
+    queueRevision: 1,
+    item: queueItem(),
+  }, { family: 'user' }));
+  assert.equal(state.queueRevision, 1);
+  assert.equal(state.sendQueue[0]?.status, 'queued');
+  assert.equal(state.optimistic[0]?.status, 'queued');
+
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'send-state',
+    queueRevision: 2,
+    item: queueItem({ status: 'delivering', deliveryRevision: 1, updatedAt: 2 }),
+  }, { family: 'user' }));
+  assert.equal(state.sendQueue[0]?.status, 'delivering');
+  assert.equal(state.optimistic[0]?.status, 'delivering');
+
+  state = applyConversationEvent(state, frame(3, {
+    kind: 'send-state',
+    queueRevision: 3,
+    item: queueItem({ status: 'accepted', deliveryRevision: 1, updatedAt: 3 }),
+  }, { family: 'user' }));
+  assert.deepEqual(state.sendQueue, []);
+  assert.deepEqual(state.optimistic, []);
+  assert.equal(buildRenderItems(sequenceToArray(state.projectedFrames)).length, 0);
+});
+
+test('queue snapshots never regress and equal-revision conflicts fail closed', () => {
+  const current = queueItem({ revision: 2, text: 'edited', updatedAt: 5 });
+  let state = applySendQueueSnapshot(seed(), {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 5,
+    items: [current],
+  });
+  state = applySendQueueSnapshot(state, {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 4,
+    items: [queueItem({ text: 'stale' })],
+  });
+  assert.equal(state.sendQueue[0]?.text, 'edited');
+  assert.deepEqual(state.integrityConflicts, []);
+
+  const exact = applySendQueueSnapshot(state, {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 5,
+    items: [current],
+  });
+  assert.equal(exact, state);
+  const conflict = applySendQueueSnapshot(state, {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 5,
+    items: [queueItem({ text: 'conflicting same revision' })],
+  });
+  assert.equal(conflict.sendQueue[0]?.text, 'edited');
+  assert.deepEqual(conflict.integrityConflicts, ['queue-snapshot:5']);
+});
+
+test('unsorted queue snapshot redelivery normalizes before equality comparison', () => {
+  const first = queueItem({ id: 'queue-1', clientMessageId: 'client-1', enqueuePosition: 1 });
+  const second = queueItem({ id: 'queue-2', clientMessageId: 'client-2', enqueuePosition: 2, text: 'second' });
+  const snapshot = {
+    type: 'send-queue-snapshot' as const,
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 2,
+    items: [second, first],
+  };
+  const state = applySendQueueSnapshot(seed(), snapshot);
+  assert.deepEqual(state.sendQueue.map((item) => item.id), ['queue-1', 'queue-2']);
+  const duplicate = applySendQueueSnapshot(state, snapshot);
+  assert.equal(duplicate, state);
+  assert.deepEqual(duplicate.integrityConflicts, []);
+});
+
+test('overtaken terminal queue events still reconcile persisted client identity', () => {
+  let state = addOptimistic(seed(), 'command-1', 'client-1', 'keep this draft');
+  state = applySendQueueSnapshot(state, {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 2,
+    items: [],
+  });
+  state = applyConversationEvent(state, frame(1, {
+    kind: 'send-state',
+    queueRevision: 1,
+    item: queueItem({
+      status: 'cancelled',
+      failureReason: 'session switched',
+      updatedAt: 2,
+    }),
+  }, { family: 'user' }));
+  assert.equal(state.queueRevision, 2);
+  assert.deepEqual(state.sendQueue, []);
+  assert.deepEqual(state.optimistic, []);
+  assert.equal(state.cancelledClientMessages['client-1'], 'session switched');
+});
+
+test('sender-only command receipts report durable acceptance or typed rejection', () => {
+  let state = addOptimistic(seed(), 'command-1', 'client-1', 'hello');
+  state = applyConversationCommandReceipt(state, {
+    type: 'conversation-command-receipt',
+    projectId: 'project-1',
+    sessionId: SID,
+    commandId: 'command-1',
+    command: 'send',
+    status: 'applied',
+    queueItemId: 'queue-1',
+    revision: 1,
+    error: null,
+  });
+  assert.equal(state.optimistic[0]?.status, 'queued');
+  assert.equal(state.commandReceipts['command-1']?.status, 'applied');
+
+  state = addOptimistic(state, 'command-2', 'client-2', 'bad');
+  state = applyConversationCommandReceipt(state, {
+    type: 'conversation-command-receipt',
+    projectId: 'project-1',
+    sessionId: SID,
+    commandId: 'command-2',
+    command: 'send',
+    status: 'rejected',
+    error: { code: 'session-changed', message: 'session changed' },
+  });
+  assert.equal(state.optimistic.find((send) => send.commandId === 'command-2')?.status, 'failed');
+  assert.equal(state.optimistic.find((send) => send.commandId === 'command-2')?.failureReason, 'session changed');
+
+  state = applyConversationCommandReceipt(state, {
+    type: 'conversation-command-receipt',
+    projectId: 'project-1',
+    sessionId: 'old-session',
+    commandId: 'stale-command',
+    command: 'send',
+    status: 'rejected',
+    error: { code: 'session-changed', message: 'old session ended' },
+  });
+  assert.equal(state.commandReceipts['stale-command']?.error?.code, 'session-changed');
+});
+
+test('interrupt projection stays requested until a positive terminal receipt', () => {
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'interrupt-state',
+    requestId: 'interrupt-1',
+    targetTurnId: 'turn-1',
+    replacementQueueItemId: 'queue-2',
+    state: 'requested',
+    terminalEventId: null,
+    result: null,
+    failure: null,
+  }, { family: 'control', turnId: 'turn-1' }));
+  assert.equal(state.interrupts['interrupt-1']?.state, 'requested');
+
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'interrupt-state',
+    requestId: 'interrupt-1',
+    targetTurnId: 'turn-1',
+    replacementQueueItemId: 'queue-2',
+    state: 'confirmed',
+    terminalEventId: 'terminal-1',
+    result: 'aborted',
+    failure: null,
+  }, { family: 'control', turnId: 'turn-1' }));
+  assert.equal(state.interrupts['interrupt-1']?.state, 'confirmed');
+  assert.equal(state.interrupts['interrupt-1']?.result, 'aborted');
+});
+
+test('latest interrupt identity follows canonical request order, not object key enumeration', () => {
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'interrupt-state',
+    requestId: '2',
+    targetTurnId: 'turn-1',
+    replacementQueueItemId: null,
+    state: 'requested',
+    terminalEventId: null,
+    result: null,
+    failure: null,
+  }, { family: 'control' }));
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'interrupt-state',
+    requestId: '1',
+    targetTurnId: 'turn-2',
+    replacementQueueItemId: null,
+    state: 'requested',
+    terminalEventId: null,
+    result: null,
+    failure: null,
+  }, { family: 'control' }));
+  assert.equal(Object.keys(state.interrupts)[0], '1', 'integer-like object keys reorder');
+  assert.equal(state.latestInterruptRequestId, '1', 'canonical fold order remains authoritative');
+});
+
+test('replay rebuilds durable queue projection instead of preserving stale snapshot state', () => {
+  const stale = applySendQueueSnapshot(seed(), {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 9,
+    items: [queueItem({ text: 'stale local snapshot' })],
+  });
+  const replayed = applyReplay(stale, {
+    type: 'session-replay',
+    projectId: 'project-1',
+    sessionId: SID,
+    highWaterSequence: 1,
+    events: [frame(1, {
+      kind: 'send-state',
+      queueRevision: 1,
+      item: queueItem({ id: 'queue-new', clientMessageId: 'client-new', text: 'replayed' }),
+    }, { family: 'user' })],
+  });
+  assert.equal(replayed.queueRevision, 1);
+  assert.equal(replayed.sendQueue[0]?.text, 'replayed');
 });

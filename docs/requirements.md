@@ -58,8 +58,8 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | CHAT-002 | verified | Server-assigned sequence is authoritative. The browser never orders durable conversation state by timestamp or arrival order. |
 | CHAT-003 | verified | Stream items have stable turn/item/stream identities and deterministic delta ordering; one logical response cannot split into orphan bubbles. |
 | CHAT-004 | verified | Event persistence and live publication use an outbox/replay discipline so reconnect neither loses nor duplicates committed events. |
-| CHAT-005 | accepted | Messages sent during an active turn enter a durable, visible FIFO queue with edit/remove rules before delivery. |
-| CHAT-006 | accepted | “Interrupt and send” requires a positive interruption receipt before the replacement message is delivered. |
+| CHAT-005 | verified | Messages sent during an active turn enter a durable, visible FIFO queue with edit/remove rules before delivery. |
+| CHAT-006 | verified | “Interrupt and send” requires a positive interruption receipt before the replacement message is delivered. |
 | CHAT-007 | accepted | The user always receives honest activity feedback while the orchestrator is working or waiting. Operational status must not expose private chain-of-thought. |
 | CHAT-008 | accepted | Tool calls have requested/approval-needed/running/succeeded/failed states with a stable call ID and safe summary. |
 | CHAT-009 | accepted | Agent progress is summarized in chat while full contracts, transcripts, evidence, and landing state live in run views. |

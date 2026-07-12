@@ -10,7 +10,7 @@ export * from './agent.ts';
 import type { ConversationEventFrame } from './chat.ts';
 import type { SessionChangedFrame, SessionReplayFrame } from './session.ts';
 import type {
-  SendAckFrame,
+  ConversationCommandReceiptFrame,
   SendQueueSnapshotFrame,
   AskFrame,
   ServerPongFrame,
@@ -24,7 +24,7 @@ export type ServerFrame =
   | ConversationEventFrame
   | SessionChangedFrame
   | SessionReplayFrame
-  | SendAckFrame
+  | ConversationCommandReceiptFrame
   | SendQueueSnapshotFrame
   | AskFrame
   | ServerPongFrame

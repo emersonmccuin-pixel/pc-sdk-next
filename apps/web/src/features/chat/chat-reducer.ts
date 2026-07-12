@@ -5,8 +5,8 @@ import type {
   AskFrame,
   ChatDeltaEvent,
   ChatEvent,
+  ConversationCommandReceiptFrame,
   ConversationEventFrame,
-  SendAckFrame,
   SendQueueItem,
   SendQueueSnapshotFrame,
   SessionChangedFrame,
@@ -81,20 +81,32 @@ export type OptimisticStatus =
   | 'sending'
   | 'queued'
   | 'delivering'
-  | 'delivered'
+  | 'accepted'
   | 'failed'
   | 'cancelled';
 
 export interface OptimisticSend {
+  commandId: string;
   clientMessageId: string;
   text: string;
   status: OptimisticStatus;
   failureReason: string | null;
 }
 
+export interface InterruptProjection {
+  requestId: string;
+  targetTurnId: string;
+  replacementQueueItemId: string | null;
+  state: 'requested' | 'confirmed' | 'failed';
+  result: 'aborted' | 'completed' | 'turn-failed' | 'recovered' | null;
+  failure: { code: string; message: string } | null;
+}
+
 export interface ChatState {
   conversationId: string | null;
   sessionId: string | null;
+  /** A connect checkpoint/replay has established the current session context. */
+  sessionContextReady: boolean;
   /** Highest accepted or checkpointed server sequence. */
   highWaterSequence: number;
   /** Highest authoritative sequence whose transition has been folded. */
@@ -106,8 +118,14 @@ export interface ChatState {
   aggregates: Aggregates;
   /** Raw/coalesced payload exists only while a stream is active. */
   deltas: Record<string, DeltaBuffer>;
+  queueRevision: number;
   sendQueue: SendQueueItem[];
   optimistic: OptimisticSend[];
+  acceptedClientMessageIds: Record<string, true>;
+  cancelledClientMessages: Record<string, string | null>;
+  commandReceipts: Record<string, ConversationCommandReceiptFrame>;
+  interrupts: Record<string, InterruptProjection>;
+  latestInterruptRequestId: string | null;
   asks: AskFrame[];
   answeredAsks: Record<string, string>;
   /** Fail-closed protocol/data conflicts; accepted projection is preserved. */
@@ -177,14 +195,21 @@ export function initialChatState(
   return {
     conversationId,
     sessionId,
+    sessionContextReady: false,
     highWaterSequence: 0,
     projectedThroughSequence: 0,
     frames: emptySequence(),
     projectedFrames: emptySequence(),
     aggregates: emptyAggregates(),
     deltas: {},
+    queueRevision: 0,
     sendQueue: [],
     optimistic: [],
+    acceptedClientMessageIds: {},
+    cancelledClientMessages: {},
+    commandReceipts: {},
+    interrupts: {},
+    latestInterruptRequestId: null,
     asks: [],
     answeredAsks: {},
     integrityConflicts: [],
@@ -416,9 +441,83 @@ function foldStableFrame(
   let projector = binding.projector;
   let deltas = state.deltas;
   let optimistic = state.optimistic;
+  let acceptedClientMessageIds = state.acceptedClientMessageIds;
+  let cancelledClientMessages = state.cancelledClientMessages;
+  let queueRevision = state.queueRevision;
+  let sendQueue = state.sendQueue;
+  let interrupts = state.interrupts;
+  let latestInterruptRequestId = state.latestInterruptRequestId;
 
   if (binding.valid && event.kind === 'user' && frame.clientMessageId) {
     optimistic = optimistic.filter((send) => send.clientMessageId !== frame.clientMessageId);
+    acceptedClientMessageIds = {
+      ...acceptedClientMessageIds,
+      [frame.clientMessageId]: true,
+    };
+  }
+
+  if (binding.valid && event.kind === 'send-state') {
+    if (event.queueRevision < queueRevision) {
+      // A reconnect snapshot may overtake still-pending older outbox rows.
+      // They are durably accounted for by the newer queue revision.
+    } else if (event.queueRevision === queueRevision) {
+      const current = sendQueue.find((item) => item.id === event.item.id);
+      const terminalAbsent =
+        (event.item.status === 'accepted' || event.item.status === 'cancelled') && !current;
+      if (!terminalAbsent && JSON.stringify(current) !== JSON.stringify(event.item)) {
+        binding.conflicts = addConflict(binding.conflicts, `queue-revision:${event.queueRevision}`);
+      }
+    } else {
+      queueRevision = event.queueRevision;
+      const withoutItem = sendQueue.filter((item) => item.id !== event.item.id);
+      sendQueue = event.item.status === 'accepted' || event.item.status === 'cancelled'
+        ? withoutItem
+        : [...withoutItem, event.item].sort((left, right) =>
+            left.enqueuePosition - right.enqueuePosition || left.id.localeCompare(right.id));
+      optimistic = optimistic.flatMap((send) => {
+        if (send.clientMessageId !== event.item.clientMessageId) return [send];
+        if (event.item.status === 'accepted' || event.item.status === 'cancelled') return [];
+        return [{
+          ...send,
+          status: event.item.status,
+          failureReason: event.item.failureReason,
+        }];
+      });
+    }
+    // A reconnect snapshot may overtake the terminal event and omit its row.
+    // Terminal client identity still folds from the canonical event even when
+    // its queue topology revision is already checkpointed by that snapshot.
+    if (event.item.status === 'accepted' || event.item.status === 'cancelled') {
+      optimistic = optimistic.filter(
+        (send) => send.clientMessageId !== event.item.clientMessageId,
+      );
+      if (event.item.status === 'accepted') {
+        acceptedClientMessageIds = {
+          ...acceptedClientMessageIds,
+          [event.item.clientMessageId]: true,
+        };
+      } else {
+        cancelledClientMessages = {
+          ...cancelledClientMessages,
+          [event.item.clientMessageId]: event.item.failureReason,
+        };
+      }
+    }
+  }
+
+  if (binding.valid && event.kind === 'interrupt-state') {
+    interrupts = {
+      ...interrupts,
+      [event.requestId]: {
+        requestId: event.requestId,
+        targetTurnId: event.targetTurnId,
+        replacementQueueItemId: event.replacementQueueItemId,
+        state: event.state,
+        result: event.result,
+        failure: event.failure,
+      },
+    };
+    if (event.state === 'requested') latestInterruptRequestId = event.requestId;
   }
 
   if (binding.valid && frame.streamId && !streamWasRetracted && binding.receipt) {
@@ -467,7 +566,13 @@ function foldStableFrame(
       ? foldAggregate(state.aggregates, event)
       : state.aggregates,
     deltas,
+    queueRevision,
+    sendQueue,
     optimistic,
+    acceptedClientMessageIds,
+    cancelledClientMessages,
+    interrupts,
+    latestInterruptRequestId,
     integrityConflicts: binding.conflicts,
     projector,
   };
@@ -612,7 +717,7 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     replay.sessionId,
     ordered[0]?.conversationId ?? replay.sessionId,
   );
-  next = { ...next, optimistic: state.optimistic, sendQueue: state.sendQueue };
+  next = { ...next, optimistic: state.optimistic };
 
   for (const event of ordered) {
     const belongs =
@@ -641,6 +746,7 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     ...next,
     highWaterSequence: checkpoint,
     projectedThroughSequence: checkpoint,
+    sessionContextReady: true,
   };
   return { state: next, work: receiptWork };
 }
@@ -650,47 +756,80 @@ export function applyReplay(state: ChatState, replay: SessionReplayFrame): ChatS
 }
 
 export function applySessionChanged(state: ChatState, frame: SessionChangedFrame): ChatState {
-  void state;
-  return initialChatState(frame.session?.id ?? null);
+  const next = {
+    ...initialChatState(frame.session?.id ?? null),
+    sessionContextReady: frame.session === null,
+  };
+  return state.sessionId === null && state.optimistic.length > 0
+    ? { ...next, optimistic: state.optimistic }
+    : next;
 }
 
-export function addOptimistic(state: ChatState, clientMessageId: string, text: string): ChatState {
+export function addOptimistic(
+  state: ChatState,
+  commandId: string,
+  clientMessageId: string,
+  text: string,
+): ChatState {
   if (state.optimistic.some((send) => send.clientMessageId === clientMessageId)) return state;
   return {
     ...state,
     optimistic: [
       ...state.optimistic,
-      { clientMessageId, text, status: 'sending', failureReason: null },
+      { commandId, clientMessageId, text, status: 'sending', failureReason: null },
     ],
   };
 }
 
-export function applySendAck(state: ChatState, ack: SendAckFrame): ChatState {
+export function applyConversationCommandReceipt(
+  state: ChatState,
+  receipt: ConversationCommandReceiptFrame,
+): ChatState {
   const optimistic = state.optimistic.map((send) => {
-    if (send.clientMessageId !== ack.clientMessageId) return send;
-    if (ack.status === 'queued') return { ...send, status: 'queued' as const };
-    if (ack.status === 'invalid' || ack.status === 'error') {
-      return { ...send, status: 'failed' as const, failureReason: ack.error ?? ack.status };
+    if (send.commandId !== receipt.commandId) return send;
+    if (receipt.status === 'applied' || receipt.status === 'duplicate') {
+      return { ...send, status: 'queued' as const, failureReason: null };
     }
-    return send;
+    return {
+      ...send,
+      status: 'failed' as const,
+      failureReason: receipt.error?.message ?? 'Command rejected',
+    };
   });
-  return { ...state, optimistic };
+  return {
+    ...state,
+    optimistic,
+    commandReceipts: { ...state.commandReceipts, [receipt.commandId]: receipt },
+  };
 }
 
 export function applySendQueueSnapshot(state: ChatState, frame: SendQueueSnapshotFrame): ChatState {
   if (state.sessionId && frame.sessionId && frame.sessionId !== state.sessionId) return state;
-  const byClientId = new Map(frame.items.map((item) => [item.clientMessageId, item] as const));
+  const checkpointed = state.sessionContextReady ? state : { ...state, sessionContextReady: true };
+  const normalizedItems = [...frame.items].sort((left, right) =>
+    left.enqueuePosition - right.enqueuePosition || left.id.localeCompare(right.id));
+  if (frame.queueRevision < checkpointed.queueRevision) return checkpointed;
+  if (frame.queueRevision === checkpointed.queueRevision) {
+    if (JSON.stringify(normalizedItems) === JSON.stringify(checkpointed.sendQueue)) return checkpointed;
+    return withConflict(checkpointed, `queue-snapshot:${frame.queueRevision}`);
+  }
+  const byClientId = new Map(normalizedItems.map((item) => [item.clientMessageId, item] as const));
   const optimistic: OptimisticSend[] = [];
-  for (const send of state.optimistic) {
+  for (const send of checkpointed.optimistic) {
     const item = byClientId.get(send.clientMessageId);
     if (!item) {
       optimistic.push(send);
       continue;
     }
-    if (item.status === 'delivered') continue;
+    if (item.status === 'accepted' || item.status === 'cancelled') continue;
     optimistic.push({ ...send, status: item.status, failureReason: item.failureReason });
   }
-  return { ...state, sendQueue: frame.items, optimistic };
+  return {
+    ...checkpointed,
+    queueRevision: frame.queueRevision,
+    sendQueue: normalizedItems,
+    optimistic,
+  };
 }
 
 export function applyAsk(state: ChatState, frame: AskFrame): ChatState {

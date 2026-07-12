@@ -1,6 +1,6 @@
-// Boot: migrate → boot-recovery (inside startServer) → seed+probe MCP registry →
-// HTTP + WS on PC_PORT (PC-SDK Next default 5124), serving apps/web/dist when built
-// (tolerated absent in dev).
+// Boot: migrate → boot-recovery (inside startServer) → HTTP + WS listen →
+// required dispatch/MCP bootstrap → recovered chat-queue drain. apps/web/dist
+// is served when built (tolerated absent in dev).
 //
 // This is the COMPOSITION ROOT — the only place (with the runtime registry)
 // that selects a concrete agent-runtime adapter. The account switcher resolves
@@ -54,8 +54,8 @@ async function main(): Promise<void> {
   runtimes.register(new ClaudeRuntimeAdapter({ accounts }));
 
   const dispatch = new DispatchService({ runtimes, accounts, mcp });
-  // The server's live port — set after listen; sessions mint on first message,
-  // which is always after listen.
+  // The server's live port — set after listen and before any recovered chat
+  // work is explicitly released by the composition root.
   const portRef = { port: 0 };
 
   // Mint one runtime session per app session: resolve the project's account,
@@ -110,6 +110,7 @@ async function main(): Promise<void> {
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
+    deferConversationQueueDrain: true,
     // Settings → Restart engine: close the listener (releases the port), then
     // respawn this exact process detached, and exit. execArgv MUST be carried —
     // tsx injects its TS loader there, not in argv; without it the child is
@@ -134,6 +135,14 @@ async function main(): Promise<void> {
     },
   });
   portRef.port = server.port;
+  // Probe MCP after listen so startup remains observable, but gate recovered
+  // chat work on the completed attempt. Failure degrades to an empty/failed
+  // bridge explicitly; it must not let recovery mint a half-initialized
+  // runtime session.
+  const mcpReady = mcp
+    .initFromBoot()
+    .then(() => console.log(`[pc-sdk][mcp] ${mcp.statuses().length} server(s) probed`))
+    .catch((err) => console.warn('[pc-sdk][mcp] init failed:', err instanceof Error ? err.message : err));
   // Recovery order (docs/worktree-lifecycle.md 'Recovery' — locked):
   // 1. sealed-run recovery — non-terminal runs with a sealed deliverable
   //    (skipped by the boot sweep inside startServer) settle completed and
@@ -186,19 +195,18 @@ async function main(): Promise<void> {
     .recoverPausedAsks()
     .catch((err) => console.warn('[pc-sdk][dispatch] paused-ask revival failed:', err));
 
+  // 9. recovered conversation queue — only after the live port, dispatch
+  // routes, paused-run sessions, and MCP initialization attempt are ready.
+  // Queued rows need no browser connection, but they do need the same fully
+  // composed runtime package as a newly submitted turn.
+  await mcpReady;
+  server.registry.kickRecoveredQueues();
+
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
   // Active quota supply — boot poll + interval per account (degrade-never-block).
   const usagePoller = new UsagePoller({ accounts: accounts.list(), cache: usage });
   usagePoller.start();
-
-  // Seed + probe MCP registry in the background — degrade-never-block: a slow or
-  // down server must not delay the server coming up. Bridges appear as probes
-  // land; sessions started before then simply have no MCP tools yet.
-  void mcp
-    .initFromBoot()
-    .then(() => console.log(`[pc-sdk][mcp] ${mcp.statuses().length} server(s) probed`))
-    .catch((err) => console.warn('[pc-sdk][mcp] init failed:', err instanceof Error ? err.message : err));
 
   const shutdown = (): void => {
     usagePoller.stop();
