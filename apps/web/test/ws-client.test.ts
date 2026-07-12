@@ -7,6 +7,7 @@ import { useChatStore } from '../src/state/chat-store.ts';
 import { useConnectionStore } from '../src/state/connection.ts';
 import { useAgentEventStore } from '../src/state/agent-event-store.ts';
 import { useSessionNav } from '../src/state/sessions.ts';
+import { useResourceStore } from '../src/state/resource-store.ts';
 
 const PROJECT_ID = 'project-1';
 const SESSION_ID = 'session-1';
@@ -286,6 +287,99 @@ test('socket admits only strict canonical agent transcript frames', () => {
     event: { ...frame.event, rawThinking: 'SECRET' },
   });
   assert.equal(useAgentEventStore.getState().byRunId.get('run-1')?.length, 1);
+});
+
+test('socket admits only exact browser-safe agent-run resources', () => {
+  useResourceStore.getState().clearAll();
+  const socket = new ProjectSocket(PROJECT_ID);
+  const run = {
+    runId: 'run-resource-1',
+    agentName: 'researcher',
+    selection: {
+      runtimeId: 'claude-agent-sdk',
+      accountId: 'personal',
+      model: 'claude-opus',
+      effort: { kind: 'none' },
+    },
+    specialistRevision: 'sha256:safe',
+    nativeSessionIdPresent: true,
+    continuationState: 'clean-started',
+    projectId: PROJECT_ID,
+    dispatcherSessionId: SESSION_ID,
+    worktreeDir: '',
+    startedAt: 1,
+    status: 'running',
+    lifecycleState: null,
+    result: '',
+    failureReason: null,
+    failureCause: null,
+    endedAt: null,
+    rev: 1,
+  };
+  const frame = {
+    type: 'resource',
+    event: {
+      id: 'resource-1',
+      cursor: '1',
+      scope: 'project',
+      projectId: PROJECT_ID,
+      entity: 'agent-run',
+      entityId: run.runId,
+      eventType: 'agent-run.changed',
+      version: 1,
+      createdAt: 1,
+      payload: { reason: 'running', run },
+    },
+  };
+
+  route(socket, frame);
+  const key = `agent-run::${run.runId}`;
+  assert.equal(useResourceStore.getState().byKey.get(key)?.version, 1);
+
+  route(socket, {
+    ...frame,
+    event: {
+      ...frame.event,
+      cursor: '2',
+      version: 2,
+      payload: {
+        ...frame.event.payload,
+        continuationAttemptId: 'attempt-secret',
+        run: { ...run, nativeSessionId: 'native-secret', rev: 2 },
+      },
+    },
+  });
+  route(socket, { ...frame, rawProviderPayload: 'secret' });
+  route(socket, {
+    ...frame,
+    event: { ...frame.event, cursor: '3', entityId: 'other-run' },
+  });
+  route(socket, {
+    ...frame,
+    event: { ...frame.event, cursor: '4', projectId: 'other-project' },
+  });
+  route(socket, {
+    ...frame,
+    event: {
+      ...frame.event,
+      cursor: '4b',
+      projectId: 'other-project',
+      version: 2,
+      payload: {
+        ...frame.event.payload,
+        run: { ...run, projectId: 'other-project', rev: 2 },
+      },
+    },
+  });
+  route(socket, {
+    ...frame,
+    event: { ...frame.event, cursor: '5', version: 5 },
+  });
+  route(socket, {
+    ...frame,
+    event: { ...frame.event, cursor: '6', scope: 'global', projectId: null },
+  });
+  assert.equal(useResourceStore.getState().byKey.get(key)?.version, 1);
 });
 
 test('socket generation guards suppress connecting duplicates and superseded handlers', () => {

@@ -54,8 +54,7 @@ const GOOD_HEADERS = {
   accept: 'application/json, text/event-stream',
   [PC_MCP_CLAIM_HEADERS.projectId]: 'proj-1',
   [PC_MCP_CLAIM_HEADERS.sessionId]: 'sess-1',
-  [PC_MCP_CLAIM_HEADERS.agentSessionId]: 'cc-1',
-  [PC_MCP_CLAIM_HEADERS.agentRunId]: '',
+  [PC_MCP_CLAIM_HEADERS.agentRunId]: 'run-1',
   [PC_MCP_CLAIM_HEADERS.dispatcherSessionId]: '',
   [PC_MCP_CLAIM_HEADERS.parentWorkItemId]: '',
   [PC_MCP_CLAIM_HEADERS.invokeDepth]: '0',
@@ -105,7 +104,7 @@ test('HTTP endpoint boots, initializes, and serves TOOLS in registry order', asy
     // The ReadyGate handshake callback fired with THIS session's claims.
     assert.equal(h.initialized.length, 1);
     assert.equal(h.initialized[0]!.projectId, 'proj-1');
-    assert.equal(h.initialized[0]!.agentSessionId, 'cc-1');
+    assert.equal(h.initialized[0]!.agentRunId, 'run-1');
 
     const listRes = await fetch(`http://127.0.0.1:${h.port}/api/mcp`, {
       method: 'POST',

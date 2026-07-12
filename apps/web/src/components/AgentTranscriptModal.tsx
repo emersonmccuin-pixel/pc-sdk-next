@@ -135,8 +135,19 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
             </button>
           </div>
 
-          <div className="mt-1.5 truncate font-mono text-[10px] text-muted-foreground/80" title={run.sessionId}>
-            session: {run.sessionId}
+          <div className="mt-1.5 truncate font-mono text-[10px] text-muted-foreground/80" title={run.runId}>
+            run: {run.runId}
+          </div>
+          <div className="truncate font-mono text-[10px] text-muted-foreground/80">
+            runtime: {formatRunSelection(run)}
+          </div>
+          <div className="truncate font-mono text-[10px] text-muted-foreground/80">
+            specialist: {run.specialistRevision ?? 'legacy unavailable'} · {run.continuationState}
+            {' · '}native id {run.nativeSessionIdPresent
+              ? 'bound'
+              : run.continuationState === 'legacy-unavailable'
+                ? 'legacy unavailable'
+                : 'unbound'}
           </div>
           <div className="truncate font-mono text-[10px] text-muted-foreground/80" title={run.worktreeDir}>
             cwd: {run.worktreeDir}
@@ -298,6 +309,14 @@ function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatRunSelection(run: AgentRunDto): string {
+  if (!run.selection) return 'legacy unavailable';
+  const effort = run.selection.effort.kind === 'selected'
+    ? run.selection.effort.value
+    : run.selection.effort.kind;
+  return `${run.selection.runtimeId} / ${run.selection.accountId} / ${run.selection.model} / effort ${effort}`;
 }
 
 /** Always-mounted Shell-level instance, driven by useAgentTranscript. Renders

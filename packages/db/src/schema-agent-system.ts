@@ -11,7 +11,12 @@
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
   AcceptanceCriteria,
+  AgentRunContinuationState,
+  AgentRunEffortState,
   AgentRunFailureCause,
+  AgentRunNativeIdentityState,
+  AgentRunSelectionState,
+  AgentRunSnapshotState,
   AgentRunStatus,
   ContractLandingAuthorizer,
   ContractLandingPolicy,
@@ -23,6 +28,7 @@ import type {
   PendingAskOption,
   PendingAskStatus,
   RunLifecycleState,
+  SpecialistExecutionSnapshot,
   ULID,
   VerificationStatus,
   VerificationTier,
@@ -37,13 +43,9 @@ import { projects } from './schema.ts';
  * intermediate states (`queued | spawning | running | paused`) are persisted
  * alongside the terminal states (`completed | failed | cancelled`).
  *
- * Continuation lineage via `continues` (self-FK). Each `pc_continue_agent`
- * dispatch creates a new row whose `cc_session_id` matches the parent's.
- * Walking `continues` backwards reconstructs the chain.
- *
- * `pod_revision_at_dispatch` + `pod_revision_at_resume` enable drift
- * detection. If they differ, the orchestrator can surface "the pod changed
- * between dispatch and resume" to the user.
+ * Continuation lineage via `continues` (self-FK). Every row also owns a frozen
+ * specialist execution snapshot, immutable runtime selection, and exact
+ * native create/resume attempt state.
  */
 export const agentRuns = sqliteTable(
   'agent_runs',
@@ -55,13 +57,27 @@ export const agentRuns = sqliteTable(
       .references(() => projects.id),
     /** PC session-id of the dispatcher (orchestrator or parent agent). */
     dispatcherSessionId: text('dispatcher_session_id').notNull(),
-    /** CC's provider session-id (UUID). Continuations share this with parent. */
-    ccSessionId: text('cc_session_id').notNull(),
+    snapshotState: text('snapshot_state', {
+      enum: ['stamped', 'legacy-unavailable'],
+    }).notNull().default('legacy-unavailable').$type<AgentRunSnapshotState>(),
+    specialistSnapshot: text('specialist_snapshot', { mode: 'json' })
+      .$type<SpecialistExecutionSnapshot | null>(),
+    nativeSessionId: text('native_session_id'),
+    nativeIdentityState: text('native_identity_state', {
+      enum: ['unbound', 'bound', 'legacy-untrusted'],
+    }).notNull().default('legacy-untrusted').$type<AgentRunNativeIdentityState>(),
+    continuationState: text('continuation_state', {
+      enum: [
+        'clean-pending',
+        'clean-started',
+        'resume-pending',
+        'native-resumed',
+        'resume-failed',
+        'legacy-unavailable',
+      ],
+    }).notNull().default('legacy-unavailable').$type<AgentRunContinuationState>(),
+    continuationAttemptId: text('continuation_attempt_id'),
     podName: text('pod_name').notNull(),
-    /** Updated-at hash of the pod row at dispatch time. Drift-detection input. */
-    podRevisionAtDispatch: text('pod_revision_at_dispatch'),
-    /** Updated-at hash at resume time. NULL until resumed. */
-    podRevisionAtResume: text('pod_revision_at_resume'),
     status: text('status').notNull().$type<AgentRunStatus>(),
     /** Worktree-pipeline state (docs/worktree-lifecycle.md, migration 0003) —
      *  layered beside `status`, which stays authoritative for dispatch.
@@ -118,11 +134,16 @@ export const agentRuns = sqliteTable(
     gitReceipt: text('git_receipt', { mode: 'json' }).$type<WorktreeGitReceipt | null>(),
     preparationReceipt: text('preparation_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
     readinessReceipt: text('readiness_receipt', { mode: 'json' }).$type<WorktreePhaseReceipt | null>(),
-    /** Runtime-selection stamp (architecture guard rule 2): the adapter id,
-     *  account, and model this run executed under. NULL = pre-Phase-3 row. */
+    selectionState: text('selection_state', {
+      enum: ['stamped', 'legacy-unavailable'],
+    }).notNull().default('legacy-unavailable').$type<AgentRunSelectionState>(),
     runtimeId: text('runtime_id'),
     accountId: text('account_id'),
     model: text('model'),
+    effortState: text('effort_state', {
+      enum: ['selected', 'none', 'unavailable', 'legacy-unknown'],
+    }).notNull().default('legacy-unknown').$type<AgentRunEffortState>(),
+    effort: text('effort'),
     /** Migration 0008 — bounded auto-continue on turn-budget exhaustion.
      *  Durable per-chain counter (survives a server restart mid-chain): 0 for
      *  a fresh dispatch / manual continuation, N+1 for an auto-continuation of
@@ -134,7 +155,7 @@ export const agentRuns = sqliteTable(
     index('agent_runs_session_queued_idx').on(t.dispatcherSessionId, t.queuedAt),
     index('agent_runs_continues_idx').on(t.continues),
     index('agent_runs_project_status_idx').on(t.projectId, t.status),
-    index('agent_runs_cc_session_idx').on(t.ccSessionId),
+    index('agent_runs_native_session_idx').on(t.nativeSessionId),
     index('agent_runs_contract_idx').on(t.contractId),
   ],
 );
@@ -239,9 +260,6 @@ export const pendingAsks = sqliteTable(
       .notNull()
       .$type<ULID>()
       .references(() => agentRuns.id),
-    /** Denormalised CC provider session-id; survives the agent_run row being
-     *  archived. */
-    ccSessionId: text('cc_session_id').notNull(),
     projectId: text('project_id')
       .notNull()
       .$type<ULID>()
@@ -262,7 +280,6 @@ export const pendingAsks = sqliteTable(
   (t) => [
     index('pending_asks_project_status_idx').on(t.projectId, t.status),
     index('pending_asks_agent_run_idx').on(t.agentRunId),
-    index('pending_asks_cc_session_idx').on(t.ccSessionId),
   ],
 );
 

@@ -20,8 +20,12 @@ import {
   listStrandedWorktrees,
 } from '@pc/db';
 import { ContractService, toAgentRunDto, toPendingAskDto } from '@pc/app-services';
-import type { ChatEvent } from '@pc/contracts';
-import type { AgentRunStatus, PendingAskOption, ULID } from '@pc/domain';
+import {
+  parseAnswerPendingAskRequest,
+  parseCreatePendingAskRequest,
+  type ChatEvent,
+} from '@pc/contracts';
+import type { AgentRunStatus, ULID } from '@pc/domain';
 import type { DispatchService } from '../dispatch/service.ts';
 
 const TERMINAL_LIST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -321,31 +325,23 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const projectId = project(c);
     if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const agentRunId = typeof body.agentRunId === 'string' ? (body.agentRunId as ULID) : null;
-    const kind = body.kind === 'approval' ? 'approval' : body.kind === 'orchestrator' ? 'orchestrator' : null;
-    const promptBody = typeof body.promptBody === 'string' ? body.promptBody : '';
-    if (!agentRunId || !kind || !promptBody.trim()) {
-      return c.json({ ok: false, error: 'agentRunId, kind, promptBody required' }, 400);
-    }
-    const options = Array.isArray(body.options)
-      ? ((body.options as unknown[])
-          .map((o) => (typeof o === 'string' ? { label: o, value: o } : (o as PendingAskOption)))
-          .filter((o) => o && typeof o.label === 'string') as PendingAskOption[])
-      : null;
+    const parsed = parseCreatePendingAskRequest(body);
+    if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400);
     const result = dispatch.createPendingAsk({
       projectId,
-      agentRunId,
-      kind,
-      promptBody,
-      context: typeof body.context === 'string' ? body.context : null,
-      options,
+      agentRunId: parsed.value.agentRunId as ULID,
+      kind: parsed.value.kind,
+      promptBody: parsed.value.promptBody,
+      context: parsed.value.context ?? null,
+      options: parsed.value.options ?? null,
     });
     if (!result.ok) return c.json({ ok: false, error: result.message }, result.httpStatus as 409);
     const ask = getPendingAsk(result.pendingAskId);
+    if (!ask) return c.json({ ok: false, error: 'pending ask persistence failed' }, 500);
     return c.json(
       {
         ok: true,
-        pendingAsk: ask ? toPendingAskDto(ask) : { id: result.pendingAskId },
+        pendingAsk: toPendingAskDto(ask),
         status: 'waiting',
         message: 'run paused — end your turn now; the answer arrives as your next message',
       },
@@ -357,18 +353,18 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const projectId = project(c);
     if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
     const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
-    const answer = typeof body.answer === 'string' ? body.answer : '';
-    const answeredBy = body.answeredBy === 'user' ? 'user' : 'orchestrator';
-    if (!answer.trim()) return c.json({ ok: false, error: 'answer required' }, 400);
+    const parsed = parseAnswerPendingAskRequest(body);
+    if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400);
     const result = await dispatch.answerPendingAsk({
       projectId,
       pendingAskId: c.req.param('askId') as ULID,
-      answer,
-      answeredBy,
+      answer: parsed.value.answer,
+      answeredBy: parsed.value.answeredBy,
     });
     if (!result.ok) return c.json({ ok: false, error: result.message }, result.httpStatus as 409);
     const ask = getPendingAsk(c.req.param('askId') as ULID);
-    return c.json({ ok: true, pendingAsk: ask ? toPendingAskDto(ask) : null });
+    if (!ask) return c.json({ ok: false, error: 'pending ask persistence failed' }, 500);
+    return c.json({ ok: true, pendingAsk: toPendingAskDto(ask) });
   });
 
   // ── roster read (pc_list_agents) ────────────────────────────────────────────

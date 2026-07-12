@@ -1,7 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-002 guarded landing, push, and feature worktree
-teardown.
+Updated: 2026-07-12 after RS-003 sealed implementation and verification.
 
 ## Repository
 
@@ -66,24 +65,34 @@ teardown.
 - RS-002 feature record: `bc3d90630519b6780a0f300b062c0fd3f9b18963`
 - RS-002 landing merge: `3a274034499f9454e059ded091b79276394780af`
 - RS-002 landed tree: `ca01b1badca3d93ad979b9cf8c261cbb7e671955`
+- Active slice: `docs/execution/slices/RS-003.md`
+- RS-003 base: `ff5b04bbb799293b31800267f061dcc6edb13742`
+- RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
+- RS-003 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
+- RS-003 sealed implementation:
+  `2f10a96ae0c56747ff25d868d15514bbef7359d3`
+- RS-003 sealed tree: `01285d07cc23b2652b41d4c277628199da0e324c`
 
 ## Status
 
-RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-002
-adds honest per-session context observation and composer/history projection
-through Claude's positive control receipt and the existing canonical
-conversation/outbox path. Contract, DB, server, web, hostile review, production
-build, isolated browser, and full workspace gates passed. The landing tree
-exactly matches the feature record, and no feature worktree residue remains.
-Quota normalization, Codex, specialist widening, and handoff compilation remain
-out of scope. There is no user-direction blocker.
+RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-003
+implementation is sealed and verification-complete at
+`2f10a96ae0c56747ff25d868d15514bbef7359d3`. Exact specialist snapshots,
+selection/attempt/native identity, continuation/revival/reviewer behavior,
+legacy quarantine, safe browser/MCP projection, landing/reviewer races, and
+recovery CAS are covered. Full `pnpm ci:check`, production web build, isolated
+browser QA, hostile review, and the 50-path/provider-boundary audit passed.
+Guarded landing, push, and teardown remain. Quota normalization is next and
+there is no user-direction blocker.
 
 ## Next safe action
 
-Re-read the master plan, current state, requirements, and relevant boundaries;
-then define the next smallest coherent N3 slice in a new recorded run-owned
-worktree. Do not widen RS-002's Claude-backed context receipt into quota, Codex,
-or specialist claims without the next slice's explicit scope.
+Record the RS-003 sealed verification receipt, then guarded-merge the feature
+tip into current clean `main`. Prove feature/sealed ancestry and exact tree
+equality, rerun the post-merge workspace gate, push `origin/main`, and remove
+the feature worktree only after positive landing proof. Then define and begin
+the provider-neutral subscription-quota slice.
 
 ## Startup checks
 
@@ -94,8 +103,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The RS-002 feature worktree is removed. Create and record a new run-owned
-worktree before the next tracked mutation; the main checkout remains read-only.
+The RS-003 feature worktree is sealed and final-gate green. All tracked RS-003
+mutation remains there until guarded landing; the main checkout remains
+read-only.
 
 ## Known blockers
 

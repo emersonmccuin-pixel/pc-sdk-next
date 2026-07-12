@@ -3,11 +3,10 @@
 // A thin wrapper over the existing raw-HTTP `ToolContext` helpers. It does NOT
 // re-implement `node:http`; it injects the raw helpers and runs the matching
 // `@pc/contracts` DTO guard over the response body. Every method returns BOTH
-// the parsed DTO (when the body parses + matches the DTO shape) AND the raw
-// `{ status, body }` — so handlers keep emitting the byte-identical raw `body`
-// text and only consult `parsed` for internal type-safety. On a non-2xx or a
-// parse/shape miss, `parsed.ok` is false but `body`/`status` still carry the
-// raw server response (the compat fallback baked in).
+// the parsed DTO (when the exact response envelope + DTO match) AND the raw
+// `{ status, body }`. Handlers may preserve a valid body's byte-identical text,
+// but MUST fail closed on `parsed.ok === false`; malformed 2xx bodies never
+// cross the MCP seam.
 //
 // The client lives in `packages/mcp` (NOT a shared package): it is
 // MCP-process-specific (localhost loopback to PC_SERVER_PORT) and a shared
@@ -34,9 +33,9 @@ export interface TypedClientTransport {
   deleteServer: (path: string) => Promise<ServerResponse>;
 }
 
-/** A typed-client outcome. `status`/`body` are ALWAYS the raw server response
- *  (the compat fallback). `parsed` carries the DTO on a clean 2xx + shape
- *  match, or a typed error otherwise. Handlers emit `body` verbatim. */
+/** A typed-client outcome. `status`/`body` retain the raw server response for
+ *  diagnostics and byte-identical emission after successful validation only.
+ *  `parsed` is the mandatory admission result for handlers. */
 export interface TypedResult<T> {
   status: number;
   body: string;
@@ -47,10 +46,15 @@ function isOkStatus(status: number): boolean {
   return status >= 200 && status < 300;
 }
 
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
 /** Parse a raw response into a DTO drawn out of the response envelope.
- *  `extract` pulls the candidate value (e.g. `body.workItem`) from the parsed
- *  JSON object; `guard` validates it. Never throws — a malformed body or a
- *  shape miss surfaces as a typed error while `status`/`body` stay raw. */
+ *  `extract` validates the owned response envelope and pulls its DTO candidate;
+ *  `guard` validates that candidate. Never throws — a malformed body or shape
+ *  miss surfaces as a typed error while the handler decides safe presentation. */
 function toTyped<T>(
   res: ServerResponse,
   extract: (body: Record<string, unknown>) => unknown,
@@ -86,7 +90,7 @@ function toTyped<T>(
     return {
       status: res.status,
       body: res.body,
-      parsed: parseErr(`${label}: response shape did not match the DTO`, 'INTERNAL'),
+      parsed: parseErr(`${label}: response envelope or DTO did not match the contract`, 'INTERNAL'),
     };
   }
   return { status: res.status, body: res.body, parsed: parseOk(candidate) };
@@ -96,8 +100,9 @@ function toTyped<T>(
  * Typed localhost client. Construct from a `ToolContext` (or any compatible
  * transport). Each method shapes the request EXACTLY as the legacy handler
  * does (no wire change), issues it through the injected raw helper, and parses
- * the response through a contract DTO guard. The raw `{ status, body }` is
- * always preserved for byte-identical handler output.
+ * the response through an exact envelope + contract DTO guard. The raw
+ * `{ status, body }` is preserved for byte-identical output only after that
+ * admission succeeds.
  */
 export class TypedLocalhostClient {
   private readonly t: TypedClientTransport;
@@ -120,21 +125,48 @@ export class TypedLocalhostClient {
 
   async invokeAgent(path: string, payload: unknown): Promise<TypedResult<AgentRunDto>> {
     const res = await this.t.postServer(path, payload);
-    return toTyped(res, (b) => b.run ?? b.agentRun, isAgentRunDto, 'invokeAgent');
+    return toTyped(
+      res,
+      (b) => hasOnlyKeys(b, ['ok', 'mode', 'run']) && b.ok === true && b.mode === 'async'
+        ? b.run
+        : undefined,
+      isAgentRunDto,
+      'invokeAgent',
+    );
   }
 
   async continueAgent(path: string, payload: unknown): Promise<TypedResult<AgentRunDto>> {
     const res = await this.t.postServer(path, payload);
-    return toTyped(res, (b) => b.run ?? b.agentRun, isAgentRunDto, 'continueAgent');
+    return toTyped(
+      res,
+      (b) => hasOnlyKeys(b, ['ok', 'mode', 'run']) && b.ok === true && b.mode === 'async'
+        ? b.run
+        : undefined,
+      isAgentRunDto,
+      'continueAgent',
+    );
   }
 
   async createPendingAsk(path: string, payload: unknown): Promise<TypedResult<PendingAskDto>> {
     const res = await this.t.postServer(path, payload);
-    return toTyped(res, (b) => b.pendingAsk ?? b.ask, isPendingAskDto, 'createPendingAsk');
+    return toTyped(
+      res,
+      (b) => hasOnlyKeys(b, ['ok', 'pendingAsk', 'status', 'message']) &&
+          b.ok === true && b.status === 'waiting' && typeof b.message === 'string'
+        ? b.pendingAsk
+        : undefined,
+      isPendingAskDto,
+      'createPendingAsk',
+    );
   }
 
   async answerPendingAsk(path: string, payload: unknown): Promise<TypedResult<PendingAskDto>> {
     const res = await this.t.postServer(path, payload);
-    return toTyped(res, (b) => b.pendingAsk ?? b.ask, isPendingAskDto, 'answerPendingAsk');
+    return toTyped(
+      res,
+      (b) => hasOnlyKeys(b, ['ok', 'pendingAsk']) && b.ok === true ? b.pendingAsk : undefined,
+      isPendingAskDto,
+      'answerPendingAsk',
+    );
   }
 }

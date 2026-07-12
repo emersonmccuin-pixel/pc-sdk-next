@@ -46,6 +46,15 @@ receipts, stamped remint/resume, and typed browser availability. These rows stay
 `accepted`, not globally `verified`, until specialist selection, Codex
 conformance, and the remaining cross-runtime behavior satisfy their full text.
 
+RS-003 verification receipt (2026-07-12): every fresh, continued, automatically
+continued, revived, and independent-review specialist run now freezes one
+complete adapter-validated selection and execution-effective specialist
+revision before native execution. Exact create/resume attempt receipts, legacy
+quarantine, and safe typed provenance cover the specialist half of `RUN-001`
+through `RUN-004`, `RUN-006`, and `RUN-007`. The runtime rows remain `accepted`
+until Codex conformance and deliberate selector/handoff behavior satisfy the
+remaining global text.
+
 ## Context and usage
 
 | ID | Status | Requirement |
@@ -88,13 +97,20 @@ separate later slice.
 | ORCH-001 | accepted | The orchestrator interprets intent, authors contracts, selects specialists, resolves asks, reviews evidence, and requests deterministic landing. |
 | ORCH-002 | accepted | The orchestrator cannot mutate the main checkout, improvise merges, bypass receipts, or treat model prose as proof. |
 | AGENT-001 | accepted | A specialist definition is provider-neutral and revisioned: charter, runtime/account/model/effort defaults, tools, MCP, permissions, limits, and output defaults. |
-| AGENT-002 | accepted | A run snapshots the specialist revision and runtime selection used to execute it. |
+| AGENT-002 | verified | A run snapshots the specialist revision and runtime selection used to execute it. |
 | COMM-001 | accepted | Orchestrator-to-agent invoke, continue, answer, cancel, fix, and context messages are durable, ordered, correlated, and idempotent. |
 | COMM-002 | accepted | Agent-to-orchestrator asks, approvals, progress, failures, warnings, and deliverables use typed doors rather than unstructured chat scraping. |
 | COMM-003 | verified | An ask that pauses work is durably recorded before the run pauses; answering is an atomic idempotent transition. |
 | CONT-001 | implemented | No agent starts without a typed expected output and derived acceptance contract that cannot silently verify empty. |
 | CONT-002 | implemented | The submitted typed deliverable—not the final chat message—is the authoritative result. |
 | CONT-003 | verified | Deterministic verification distinguishes passed, failed, and inconclusive; missing evidence never means pass. |
+
+RS-003 verification receipt (2026-07-12): `AGENT-002` is enforced at the
+domain, migration, repository, dispatch, restart, browser, websocket, and MCP
+boundaries. DB guards freeze the complete snapshot/selection and parent-derived
+continuation scope; exact receipt CAS is the only native identity advancement
+door. Hostile mutable-default, race, malformed-response, and legacy-recovery
+tests passed.
 
 ## Repository delivery
 

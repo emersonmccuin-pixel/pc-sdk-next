@@ -1,11 +1,18 @@
 // Compatibility adapters for the agent-run family (slice 005).
 //
 // Pure mappers between the @pc/domain AgentRunRow / PendingAskRow shapes and
-// the shared @pc/contracts DTOs. The legacy `agent-run-changed` record had no
-// pod-row model lookup — it hard-coded `'opus'`; the DTO mirrors that so the
-// legacy adapter stays lossless. Boundary purity: @pc/contracts + @pc/domain.
+// the shared @pc/contracts DTOs. Run selection/provenance is projected exactly;
+// provider-native identity and continuation attempts remain private. Boundary
+// purity: @pc/contracts + @pc/domain.
 
-import type { AgentRunDto, PendingAskDto } from '@pc/contracts';
+import {
+  isAgentRunDto,
+  isPendingAskDto,
+  isRuntimeSelection,
+  type AgentRunDto,
+  type PendingAskDto,
+  type RuntimeSelection,
+} from '@pc/contracts';
 import type { AgentRunRow, PendingAskRow } from '@pc/domain';
 
 export class AgentRunAdapterError extends Error {
@@ -15,9 +22,28 @@ export class AgentRunAdapterError extends Error {
   }
 }
 
-/** v1 Activity-Panel card model pill — the row carries no model, so mirror the
- *  legacy pod-less-spawn fallback. */
-const DEFAULT_MODEL = 'opus';
+function selectionForRow(row: AgentRunRow): RuntimeSelection | null {
+  if (
+    row.selectionState !== 'stamped' ||
+    !row.runtimeId ||
+    !row.accountId ||
+    !row.model ||
+    row.effortState === 'legacy-unknown'
+  ) return null;
+  const effort: RuntimeSelection['effort'] | null = row.effortState === 'selected'
+    ? row.effort
+      ? { kind: 'selected', value: row.effort }
+      : null
+    : { kind: row.effortState };
+  if (!effort) return null;
+  const selection = {
+    runtimeId: row.runtimeId,
+    accountId: row.accountId,
+    model: row.model,
+    effort,
+  };
+  return isRuntimeSelection(selection) ? selection : null;
+}
 
 /** AgentRunRow → AgentRunDto. `startedAt` mirrors the v1 record's use of the
  *  queue timestamp; `worktreeDir` is supplied by the caller (the row does not
@@ -29,11 +55,17 @@ export function toAgentRunDto(
   if (!row || typeof row.id !== 'string') {
     throw new AgentRunAdapterError('invalid agent run row: missing id');
   }
-  return {
+  const dto: AgentRunDto = {
     runId: row.id,
-    sessionId: row.ccSessionId,
     agentName: row.podName,
-    model: row.model ?? DEFAULT_MODEL,
+    selection: selectionForRow(row),
+    specialistRevision:
+      row.snapshotState === 'stamped' ? row.specialistSnapshot?.revision ?? null : null,
+    nativeSessionIdPresent:
+      row.nativeIdentityState === 'bound' &&
+      typeof row.nativeSessionId === 'string' &&
+      row.nativeSessionId.trim().length > 0,
+    continuationState: row.continuationState,
     projectId: row.projectId,
     dispatcherSessionId: row.dispatcherSessionId,
     worktreeDir: opts.worktreeDir ?? row.worktreeDir ?? '',
@@ -50,16 +82,19 @@ export function toAgentRunDto(
     preparationReceipt: row.preparationReceipt ?? null,
     readinessReceipt: row.readinessReceipt ?? null,
   };
+  if (!isAgentRunDto(dto)) {
+    throw new AgentRunAdapterError(`invalid agent run row: unsafe or inconsistent projection (${row.id})`);
+  }
+  return dto;
 }
 
 export function toPendingAskDto(row: PendingAskRow): PendingAskDto {
   if (!row || typeof row.id !== 'string') {
     throw new AgentRunAdapterError('invalid pending-ask row: missing id');
   }
-  return {
+  const dto: PendingAskDto = {
     id: row.id,
     agentRunId: row.agentRunId,
-    ccSessionId: row.ccSessionId,
     projectId: row.projectId,
     pmRef: row.pmRef ?? null,
     kind: row.kind,
@@ -72,4 +107,8 @@ export function toPendingAskDto(row: PendingAskRow): PendingAskDto {
     answeredAt: row.answeredAt,
     cancelledAt: row.cancelledAt,
   };
+  if (!isPendingAskDto(dto)) {
+    throw new AgentRunAdapterError(`invalid pending-ask row: unsafe or inconsistent projection (${row.id})`);
+  }
+  return dto;
 }

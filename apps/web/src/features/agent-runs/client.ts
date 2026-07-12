@@ -11,6 +11,7 @@
 
 import { getJson } from '@/api/http';
 import {
+  isAgentRunDto,
   isAgentRunStatus,
   isChatEvent,
   type AgentRunDto,
@@ -68,11 +69,22 @@ export function parseAgentRunEventsResponse(value: unknown): AgentRunEventsRespo
   };
 }
 
+export function parseAgentRunListResponse(value: unknown): AgentRunDto[] {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => key !== 'ok' && key !== 'runs') ||
+    value.ok !== true ||
+    !Array.isArray(value.runs) ||
+    !value.runs.every(isAgentRunDto)
+  ) {
+    throw new Error('invalid agent run list response');
+  }
+  return value.runs;
+}
+
 export const agentRunsApi = {
   listAgentRuns: (projectId: ULID) =>
-    getJson<{ runs: AgentRunDto[] }>(`/api/projects/${projectId}/agent-runs`).then(
-      (r) => r.runs,
-    ),
+    getJson<unknown>(`/api/projects/${projectId}/agent-runs`).then(parseAgentRunListResponse),
 
   getAgentRunEvents: (projectId: ULID, runId: string) =>
     getJson<unknown>(

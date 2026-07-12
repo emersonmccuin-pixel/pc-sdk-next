@@ -41,8 +41,16 @@ import { DispatchService } from '../src/dispatch/service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
-import { commitFile, freshDb, newGitProject, newProject, until } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  commitFile,
+  freshDb,
+  newGitProject,
+  newProject,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  until,
+} from './helpers.ts';
 import {
   testCapabilities,
   testModelDiscovery,
@@ -118,7 +126,10 @@ async function* turnStream(gate: Promise<void>): AsyncGenerator<RuntimeEvent> {
 function rig(adapter: AgentRuntimeAdapter): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
-  const dispatch = new DispatchService({ runtimes, accounts: new AccountRegistry(), mcp: {} as McpManager });
+  const accounts = new AccountRegistry();
+  const dispatch = new DispatchService({
+    ...testDispatchRuntimeDeps(runtimes, accounts),
+  });
   const hub = new ProjectWebSocketHub<ULID>();
   const registry = new SessionRegistry({
     hub,
@@ -306,15 +317,16 @@ test('boot recovery: unsealed runs fail; sealed-deliverable runs settle complete
     insertAgentRunRow({
       id,
       projectId: project.id,
-      podName: 'code-writer',
+      ...testAgentRunExecution('code-writer'),
       dispatcherSessionId: 'S1',
-      ccSessionId: `cc-${id}`,
-      status: 'running',
+      status: 'queued',
       input: 'go',
       contractId: contract.id,
       lifecycleState,
       queuedAt: Date.now(),
     });
+    contracts.setRun(contract.id, id);
+    advanceTestAgentRunStatus(id, 'running');
     // Match the real submit flow: the RUN's deliveredAt is stamped in the
     // same motion as the seal — sealed-run recovery keys on it.
     if (sealed) markAgentRunDelivered(id, Date.now());
@@ -339,10 +351,10 @@ test('boot recovery: unsealed runs fail; sealed-deliverable runs settle complete
 
   // The dispatch door (index.ts boot order, pre-attach) settles them
   // completed-with-deliverable…
+  const runtimes = new RuntimeRegistry();
+  const accounts = new AccountRegistry();
   const dispatch = new DispatchService({
-    runtimes: new RuntimeRegistry(),
-    accounts: new AccountRegistry(),
-    mcp: {} as McpManager,
+    ...testDispatchRuntimeDeps(runtimes, accounts),
   });
   await dispatch.recoverSealedRuns();
   for (const id of [sealedBuilding, sealedVerifying, sealedParked]) {

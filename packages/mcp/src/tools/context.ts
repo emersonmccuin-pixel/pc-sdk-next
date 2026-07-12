@@ -44,7 +44,6 @@ export interface ToolResult {
 
 export interface ToolContext {
   projectId: string;
-  agentSessionId: string;
   sessionId: string;
   dispatcherSessionId: string;
   agentRunId?: string;
@@ -66,7 +65,6 @@ export interface ToolContext {
 
 interface ToolContextOptions {
   projectId: string;
-  agentSessionId: string;
   sessionId: string;
   dispatcherSessionId: string;
   agentRunId: string;
@@ -206,7 +204,6 @@ export function createToolContext(options: ToolContextOptions): ToolContext {
 
   return {
     projectId: options.projectId,
-    agentSessionId: options.agentSessionId,
     sessionId: options.sessionId,
     dispatcherSessionId: options.dispatcherSessionId,
     agentRunId: options.agentRunId,

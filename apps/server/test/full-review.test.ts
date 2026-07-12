@@ -20,10 +20,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
-import { getAgentRunRow, getContract, listContractsForProject, newId, setContractDeliverable } from '@pc/db';
+import type { Contract } from '@pc/contracts';
+import {
+  createContract,
+  getAgentRunRow,
+  getContract,
+  insertAgentRunRow,
+  listContractsForProject,
+  newId,
+  setContractDeliverable,
+  setContractReviewState,
+  setContractRun,
+  setContractVerification,
+} from '@pc/db';
 import type { ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
-import { AccountRegistry } from '../src/runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import {
@@ -34,13 +45,20 @@ import {
   type RuntimeEvent,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
-import { DispatchService } from '../src/dispatch/service.ts';
+import { DispatchService, type DispatchServiceDeps } from '../src/dispatch/service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
 import { git } from '../src/dispatch/worktrees.ts';
-import { commitFile, freshDb, newGitProject, until } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  commitFile,
+  freshDb,
+  newGitProject,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  until,
+} from './helpers.ts';
 import {
   testCapabilities,
   testModelDiscovery,
@@ -126,10 +144,16 @@ async function* turnStream(gate: Promise<void>): AsyncGenerator<RuntimeEvent> {
   yield OK_RESULT;
 }
 
-function rig(adapter: AgentRuntimeAdapter): DispatchService {
+function rig(
+  adapter: AgentRuntimeAdapter,
+  configureDeps?: (base: DispatchServiceDeps) => DispatchServiceDeps,
+): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
-  const dispatch = new DispatchService({ runtimes, accounts: new AccountRegistry(), mcp: {} as McpManager });
+  const baseDeps: DispatchServiceDeps = {
+    ...testDispatchRuntimeDeps(runtimes),
+  };
+  const dispatch = new DispatchService(configureDeps ? configureDeps(baseDeps) : baseDeps);
   const hub = new ProjectWebSocketHub<ULID>();
   const registry = new SessionRegistry({
     hub,
@@ -141,6 +165,49 @@ function rig(adapter: AgentRuntimeAdapter): DispatchService {
 }
 
 const FULL_REVIEW_SPEC = { kind: 'repo' as const, review: 'full' as const, paths_touched: ['feature.txt'] };
+
+function driveIndependentReview(dispatch: DispatchService, contractId: ULID): Promise<Contract | null> {
+  return (
+    dispatch as unknown as { ensureIndependentReview(id: ULID): Promise<Contract | null> }
+  ).ensureIndependentReview(contractId);
+}
+
+async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>): Promise<{ contractId: ULID; sealedCommit: string }> {
+  const sealedCommit = (await git(['rev-parse', 'HEAD'], gp.dir)).stdout;
+  const created = createContract({
+    projectId: gp.project.id,
+    podName: 'code-writer',
+    expectedOutput: FULL_REVIEW_SPEC,
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+    landingPolicy: 'full-review',
+    worktreePath: gp.dir,
+    worktreeBaseBranch: 'main',
+    worktreeBaseSha: sealedCommit,
+  });
+  const producingRunId = newId() as ULID;
+  insertAgentRunRow({
+    id: producingRunId,
+    projectId: gp.project.id,
+    ...testAgentRunExecution('code-writer'),
+    dispatcherSessionId: 'review-target',
+    status: 'queued',
+    input: 'produce review target',
+    contractId: created.id,
+    worktreeDir: gp.dir,
+    worktreeBaseBranch: 'main',
+    worktreeBaseSha: sealedCommit,
+    queuedAt: Date.now(),
+  });
+  setContractRun(created.id, producingRunId);
+  advanceTestAgentRunStatus(producingRunId, 'completed');
+  assert.ok(setContractDeliverable(created.id, {
+    deliverable: { kind: 'repo', branch: 'main', commit: sealedCommit },
+    report: 'ready for independent review',
+  }));
+  assert.ok(setContractVerification(created.id, { verificationStatus: 'passed' }));
+  return { contractId: created.id, sealedCommit };
+}
 
 /** Dispatch a full-review builder, do one in-scope commit, seal, end the turn
  *  (session index `sessionIdx`), and wait for the review round to dispatch. */
@@ -172,7 +239,15 @@ async function buildAndSeal(
   assert.equal(submitted.ok, true, JSON.stringify(submitted));
   adapter.releaseTurn(sessionIdx);
   const contractId = row.contractId!;
-  await until(() => getContract(contractId)?.reviewRunId !== null, 20000);
+  await until(() => {
+    const reviewRunId = getContract(contractId)?.reviewRunId;
+    return (
+      reviewRunId != null &&
+      getAgentRunRow(reviewRunId) !== null &&
+      adapter.created.length > sessionIdx + 1 &&
+      (adapter.turnInputs[sessionIdx + 1]?.length ?? 0) > 0
+    );
+  }, 20000);
   return { builderRunId, contractId, worktreeDir, sealedCommit };
 }
 
@@ -225,6 +300,95 @@ async function deliverVerdict(
   assert.equal(submitted.ok, true, JSON.stringify(submitted));
   adapter.releaseTurn(sessionIdx);
 }
+
+test('concurrent review re-entry shares the active reservation and mints exactly one reviewer', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  try {
+    const adapter = new QueueAdapter();
+    const selectionGate = deferred();
+    let selectionCalls = 0;
+    const dispatch = rig(adapter, (base) => ({
+      ...base,
+      resolveNewSpecialistSelection: async (input) => {
+        selectionCalls += 1;
+        await selectionGate.promise;
+        return base.resolveNewSpecialistSelection(input);
+      },
+    }));
+    const { contractId } = await readyReviewTarget(gp);
+
+    const first = driveIndependentReview(dispatch, contractId);
+    await until(() => selectionCalls === 1, 20000);
+    const reservedId = getContract(contractId)?.reviewRunId as ULID;
+    assert.ok(reservedId, 'the admission is durable before async selection completes');
+    assert.equal(getAgentRunRow(reservedId), null, 'reservation window intentionally precedes row publication');
+
+    const second = driveIndependentReview(dispatch, contractId);
+    await second;
+    assert.equal(selectionCalls, 1, 're-entry recognizes the live admission instead of replacing it');
+    assert.equal(getContract(contractId)?.reviewRunId, reservedId, 'the first admission keeps ownership');
+
+    selectionGate.resolve();
+    await first;
+    await until(() => getAgentRunRow(reservedId) !== null, 20000);
+    assert.equal(
+      listContractsForProject(gp.project.id).filter((contract) => contract.podName === 'contract-reviewer').length,
+      1,
+      'one reservation produces one reviewer contract',
+    );
+    assert.equal(getContract(contractId)?.reviewRound, 1, 'the race burns only one review round');
+    await until(() => adapter.created.length === 1, 20000);
+    await dispatch.disposeAll();
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('failed async admission cleanup cannot clear a newer review reservation', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  try {
+    const adapter = new QueueAdapter();
+    const selectionGate = deferred();
+    let selectionCalls = 0;
+    const dispatch = rig(adapter, (base) => ({
+      ...base,
+      resolveNewSpecialistSelection: async () => {
+        selectionCalls += 1;
+        await selectionGate.promise;
+        return { status: 'invalid', code: 'account-unavailable' } as const;
+      },
+    }));
+    const { contractId, sealedCommit } = await readyReviewTarget(gp);
+
+    const admission = driveIndependentReview(dispatch, contractId);
+    await until(() => selectionCalls === 1, 20000);
+    const staleReservation = getContract(contractId)?.reviewRunId as ULID;
+    assert.ok(staleReservation);
+
+    const newerReservation = newId() as ULID;
+    assert.ok(setContractReviewState(contractId, {
+      reviewRound: 2,
+      reviewRunId: newerReservation,
+      reviewSealedCommit: sealedCommit,
+    }));
+    selectionGate.resolve();
+    await admission;
+
+    const current = getContract(contractId)!;
+    assert.equal(current.reviewRunId, newerReservation, 'stale cleanup is compare-and-clear, not a broad marker reset');
+    assert.equal(current.reviewSealedCommit, sealedCommit);
+    assert.equal(current.verificationStatus, 'passed');
+    assert.doesNotMatch(current.verificationNotes ?? '', /independent review not dispatchable/);
+    assert.equal(getAgentRunRow(staleReservation), null);
+    await dispatch.disposeAll();
+  } finally {
+    gp.cleanup();
+  }
+});
 
 test('full-review pass does NOT land or park merge-ready — a reviewer is dispatched against the sealed commit; approve lands with authorizer reviewer', async () => {
   freshDb();
@@ -341,7 +505,10 @@ test('reject stamps review-rejected + structured findings; a Fix continuation re
     // Fix continuation: a NEW sealed checkpoint (guard 4) re-enters
     // verification, then review round 2.
     const { newCommit } = await fixAndReseal(dispatch, adapter, gp.project.id, builderRunId, worktreeDir, 2);
-    await until(() => getContract(contractId)?.reviewRunId !== null, 20000);
+    await until(() => {
+      const reviewRunId = getContract(contractId)?.reviewRunId;
+      return reviewRunId != null && getAgentRunRow(reviewRunId) !== null && (adapter.turnInputs[3]?.length ?? 0) > 0;
+    }, 20000);
     const round2 = getContract(contractId)!;
     assert.equal(round2.verificationStatus, 'passed', 'fix checkpoint re-verified');
     assert.equal(round2.reviewRound, 2);
@@ -605,6 +772,56 @@ test('a mid-review reseal voids an approve verdict — the never-reviewed commit
     assert.ok(c.reviewRunId, 'gate re-entered — a fresh round reviews the new seal');
     assert.notEqual(c.reviewRunId, round1ReviewId);
     assert.equal(c.reviewSealedCommit, swapped, 'round 2 is briefed on the new seal');
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('review approval cannot overwrite a newer producer failure with the inherited old seal', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  try {
+    const adapter = new QueueAdapter();
+    const dispatch = rig(adapter);
+    const { contractId, worktreeDir } = await buildAndSeal(dispatch, adapter, gp.project.id, 0);
+    const reviewRunId = getContract(contractId)!.reviewRunId as ULID;
+    const target = getContract(contractId)!;
+
+    // Model the recovery race: a continuation moved the contract to a new
+    // producer before review admission, then failed without replacing the
+    // inherited seal. The old review must not resurrect `passed` or land it.
+    const failedProducerId = newId() as ULID;
+    insertAgentRunRow({
+      id: failedProducerId,
+      projectId: gp.project.id,
+      ...testAgentRunExecution('code-writer'),
+      dispatcherSessionId: 'review-race',
+      status: 'queued',
+      input: 'failed continuation',
+      contractId,
+      worktreeDir,
+      worktreeBaseBranch: target.worktreeBaseBranch,
+      worktreeBaseSha: target.worktreeBaseSha,
+      queuedAt: Date.now(),
+    });
+    setContractRun(contractId, failedProducerId);
+    advanceTestAgentRunStatus(failedProducerId, 'failed');
+    setContractVerification(contractId, {
+      verificationStatus: 'failed',
+      verificationNotes: 'new producer failed before verification',
+    });
+
+    await deliverVerdict(dispatch, adapter, gp.project.id, reviewRunId, 1, {
+      verdict: 'approve',
+      findings: [],
+    });
+    await until(() => getContract(contractId)?.reviewRunId === null, 20000);
+    const current = getContract(contractId)!;
+    assert.equal(current.agentRunId, failedProducerId);
+    assert.equal(current.verificationStatus, 'failed');
+    assert.equal(current.landingStatus, null);
+    assert.equal(existsSync(worktreeDir), true, 'failed producer worktree is preserved');
   } finally {
     gp.cleanup();
   }

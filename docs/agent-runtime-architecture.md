@@ -77,16 +77,21 @@ Every app session snapshots its runtime selection. Defaults may live on a
 project or specialist, and a dispatch may override them, but a running session
 never silently changes runtime, account, or native session identity.
 
-The durable orchestrator stamp includes `runtimeId`, `accountId`, `model`,
-explicit effort state, bind-once adapter-native session identity, continuation
-provenance, and a non-empty continuation-attempt identity. The attempt identity
-rotates immediately before every native create or resume mint. A receipt or
-failure callback can advance only the exact persisted attempt, so an abandoned
-provider stream cannot confirm or fail a successor after remint, restart, or
-service replacement. These internal identities never cross the orchestrator
-session-frame or session-HTTP browser seam. Existing specialist agent-run and
-pending-ask DTOs still carry native session-shaped fields and are explicitly
-later N3 cleanup, not evidence of this invariant outside the orchestrator path.
+The durable orchestrator stamp and every new specialist run include
+`runtimeId`, `accountId`, `model`, explicit effort state, bind-once adapter-
+native session identity, continuation provenance, and a non-empty attempt
+identity. Specialist runs additionally freeze the execution-effective
+specialist id/revision, charter, ordered context documents, and turn limit.
+Attempt identity rotates immediately before every native create or resume.
+Only an exact positive receipt may bind or confirm native identity, so an
+abandoned provider stream cannot confirm or fail a successor after remint,
+restart, or service replacement.
+
+Internal native and attempt identities never cross orchestrator-session,
+agent-run, pending-ask, browser, websocket, or MCP seams. Public agent-run DTOs
+expose only the complete selection, opaque specialist revision, native-ID
+presence, and typed clean/resume/legacy provenance. Pending asks correlate only
+by the app-owned agent-run id.
 
 A display-only provider label is not a substitute for the stamp. Model
 identifiers and allowed effort values come from the selected adapter/account's
@@ -274,15 +279,15 @@ The inherited Phase 3 began with a behavior-preserving boundary extraction.
 PC-SDK Next continues the remaining migration under master-plan phases N3/N5.
 RS-001 completed the canonical selection/capability types, Claude discovery,
 and immutable orchestrator create/remint/resume path. RS-002 added honest
-Claude-backed orchestrator context observation and projection. Remaining gates
-are:
+Claude-backed orchestrator context observation and projection. RS-003 completed
+specialist revision/run selection, native attempt receipts, and safe public
+provenance. Remaining gates are:
 
-1. finish specialist revision/run selection and durable attempt stamps;
-2. add provider-neutral subscription-quota observations and source semantics;
-3. implement a Codex subscription spike against the same contract;
-4. add `CodexRuntimeAdapter` and run the same conformance suite;
-5. expose deliberate runtime/account/model/effort selection controls;
-6. compile attributed cross-runtime handoffs and their UI provenance.
+1. add provider-neutral subscription-quota observations and source semantics;
+2. implement a Codex subscription spike against the same contract;
+3. add `CodexRuntimeAdapter` and run the same conformance suite;
+4. expose deliberate runtime/account/model/effort selection controls;
+5. compile attributed cross-runtime handoffs and their UI provenance.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers

@@ -22,13 +22,17 @@ import {
 import { AccountRegistry, type Account } from './runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter.ts';
 import { seedStockAgents } from './agents/seed.ts';
-import { DispatchService } from './dispatch/service.ts';
+import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
 import { McpManager } from './mcp/manager.ts';
 import { UsageCache } from './usage/cache.ts';
 import { UsagePoller } from './usage/poller.ts';
 import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
 import { startServer } from './server.ts';
+
+/** Current composition policy for a specialist that has no explicit model.
+ *  Concrete provider vocabulary is intentionally confined to this root. */
+const DEFAULT_CLAUDE_SPECIALIST_MODEL = 'sonnet';
 
 async function main(): Promise<void> {
   runMigrations();
@@ -75,7 +79,33 @@ async function main(): Promise<void> {
     });
   };
 
-  const dispatch = new DispatchService({ runtimes, accounts, mcp });
+  const resolveNewSpecialistSelection: DispatchServiceDeps['resolveNewSpecialistSelection'] =
+    async (input) => {
+      let account: Account;
+      try {
+        account = accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
+      } catch {
+        return { status: 'invalid', code: 'account-unavailable' };
+      }
+      return runtimes.resolveSelection({
+        runtimeId: CLAUDE_RUNTIME_ID,
+        accountId: account.id,
+        model: input.model?.trim() || DEFAULT_CLAUDE_SPECIALIST_MODEL,
+        effort: input.effort,
+      });
+    };
+  const dispatch = new DispatchService({
+    resolveNewSpecialistSelection,
+    preflightRuntimeSession: (selection, continuation) =>
+      runtimes.preflight(selection, continuation),
+    mintSpecialistRuntimeSession: async (input) => {
+      const { continuation, ...sessionInput } = input;
+      const adapter = runtimes.get(sessionInput.selection.runtimeId);
+      return continuation.mode === 'resume'
+        ? adapter.resumeSession({ ...sessionInput, nativeSessionId: continuation.nativeSessionId })
+        : adapter.createSession(sessionInput);
+    },
+  });
   // The server's live port — set after listen and before any recovered chat
   // work is explicitly released by the composition root.
   const portRef = { port: 0 };

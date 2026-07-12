@@ -18,7 +18,6 @@ import { join } from 'node:path';
 import { getAgentRunRow, getContract, newId, updateProjectWorktreeProfile } from '@pc/db';
 import type { RunLifecycleState, ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
-import { AccountRegistry } from '../src/runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import {
@@ -33,8 +32,7 @@ import { DispatchService } from '../src/dispatch/service.ts';
 import { git, provisionWorktree, worktreesRoot } from '../src/dispatch/worktrees.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
-import { commitFile, freshDb, newGitProject, until } from './helpers.ts';
+import { commitFile, freshDb, newGitProject, testDispatchRuntimeDeps, until } from './helpers.ts';
 import {
   testCapabilities,
   testModelDiscovery,
@@ -118,7 +116,9 @@ async function* turnStream(gate: Promise<void>): AsyncGenerator<RuntimeEvent> {
 function rig(adapter: AgentRuntimeAdapter): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
-  const dispatch = new DispatchService({ runtimes, accounts: new AccountRegistry(), mcp: {} as McpManager });
+  const dispatch = new DispatchService({
+    ...testDispatchRuntimeDeps(runtimes),
+  });
   const hub = new ProjectWebSocketHub<ULID>();
   const registry = new SessionRegistry({
     hub,

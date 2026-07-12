@@ -10,6 +10,87 @@ import type { PendingAskOption } from './agent-comms.ts';
 import type { RunLifecycleState } from './run-lifecycle.ts';
 import type { WorktreeGitReceipt, WorktreePhaseReceipt } from './worktree.ts';
 
+/** One context document frozen into the exact specialist execution package. */
+export interface SpecialistContextSnapshot {
+  id: ULID;
+  title: string;
+  body: string;
+  updatedAt: number;
+}
+
+/**
+ * Run-owned, provider-neutral specialist material consumed by dispatch.
+ * Contracts freeze expected output separately and RuntimeSelection freezes
+ * model/effort, so neither is duplicated here. Secrets and native provider
+ * configuration are deliberately excluded.
+ */
+export interface SpecialistExecutionSnapshot {
+  specialistId: ULID;
+  revision: string;
+  name: string;
+  charter: string;
+  contextDocs: SpecialistContextSnapshot[];
+  maxTurns: number;
+}
+
+export type AgentRunSelectionState = 'stamped' | 'legacy-unavailable';
+export type AgentRunEffortState = 'selected' | 'none' | 'unavailable' | 'legacy-unknown';
+export type AgentRunSnapshotState = 'stamped' | 'legacy-unavailable';
+export type AgentRunNativeIdentityState = 'unbound' | 'bound' | 'legacy-untrusted';
+export type AgentRunContinuationState =
+  | 'clean-pending'
+  | 'clean-started'
+  | 'resume-pending'
+  | 'native-resumed'
+  | 'resume-failed'
+  | 'legacy-unavailable';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function exactNonEmpty(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim();
+}
+
+function isSpecialistContextSnapshot(value: unknown): value is SpecialistContextSnapshot {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ['id', 'title', 'body', 'updatedAt']) &&
+    exactNonEmpty(value.id) &&
+    exactNonEmpty(value.title) &&
+    typeof value.body === 'string' &&
+    Number.isSafeInteger(value.updatedAt) &&
+    (value.updatedAt as number) >= 0;
+}
+
+export function isSpecialistExecutionSnapshot(
+  value: unknown,
+): value is SpecialistExecutionSnapshot {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'specialistId',
+      'revision',
+      'name',
+      'charter',
+      'contextDocs',
+      'maxTurns',
+    ]) &&
+    exactNonEmpty(value.specialistId) &&
+    exactNonEmpty(value.revision) &&
+    exactNonEmpty(value.name) &&
+    typeof value.charter === 'string' &&
+    Array.isArray(value.contextDocs) &&
+    value.contextDocs.every(isSpecialistContextSnapshot) &&
+    new Set(value.contextDocs.map((doc) => doc.id)).size === value.contextDocs.length &&
+    Number.isSafeInteger(value.maxTurns) &&
+    (value.maxTurns as number) >= 1;
+}
+
 /** Full in-memory state machine, persisted 1:1. */
 export type AgentRunStatus =
   | 'queued'
@@ -105,17 +186,18 @@ export interface AgentRunRow {
   /** PC session-id (ULID) of the orchestrator (or other AgentRun) that
    *  dispatched this run. */
   dispatcherSessionId: string;
-  /** CC's provider session-id. UUID. Reused via `--resume` on continuation. */
-  ccSessionId: string;
+  /** Immutable run-owned specialist package. Null only on migrated rows whose
+   * execution-effective revision cannot be reconstructed honestly. */
+  snapshotState: AgentRunSnapshotState;
+  specialistSnapshot: SpecialistExecutionSnapshot | null;
+  /** Adapter-native identity. New clean runs bind it from one exact positive
+   * receipt; continuations inherit only a positively bound parent identity. */
+  nativeSessionId: string | null;
+  nativeIdentityState: AgentRunNativeIdentityState;
+  continuationState: AgentRunContinuationState;
+  /** Durable generation fence for the currently authorized native mint. */
+  continuationAttemptId: string | null;
   podName: string;
-  /** Updated-at hash (or revision string) of the pod row at dispatch time.
-   *  Used by drift detection to flag continuations against an edited pod.
-   *  NULL when the materialiser didn't supply a revision. */
-  podRevisionAtDispatch: string | null;
-  /** Updated-at hash of the pod row at resume time. Differs from
-   *  `podRevisionAtDispatch` iff the pod was edited between dispatch and
-   *  resume. NULL for non-resumed runs. */
-  podRevisionAtResume: string | null;
   status: AgentRunStatus;
   /** Worktree-pipeline state (docs/worktree-lifecycle.md 'Lifecycle states'),
    *  layered beside `status` (which stays authoritative for dispatch).
@@ -170,11 +252,13 @@ export interface AgentRunRow {
   gitReceipt: WorktreeGitReceipt | null;
   preparationReceipt: WorktreePhaseReceipt | null;
   readinessReceipt: WorktreePhaseReceipt | null;
-  /** Runtime-selection stamp (agent-runtime architecture guard rule 2): the
-   *  adapter id, account, and model this run executed under. NULL = legacy. */
+  /** Runtime-selection stamp (agent-runtime architecture guard rule 2). */
+  selectionState: AgentRunSelectionState;
   runtimeId: string | null;
   accountId: string | null;
   model: string | null;
+  effortState: AgentRunEffortState;
+  effort: string | null;
   /** Bounded auto-continue on turn-budget exhaustion (max-turns fix part 2):
    *  how many automatic continuations preceded THIS run in its chain. 0 for a
    *  fresh dispatch or a manual `pc_continue_agent`; N+1 for an
@@ -204,8 +288,6 @@ export const PENDING_ASK_STATUSES: readonly PendingAskStatus[] = [
 export interface PendingAskRow {
   id: ULID;
   agentRunId: ULID;
-  /** Denormalised — survives agent_run row deletion / archival. */
-  ccSessionId: string;
   projectId: ULID;
   /** External PM-item ref (AInativePM over MCP), or null. Replaces the dead
    *  internal work-item FK. */

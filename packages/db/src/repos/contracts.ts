@@ -6,7 +6,7 @@
 // Optionally carries an external PM item ref (`pmRef`). The deliverable lives
 // here. Keyed by contract id / agent_run_id.
 
-import { and, asc, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type {
   AcceptanceCriteria,
   ContractLandingAuthorizer,
@@ -364,6 +364,74 @@ export function setContractReviewState(
   return getContractInDb(db, id);
 }
 
+export interface SetRunRecoveryVerificationInput {
+  expectedVersion: number;
+  projectId: ULID;
+  producerRunId: ULID;
+  verificationNotes: string;
+  /** The only unbound shape admitted is the issued contract created just
+   * before its run row when the process died between those two durable writes. */
+  allowIssuedUnbound: boolean;
+}
+
+export interface ReserveContractReviewInput {
+  expectedVersion: number;
+  expectedReviewRunId: ULID | null;
+  expectedAgentRunId: ULID | null;
+  reviewRound: number;
+  reviewRunId: ULID;
+  reviewSealedCommit: string;
+}
+
+/** CAS reservation spanning async reviewer selection/checkout. Exactly one
+ * admission may own a contract version + current marker. */
+export function reserveContractReview(
+  id: ULID,
+  input: ReserveContractReviewInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const reviewMarker = input.expectedReviewRunId === null
+    ? isNull(agentContracts.reviewRunId)
+    : eq(agentContracts.reviewRunId, input.expectedReviewRunId);
+  const producer = input.expectedAgentRunId === null
+    ? isNull(agentContracts.agentRunId)
+    : eq(agentContracts.agentRunId, input.expectedAgentRunId);
+  const changed = db.update(agentContracts).set({
+    reviewRound: input.reviewRound,
+    reviewRunId: input.reviewRunId,
+    reviewSealedCommit: input.reviewSealedCommit,
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, input.expectedVersion),
+    reviewMarker,
+    producer,
+    eq(agentContracts.verificationStatus, 'passed'),
+    isNull(agentContracts.landingStatus),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+/** Release only the reservation owned by `reviewRunId`; never clear a newer
+ * reviewer or an orchestrator override. */
+export function clearContractReviewReservation(
+  id: ULID,
+  reviewRunId: ULID,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const changed = db.update(agentContracts).set({
+    reviewRunId: null,
+    reviewSealedCommit: null,
+    version: sql`${agentContracts.version} + 1`,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.reviewRunId, reviewRunId),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
 /** The full-review target a review run was dispatched against (reviewRunId
  *  marker) — how verdict settlement finds the contract under review. */
 export function findContractByReviewRun(reviewRunId: ULID, db: DbExecutor = getDb()): ContractRow | null {
@@ -422,4 +490,36 @@ export function setContractVerification(
         : 'verifying');
   db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
   return getContractInDb(db, id);
+}
+
+/** Park verification after boot terminalizes a live run. The producer link,
+ * project, version, and non-landed state are one CAS predicate so a stale
+ * legacy row cannot overwrite a contract that has moved to a newer producer.
+ * An issued+unbound contract is the narrowly allowed crash window between
+ * run insertion and setContractRun; no other null binding is accepted. */
+export function setContractRunRecoveryVerification(
+  id: ULID,
+  input: SetRunRecoveryVerificationInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const producer = input.allowIssuedUnbound
+    ? or(
+        eq(agentContracts.agentRunId, input.producerRunId),
+        and(isNull(agentContracts.agentRunId), eq(agentContracts.status, 'issued')),
+      )
+    : eq(agentContracts.agentRunId, input.producerRunId);
+  const changed = db.update(agentContracts).set({
+    verificationStatus: 'pending',
+    verificationNotes: input.verificationNotes,
+    status: 'verifying',
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.projectId, input.projectId),
+    eq(agentContracts.version, input.expectedVersion),
+    producer,
+    isNull(agentContracts.landingStatus),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
 }

@@ -19,7 +19,6 @@ import { pendingAsks } from '../schema-agent-system.ts';
 export interface CreatePendingAskInput {
   id: ULID;
   agentRunId: ULID;
-  ccSessionId: string;
   projectId: ULID;
   pmRef?: string | null;
   kind: PendingAskKind;
@@ -33,16 +32,21 @@ export interface CreatePendingAskInput {
  *  `agent-asks-*` event body can reference it before the row is fully
  *  persisted. */
 export function createPendingAsk(input: CreatePendingAskInput): PendingAskRow {
+  // Reconstruct at the persistence boundary so a type-cast caller cannot
+  // smuggle provider/native-shaped keys into durable JSON.
+  const options = input.options?.map((option) => ({
+    label: option.label,
+    value: option.value,
+  })) ?? null;
   const row: PendingAskRow = {
     id: input.id,
     agentRunId: input.agentRunId,
-    ccSessionId: input.ccSessionId,
     projectId: input.projectId,
     pmRef: input.pmRef ?? null,
     kind: input.kind,
     promptBody: input.promptBody,
     context: input.context ?? null,
-    options: input.options ?? null,
+    options,
     status: 'open',
     answerBody: null,
     answeredBy: null,
@@ -70,18 +74,6 @@ export function listOpenPendingAsksForProject(projectId: ULID): PendingAskRow[] 
     .select()
     .from(pendingAsks)
     .where(and(eq(pendingAsks.projectId, projectId), eq(pendingAsks.status, 'open')))
-    .orderBy(asc(pendingAsks.createdAt))
-    .all();
-}
-
-/** Open rows for a CC provider session, oldest first. Used by the runtime
- *  to detect a duplicate pause for the same session (would indicate a
- *  cross-stream bug). */
-export function listOpenPendingAsksForSession(ccSessionId: string): PendingAskRow[] {
-  return getDb()
-    .select()
-    .from(pendingAsks)
-    .where(and(eq(pendingAsks.ccSessionId, ccSessionId), eq(pendingAsks.status, 'open')))
     .orderBy(asc(pendingAsks.createdAt))
     .all();
 }
