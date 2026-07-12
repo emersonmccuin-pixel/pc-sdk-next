@@ -11,8 +11,10 @@ import type {
   CurrentActivityProjection,
   InterruptProjection,
   OptimisticSend,
+  SessionContextProjection,
 } from './chat-reducer';
 import { deriveActivityDisplay, formatActivityElapsed } from './activity-display';
+import { ContextBar } from './ContextBar';
 
 const PROMPT_HISTORY_CAP = 100;
 
@@ -118,6 +120,8 @@ export function ChatComposer({
   busy,
   sessionId,
   sessionContextReady,
+  contextProjectionReady,
+  contextProjection,
   activeTurnId,
   sendQueue,
   optimistic,
@@ -152,6 +156,8 @@ export function ChatComposer({
   busy: boolean;
   sessionId: string | null;
   sessionContextReady: boolean;
+  contextProjectionReady: boolean;
+  contextProjection: SessionContextProjection;
   activeTurnId: string | null;
   sendQueue: SendQueueItem[];
   optimistic: OptimisticSend[];
@@ -644,6 +650,11 @@ export function ChatComposer({
           })}
         </div>
       )}
+      <ContextBar
+        sessionId={sessionId}
+        ready={contextProjectionReady}
+        projection={contextProjection}
+      />
       <div className="flex items-center gap-3 text-[10px] uppercase tracking-[0.04em] text-muted-foreground">
         <span className="inline-flex items-center gap-1.5 text-[var(--fg-dim)]" title="↑/↓ walks prompt history">
           <kbd className="border border-border px-1 text-[9px]">↑</kbd>

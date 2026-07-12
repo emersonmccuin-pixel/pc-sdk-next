@@ -136,3 +136,34 @@ test('orphan non-requested tool state is ignored rather than synthesized in pres
   })]);
   assert.deepEqual(items, []);
 });
+
+test('context observations stay out of the transcript render list', () => {
+  const items = buildRenderItems([
+    frame(1, {
+      kind: 'context-observation',
+      confidence: 'exact',
+      usedTokens: 25,
+      usableTokens: 100,
+      contextWindowTokens: 120,
+    }),
+  ]);
+  assert.deepEqual(items, []);
+});
+
+test('compaction remains visible without inventing trigger or token counts', () => {
+  const items = buildRenderItems([
+    frame(1, {
+      kind: 'compaction',
+      trigger: 'unknown',
+      preTokens: null,
+      postTokens: null,
+    }),
+  ]);
+  assert.deepEqual(items, [{
+    kind: 'compaction',
+    key: `${SID}:1`,
+    trigger: 'unknown',
+    preTokens: null,
+    postTokens: null,
+  }]);
+});

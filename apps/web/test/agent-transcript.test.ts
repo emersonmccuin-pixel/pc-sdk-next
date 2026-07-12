@@ -80,3 +80,20 @@ test('transcript renderer never serializes malformed or internal envelope payloa
   assert.equal(malformed, '');
   assert.equal(internalEnvelope, '');
 });
+
+test('context telemetry stays in the session bar and unknown compaction renders honestly', () => {
+  const context = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: {
+      kind: 'context-observation', confidence: 'exact',
+      usedTokens: 10, usableTokens: 100, contextWindowTokens: 120,
+    },
+  }));
+  assert.equal(context, '');
+
+  const compaction = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: { kind: 'compaction', trigger: 'unknown', preTokens: null, postTokens: null },
+  }));
+  assert.match(compaction, /compaction/);
+  assert.match(compaction, /token counts unavailable/);
+  assert.doesNotMatch(compaction, /auto|0 →/);
+});

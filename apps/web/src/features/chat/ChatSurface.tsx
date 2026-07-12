@@ -145,6 +145,8 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
         busy={busy}
         sessionId={state.sessionId}
         sessionContextReady={state.sessionContextReady}
+        contextProjectionReady={state.contextProjectionReady}
+        contextProjection={state.contextProjection}
         activeTurnId={activeTurnId}
         sendQueue={state.sendQueue}
         optimistic={state.optimistic}

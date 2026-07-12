@@ -139,13 +139,24 @@ export function AgentRunCard({
   );
 }
 
-export function CompactionDivider({ trigger, preTokens, postTokens }: { trigger: string; preTokens: number; postTokens: number | null }) {
+export function CompactionDivider({
+  trigger,
+  preTokens,
+  postTokens,
+}: {
+  trigger: 'manual' | 'auto' | 'unknown';
+  preTokens: number | null;
+  postTokens: number | null;
+}) {
+  const triggerLabel = trigger === 'unknown' ? '' : ` (${trigger})`;
+  const tokenLabel = preTokens === null
+    ? 'token counts unavailable'
+    : `${preTokens.toLocaleString()}${postTokens !== null ? ` → ${postTokens.toLocaleString()}` : ''} tokens`;
   return (
     <div className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
       <span className="h-px flex-1 bg-border" />
       <span>
-        compacted ({trigger}) {preTokens.toLocaleString()}
-        {postTokens != null ? ` → ${postTokens.toLocaleString()}` : ''} tokens
+        compacted{triggerLabel} · {tokenLabel}
       </span>
       <span className="h-px flex-1 bg-border" />
     </div>

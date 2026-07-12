@@ -7,6 +7,7 @@ import {
   type AskFrame,
   type ChatDeltaEvent,
   type ChatEvent,
+  type ContextObservation,
   type ConversationCommandReceiptFrame,
   type ConversationEventFrame,
   type SendQueueItem,
@@ -75,6 +76,34 @@ export interface CurrentActivityProjection {
   source: ActivitySource;
 }
 
+export type ContextFreshness = 'unobserved' | 'fresh' | 'stale';
+
+export interface ContextObservationProjection {
+  observation: ContextObservation;
+  turnId: string;
+  sequence: number;
+  occurredAt: number;
+}
+
+export interface ContextCompactionProjection {
+  turnId: string | null;
+  sequence: number;
+  occurredAt: number;
+  trigger: Extract<ChatEvent, { kind: 'compaction' }>['trigger'];
+  preTokens: number | null;
+  postTokens: number | null;
+}
+
+/** Latest context truth for one app session. Observation freshness is a
+ * projection of canonical turn/compaction order, never wall-clock inference. */
+export interface SessionContextProjection {
+  latestStartedTurnId: string | null;
+  acceptedObservationTurnId: string | null;
+  observation: ContextObservationProjection | null;
+  freshness: ContextFreshness;
+  latestCompaction: ContextCompactionProjection | null;
+}
+
 interface SequenceReceipt {
   eventId: string;
   digest: string;
@@ -133,6 +162,9 @@ export interface ChatState {
   sessionId: string | null;
   /** A connect checkpoint/replay has established the current session context. */
   sessionContextReady: boolean;
+  /** A new-session receipt or valid replay has established context telemetry
+   * truth. Deliberately separate from queue/composer checkpoint readiness. */
+  contextProjectionReady: boolean;
   /** Highest accepted or checkpointed server sequence. */
   highWaterSequence: number;
   /** Highest authoritative sequence whose transition has been folded. */
@@ -142,6 +174,7 @@ export interface ChatState {
   /** Stable render input after fail-closed stream/item exclusions. */
   projectedFrames: PersistentSequence<ConversationEventFrame>;
   aggregates: Aggregates;
+  contextProjection: SessionContextProjection;
   /** Guarded latest lifecycle snapshot per canonical call. */
   toolStates: PersistentIndex<ToolProjection>;
   /** Latest positive operational evidence for the active turn. */
@@ -202,6 +235,16 @@ export function emptyAggregates(): Aggregates {
   };
 }
 
+export function emptyContextProjection(): SessionContextProjection {
+  return {
+    latestStartedTurnId: null,
+    acceptedObservationTurnId: null,
+    observation: null,
+    freshness: 'unobserved',
+    latestCompaction: null,
+  };
+}
+
 function emptyProjector(): ProjectorState {
   return {
     sequenceReceipts: null,
@@ -230,11 +273,13 @@ export function initialChatState(
     conversationId,
     sessionId,
     sessionContextReady: false,
+    contextProjectionReady: sessionId === null,
     highWaterSequence: 0,
     projectedThroughSequence: 0,
     frames: emptySequence(),
     projectedFrames: emptySequence(),
     aggregates: emptyAggregates(),
+    contextProjection: emptyContextProjection(),
     toolStates: null,
     currentActivity: null,
     terminalTurns: null,
@@ -273,6 +318,84 @@ function foldAggregate(agg: Aggregates, event: ChatEvent): Aggregates {
     default:
       return agg;
   }
+}
+
+function contextObservationFromEvent(
+  event: Extract<ChatEvent, { kind: 'context-observation' }>,
+): ContextObservation {
+  if (event.confidence === 'unavailable') {
+    return { confidence: 'unavailable', reason: event.reason };
+  }
+  return {
+    confidence: event.confidence,
+    usedTokens: event.usedTokens,
+    usableTokens: event.usableTokens,
+    contextWindowTokens: event.contextWindowTokens,
+  };
+}
+
+function foldContextProjection(
+  projection: SessionContextProjection,
+  frame: ConversationEventFrame,
+  terminalTurns: PersistentIndex<true>,
+): { projection: SessionContextProjection; conflict: string | null } {
+  const event = frame.event;
+  if (event.kind === 'activity-state' && event.phase === 'turn-starting') {
+    if (!frame.turnId) {
+      return { projection, conflict: `context:${frame.eventId}:turn-start` };
+    }
+    return {
+      projection: {
+        ...projection,
+        latestStartedTurnId: frame.turnId,
+        freshness: projection.observation ? 'stale' : 'unobserved',
+      },
+      conflict: null,
+    };
+  }
+  if (event.kind === 'compaction') {
+    return {
+      projection: {
+        ...projection,
+        freshness: projection.observation ? 'stale' : 'unobserved',
+        latestCompaction: {
+          turnId: frame.turnId ?? null,
+          sequence: frame.sequence,
+          occurredAt: frame.occurredAt,
+          trigger: event.trigger,
+          preTokens: event.preTokens,
+          postTokens: event.postTokens,
+        },
+      },
+      conflict: null,
+    };
+  }
+  if (event.kind !== 'context-observation') {
+    return { projection, conflict: null };
+  }
+  if (!frame.turnId || projection.latestStartedTurnId !== frame.turnId) {
+    return { projection, conflict: `context:${frame.eventId}:turn-order` };
+  }
+  if (!indexGet(terminalTurns, frame.turnId)) {
+    return { projection, conflict: `context:${frame.eventId}:turn-not-settled` };
+  }
+  if (projection.acceptedObservationTurnId === frame.turnId) {
+    return { projection, conflict: `context:${frame.eventId}:duplicate-turn` };
+  }
+  return {
+    projection: {
+      ...projection,
+      acceptedObservationTurnId: frame.turnId,
+      observation: {
+        observation: contextObservationFromEvent(event),
+        turnId: frame.turnId,
+        sequence: frame.sequence,
+        occurredAt: frame.occurredAt,
+      },
+      freshness: 'fresh',
+    },
+    conflict: null,
+  };
 }
 
 function sequenceKey(sequence: number): string {
@@ -480,6 +603,8 @@ function foldStableFrame(
   let asks = state.asks;
   let pendingAsks = state.pendingAsks;
   let answeredAsks = state.answeredAsks;
+  let contextProjection = state.contextProjection;
+  let contextProjectionReady = state.contextProjectionReady;
 
   if (binding.valid && event.kind === 'tool-state') {
     const previous = indexGet(toolStates, event.callId);
@@ -702,6 +827,19 @@ function foldStableFrame(
     answeredAsks = {};
   }
 
+  if (binding.valid) {
+    const contextFold = foldContextProjection(contextProjection, frame, terminalTurns);
+    if (contextFold.conflict) {
+      binding.valid = false;
+      binding.conflicts = addConflict(binding.conflicts, contextFold.conflict);
+    } else {
+      contextProjection = contextFold.projection;
+      if (event.kind === 'context-observation' || event.kind === 'compaction') {
+        contextProjectionReady = true;
+      }
+    }
+  }
+
   return {
     ...state,
     frames: sequenceAppend(state.frames, frame),
@@ -711,6 +849,8 @@ function foldStableFrame(
     aggregates: binding.valid && !streamWasRetracted
       ? foldAggregate(state.aggregates, event)
       : state.aggregates,
+    contextProjection,
+    contextProjectionReady,
     toolStates,
     currentActivity,
     terminalTurns,
@@ -899,6 +1039,7 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     highWaterSequence: checkpoint,
     projectedThroughSequence: checkpoint,
     sessionContextReady: true,
+    contextProjectionReady: true,
   };
   return { state: next, work: receiptWork };
 }
@@ -911,6 +1052,7 @@ export function applySessionChanged(state: ChatState, frame: SessionChangedFrame
   const next = {
     ...initialChatState(frame.session?.id ?? null),
     sessionContextReady: frame.session === null,
+    contextProjectionReady: frame.session === null || frame.transition === 'new-session',
   };
   return state.sessionId === null && state.optimistic.length > 0
     ? { ...next, optimistic: state.optimistic }

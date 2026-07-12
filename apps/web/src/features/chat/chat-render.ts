@@ -40,7 +40,13 @@ export type RenderItem =
       detail: string;
     }
   | { kind: 'sidechain-group'; key: string; steps: SidechainStep[] }
-  | { kind: 'compaction'; key: string; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
+  | {
+      kind: 'compaction';
+      key: string;
+      trigger: 'manual' | 'auto' | 'unknown';
+      preTokens: number | null;
+      postTokens: number | null;
+    }
   | { kind: 'system'; key: string; subtype: string; level: 'info' | 'notice' | 'warning' | 'error'; message: string }
   | { kind: 'turn-failed'; key: string; error: string; source: 'api' | 'abort' | 'internal' }
   | {
@@ -173,6 +179,7 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
         break;
       // Folded into aggregates — never rendered.
       case 'usage':
+      case 'context-observation':
       case 'turn-duration':
       case 'session-state':
       case 'activity-state':

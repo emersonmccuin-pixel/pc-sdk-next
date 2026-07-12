@@ -8,6 +8,7 @@ import {
   type ConversationEvent,
   type ConversationEventFrame,
   type SendQueueItem,
+  type SessionChangedFrame,
   type SessionReplayFrame,
   type ToolStateEvent,
 } from '../../../packages/contracts/src/events/index.ts';
@@ -19,6 +20,7 @@ import {
   applyConversationEvent,
   applyReplay,
   applySendQueueSnapshot,
+  applySessionChanged,
   initialChatState,
   reduceConversationEvent,
   reduceReplay,
@@ -69,6 +71,33 @@ function usage(tokens: number): ChatEvent {
 
 function seed(): ChatState {
   return initialChatState(SID);
+}
+
+function sessionChanged(
+  transition: SessionChangedFrame['transition'],
+  sessionId = SID,
+): SessionChangedFrame {
+  return {
+    type: 'session-changed',
+    projectId: 'project-1',
+    transition,
+    session: {
+      id: sessionId,
+      projectId: 'project-1',
+      selection: {
+        runtimeId: 'runtime-1',
+        accountId: 'account-1',
+        model: 'model-1',
+        effort: { kind: 'none' },
+      },
+      title: null,
+      status: 'active',
+      nativeSessionIdPresent: false,
+      continuationState: 'clean-pending',
+      resumeAvailability: { status: 'unavailable', code: 'session-active' },
+      startedAt: 1,
+    },
+  };
 }
 
 function tool(
@@ -128,6 +157,7 @@ function projectionView(state: ChatState) {
     frames,
     projectedFrames,
     aggregates: state.aggregates,
+    contextProjection: state.contextProjection,
     toolStates: indexEntries(state.toolStates),
     currentActivity: state.currentActivity,
     terminalTurns: indexEntries(state.terminalTurns),
@@ -174,6 +204,187 @@ test('projector receipt digests use the standard SHA-256 identity', () => {
     sha256('abc'),
     'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
   );
+});
+
+test('context projection readiness is independent from queue checkpoint readiness', () => {
+  assert.equal(initialChatState().contextProjectionReady, true, 'no session is resolved truth');
+
+  const resumed = applySessionChanged(seed(), sessionChanged('resume-session'));
+  assert.equal(resumed.contextProjectionReady, false);
+  const queueCheckpoint = applySendQueueSnapshot(resumed, {
+    type: 'send-queue-snapshot',
+    projectId: 'project-1',
+    sessionId: SID,
+    queueRevision: 0,
+    items: [],
+  });
+  assert.equal(queueCheckpoint.sessionContextReady, true);
+  assert.equal(
+    queueCheckpoint.contextProjectionReady,
+    false,
+    'a queue snapshot is not evidence that context replay succeeded',
+  );
+
+  const replayed = applyReplay(queueCheckpoint, {
+    type: 'session-replay',
+    projectId: 'project-1',
+    sessionId: SID,
+    highWaterSequence: 0,
+    events: [],
+  });
+  assert.equal(replayed.contextProjectionReady, true, 'an empty valid replay is authoritative');
+  assert.equal(replayed.contextProjection.observation, null);
+
+  const created = applySessionChanged(seed(), sessionChanged('new-session', 'session-new'));
+  assert.equal(created.contextProjectionReady, true, 'a new session has no prior context to replay');
+  assert.equal(created.contextProjection.observation, null);
+});
+
+test('context observation, new turns, compaction, and unavailability fold by server order', () => {
+  const turnOne = 'turn-context-1';
+  const turnTwo = 'turn-context-2';
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'activity-state', phase: 'turn-starting',
+  }, { turnId: turnOne }));
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'turn-end', text: '', stopReason: 'complete',
+  }, { turnId: turnOne }));
+  state = applyConversationEvent(state, frame(3, {
+    kind: 'context-observation', confidence: 'exact',
+    usedTokens: 40, usableTokens: 100, contextWindowTokens: 120,
+  }, { turnId: turnOne }));
+  assert.equal(state.contextProjectionReady, true);
+  assert.equal(state.contextProjection.freshness, 'fresh');
+  assert.equal(state.contextProjection.latestStartedTurnId, turnOne);
+  assert.equal(state.contextProjection.acceptedObservationTurnId, turnOne);
+  assert.equal(state.contextProjection.observation?.observation.confidence, 'exact');
+
+  state = applyConversationEvent(state, frame(4, {
+    kind: 'activity-state', phase: 'turn-starting',
+  }, { turnId: turnTwo }));
+  assert.equal(state.contextProjection.freshness, 'stale');
+  assert.equal(state.contextProjection.latestStartedTurnId, turnTwo);
+
+  state = applyConversationEvent(state, frame(5, {
+    kind: 'compaction', trigger: 'auto', preTokens: 80, postTokens: 20,
+  }, { turnId: turnTwo }));
+  assert.deepEqual(state.contextProjection.latestCompaction, {
+    turnId: turnTwo,
+    sequence: 5,
+    occurredAt: 5,
+    trigger: 'auto',
+    preTokens: 80,
+    postTokens: 20,
+  });
+  assert.equal(state.contextProjection.freshness, 'stale');
+
+  state = applyConversationEvent(state, frame(6, {
+    kind: 'turn-end', text: '', stopReason: 'complete',
+  }, { turnId: turnTwo }));
+  state = applyConversationEvent(state, frame(7, {
+    kind: 'context-observation', confidence: 'unavailable', reason: 'observation-timeout',
+  }, { turnId: turnTwo }));
+  assert.equal(state.contextProjection.freshness, 'fresh');
+  assert.equal(state.contextProjection.acceptedObservationTurnId, turnTwo);
+  assert.deepEqual(state.contextProjection.observation?.observation, {
+    confidence: 'unavailable', reason: 'observation-timeout',
+  });
+  assert.equal(state.contextProjection.latestCompaction?.sequence, 5);
+});
+
+test('a late observation for an older turn cannot replace current context truth', () => {
+  const turnOne = 'turn-old';
+  const turnTwo = 'turn-current';
+  const events: ConversationEventFrame[] = [
+    frame(1, { kind: 'activity-state', phase: 'turn-starting' }, { turnId: turnOne }),
+    frame(2, { kind: 'turn-end', text: '', stopReason: 'complete' }, { turnId: turnOne }),
+    frame(3, {
+      kind: 'context-observation', confidence: 'derived',
+      usedTokens: 20, usableTokens: 100, contextWindowTokens: 100,
+    }, { turnId: turnOne }),
+    frame(4, { kind: 'activity-state', phase: 'turn-starting' }, { turnId: turnTwo }),
+    frame(5, {
+      kind: 'context-observation', confidence: 'exact',
+      usedTokens: 99, usableTokens: 100, contextWindowTokens: 100,
+    }, { turnId: turnOne }),
+  ];
+  let state = seed();
+  for (const event of events) state = applyConversationEvent(state, event);
+  assert.equal(state.contextProjection.acceptedObservationTurnId, turnOne);
+  assert.equal(state.contextProjection.freshness, 'stale');
+  assert.deepEqual(state.contextProjection.observation?.observation, {
+    confidence: 'derived', usedTokens: 20, usableTokens: 100, contextWindowTokens: 100,
+  });
+  assert.ok(state.integrityConflicts.includes('context:event-5:turn-order'));
+  assert.equal(sequenceToArray(state.projectedFrames).some((event) => event.sequence === 5), false);
+});
+
+test('a second observation event for one turn is rejected without replacing the first', () => {
+  const turnId = 'turn-one-observation';
+  const events = [
+    frame(1, { kind: 'activity-state', phase: 'turn-starting' }, { turnId }),
+    frame(2, { kind: 'turn-end', text: '', stopReason: 'complete' }, { turnId }),
+    frame(3, {
+      kind: 'context-observation', confidence: 'exact',
+      usedTokens: 10, usableTokens: 100, contextWindowTokens: 120,
+    }, { turnId }),
+    frame(4, {
+      kind: 'context-observation', confidence: 'exact',
+      usedTokens: 90, usableTokens: 100, contextWindowTokens: 120,
+    }, { turnId }),
+  ];
+  let state = seed();
+  for (const event of events) state = applyConversationEvent(state, event);
+  assert.deepEqual(state.contextProjection.observation?.observation, {
+    confidence: 'exact', usedTokens: 10, usableTokens: 100, contextWindowTokens: 120,
+  });
+  assert.ok(state.integrityConflicts.includes('context:event-4:duplicate-turn'));
+  assert.equal(sequenceToArray(state.projectedFrames).some((event) => event.sequence === 4), false);
+});
+
+test('context cannot become current before its attributed turn settles', () => {
+  const turnId = 'turn-not-settled';
+  let state = applyConversationEvent(seed(), frame(1, {
+    kind: 'activity-state', phase: 'turn-starting',
+  }, { turnId }));
+  state = applyConversationEvent(state, frame(2, {
+    kind: 'context-observation', confidence: 'exact',
+    usedTokens: 25, usableTokens: 100, contextWindowTokens: 120,
+  }, { turnId }));
+  assert.equal(state.contextProjection.observation, null);
+  assert.equal(state.contextProjectionReady, false);
+  assert.ok(state.integrityConflicts.includes('context:event-2:turn-not-settled'));
+});
+
+test('context projection converges for ordered, shuffled, duplicate, and replay delivery', () => {
+  const turnId = 'turn-context-converges';
+  const events = [
+    frame(1, { kind: 'activity-state', phase: 'turn-starting' }, { turnId }),
+    frame(2, { kind: 'turn-end', text: '', stopReason: 'complete' }, { turnId }),
+    frame(3, {
+      kind: 'context-observation', confidence: 'approximate',
+      usedTokens: 30, usableTokens: 100, contextWindowTokens: 120,
+    }, { turnId }),
+  ];
+  let ordered = seed();
+  for (const event of events) ordered = applyConversationEvent(ordered, event);
+  let shuffled = seed();
+  for (const event of [events[2]!, events[2]!, events[0]!, events[1]!]) {
+    shuffled = applyConversationEvent(shuffled, event);
+  }
+  const replayed = applyReplay(seed(), {
+    type: 'session-replay', projectId: 'project-1', sessionId: SID,
+    highWaterSequence: 3, events: [events[2]!, events[0]!, events[1]!, events[2]!],
+  });
+  assert.deepEqual(projectionView(shuffled), projectionView(ordered));
+  assert.deepEqual(projectionView(replayed), projectionView(ordered));
+});
+
+test('turn usage alone never manufactures a context observation', () => {
+  const state = applyConversationEvent(seed(), frame(1, usage(90), { family: 'telemetry' }));
+  assert.equal(state.aggregates.inputTokens, 90);
+  assert.equal(state.contextProjection.observation, null);
+  assert.equal(state.contextProjection.freshness, 'unobserved');
 });
 
 test('tool lifecycle projection accepts one guarded path and rejects regressions without replacement', () => {

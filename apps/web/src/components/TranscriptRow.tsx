@@ -99,6 +99,10 @@ export function TranscriptRow({ event }: { event: unknown }) {
           </div>
         </Row>
       );
+    case 'context-observation':
+      // Session context belongs in the composer-adjacent context bar, not as
+      // provider telemetry noise in an agent transcript.
+      return null;
     case 'turn-duration':
       return (
         <Row label="turn duration" tone="muted">
@@ -124,9 +128,11 @@ export function TranscriptRow({ event }: { event: unknown }) {
       );
     case 'compaction':
       return (
-        <Row label={`compaction · ${event.trigger}`} tone="muted">
+        <Row label={`compaction${event.trigger === 'unknown' ? '' : ` · ${event.trigger}`}`} tone="muted">
           <div className="font-mono text-[10px] text-muted-foreground">
-            {event.preTokens} → {event.postTokens ?? '…'} tokens
+            {event.preTokens === null
+              ? 'token counts unavailable'
+              : `${event.preTokens} → ${event.postTokens ?? '…'} tokens`}
           </div>
         </Row>
       );
