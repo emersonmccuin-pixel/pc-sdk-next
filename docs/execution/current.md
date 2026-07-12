@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after PM-001 guarded landing and teardown.
+Updated: 2026-07-12 at BC-002 startup from clean pushed PM-001 closeout.
 
 ## Repository
 
@@ -93,8 +93,7 @@ Updated: 2026-07-12 after PM-001 guarded landing and teardown.
 - Completed slice: `docs/execution/slices/PM-001.md`
 - PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
-- PM-001 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 feature worktree: removed after positive ancestry/tree proof
 - PM-001 sealed proposal checkpoint:
   `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
 - PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
@@ -109,10 +108,14 @@ Updated: 2026-07-12 after PM-001 guarded landing and teardown.
 - PM-001 landed tree: `18cfeb9177130f697ad30358d76b5db27104bae4`
 - PM-001 feature worktree: removed; feature branch preserved
 - PM-001 closeout branch: `codex/pm-001-closeout`
-- PM-001 closeout worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001-closeout`
+- PM-001 closeout worktree: removed after guarded landing
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
+- Active slice: `docs/execution/slices/BC-002.md`
+- BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
+- BC-002 branch: `codex/bc-002-browser-baseline`
+- BC-002 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-bc-002`
 
 ## Status
 
@@ -164,11 +167,13 @@ PM-001 is complete on pushed `main` at `1adaad7`. Exact feature/merge tree
 equality, ancestry, full post-merge `pnpm ci:check`, push, and feature-worktree
 teardown passed.
 
-## Next safe action
+## Active action
 
-Close this receipt, then define the smallest remaining N1 characterization/
-backlog slice from the baseline evidence. Do not begin PM implementation or
-jump to Codex/N5 merely because the ownership seam is now accepted.
+Execute BC-002 from its recorded worktree: prepare isolated current and
+preserved-baseline production bundles, gather reproducible browser evidence,
+reconcile BC-001, and close N1 only if its objective gate passes. A browser
+failure becomes evidence or a later bounded behavior slice; it does not silently
+expand this characterization slice.
 
 ## Startup checks
 
@@ -179,8 +184,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The isolated PM-001 feature worktree is removed. Keep the PC-SDK Next main
-checkout read-only; closeout changes stay in the recorded closeout worktree
+The PM-001 feature and closeout worktrees are removed. Keep the PC-SDK Next main
+checkout read-only; all BC-002 mutations stay in its recorded feature worktree
 until guarded landing.
 
 ## Known blockers

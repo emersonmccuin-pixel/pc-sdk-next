@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
+Last updated: 2026-07-12 at BC-002 browser-baseline startup.
 
 ## Preserved baseline
 
@@ -81,8 +81,7 @@ only in PC-SDK Next.
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
 - PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
-- PM-001 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 feature worktree: removed after positive ancestry/tree proof
 - PM-001 sealed proposal checkpoint:
   `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
 - PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
@@ -278,6 +277,22 @@ root domains were observed only after that hook ran, so no private DB read or
 pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
 domain creation. That bounded uncertainty is retained in the receipt; PM-001
 does not claim the remote stayed unchanged and will not make another live call.
+
+## Active N1 browser-baseline closure
+
+`BC-002` is active from clean pushed base `36ac71c` in isolated worktree
+`E:\Claude Code Projects\Personal\PC-SDK-Next-bc-002`. It will compare the
+preserved `e233aa5` production shell with the current production bundle using
+disposable ports, databases, logs, and repositories. The current path uses a
+deterministic fake runtime; no live provider, PM call, stable app data, or
+daily-driver checkout mutation is authorized.
+
+The gate distinguishes direct browser evidence from named deterministic guards,
+reconciles the stale BC-001 findings after CF-001 through CF-004 and RS-001
+through RS-004, and records any real defect as a later bounded slice rather than
+silently changing production behavior. Root may close N1 autonomously when the
+objective gate passes; only an unresolved subjective `UI-001` divergence needs
+product direction.
 
 ## Known architectural gaps
 
