@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 at SF-001 sealed implementation.
+Last updated: 2026-07-12 at SF-001 guarded landing and teardown.
 
 ## Preserved baseline
 
@@ -108,6 +108,12 @@ only in PC-SDK Next.
 - SF-001 sealed implementation:
   `c22d5278419ca6ad3d96add8a3d0109aaefca796`
 - SF-001 sealed tree: `64c0a414bb159498faf64e16be4f3ecaeef5cdae`
+- SF-001 feature tip: `8b6a08dcde66cb190dcbb96edf500c7276f91cb2`
+- SF-001 landing merge: `a8b52c666d3fc3284b94f441ce602b908689539a`
+- SF-001 landed tree: `e7d6dc7d8318f40be698b0564b8f5d65874187d7`
+- SF-001 feature worktree: removed after positive ancestry/tree/post-merge-CI
+  proof; dependency/build residue was path/process-guarded and removed; feature
+  branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -352,6 +358,12 @@ This slice excludes only a second PC-SDK engine from one app data directory. It
 does not claim positive provider/setup/repository subprocess-tree exit; the
 cross-process repository lease, child-environment scrub, and remaining process
 hardening retain their separate owning slices.
+
+Feature tip `8b6a08d` guarded-landed as merge `a8b52c6` with exact tree
+`e7d6dc7`; sealed and feature ancestry, post-merge `pnpm ci:check` (342/342
+server tests), and push to exact `origin/main` passed. The feature worktree was
+deregistered after that proof. Git left only clean-worktree dependency/build
+residue; its exact parent/name/process guard passed before recursive removal.
 
 ## Known architectural gaps
 
