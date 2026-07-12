@@ -16,7 +16,11 @@
 // Contract resource events are PROJECT-scoped; the frame's `version` carries
 // `agent_contracts.version` for rev-aware upserts.
 
-import type { ULID } from './shared.ts';
+import { isUlid, parseErr, parseOk, type ParseResult, type ULID } from './shared.ts';
+import {
+  isRepositoryIdentityReceiptDto,
+  type RepositoryIdentityReceiptDto,
+} from './agent-runs.ts';
 
 // ── v2 union (mirror of @pc/domain contract.ts) ──────────────────────────────
 
@@ -186,6 +190,125 @@ export const CONTRACT_STATUSES = [
 ] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
 
+// ── Explicit worktree abandonment (DL-002) ─────────────────────────────────
+
+export const WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL =
+  'worktree-abandonment-preview-v1' as const;
+export const WORKTREE_ABANDONMENT_PROTOCOL = 'worktree-abandonment-v1' as const;
+export const WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL =
+  'worktree-abandonment-teardown-v1' as const;
+export const WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX = 50;
+export const WORKTREE_ABANDONMENT_REASON_MAX_CHARS = 1000;
+
+export type WorktreeAbandonmentIntegrationStateDto =
+  | 'unmerged'
+  | 'no-exclusive-commits';
+
+export interface WorktreeAbandonmentPresentStateDto {
+  directory: 'present';
+  registration: 'registered';
+  status: 'clean' | 'dirty';
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  worktreeStateDigest: string;
+  changedPaths: string[];
+  ignoredContents: 'uninspected';
+}
+
+export interface WorktreeAbandonmentMissingStateDto {
+  directory: 'missing';
+  registration: 'registered' | 'absent';
+  status: 'unavailable';
+  worktreeStateDigest: string;
+  changedPaths: [];
+  ignoredContents: 'uninspected';
+}
+
+export type WorktreeAbandonmentStateDto =
+  | WorktreeAbandonmentPresentStateDto
+  | WorktreeAbandonmentMissingStateDto;
+
+export interface WorktreeAbandonmentPreviewDto {
+  protocol: typeof WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL;
+  projectId: ULID;
+  contractId: ULID;
+  contractVersion: number;
+  producerRunId: ULID;
+  worktreeId: ULID;
+  worktreeStatus: 'active' | 'stranded';
+  worktreePath: string;
+  branch: string;
+  branchTip: string;
+  baseBranch: string;
+  validatedBaseSha: string;
+  targetTip: string;
+  integrationState: WorktreeAbandonmentIntegrationStateDto;
+  repositoryIdentity: RepositoryIdentityReceiptDto;
+  worktreeState: WorktreeAbandonmentStateDto;
+  previewDigest: string;
+}
+
+export interface WorktreeAbandonmentReceiptDto {
+  protocol: typeof WORKTREE_ABANDONMENT_PROTOCOL;
+  requestId: string;
+  approvedBy: 'user';
+  approvalSurface: 'browser';
+  approvalReason: 'explicit-browser-confirmation';
+  approvedAt: number;
+  reason: string | null;
+  approvedContractVersion: number;
+  projectId: ULID;
+  contractId: ULID;
+  producerRunId: ULID;
+  worktreeId: ULID;
+  worktreeStatus: 'active' | 'stranded';
+  repositoryIdentity: RepositoryIdentityReceiptDto;
+  worktreePath: string;
+  branch: string;
+  branchTip: string;
+  baseBranch: string;
+  validatedBaseSha: string;
+  targetTip: string;
+  integrationState: WorktreeAbandonmentIntegrationStateDto;
+  worktreeState: WorktreeAbandonmentPresentStateDto;
+  previewDigest: string;
+}
+
+export interface WorktreeAbandonmentTeardownReceiptDto {
+  protocol: typeof WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL;
+  authorityRequestId: string;
+  startedAt: number;
+  finishedAt: number;
+  repositoryIdentity: RepositoryIdentityReceiptDto;
+  worktreePath: string;
+  branch: string;
+  approvedBranchTip: string;
+  observedBranchTip: string;
+  directoryAbsent: true;
+  registrationAbsent: true;
+  branchPreserved: true;
+}
+
+export interface ApproveWorktreeAbandonmentRequest {
+  requestId: string;
+  expectedContractVersion: number;
+  previewDigest: string;
+  confirmation: string;
+  reason?: string;
+}
+
+export interface WorktreeAbandonmentPreviewResponse {
+  ok: true;
+  preview: WorktreeAbandonmentPreviewDto;
+}
+
+export interface ApproveWorktreeAbandonmentResponse {
+  ok: true;
+  settlement: 'completed' | 'pending';
+  contract: Contract;
+}
+
 // ── Contract DTO ─────────────────────────────────────────────────────────────
 
 /** The first-class agent contract. A machine assignment with a typed output.
@@ -220,7 +343,15 @@ export interface Contract {
    *  (non-repo, pre-415). The receipts outlive the worktree; 'abandoned'
    *  preserves the branch + records its tip before reclaim; 'stale-base'
    *  parks work whose verified base the target advanced past (guard 7). */
-  landingStatus: 'pending' | 'landed' | 'conflict' | 'failed' | 'abandoned' | 'stale-base' | null;
+  landingStatus:
+    | 'pending'
+    | 'landed'
+    | 'conflict'
+    | 'failed'
+    | 'abandoning'
+    | 'abandoned'
+    | 'stale-base'
+    | null;
   landedBranch: string | null;
   /** The agent BRANCH TIP — never the merge commit (that's `mergeSha`). */
   landedSha: string | null;
@@ -246,6 +377,11 @@ export interface Contract {
    *  approve settlement re-checks it against the CURRENT deliverable commit
    *  so a mid-review reseal voids the verdict. Cleared with reviewRunId. */
   reviewSealedCommit: string | null;
+  /** Browser-approved destructive worktree reclaim. Legacy `abandoned` rows
+   * have both receipts null and carry no cleanup authority. */
+  abandonmentReceipt: WorktreeAbandonmentReceiptDto | null;
+  abandonmentTeardownReceipt: WorktreeAbandonmentTeardownReceiptDto | null;
+  abandonmentError: string | null;
   status: ContractStatus;
   /** Optimistic-concurrency counter. */
   version: number;
@@ -260,6 +396,10 @@ export const contractRoutes = {
   /** Slice 022 — project-scoped contract list. */
   forProject: (projectId: ULID) =>
     `/api/projects/${encodeURIComponent(projectId)}/contracts`,
+  abandonmentPreview: (projectId: ULID, contractId: ULID) =>
+    `/api/projects/${encodeURIComponent(projectId)}/contracts/${encodeURIComponent(contractId)}/abandonment-preview`,
+  abandonment: (projectId: ULID, contractId: ULID) =>
+    `/api/projects/${encodeURIComponent(projectId)}/contracts/${encodeURIComponent(contractId)}/abandonment`,
 } as const;
 
 export interface ListContractsResponse {
@@ -280,6 +420,9 @@ export type ContractMutationReason =
   | 'deliverable-set'
   | 'verification-set'
   | 'landing-set'
+  | 'abandonment-authorized'
+  | 'abandonment-settled'
+  | 'abandonment-error'
   | 'patched';
 
 export interface ContractChangedLivePayload {
@@ -316,12 +459,384 @@ export function isContractMutationReason(value: unknown): value is ContractMutat
     value === 'deliverable-set' ||
     value === 'verification-set' ||
     value === 'landing-set' ||
+    value === 'abandonment-authorized' ||
+    value === 'abandonment-settled' ||
+    value === 'abandonment-error' ||
     value === 'patched'
   );
 }
 
+function isContractLandingStatus(value: unknown): value is Contract['landingStatus'] {
+  return value === null ||
+    value === 'pending' ||
+    value === 'landed' ||
+    value === 'conflict' ||
+    value === 'failed' ||
+    value === 'abandoning' ||
+    value === 'abandoned' ||
+    value === 'stale-base';
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSha256Digest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function isGitObjectId(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+}
+
+function isUuidV4(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+}
+
+function isNonEmptyTrimmedString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim();
+}
+
+function isChangedPathSummary(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX) {
+    return false;
+  }
+  const unique = new Set<string>();
+  for (const path of value) {
+    if (
+      typeof path !== 'string' ||
+      path.length === 0 ||
+      path.length > 2000 ||
+      path.includes('\0')
+    ) return false;
+    unique.add(path);
+  }
+  return unique.size === value.length;
+}
+
+export function isWorktreeAbandonmentStateDto(
+  value: unknown,
+): value is WorktreeAbandonmentStateDto {
+  if (!isRecord(value)) return false;
+  if (value.directory === 'present') {
+    if (!hasExactKeys(value, [
+      'directory',
+      'registration',
+      'status',
+      'staged',
+      'unstaged',
+      'untracked',
+      'worktreeStateDigest',
+      'changedPaths',
+      'ignoredContents',
+    ])) return false;
+    if (
+      value.registration !== 'registered' ||
+      (value.status !== 'clean' && value.status !== 'dirty') ||
+      !isNonNegativeSafeInteger(value.staged) ||
+      !isNonNegativeSafeInteger(value.unstaged) ||
+      !isNonNegativeSafeInteger(value.untracked) ||
+      !isSha256Digest(value.worktreeStateDigest) ||
+      !isChangedPathSummary(value.changedPaths) ||
+      value.ignoredContents !== 'uninspected'
+    ) return false;
+    const count = value.staged + value.unstaged + value.untracked;
+    return value.status === (count === 0 ? 'clean' : 'dirty') &&
+      (count !== 0 || value.changedPaths.length === 0);
+  }
+  return value.directory === 'missing' &&
+    hasExactKeys(value, [
+      'directory',
+      'registration',
+      'status',
+      'worktreeStateDigest',
+      'changedPaths',
+      'ignoredContents',
+    ]) &&
+    (value.registration === 'registered' || value.registration === 'absent') &&
+    value.status === 'unavailable' &&
+    isSha256Digest(value.worktreeStateDigest) &&
+    Array.isArray(value.changedPaths) &&
+    value.changedPaths.length === 0 &&
+    value.ignoredContents === 'uninspected';
+}
+
+export function isWorktreeAbandonmentPreviewDto(
+  value: unknown,
+): value is WorktreeAbandonmentPreviewDto {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      'protocol',
+      'projectId',
+      'contractId',
+      'contractVersion',
+      'producerRunId',
+      'worktreeId',
+      'worktreeStatus',
+      'worktreePath',
+      'branch',
+      'branchTip',
+      'baseBranch',
+      'validatedBaseSha',
+      'targetTip',
+      'integrationState',
+      'repositoryIdentity',
+      'worktreeState',
+      'previewDigest',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL &&
+    isUlid(value.projectId) &&
+    isUlid(value.contractId) &&
+    isNonNegativeSafeInteger(value.contractVersion) &&
+    value.contractVersion > 0 &&
+    isUlid(value.producerRunId) &&
+    isUlid(value.worktreeId) &&
+    (value.worktreeStatus === 'active' || value.worktreeStatus === 'stranded') &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    isGitObjectId(value.branchTip) &&
+    isNonEmptyTrimmedString(value.baseBranch) &&
+    isGitObjectId(value.validatedBaseSha) &&
+    isGitObjectId(value.targetTip) &&
+    (value.integrationState === 'unmerged' || value.integrationState === 'no-exclusive-commits') &&
+    isRepositoryIdentityReceiptDto(value.repositoryIdentity) &&
+    isWorktreeAbandonmentStateDto(value.worktreeState) &&
+    isSha256Digest(value.previewDigest);
+}
+
+export function isWorktreeAbandonmentReceiptDto(
+  value: unknown,
+): value is WorktreeAbandonmentReceiptDto {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      'protocol',
+      'requestId',
+      'approvedBy',
+      'approvalSurface',
+      'approvalReason',
+      'approvedAt',
+      'reason',
+      'approvedContractVersion',
+      'projectId',
+      'contractId',
+      'producerRunId',
+      'worktreeId',
+      'worktreeStatus',
+      'repositoryIdentity',
+      'worktreePath',
+      'branch',
+      'branchTip',
+      'baseBranch',
+      'validatedBaseSha',
+      'targetTip',
+      'integrationState',
+      'worktreeState',
+      'previewDigest',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_PROTOCOL &&
+    isUuidV4(value.requestId) &&
+    value.approvedBy === 'user' &&
+    value.approvalSurface === 'browser' &&
+    value.approvalReason === 'explicit-browser-confirmation' &&
+    isNonNegativeSafeInteger(value.approvedAt) &&
+    (
+      value.reason === null ||
+      (
+        isNonEmptyTrimmedString(value.reason) &&
+        value.reason.length <= WORKTREE_ABANDONMENT_REASON_MAX_CHARS
+      )
+    ) &&
+    isNonNegativeSafeInteger(value.approvedContractVersion) &&
+    value.approvedContractVersion > 0 &&
+    isUlid(value.projectId) &&
+    isUlid(value.contractId) &&
+    isUlid(value.producerRunId) &&
+    isUlid(value.worktreeId) &&
+    (value.worktreeStatus === 'active' || value.worktreeStatus === 'stranded') &&
+    isRepositoryIdentityReceiptDto(value.repositoryIdentity) &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    isGitObjectId(value.branchTip) &&
+    isNonEmptyTrimmedString(value.baseBranch) &&
+    isGitObjectId(value.validatedBaseSha) &&
+    isGitObjectId(value.targetTip) &&
+    (value.integrationState === 'unmerged' || value.integrationState === 'no-exclusive-commits') &&
+    isWorktreeAbandonmentStateDto(value.worktreeState) &&
+    value.worktreeState.directory === 'present' &&
+    isSha256Digest(value.previewDigest);
+}
+
+export function isWorktreeAbandonmentTeardownReceiptDto(
+  value: unknown,
+): value is WorktreeAbandonmentTeardownReceiptDto {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      'protocol',
+      'authorityRequestId',
+      'startedAt',
+      'finishedAt',
+      'repositoryIdentity',
+      'worktreePath',
+      'branch',
+      'approvedBranchTip',
+      'observedBranchTip',
+      'directoryAbsent',
+      'registrationAbsent',
+      'branchPreserved',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL &&
+    isUuidV4(value.authorityRequestId) &&
+    isNonNegativeSafeInteger(value.startedAt) &&
+    isNonNegativeSafeInteger(value.finishedAt) &&
+    value.finishedAt >= value.startedAt &&
+    isRepositoryIdentityReceiptDto(value.repositoryIdentity) &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    isGitObjectId(value.approvedBranchTip) &&
+    isGitObjectId(value.observedBranchTip) &&
+    value.directoryAbsent === true &&
+    value.registrationAbsent === true &&
+    value.branchPreserved === true;
+}
+
+export function isMatchingWorktreeAbandonmentTeardownDto(
+  authority: unknown,
+  settlement: unknown,
+): settlement is WorktreeAbandonmentTeardownReceiptDto {
+  if (
+    !isWorktreeAbandonmentReceiptDto(authority) ||
+    !isWorktreeAbandonmentTeardownReceiptDto(settlement)
+  ) return false;
+  return settlement.authorityRequestId === authority.requestId &&
+    settlement.worktreePath === authority.worktreePath &&
+    settlement.branch === authority.branch &&
+    settlement.approvedBranchTip === authority.branchTip &&
+    settlement.observedBranchTip === authority.branchTip &&
+    settlement.repositoryIdentity.protocol === authority.repositoryIdentity.protocol &&
+    settlement.repositoryIdentity.gitCommonDir === authority.repositoryIdentity.gitCommonDir &&
+    settlement.repositoryIdentity.leaseKey === authority.repositoryIdentity.leaseKey;
+}
+
+export function parseApproveWorktreeAbandonmentRequest(
+  input: unknown,
+): ParseResult<ApproveWorktreeAbandonmentRequest> {
+  if (!isRecord(input)) return parseErr('request body must be an object');
+  if (!hasOnlyKeys(input, [
+    'requestId',
+    'expectedContractVersion',
+    'previewDigest',
+    'confirmation',
+    'reason',
+  ])) return parseErr('request body contains unsupported fields');
+  if (!isUuidV4(input.requestId)) return parseErr('requestId must be a canonical UUID v4');
+  if (
+    !isNonNegativeSafeInteger(input.expectedContractVersion) ||
+    input.expectedContractVersion < 1
+  ) return parseErr('expectedContractVersion must be a positive safe integer');
+  if (!isSha256Digest(input.previewDigest)) return parseErr('previewDigest must be sha256 evidence');
+  if (!isNonEmptyTrimmedString(input.confirmation)) return parseErr('confirmation required');
+  if (input.reason !== undefined && typeof input.reason !== 'string') {
+    return parseErr('reason must be a string');
+  }
+  const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+  if (reason.length > WORKTREE_ABANDONMENT_REASON_MAX_CHARS) {
+    return parseErr(`reason exceeds ${WORKTREE_ABANDONMENT_REASON_MAX_CHARS} characters`);
+  }
+  return parseOk({
+    requestId: input.requestId,
+    expectedContractVersion: input.expectedContractVersion,
+    previewDigest: input.previewDigest,
+    confirmation: input.confirmation,
+    ...(reason ? { reason } : {}),
+  });
+}
+
 export function isContract(value: unknown): value is Contract {
   if (!isRecord(value)) return false;
+  if (!hasExactKeys(value, [
+    'id',
+    'projectId',
+    'pmRef',
+    'agentRunId',
+    'podName',
+    'expectedOutput',
+    'acceptanceCriteria',
+    'verificationTier',
+    'verificationStatus',
+    'verificationNotes',
+    'report',
+    'deliverable',
+    'worktreePath',
+    'worktreeBaseBranch',
+    'worktreeBaseSha',
+    'landingStatus',
+    'landedBranch',
+    'landedSha',
+    'landingError',
+    'landedAt',
+    'targetShaBefore',
+    'targetShaAfter',
+    'mergeSha',
+    'landingAuthorizer',
+    'verifiedBaseSha',
+    'landingPolicy',
+    'reviewRound',
+    'reviewRunId',
+    'reviewSealedCommit',
+    'abandonmentReceipt',
+    'abandonmentTeardownReceipt',
+    'abandonmentError',
+    'status',
+    'version',
+    'createdAt',
+    'updatedAt',
+  ])) return false;
+  const abandonmentReceipt = value.abandonmentReceipt === null
+    ? null
+    : isWorktreeAbandonmentReceiptDto(value.abandonmentReceipt)
+      ? value.abandonmentReceipt
+      : undefined;
+  const abandonmentTeardownReceipt = value.abandonmentTeardownReceipt === null
+    ? null
+    : isWorktreeAbandonmentTeardownReceiptDto(value.abandonmentTeardownReceipt)
+      ? value.abandonmentTeardownReceipt
+      : undefined;
+  if (abandonmentReceipt === undefined || abandonmentTeardownReceipt === undefined) return false;
+  const abandonmentErrorValid = value.abandonmentError === null ||
+    (typeof value.abandonmentError === 'string' && value.abandonmentError.length > 0);
+  if (!abandonmentErrorValid) return false;
+  const authorityMatchesContract = abandonmentReceipt === null || (
+    abandonmentReceipt.projectId === value.projectId &&
+    abandonmentReceipt.contractId === value.id &&
+    abandonmentReceipt.producerRunId === value.agentRunId &&
+    abandonmentReceipt.worktreePath === value.worktreePath &&
+    abandonmentReceipt.baseBranch === value.worktreeBaseBranch &&
+    typeof value.version === 'number' &&
+    value.version > abandonmentReceipt.approvedContractVersion
+  );
+  if (!authorityMatchesContract) return false;
+  const abandonmentStateValid = value.landingStatus === 'abandoning'
+    ? abandonmentReceipt !== null &&
+      abandonmentTeardownReceipt === null
+    : value.landingStatus === 'abandoned'
+      ? (
+          abandonmentReceipt === null &&
+          abandonmentTeardownReceipt === null &&
+          value.abandonmentError === null
+        ) || (
+          abandonmentReceipt !== null &&
+          abandonmentTeardownReceipt !== null &&
+          value.abandonmentError === null &&
+          isMatchingWorktreeAbandonmentTeardownDto(
+            abandonmentReceipt,
+            abandonmentTeardownReceipt,
+          )
+        )
+      : abandonmentReceipt === null &&
+        abandonmentTeardownReceipt === null &&
+        value.abandonmentError === null;
+  if (!abandonmentStateValid) return false;
   return (
     typeof value.id === 'string' &&
     typeof value.projectId === 'string' &&
@@ -338,6 +853,11 @@ export function isContract(value: unknown): value is Contract {
     (value.worktreePath === null || typeof value.worktreePath === 'string') &&
     (value.worktreeBaseBranch === null || typeof value.worktreeBaseBranch === 'string') &&
     (value.worktreeBaseSha === null || typeof value.worktreeBaseSha === 'string') &&
+    isContractLandingStatus(value.landingStatus) &&
+    (value.landedBranch === null || typeof value.landedBranch === 'string') &&
+    (value.landedSha === null || typeof value.landedSha === 'string') &&
+    (value.landingError === null || typeof value.landingError === 'string') &&
+    (value.landedAt === null || isNonNegativeSafeInteger(value.landedAt)) &&
     (value.targetShaBefore === null || typeof value.targetShaBefore === 'string') &&
     (value.targetShaAfter === null || typeof value.targetShaAfter === 'string') &&
     (value.mergeSha === null || typeof value.mergeSha === 'string') &&
@@ -351,13 +871,14 @@ export function isContract(value: unknown): value is Contract {
       value.landingPolicy === 'default-review' ||
       value.landingPolicy === 'auto-merge' ||
       value.landingPolicy === 'full-review') &&
-    (value.reviewRound === null || typeof value.reviewRound === 'number') &&
+    (value.reviewRound === null || isNonNegativeSafeInteger(value.reviewRound)) &&
     (value.reviewRunId === null || typeof value.reviewRunId === 'string') &&
     (value.reviewSealedCommit === null || typeof value.reviewSealedCommit === 'string') &&
     isContractStatus(value.status) &&
-    typeof value.version === 'number' &&
-    typeof value.createdAt === 'number' &&
-    typeof value.updatedAt === 'number'
+    isNonNegativeSafeInteger(value.version) &&
+    value.version > 0 &&
+    isNonNegativeSafeInteger(value.createdAt) &&
+    isNonNegativeSafeInteger(value.updatedAt)
   );
 }
 
@@ -370,4 +891,13 @@ export function isContractChangedLivePayload(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return hasOnlyKeys(value, keys) && Object.keys(value).length === keys.length;
 }

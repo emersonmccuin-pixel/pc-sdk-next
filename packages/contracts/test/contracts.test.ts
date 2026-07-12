@@ -9,10 +9,18 @@ import {
   isContractStatus,
   isDeliverableKind,
   isExpectedOutputKind,
+  isMatchingWorktreeAbandonmentTeardownDto,
+  isWorktreeAbandonmentPreviewDto,
+  isWorktreeAbandonmentReceiptDto,
+  isWorktreeAbandonmentTeardownReceiptDto,
+  parseApproveWorktreeAbandonmentRequest,
   type AcceptancePredicate,
   type Contract,
   type Deliverable,
   type ExpectedOutput,
+  type WorktreeAbandonmentPreviewDto,
+  type WorktreeAbandonmentReceiptDto,
+  type WorktreeAbandonmentTeardownReceiptDto,
 } from '../src/index.ts';
 
 const baseContract: Contract = {
@@ -45,6 +53,9 @@ const baseContract: Contract = {
   reviewRound: null,
   reviewRunId: null,
   reviewSealedCommit: null,
+  abandonmentReceipt: null,
+  abandonmentTeardownReceipt: null,
+  abandonmentError: null,
   status: 'issued',
   version: 1,
   createdAt: 1,
@@ -81,6 +92,180 @@ test('Contract guard accepts a full row and rejects drift', () => {
   assert.equal(isContract({ ...baseContract, reviewRunId: 42 }), false);
   assert.equal(isContract({ ...baseContract, reviewSealedCommit: 'a'.repeat(40) }), true);
   assert.equal(isContract({ ...baseContract, reviewSealedCommit: 42 }), false);
+  assert.equal(isContract({ ...baseContract, landingStatus: 'unknown' }), false);
+  assert.equal(isContract({ ...baseContract, landedAt: Number.MAX_SAFE_INTEGER + 1 }), false);
+  assert.equal(isContract({ ...baseContract, providerReceipt: 'leak' }), false);
+});
+
+const abandonmentProjectId = '01J00000000000000000000000';
+const abandonmentContractId = '01J00000000000000000000001';
+const abandonmentProducerId = '01J00000000000000000000002';
+const abandonmentWorktreeId = '01J00000000000000000000003';
+const abandonmentRequestId = '123e4567-e89b-42d3-a456-426614174000';
+const abandonmentIdentity = {
+  protocol: 'git-common-dir-v1' as const,
+  gitCommonDir: 'C:/repo/.git',
+  leaseKey: `sha256:${'1'.repeat(64)}`,
+};
+const abandonmentState = {
+  directory: 'present' as const,
+  registration: 'registered' as const,
+  status: 'dirty' as const,
+  staged: 1,
+  unstaged: 0,
+  untracked: 1,
+  worktreeStateDigest: `sha256:${'2'.repeat(64)}`,
+  changedPaths: ['a.ts', 'new.txt'],
+  ignoredContents: 'uninspected' as const,
+};
+const abandonmentPreview: WorktreeAbandonmentPreviewDto = {
+  protocol: 'worktree-abandonment-preview-v1',
+  projectId: abandonmentProjectId,
+  contractId: abandonmentContractId,
+  contractVersion: 7,
+  producerRunId: abandonmentProducerId,
+  worktreeId: abandonmentWorktreeId,
+  worktreeStatus: 'active',
+  worktreePath: 'C:/repo-worktrees/agent-one',
+  branch: 'agent-one',
+  branchTip: 'a'.repeat(40),
+  baseBranch: 'main',
+  validatedBaseSha: 'b'.repeat(40),
+  targetTip: 'c'.repeat(40),
+  integrationState: 'unmerged',
+  repositoryIdentity: abandonmentIdentity,
+  worktreeState: abandonmentState,
+  previewDigest: `sha256:${'3'.repeat(64)}`,
+};
+const abandonmentReceipt: WorktreeAbandonmentReceiptDto = {
+  protocol: 'worktree-abandonment-v1',
+  requestId: abandonmentRequestId,
+  approvedBy: 'user',
+  approvalSurface: 'browser',
+  approvalReason: 'explicit-browser-confirmation',
+  approvedAt: 10,
+  reason: null,
+  approvedContractVersion: 7,
+  projectId: abandonmentProjectId,
+  contractId: abandonmentContractId,
+  producerRunId: abandonmentProducerId,
+  worktreeId: abandonmentWorktreeId,
+  worktreeStatus: 'active',
+  repositoryIdentity: abandonmentIdentity,
+  worktreePath: abandonmentPreview.worktreePath,
+  branch: abandonmentPreview.branch,
+  branchTip: abandonmentPreview.branchTip,
+  baseBranch: abandonmentPreview.baseBranch,
+  validatedBaseSha: abandonmentPreview.validatedBaseSha,
+  targetTip: abandonmentPreview.targetTip,
+  integrationState: abandonmentPreview.integrationState,
+  worktreeState: abandonmentState,
+  previewDigest: abandonmentPreview.previewDigest,
+};
+const abandonmentTeardown: WorktreeAbandonmentTeardownReceiptDto = {
+  protocol: 'worktree-abandonment-teardown-v1',
+  authorityRequestId: abandonmentRequestId,
+  startedAt: 11,
+  finishedAt: 12,
+  repositoryIdentity: abandonmentIdentity,
+  worktreePath: abandonmentPreview.worktreePath,
+  branch: abandonmentPreview.branch,
+  approvedBranchTip: abandonmentPreview.branchTip,
+  observedBranchTip: abandonmentPreview.branchTip,
+  directoryAbsent: true,
+  registrationAbsent: true,
+  branchPreserved: true,
+};
+
+test('abandonment DTO and request guards are strict and reject caller-authored authority', () => {
+  assert.equal(isWorktreeAbandonmentPreviewDto(abandonmentPreview), true);
+  assert.equal(isWorktreeAbandonmentReceiptDto(abandonmentReceipt), true);
+  assert.equal(isWorktreeAbandonmentTeardownReceiptDto(abandonmentTeardown), true);
+  assert.equal(isMatchingWorktreeAbandonmentTeardownDto(abandonmentReceipt, abandonmentTeardown), true);
+  assert.equal(isWorktreeAbandonmentPreviewDto({ ...abandonmentPreview, extra: true }), false);
+  assert.equal(isWorktreeAbandonmentReceiptDto({ ...abandonmentReceipt, approvedAt: 1.5 }), false);
+  assert.equal(isMatchingWorktreeAbandonmentTeardownDto(abandonmentReceipt, {
+    ...abandonmentTeardown,
+    observedBranchTip: 'd'.repeat(40),
+  }), false);
+
+  const parsed = parseApproveWorktreeAbandonmentRequest({
+    requestId: abandonmentRequestId,
+    expectedContractVersion: 7,
+    previewDigest: abandonmentPreview.previewDigest,
+    confirmation: abandonmentPreview.branch,
+    reason: '  done  ',
+  });
+  assert.deepEqual(parsed, {
+    ok: true,
+    value: {
+      requestId: abandonmentRequestId,
+      expectedContractVersion: 7,
+      previewDigest: abandonmentPreview.previewDigest,
+      confirmation: abandonmentPreview.branch,
+      reason: 'done',
+    },
+  });
+  assert.equal(parseApproveWorktreeAbandonmentRequest({
+    requestId: abandonmentRequestId,
+    expectedContractVersion: 7,
+    previewDigest: abandonmentPreview.previewDigest,
+    confirmation: abandonmentPreview.branch,
+    approvedBy: 'user',
+  }).ok, false);
+  assert.equal(parseApproveWorktreeAbandonmentRequest({
+    requestId: 'bad',
+    expectedContractVersion: 7,
+    previewDigest: abandonmentPreview.previewDigest,
+    confirmation: abandonmentPreview.branch,
+  }).ok, false);
+});
+
+test('contract guard enforces legacy, pending, and settled abandonment cross-fields', () => {
+  const bound = {
+    ...baseContract,
+    id: abandonmentContractId,
+    projectId: abandonmentProjectId,
+    agentRunId: abandonmentProducerId,
+    expectedOutput: { kind: 'repo' } as const,
+    worktreePath: abandonmentPreview.worktreePath,
+    worktreeBaseBranch: abandonmentPreview.baseBranch,
+    worktreeBaseSha: abandonmentPreview.validatedBaseSha,
+    version: 8,
+  };
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'abandoning',
+    abandonmentReceipt,
+  }), true);
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'abandoning',
+    abandonmentReceipt: null,
+  }), false);
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'abandoned',
+    version: 9,
+    abandonmentReceipt,
+    abandonmentTeardownReceipt: abandonmentTeardown,
+  }), true);
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'abandoned',
+    abandonmentReceipt,
+  }), false, 'partial final evidence is invalid');
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'abandoned',
+    abandonmentReceipt: null,
+    abandonmentTeardownReceipt: null,
+  }), true, 'legacy abandoned stays readable but carries no authority');
+  assert.equal(isContract({
+    ...bound,
+    landingStatus: 'failed',
+    abandonmentReceipt,
+  }), false);
 });
 
 // ── Every ExpectedOutput kind round-trips through the Contract DTO ──
@@ -174,7 +359,17 @@ test('contract status + mutation-reason guards', () => {
     assert.equal(isContractStatus(s), true);
   }
   assert.equal(isContractStatus('open'), false);
-  for (const r of ['created', 'dispatched', 'deliverable-set', 'verification-set', 'landing-set', 'patched']) {
+  for (const r of [
+    'created',
+    'dispatched',
+    'deliverable-set',
+    'verification-set',
+    'landing-set',
+    'abandonment-authorized',
+    'abandonment-settled',
+    'abandonment-error',
+    'patched',
+  ]) {
     assert.equal(isContractMutationReason(r), true);
   }
   assert.equal(isContractMutationReason('deleted'), false);

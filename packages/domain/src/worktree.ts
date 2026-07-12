@@ -143,6 +143,354 @@ export interface RepositoryIdentityReceipt {
   readonly leaseKey: string;
 }
 
+// ── Explicit worktree abandonment receipts (DL-002) ────────────────────────
+
+export const WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL =
+  'worktree-abandonment-preview-v1' as const;
+export const WORKTREE_ABANDONMENT_PROTOCOL = 'worktree-abandonment-v1' as const;
+export const WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL =
+  'worktree-abandonment-teardown-v1' as const;
+export const WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX = 50;
+export const WORKTREE_ABANDONMENT_REASON_MAX_CHARS = 1000;
+
+export type WorktreeAbandonmentIntegrationState =
+  | 'unmerged'
+  | 'no-exclusive-commits';
+
+export interface WorktreeAbandonmentPresentState {
+  readonly directory: 'present';
+  readonly registration: 'registered';
+  readonly status: 'clean' | 'dirty';
+  readonly staged: number;
+  readonly unstaged: number;
+  readonly untracked: number;
+  readonly worktreeStateDigest: string;
+  readonly changedPaths: string[];
+  readonly ignoredContents: 'uninspected';
+}
+
+export interface WorktreeAbandonmentMissingState {
+  readonly directory: 'missing';
+  readonly registration: 'registered' | 'absent';
+  readonly status: 'unavailable';
+  readonly worktreeStateDigest: string;
+  readonly changedPaths: [];
+  readonly ignoredContents: 'uninspected';
+}
+
+export type WorktreeAbandonmentState =
+  | WorktreeAbandonmentPresentState
+  | WorktreeAbandonmentMissingState;
+
+export interface WorktreeAbandonmentPreview {
+  readonly protocol: typeof WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL;
+  readonly projectId: ULID;
+  readonly contractId: ULID;
+  readonly contractVersion: number;
+  readonly producerRunId: ULID;
+  readonly worktreeId: ULID;
+  readonly worktreeStatus: 'active' | 'stranded';
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly branchTip: string;
+  readonly baseBranch: string;
+  readonly validatedBaseSha: string;
+  readonly targetTip: string;
+  readonly integrationState: WorktreeAbandonmentIntegrationState;
+  readonly repositoryIdentity: RepositoryIdentityReceipt;
+  readonly worktreeState: WorktreeAbandonmentState;
+  readonly previewDigest: string;
+}
+
+export interface WorktreeAbandonmentReceipt {
+  readonly protocol: typeof WORKTREE_ABANDONMENT_PROTOCOL;
+  readonly requestId: string;
+  readonly approvedBy: 'user';
+  readonly approvalSurface: 'browser';
+  readonly approvalReason: 'explicit-browser-confirmation';
+  readonly approvedAt: number;
+  readonly reason: string | null;
+  readonly approvedContractVersion: number;
+  readonly projectId: ULID;
+  readonly contractId: ULID;
+  readonly producerRunId: ULID;
+  readonly worktreeId: ULID;
+  readonly worktreeStatus: 'active' | 'stranded';
+  readonly repositoryIdentity: RepositoryIdentityReceipt;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly branchTip: string;
+  readonly baseBranch: string;
+  readonly validatedBaseSha: string;
+  readonly targetTip: string;
+  readonly integrationState: WorktreeAbandonmentIntegrationState;
+  readonly worktreeState: WorktreeAbandonmentPresentState;
+  readonly previewDigest: string;
+}
+
+export interface WorktreeAbandonmentTeardownReceipt {
+  readonly protocol: typeof WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL;
+  readonly authorityRequestId: string;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly repositoryIdentity: RepositoryIdentityReceipt;
+  readonly worktreePath: string;
+  readonly branch: string;
+  readonly approvedBranchTip: string;
+  readonly observedBranchTip: string;
+  readonly directoryAbsent: true;
+  readonly registrationAbsent: true;
+  readonly branchPreserved: true;
+}
+
+function isSha256Digest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function isGitObjectId(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
+}
+
+function isUuidV4(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+}
+
+function isNonEmptyTrimmedString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim();
+}
+
+function isAbandonmentIntegrationState(
+  value: unknown,
+): value is WorktreeAbandonmentIntegrationState {
+  return value === 'unmerged' || value === 'no-exclusive-commits';
+}
+
+function isChangedPathSummary(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX) {
+    return false;
+  }
+  const unique = new Set<string>();
+  for (const path of value) {
+    if (
+      typeof path !== 'string' ||
+      path.length === 0 ||
+      path.length > 2000 ||
+      path.includes('\0')
+    ) return false;
+    unique.add(path);
+  }
+  return unique.size === value.length;
+}
+
+export function isWorktreeAbandonmentState(
+  value: unknown,
+): value is WorktreeAbandonmentState {
+  if (!isRecord(value)) return false;
+  if (value.directory === 'present') {
+    if (!hasOnlyKeys(value, [
+      'directory',
+      'registration',
+      'status',
+      'staged',
+      'unstaged',
+      'untracked',
+      'worktreeStateDigest',
+      'changedPaths',
+      'ignoredContents',
+    ])) return false;
+    if (
+      value.registration !== 'registered' ||
+      (value.status !== 'clean' && value.status !== 'dirty') ||
+      !isNonNegativeSafeInteger(value.staged) ||
+      !isNonNegativeSafeInteger(value.unstaged) ||
+      !isNonNegativeSafeInteger(value.untracked) ||
+      !isSha256Digest(value.worktreeStateDigest) ||
+      !isChangedPathSummary(value.changedPaths) ||
+      value.ignoredContents !== 'uninspected'
+    ) return false;
+    const count = value.staged + value.unstaged + value.untracked;
+    return value.status === (count === 0 ? 'clean' : 'dirty') &&
+      (count !== 0 || value.changedPaths.length === 0);
+  }
+  return value.directory === 'missing' &&
+    hasOnlyKeys(value, [
+      'directory',
+      'registration',
+      'status',
+      'worktreeStateDigest',
+      'changedPaths',
+      'ignoredContents',
+    ]) &&
+    (value.registration === 'registered' || value.registration === 'absent') &&
+    value.status === 'unavailable' &&
+    isSha256Digest(value.worktreeStateDigest) &&
+    Array.isArray(value.changedPaths) &&
+    value.changedPaths.length === 0 &&
+    value.ignoredContents === 'uninspected';
+}
+
+export function isWorktreeAbandonmentPreview(
+  value: unknown,
+): value is WorktreeAbandonmentPreview {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'protocol',
+      'projectId',
+      'contractId',
+      'contractVersion',
+      'producerRunId',
+      'worktreeId',
+      'worktreeStatus',
+      'worktreePath',
+      'branch',
+      'branchTip',
+      'baseBranch',
+      'validatedBaseSha',
+      'targetTip',
+      'integrationState',
+      'repositoryIdentity',
+      'worktreeState',
+      'previewDigest',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL &&
+    isAppMintedUlid(value.projectId) &&
+    isAppMintedUlid(value.contractId) &&
+    isNonNegativeSafeInteger(value.contractVersion) &&
+    value.contractVersion > 0 &&
+    isAppMintedUlid(value.producerRunId) &&
+    isAppMintedUlid(value.worktreeId) &&
+    (value.worktreeStatus === 'active' || value.worktreeStatus === 'stranded') &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    WORKTREE_BASE_BRANCH_RE.test(value.branch) &&
+    isGitObjectId(value.branchTip) &&
+    isNonEmptyTrimmedString(value.baseBranch) &&
+    WORKTREE_BASE_BRANCH_RE.test(value.baseBranch) &&
+    isGitObjectId(value.validatedBaseSha) &&
+    isGitObjectId(value.targetTip) &&
+    isAbandonmentIntegrationState(value.integrationState) &&
+    isRepositoryIdentityReceipt(value.repositoryIdentity) &&
+    isWorktreeAbandonmentState(value.worktreeState) &&
+    isSha256Digest(value.previewDigest);
+}
+
+export function isWorktreeAbandonmentReceipt(
+  value: unknown,
+): value is WorktreeAbandonmentReceipt {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'protocol',
+      'requestId',
+      'approvedBy',
+      'approvalSurface',
+      'approvalReason',
+      'approvedAt',
+      'reason',
+      'approvedContractVersion',
+      'projectId',
+      'contractId',
+      'producerRunId',
+      'worktreeId',
+      'worktreeStatus',
+      'repositoryIdentity',
+      'worktreePath',
+      'branch',
+      'branchTip',
+      'baseBranch',
+      'validatedBaseSha',
+      'targetTip',
+      'integrationState',
+      'worktreeState',
+      'previewDigest',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_PROTOCOL &&
+    isUuidV4(value.requestId) &&
+    value.approvedBy === 'user' &&
+    value.approvalSurface === 'browser' &&
+    value.approvalReason === 'explicit-browser-confirmation' &&
+    isNonNegativeSafeInteger(value.approvedAt) &&
+    (
+      value.reason === null ||
+      (
+        isNonEmptyTrimmedString(value.reason) &&
+        value.reason.length <= WORKTREE_ABANDONMENT_REASON_MAX_CHARS
+      )
+    ) &&
+    isNonNegativeSafeInteger(value.approvedContractVersion) &&
+    value.approvedContractVersion > 0 &&
+    isAppMintedUlid(value.projectId) &&
+    isAppMintedUlid(value.contractId) &&
+    isAppMintedUlid(value.producerRunId) &&
+    isAppMintedUlid(value.worktreeId) &&
+    (value.worktreeStatus === 'active' || value.worktreeStatus === 'stranded') &&
+    isRepositoryIdentityReceipt(value.repositoryIdentity) &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    WORKTREE_BASE_BRANCH_RE.test(value.branch) &&
+    isGitObjectId(value.branchTip) &&
+    isNonEmptyTrimmedString(value.baseBranch) &&
+    WORKTREE_BASE_BRANCH_RE.test(value.baseBranch) &&
+    isGitObjectId(value.validatedBaseSha) &&
+    isGitObjectId(value.targetTip) &&
+    isAbandonmentIntegrationState(value.integrationState) &&
+    isWorktreeAbandonmentState(value.worktreeState) &&
+    value.worktreeState.directory === 'present' &&
+    isSha256Digest(value.previewDigest);
+}
+
+export function isWorktreeAbandonmentTeardownReceipt(
+  value: unknown,
+): value is WorktreeAbandonmentTeardownReceipt {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'protocol',
+      'authorityRequestId',
+      'startedAt',
+      'finishedAt',
+      'repositoryIdentity',
+      'worktreePath',
+      'branch',
+      'approvedBranchTip',
+      'observedBranchTip',
+      'directoryAbsent',
+      'registrationAbsent',
+      'branchPreserved',
+    ]) &&
+    value.protocol === WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL &&
+    isUuidV4(value.authorityRequestId) &&
+    isNonNegativeSafeInteger(value.startedAt) &&
+    isNonNegativeSafeInteger(value.finishedAt) &&
+    value.finishedAt >= value.startedAt &&
+    isRepositoryIdentityReceipt(value.repositoryIdentity) &&
+    isNonEmptyTrimmedString(value.worktreePath) &&
+    isNonEmptyTrimmedString(value.branch) &&
+    WORKTREE_BASE_BRANCH_RE.test(value.branch) &&
+    isGitObjectId(value.approvedBranchTip) &&
+    isGitObjectId(value.observedBranchTip) &&
+    value.directoryAbsent === true &&
+    value.registrationAbsent === true &&
+    value.branchPreserved === true;
+}
+
+export function isMatchingWorktreeAbandonmentTeardown(
+  authority: unknown,
+  settlement: unknown,
+): settlement is WorktreeAbandonmentTeardownReceipt {
+  if (
+    !isWorktreeAbandonmentReceipt(authority) ||
+    !isWorktreeAbandonmentTeardownReceipt(settlement)
+  ) return false;
+  return settlement.authorityRequestId === authority.requestId &&
+    settlement.worktreePath === authority.worktreePath &&
+    settlement.branch === authority.branch &&
+    settlement.approvedBranchTip === authority.branchTip &&
+    settlement.observedBranchTip === authority.branchTip &&
+    settlement.repositoryIdentity.protocol === authority.repositoryIdentity.protocol &&
+    settlement.repositoryIdentity.gitCommonDir === authority.repositoryIdentity.gitCommonDir &&
+    settlement.repositoryIdentity.leaseKey === authority.repositoryIdentity.leaseKey;
+}
+
 export function isRepositoryIdentityReceipt(value: unknown): value is RepositoryIdentityReceipt {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
