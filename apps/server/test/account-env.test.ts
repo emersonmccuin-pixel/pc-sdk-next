@@ -140,6 +140,11 @@ test('registry rejects malformed identities and non-absolute credential homes', 
   assert.throws(() => new AccountRegistry([{
     id: 'personal', runtimeId: 'claude-agent-sdk\u0000peer', configDir: 'C:/home',
   }]), /identity must be canonical/);
+  for (const id of ['a'.repeat(201), 'account-😀', '\taccount', '\u00a0account']) {
+    assert.throws(() => new AccountRegistry([{
+      id, runtimeId: 'claude-agent-sdk', configDir: 'C:/home',
+    }]), /identity must be canonical/);
+  }
   assert.throws(() => new AccountRegistry([{
     id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'relative-home',
   }]), /absolute canonical path/);

@@ -19,8 +19,8 @@ import {
   type ChatDeltaEvent,
   type ChatEvent,
   type RuntimeSessionReceipt,
+  type SubscriptionQuotaObservationBatch,
   type ToolStateEvent,
-  type UsageSnapshot,
 } from '@pc/contracts';
 import type { RuntimeEvent } from '../runner/runtime.ts';
 
@@ -44,8 +44,8 @@ export interface TurnRunnerDeps {
   emitDelta: (itemId: string, deltaIndex: number, event: ChatDeltaEvent) => void;
   /** Positive exact native create/resume observation. */
   onRuntimeSessionReceipt?: (receipt: RuntimeSessionReceipt) => void;
-  /** Durable per-account usage snapshot (`rate_limit_event`). */
-  onRateLimit?: (snapshot: UsageSnapshot) => void;
+  /** Subscription-quota telemetry; never enters the conversation transcript. */
+  onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   /** Dropped/unknown message log (rule 5). */
   onDropped?: (reason: string, message: unknown) => void;
 }
@@ -291,8 +291,8 @@ export async function runTurn(
           });
           break;
 
-        case 'rate-limit':
-          deps.onRateLimit?.(msg.snapshot);
+        case 'subscription-quota':
+          deps.onSubscriptionQuota?.(msg.batch);
           break;
 
         case 'system':

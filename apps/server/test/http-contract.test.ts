@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SubscriptionQuotaService } from '@pc/app-services';
+import { isSubscriptionQuotaListResponse } from '@pc/contracts';
 import {
   enqueueConversationSend,
   getActiveConversationTurn,
@@ -15,9 +17,10 @@ import {
   getOrchestratorSession,
   getProjectById,
   getRawDb,
+  listLiveOutboxRowsAfter,
+  pruneLiveOutbox,
 } from '@pc/db';
 import { AccountRegistry } from '../src/runner/account-env.ts';
-import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { freshDb, until } from './helpers.ts';
@@ -31,8 +34,12 @@ import {
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
 
-async function boot(): Promise<{ server: RunningServer; base: string; usage: UsageCache }> {
-  const usage = new UsageCache();
+async function boot(): Promise<{
+  server: RunningServer;
+  base: string;
+  subscriptionQuota: SubscriptionQuotaService;
+}> {
+  const subscriptionQuota = new SubscriptionQuotaService();
   const server = await startServer({
     mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 })),
     ...testSessionSelectionDeps(),
@@ -41,9 +48,9 @@ async function boot(): Promise<{ server: RunningServer; base: string; usage: Usa
     runRecovery: false,
     accounts: new AccountRegistry(),
     orchestratorRuntimeId: TEST_RUNTIME_ID,
-    usage,
+    subscriptionQuota,
   });
-  return { server, base: `http://localhost:${server.port}`, usage };
+  return { server, base: `http://localhost:${server.port}`, subscriptionQuota };
 }
 
 test('health positively identifies the PC-SDK Next instance', async () => {
@@ -80,9 +87,9 @@ test('settings: GET returns the singleton; PATCH round-trips', async () => {
   }
 });
 
-test('projects: probe → create (contract shape) → list → detail; sessions + usage + image', async () => {
+test('projects: probe → create (contract shape) → list → detail; sessions + image', async () => {
   freshDb();
-  const { server, base, usage } = await boot();
+  const { server, base } = await boot();
   const dir = mkdtempSync(join(tmpdir(), 'pc-probe-'));
   try {
     // fs/probe
@@ -158,19 +165,6 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     );
     assert.equal(foreignEvents.status, 404);
 
-    // usage re-prime → { snapshots }
-    usage.record({
-      accountId: 'personal',
-      fiveHour: { utilization: 0.1, resetsAt: null },
-      sevenDay: null,
-      fable: null,
-      status: 'allowed',
-      model: null,
-      updatedAt: Date.now(),
-    });
-    const usageRes = await fetch(`${base}/api/usage`).then(body);
-    assert.ok(Array.isArray(usageRes.snapshots) && usageRes.snapshots[0].accountId === 'personal');
-
     // pasted image → multipart 'image' field
     const form = new FormData();
     form.append('image', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), 'p.png');
@@ -180,6 +174,43 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     }).then(body);
     assert.equal(img.ok, true);
     assert.ok(img.path.endsWith('.png'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('subscription quota HTTP returns exact durable truth after outbox pruning; old usage route is dead', async () => {
+  freshDb();
+  const { server, base, subscriptionQuota } = await boot();
+  try {
+    const recorded = subscriptionQuota.record({
+      runtimeId: TEST_RUNTIME_ID,
+      accountId: 'personal',
+      availability: 'available',
+      coverage: 'complete',
+      observedAt: 1_000,
+      observations: [{
+        window: { id: 'five-hour', label: '5h', durationMs: 18_000_000 },
+        scope: { kind: 'account' },
+        source: { semantics: 'used', fraction: 0.4 },
+        confidence: 'exact',
+        limitState: 'allowed',
+        resetsAt: null,
+      }],
+    });
+    assert.ok(listLiveOutboxRowsAfter('0', 100).some((row) =>
+      row.entity === 'subscription-quota' && row.entityId === recorded.snapshot.id));
+    pruneLiveOutbox({ maxRows: 0 });
+    assert.equal(listLiveOutboxRowsAfter('0', 100).length, 0);
+
+    const response = await fetch(`${base}/api/subscription-quota`);
+    assert.equal(response.status, 200);
+    const value: unknown = await response.json();
+    assert.equal(isSubscriptionQuotaListResponse(value), true);
+    assert.deepEqual(value, { ok: true, snapshots: [recorded.snapshot] });
+    assert.deepEqual(Object.keys(value as Record<string, unknown>).sort(), ['ok', 'snapshots']);
+
+    assert.equal((await fetch(`${base}/api/usage`)).status, 404);
   } finally {
     await server.close();
   }

@@ -8,6 +8,8 @@ import type {
   ResourceEntity,
   SendQueueItemOrigin,
   SendQueueItemStatus,
+  SubscriptionQuotaSnapshot,
+  SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
 import type {
   AgentEffort,
@@ -98,6 +100,31 @@ export const liveOutbox = sqliteTable(
     index('live_outbox_scope_seq_idx').on(t.scope, t.seq),
     index('live_outbox_type_seq_idx').on(t.type, t.seq),
     index('live_outbox_entity_idx').on(t.entity, t.entityId, t.seq),
+  ],
+);
+
+/** Durable current subscription-quota truth. One row owns the complete latest
+ * snapshot for an exact runtime/account; live_outbox is only its delivery
+ * projection. */
+export const subscriptionQuota = sqliteTable(
+  'subscription_quota',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    runtimeId: text('runtime_id').notNull(),
+    accountId: text('account_id').notNull(),
+    revision: integer('revision').notNull(),
+    availability: text('availability', {
+      enum: ['available', 'unavailable'],
+    }).notNull(),
+    unavailableReason: text('unavailable_reason')
+      .$type<SubscriptionQuotaUnavailableReason | null>(),
+    observedAt: integer('observed_at').notNull(),
+    snapshot: text('snapshot_json', { mode: 'json' })
+      .notNull()
+      .$type<SubscriptionQuotaSnapshot>(),
+  },
+  (t) => [
+    uniqueIndex('subscription_quota_runtime_account_idx').on(t.runtimeId, t.accountId),
   ],
 );
 

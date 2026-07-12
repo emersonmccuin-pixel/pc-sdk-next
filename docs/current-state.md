@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-003 guarded landing and teardown.
+Last updated: 2026-07-12 after RS-004 sealed verification.
 
 ## Preserved baseline
 
@@ -67,6 +67,14 @@ only in PC-SDK Next.
 - RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
 - RS-003 feature worktree: removed after positive sealed/feature ancestry and
   exact tree-equality proof; verified dependency residue was removed
+- RS-003 closeout landing: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 base: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 feature branch: `codex/rs-004-quota-observations`
+- RS-004 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
+- RS-004 sealed implementation:
+  `f7bcb60e9f242c72a56ffda508da6451012e172b`
+- RS-004 sealed tree: `316ec12a2f94991cb89ed069886feec17e02ad03`
 
 Isolation defaults in the planning slice:
 
@@ -88,7 +96,8 @@ Isolation defaults in the planning slice:
 - Durable asks/mailbox and agent terminal envelopes
 - Mandatory worktree provisioning/readiness, sealed commits, guarded landing,
   teardown, recovery, and lifecycle tests
-- Global MCP client/bridge foundation and Claude usage observations
+- Global MCP client/bridge foundation and durable provider-neutral subscription
+  quota observations, with Claude pull/passive acquisition adapter-local
 - One-click hidden launcher and boot recovery
 - Canonical pre-listener boot quarantine of queued/failed sends owned by
   `legacy-unavailable` orchestrator sessions, with queue revision plus
@@ -159,6 +168,11 @@ Isolation defaults in the planning slice:
   persistence; deterministic live/replay/history projection; honest stale,
   unavailable, and compaction states; and a shared context-used bar that never
   renders a percentage without fresh accepted evidence.
+- Durable provider-neutral subscription-quota contracts and current-state truth;
+  collision-safe runtime/account identity; atomic revisioned outbox publication;
+  strict partial/complete/unavailable and per-window freshness semantics; generic
+  bounded polling; exact pull/passive attribution; and a guarded dynamic rail
+  projection that always presents used quota while retaining source semantics.
 
 ## Completed N3 specialist-selection slice
 
@@ -179,8 +193,31 @@ QA passed. The feature record `b79f84b130702f7c523fe20a32c71c5236eb9fb9`
 was guarded-merged as `9fde98518aca92742040ed8e0e82a4825f258f5a`
 and pushed to `origin/main`. Sealed and feature ancestry plus exact tree equality
 were proven, the post-merge workspace gate passed, and the feature worktree and
-verified residue were removed. Quota normalization is the next safe slice and
-needs no product direction.
+verified residue were removed. RS-004 completed the quota normalization work
+described below.
+
+## Completed N3 subscription-quota slice
+
+`RS-004` completed implementation and verification from clean pushed base
+`6a0beb90a7b730dbee94181f012c0918f464af8b`. The sealed implementation is
+`f7bcb60e9f242c72a56ffda508da6451012e172b`, with tree
+`316ec12a2f94991cb89ed069886feec17e02ad03`. It replaces the inherited
+Claude-shaped usage cache/wire with durable atomic DB/outbox quota truth, strict
+provider-neutral source observations, app-owned used/remaining normalization,
+runtime/account attribution, per-window freshness, generic bounded polling, and
+an honest dynamic browser projection. Claude credentials, pull/passive native
+scales, status, reset parsing, and the narrowly verified included-plan Fable
+mapping remain inside the adapter; paid overage and billing/credit fields stay
+excluded. Context and per-turn token usage remain separate families.
+
+Three independent hostile audits covered persistence/service races,
+runtime/provider mapping, and HTTP/web/browser ingress. Full `pnpm ci:check`
+(including 331/331 server tests), production Vite build, final path/provider
+audits, and isolated browser QA at 1440x900 and 760x720 passed. Browser QA
+rendered 24 dynamic windows with accessible progress semantics, independent
+bounded scrolling, no horizontal overflow, and no console warnings/errors; its
+temporary listener/data were removed. Guarded landing, positive ancestry/tree
+proof, push, and worktree teardown remain pending.
 
 ## Known architectural gaps
 
@@ -189,9 +226,7 @@ needs no product direction.
   selector yet.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
-- Subscription-quota DTOs are Claude-shaped and do not retain general source
-  semantics, confidence, staleness, or runtime attribution; some runtime-notice
-  vocabulary is also not yet fully provider-neutral.
+- Some older runtime-notice vocabulary remains not yet fully provider-neutral.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
 - Process identity is positive at `/health`, but a data-directory mutex and
@@ -214,8 +249,9 @@ guards. Isolated no-provider browser QA confirmed cold-reload provenance,
 view-only unavailable continuation, no native/attempt identity leakage through
 orchestrator session surfaces, clean console, and bounded layout.
 
-Attributed handoff, Codex, and provider-neutral quota semantics remain later N3
-slices; this receipt does not claim those global requirements complete.
+At RS-001 close, attributed handoff, Codex, and provider-neutral quota semantics
+remained later slices. RS-004 now completes the Claude-path quota portion; this
+historical receipt still does not claim the global runtime requirements complete.
 
 ## Completed N3 context slice
 
@@ -230,4 +266,6 @@ review, production build, isolated browser QA, and full `pnpm ci:check` passed.
 The guarded landing merge `3a274034499f9454e059ded091b79276394780af` is
 pushed on `origin/main`; sealed and feature ancestry plus exact feature-tree
 equality were positively proven, and the feature worktree/residue were removed.
-Quota normalization, Codex, and specialist widening remain separate slices.
+At RS-002 close, quota normalization, Codex, and specialist widening remained
+separate slices. RS-004 now completes quota normalization on the Claude path;
+Codex/runtime conformance and specialist context widening remain separate.

@@ -17,6 +17,12 @@ const selection: RuntimeSelection = {
   effort: { kind: 'selected', value: 'high' },
 };
 
+const subscriptionQuota = {
+  status: 'supported' as const,
+  sourceSemantics: ['used', 'remaining'] as const,
+  confidences: ['exact', 'approximate'] as const,
+};
+
 test('runtime selection is exact and effort absence is explicit', () => {
   assert.equal(isRuntimeSelection(selection), true);
   assert.equal(isRuntimeSelection({ ...selection, effort: { kind: 'none' } }), true);
@@ -46,6 +52,7 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
     },
+    subscriptionQuota,
   }), true);
   assert.equal(isRuntimeCapabilities({
     runtimeId: selection.runtimeId,
@@ -57,6 +64,7 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
       currentUse: { status: 'supported', confidences: ['exact'] },
       compaction: { status: 'supported' },
     },
+    subscriptionQuota,
   }), false);
   assert.equal(isRuntimeCapabilities({
     runtimeId: selection.runtimeId,
@@ -65,6 +73,33 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
   }), false, 'context capability truth is required');
+  assert.equal(isRuntimeCapabilities({
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    nativeContinuation: { status: 'supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact'] },
+      compaction: { status: 'supported' },
+    },
+  }), false, 'subscription-quota capability truth is required');
+  assert.equal(isRuntimeCapabilities({
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    nativeContinuation: { status: 'supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact'] },
+      compaction: { status: 'supported' },
+    },
+    subscriptionQuota: {
+      status: 'supported',
+      sourceSemantics: ['used'],
+      confidences: ['derived'],
+    },
+  }), false, 'adapter capability cannot claim app-derived confidence as a source');
   assert.equal(isRuntimeModelDiscovery({
     status: 'available',
     models: [{

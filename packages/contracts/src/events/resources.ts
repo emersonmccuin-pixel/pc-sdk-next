@@ -8,12 +8,16 @@
 // Closed unions everywhere (guard rule 7): a dead entity name fails typecheck.
 // Browser-safe, zero runtime deps.
 
-import type { ULID } from '../shared.ts';
+import { isResourceCursor, isUlid, type ULID } from '../shared.ts';
 import {
   isAgentRunChangedLivePayload,
   type AgentRunChangedLivePayload,
 } from '../agent-runs.ts';
 import type { ContractChangedLivePayload } from '../contracts.ts';
+import {
+  isSubscriptionQuotaSnapshot,
+  type SubscriptionQuotaSnapshot,
+} from '../quota.ts';
 import type { SessionSummary } from './session.ts';
 
 export const RESOURCE_ENTITIES = [
@@ -24,24 +28,13 @@ export const RESOURCE_ENTITIES = [
   'session-title',
   'mcp-server',
   'project',
-  'usage',
+  'subscription-quota',
 ] as const;
 export type ResourceEntity = (typeof RESOURCE_ENTITIES)[number];
 
 export type ResourceScope = 'project' | 'global';
 
 // ── Per-entity payloads ───────────────────────────────────────────────────────
-
-/** Full snapshot — quota is durable state, not a lucky broadcast. */
-export interface UsageSnapshot {
-  accountId: string; // 'personal' | 'work' | …
-  fiveHour: { utilization: number; resetsAt: number | null } | null;
-  sevenDay: { utilization: number; resetsAt: number | null } | null;
-  fable: { utilization: number; resetsAt: number | null } | null;
-  status: 'allowed' | 'allowed_warning' | 'rejected';
-  model: string | null;
-  updatedAt: number;
-}
 
 /** The MCP manager's reliability bar: every state change surfaces; unknown is a
  *  state. */
@@ -107,7 +100,7 @@ export type ResourceEvent =
   | ResourceEventBase<'session-title', SessionTitlePayload>
   | ResourceEventBase<'mcp-server', McpServerChangedPayload>
   | ResourceEventBase<'project', ProjectSignalPayload>
-  | ResourceEventBase<'usage', UsageSnapshot>;
+  | ResourceEventBase<'subscription-quota', SubscriptionQuotaSnapshot>;
 
 export interface ResourceFrame {
   type: 'resource';
@@ -126,6 +119,10 @@ export interface LiveResetFrame {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 export function isResourceEntity(value: unknown): value is ResourceEntity {
@@ -154,29 +151,37 @@ export function isResourceFrame(value: unknown): value is ResourceFrame {
       'payload',
     ]) ||
     !(
-    typeof e.id === 'string' &&
-    typeof e.cursor === 'string' &&
+    isUlid(e.id) &&
+    isResourceCursor(e.cursor) &&
     (e.scope === 'project' || e.scope === 'global') &&
     (e.projectId === null || typeof e.projectId === 'string') &&
     isResourceEntity(e.entity) &&
     typeof e.entityId === 'string' &&
     e.eventType === `${e.entity}.changed` &&
-    (e.version === null || typeof e.version === 'number') &&
-    typeof e.createdAt === 'number' &&
+    (e.version === null || nonNegativeSafeInteger(e.version)) &&
+    nonNegativeSafeInteger(e.createdAt) &&
     'payload' in e
     )
   ) return false;
 
-  // Full-snapshot agent-run resources cross directly into the activity rail
-  // and transcript modal. Validate their owned payload before advancing the
-  // cursor or admitting anything to browser state.
-  if (e.entity !== 'agent-run') return true;
-  if (!isAgentRunChangedLivePayload(e.payload)) return false;
-  return e.scope === 'project' &&
-    e.projectId !== null &&
-    e.entityId === e.payload.run.runId &&
-    e.projectId === e.payload.run.projectId &&
-    e.version === e.payload.run.rev;
+  // Full snapshots cross directly into browser stores. Validate their owned
+  // payload and envelope binding before advancing a cursor.
+  if (e.entity === 'agent-run') {
+    if (!isAgentRunChangedLivePayload(e.payload)) return false;
+    return e.scope === 'project' &&
+      e.projectId !== null &&
+      e.entityId === e.payload.run.runId &&
+      e.projectId === e.payload.run.projectId &&
+      e.version === e.payload.run.rev;
+  }
+  if (e.entity === 'subscription-quota') {
+    return isSubscriptionQuotaSnapshot(e.payload) &&
+      e.scope === 'global' &&
+      e.projectId === null &&
+      e.entityId === e.payload.id &&
+      e.version === e.payload.revision;
+  }
+  return true;
 }
 
 export function isLiveResetFrame(value: unknown): value is LiveResetFrame {
@@ -185,33 +190,13 @@ export function isLiveResetFrame(value: unknown): value is LiveResetFrame {
     hasOnlyKeys(value, ['type', 'projectId', 'cursor']) &&
     value.type === 'live-reset' &&
     (value.projectId === null || typeof value.projectId === 'string') &&
-    (value.cursor === null || typeof value.cursor === 'string')
+    (value.cursor === null || isResourceCursor(value.cursor))
   );
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys);
   return Object.keys(value).every((key) => allowed.has(key));
-}
-
-export function isUsageSnapshot(value: unknown): value is UsageSnapshot {
-  if (!isRecord(value)) return false;
-  const windowOk = (w: unknown): boolean =>
-    w === null ||
-    (isRecord(w) &&
-      typeof w.utilization === 'number' &&
-      (w.resetsAt === null || typeof w.resetsAt === 'number'));
-  return (
-    typeof value.accountId === 'string' &&
-    windowOk(value.fiveHour) &&
-    windowOk(value.sevenDay) &&
-    windowOk(value.fable) &&
-    (value.status === 'allowed' ||
-      value.status === 'allowed_warning' ||
-      value.status === 'rejected') &&
-    (value.model === null || typeof value.model === 'string') &&
-    typeof value.updatedAt === 'number'
-  );
 }
 
 export function isMcpServerStatus(value: unknown): value is McpServerStatus {

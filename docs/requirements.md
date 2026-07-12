@@ -73,8 +73,21 @@ observation, exact/derived/unavailable confidence, canonical event/outbox
 persistence, deterministic stale/compaction replay, and one shared live/history
 bar that renders no percentage without fresh available evidence. These rows
 remain `accepted`, not globally `verified`, until context conformance covers the
-remaining runtimes and specialist execution paths. Subscription quota remains a
-separate later slice.
+remaining runtimes and specialist execution paths. At that receipt,
+subscription quota remained a separate later slice; RS-004 now implements it
+without changing context semantics.
+
+RS-004 verification receipt (2026-07-12): the Claude-backed path implements
+`USE-001` through `USE-003` with strict provider-neutral source observations,
+app-owned used/remaining normalization, exact runtime/account attribution,
+durable revisioned current state plus outbox publication, per-window freshness,
+and one dynamic rail projection that never invents a percentage. Claude OAuth
+used-percent (`0..100`) and passive used-fraction (`0..1`) parsing, credentials,
+native status, and the narrowly verified included-plan Fable mapping remain
+adapter-local; paid overage stays excluded. Context and per-turn token usage use
+separate contracts, persistence, events, and UI. These rows remain `accepted`,
+not globally `verified`, until Codex/runtime conformance covers the same quota
+and degradation contract.
 
 ## Conversation and chat
 

@@ -12,6 +12,7 @@ import {
   type ChatEvent,
   type ConversationEventFrame,
   type ServerFrame,
+  type SubscriptionQuotaObservationBatch,
   type ToolStateEvent,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
@@ -21,7 +22,12 @@ import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import type { MintRuntimeSession, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from '../src/ws/hub.ts';
 import { freshDb, newProject, until } from './helpers.ts';
-import { testSessionSelectionDeps, withRuntimeReceipt } from './runtime-fixtures.ts';
+import {
+  runtimeReceiptFor,
+  TEST_SELECTION,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 function terminals(sessionId: string): ChatEvent[] {
   return listConversationEvents(sessionId)
@@ -58,6 +64,120 @@ function rig(
   });
   return { service, frames, relay };
 }
+
+function quotaBatch(
+  observedAt: number,
+  overrides: Partial<Pick<SubscriptionQuotaObservationBatch, 'runtimeId' | 'accountId'>> = {},
+): SubscriptionQuotaObservationBatch {
+  return {
+    runtimeId: overrides.runtimeId ?? TEST_SELECTION.runtimeId,
+    accountId: overrides.accountId ?? TEST_SELECTION.accountId,
+    availability: 'available',
+    coverage: 'complete',
+    observedAt,
+    observations: [{
+      window: { id: `window-${observedAt}`, label: '5h', durationMs: null },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: 0.25 },
+      confidence: 'exact',
+      limitState: 'allowed',
+      resetsAt: null,
+    }],
+  };
+}
+
+test('orchestrator quota ingress requires the exact positive runtime receipt and never enters chat', async () => {
+  freshDb();
+  const project = newProject('orchestrator-passive-quota');
+  const admitted: SubscriptionQuotaObservationBatch[] = [];
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: async (ctx): Promise<RuntimeSession> => ({
+      async *sendTurn() {
+        yield { type: 'subscription-quota', batch: quotaBatch(100) };
+        yield runtimeReceiptFor(ctx);
+        yield {
+          type: 'subscription-quota',
+          batch: quotaBatch(200, { accountId: 'foreign-account' }),
+        };
+        yield { type: 'subscription-quota', batch: quotaBatch(300) };
+        yield {
+          type: 'result', ok: true, stopReason: 'complete', usage: null,
+          durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+        };
+      },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
+      interrupt: async () => {},
+      dispose: async () => {},
+    }),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+    onSubscriptionQuota: (batch) => {
+      admitted.push(batch);
+      throw new Error('forced non-critical quota sink failure');
+    },
+  });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'quota-ingress-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'quota-ingress-client',
+  });
+  await until(() => terminals(session.id).length === 1);
+  assert.deepEqual(admitted.map((batch) => batch.observedAt), [300]);
+  assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
+  assert.equal(
+    JSON.stringify(listConversationEvents(session.id)).includes('window-'),
+    false,
+  );
+  await service.dispose();
+});
+
+test('a stale disposed orchestrator attempt cannot publish passive quota or fail its transcript', async () => {
+  freshDb();
+  const project = newProject('orchestrator-stale-quota-attempt');
+  const admitted: SubscriptionQuotaObservationBatch[] = [];
+  let markReceiptConsumed!: () => void;
+  const receiptConsumed = new Promise<void>((resolve) => { markReceiptConsumed = resolve; });
+  let releaseStale!: () => void;
+  const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: async (ctx): Promise<RuntimeSession> => ({
+      async *sendTurn() {
+        yield runtimeReceiptFor(ctx);
+        markReceiptConsumed();
+        await staleGate;
+        yield { type: 'subscription-quota', batch: quotaBatch(500) };
+        yield {
+          type: 'result', ok: true, stopReason: 'complete', usage: null,
+          durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+        };
+      },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
+      interrupt: async () => {},
+      dispose: async () => {},
+    }),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+    onSubscriptionQuota: (batch) => admitted.push(batch),
+  });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'stale-quota-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'stale-quota-client',
+  });
+  await receiptConsumed;
+  const disposing = service.dispose();
+  releaseStale();
+  await disposing;
+
+  assert.deepEqual(admitted, []);
+  assert.deepEqual(terminals(session.id).map((event) => event.kind), ['turn-end']);
+  assert.equal(
+    JSON.stringify(listConversationEvents(session.id)).includes('window-500'),
+    false,
+  );
+});
 
 test('event, sequence, and outbox commit before the one relay path broadcasts', async () => {
   freshDb();

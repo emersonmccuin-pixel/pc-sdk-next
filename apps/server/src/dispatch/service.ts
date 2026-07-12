@@ -60,6 +60,7 @@ import {
   type ChatEvent,
   type Contract,
   type Deliverable as ContractDeliverable,
+  type SubscriptionQuotaObservationBatch,
 } from '@pc/contracts';
 import {
   PRESERVED_LIFECYCLE_STATES,
@@ -220,6 +221,8 @@ export interface DispatchServiceDeps {
   mintSpecialistRuntimeSession(
     input: CreateRuntimeSession & { continuation: RuntimeContinuationRequest },
   ): Promise<RuntimeSession>;
+  /** Non-critical global quota sink. Attribution is fenced before invocation. */
+  onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   /** Injectable command boundary keeps async repository evidence races
    * deterministic under guard tests. Production uses the canonical helper. */
   gitCommand?: typeof git;
@@ -1229,6 +1232,21 @@ export class DispatchService {
               throw new Error('agent run became terminal before receipt publication');
             }
             markedRunning = true;
+          }
+        },
+        onSubscriptionQuota: (batch) => {
+          if (
+            !this.liveAttemptIsCurrent(runId, liveRun) ||
+            !liveRun.receiptConfirmed ||
+            batch.runtimeId !== liveRun.selection.runtimeId ||
+            batch.accountId !== liveRun.selection.accountId
+          ) {
+            return;
+          }
+          try {
+            this.deps.onSubscriptionQuota?.(batch);
+          } catch {
+            // Quota projection is telemetry and cannot fail specialist work.
           }
         },
         onDropped: () => {},

@@ -3,6 +3,7 @@ import type {
   RuntimeModelDiscovery,
   RuntimeSelection,
   RuntimeSelectionValidation,
+  SubscriptionQuotaObservationBatch,
 } from '@pc/contracts';
 import type {
   MintRuntimeSession,
@@ -32,6 +33,25 @@ export function testCapabilities(
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
     },
+    subscriptionQuota: {
+      status: 'unsupported',
+      code: 'test-runtime-quota-unsupported',
+    },
+  };
+}
+
+/** Explicit fake-adapter quota result. Tests that are not about provider quota
+ * must still satisfy the required runtime seam without inventing telemetry. */
+export function testSubscriptionQuotaUnavailable(
+  runtimeId = TEST_RUNTIME_ID,
+  accountId = 'personal',
+): SubscriptionQuotaObservationBatch {
+  return {
+    runtimeId,
+    accountId,
+    availability: 'unavailable',
+    reason: 'unsupported',
+    observedAt: 0,
   };
 }
 

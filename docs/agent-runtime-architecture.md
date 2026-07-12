@@ -154,11 +154,17 @@ silent fallback or invented context/usage precision.
   maps the pinned SDK's `getContextUsage()` control receipt into strict
   provider-neutral exact/derived context observations. Native category, path,
   tool, percentage, and error detail stays inside the adapter.
-  Orchestrator app sessions persist the complete immutable selection and route
-  every remint/resume through it. Specialist-wide immutable effort/attempt
-  persistence remains a later N3 slice. Specialist dispatch also still imports
-  and selects `CLAUDE_RUNTIME_ID` directly rather than receiving its choice only
-  through the composition/registry boundary.
+  It also owns Claude OAuth subscription-quota acquisition and strict native
+  response/event mapping behind `observeSubscriptionQuota`; credential JSON,
+  URL/header, token, percent scale, reset parsing, and native status never cross
+  the adapter. OAuth utilization is a used percent in `0..100` with ISO reset
+  time; passive SDK utilization is already a used fraction in `0..1` with epoch
+  reset time. The only model bucket admitted from the additive OAuth `limits[]`
+  array is positively verified bundled Fable evidence, canonicalized to
+  `model:fable`; paid overage and credit/billing fields are excluded.
+  Orchestrator app sessions and
+  specialist runs persist the complete immutable selection and route every
+  remint/resume through it.
 
 ### OpenAI Codex
 
@@ -273,6 +279,17 @@ evidence supersedes a turn identity, a late frame cannot roll the context epoch
 back or re-authorize that turn. Subscription quota remains a separate resource
 family.
 
+`RS-004` implements that separate family. A generic bounded scheduler resolves
+each runtime/account through `RuntimeRegistry`; it never reads a credential home
+or provider payload. Adapters return strict partial/complete source-observation
+batches. The quota service derives used fraction and reset-capped freshness,
+merges by stable window identity, and atomically commits one revisioned current-
+state snapshot plus its global resource event. Equal account IDs under peer
+runtimes remain distinct. Pull failure records typed availability while retaining
+last-good windows without refreshing them; stale is derived from `staleAt`.
+Passive events from orchestrator or specialist turns must match the exact
+positively attached selection and remain outside transcripts.
+
 ## Migration and gates
 
 The inherited Phase 3 began with a behavior-preserving boundary extraction.
@@ -281,13 +298,14 @@ RS-001 completed the canonical selection/capability types, Claude discovery,
 and immutable orchestrator create/remint/resume path. RS-002 added honest
 Claude-backed orchestrator context observation and projection. RS-003 completed
 specialist revision/run selection, native attempt receipts, and safe public
-provenance. Remaining gates are:
+provenance. RS-004 completed provider-neutral subscription quota on the Claude
+path. The remaining runtime-boundary N3/N5 backlog below does not reorder or
+authorize skipping the master plan's global N1/N4 gates:
 
-1. add provider-neutral subscription-quota observations and source semantics;
-2. implement a Codex subscription spike against the same contract;
-3. add `CodexRuntimeAdapter` and run the same conformance suite;
-4. expose deliberate runtime/account/model/effort selection controls;
-5. compile attributed cross-runtime handoffs and their UI provenance.
+1. implement a Codex subscription spike against the same contract;
+2. add `CodexRuntimeAdapter` and run the same conformance suite;
+3. expose deliberate runtime/account/model/effort selection controls;
+4. compile attributed cross-runtime handoffs and their UI provenance.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers

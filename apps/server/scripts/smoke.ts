@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     onRuntimeSessionReceipt: (receipt) => {
       console.log(`[smoke] ${receipt.mode} nativeSessionId=${receipt.nativeSessionId}`);
     },
-    onRateLimit: (snap) => console.log('[usage]', snap),
+    onSubscriptionQuota: (batch) => console.log('[subscription-quota]', batch),
     onDropped: (reason, msg) => console.log(`[dropped] ${reason}`, preview(msg)),
   });
 

@@ -1,12 +1,13 @@
-// HTTP — accounts (list + per-project default) and usage re-prime.
+// HTTP — accounts (list + per-project default) and subscription-quota re-prime.
 //
 // Accounts are the Claude Code logins the account switcher selects between.
 // Setting a project's default account mints a NEW session (sessions live per
-// config dir — switching accounts can't continue the old one). Usage re-prime
-// returns the server's cached per-account quota snapshots for a fresh page load
-// (the durable `usage` resource events heal live sockets; this heals cold HTTP).
+// config dir — switching accounts can't continue the old one). Quota re-prime
+// reads durable per-runtime/account current state for a fresh page load; the
+// matching `subscription-quota` resource events heal live sockets.
 
 import type { Hono } from 'hono';
+import type { SubscriptionQuotaService } from '@pc/app-services';
 import { getProjectById } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import {
@@ -14,7 +15,6 @@ import {
   type AccountRegistry,
 } from '../runner/account-env.ts';
 import type { SessionRegistry } from '../chat/registry.ts';
-import type { UsageCache } from '../usage/cache.ts';
 import { RuntimeSelectionRejectedError } from '../runner/runtime.ts';
 import { toSessionSummary } from './dto.ts';
 
@@ -22,7 +22,7 @@ export interface AccountsHttpDeps {
   accounts: AccountRegistry;
   registry: SessionRegistry;
   runtimeId: string;
-  usage?: UsageCache;
+  subscriptionQuota?: SubscriptionQuotaService;
 }
 
 export function mountAccounts(app: Hono, deps: AccountsHttpDeps): void {
@@ -103,9 +103,12 @@ export function mountAccounts(app: Hono, deps: AccountsHttpDeps): void {
     }
   });
 
-  // Usage re-prime — cached per-account quota snapshots for a cold page load.
-  if (deps.usage) {
-    const usage = deps.usage;
-    app.get('/api/usage', (c) => c.json({ snapshots: usage.list() }));
+  // Durable quota re-prime. The product table is truth; outbox is transport.
+  if (deps.subscriptionQuota) {
+    const subscriptionQuota = deps.subscriptionQuota;
+    app.get('/api/subscription-quota', (c) => c.json({
+      ok: true as const,
+      snapshots: subscriptionQuota.list(),
+    }));
   }
 }

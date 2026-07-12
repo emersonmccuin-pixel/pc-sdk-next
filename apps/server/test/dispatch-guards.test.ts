@@ -34,7 +34,11 @@ import {
   setContractRun,
   updateAgentRunStatus,
 } from '@pc/db';
-import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
+import {
+  safeToolSummary,
+  type SubscriptionQuotaObservationBatch,
+  type ToolStateEvent,
+} from '@pc/contracts';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import type { ULID } from '@pc/domain';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
@@ -65,6 +69,7 @@ import {
   testCapabilities,
   testModelDiscovery,
   testSessionSelectionDeps,
+  testSubscriptionQuotaUnavailable,
   withRuntimeReceipt,
 } from './runtime-fixtures.ts';
 
@@ -88,6 +93,9 @@ class FakeAdapter implements AgentRuntimeAdapter {
   runtimes: FakeRuntime[] = [];
   constructor(private readonly turns: ScriptedTurn[], private readonly stepDelayMs = 0) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.created.push(input);
@@ -120,6 +128,9 @@ class DeferredResumeAdapter implements AgentRuntimeAdapter {
   private resolveResume!: (session: RuntimeSession) => void;
   private readonly resumedSession = new Promise<RuntimeSession>((resolve) => { this.resolveResume = resolve; });
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
 
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
@@ -161,6 +172,9 @@ class TrackingRuntime implements RuntimeSession {
 class ThrowingCreateAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
     throw new Error('SECRET provider create detail');
@@ -183,6 +197,9 @@ class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   constructor(private readonly runtime: RuntimeSession) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     return withRuntimeReceipt(() => this.runtime)({
@@ -204,6 +221,9 @@ class SingleRuntimeAdapter implements AgentRuntimeAdapter {
 class UnreceiptedAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
     return new FakeRuntime({ turns: [[OK_RESULT]] });
@@ -241,6 +261,27 @@ function turnTerminals(runId: ULID): unknown[] {
       (((event as { kind?: unknown }).kind === 'turn-failed') ||
         ((event as { kind?: unknown }).kind === 'turn-end'))
     ));
+}
+
+function specialistQuotaBatch(
+  observedAt: number,
+  overrides: Partial<Pick<SubscriptionQuotaObservationBatch, 'runtimeId' | 'accountId'>> = {},
+): SubscriptionQuotaObservationBatch {
+  return {
+    runtimeId: overrides.runtimeId ?? TEST_RUNTIME_SELECTION.runtimeId,
+    accountId: overrides.accountId ?? TEST_RUNTIME_SELECTION.accountId,
+    availability: 'available',
+    coverage: 'complete',
+    observedAt,
+    observations: [{
+      window: { id: `specialist-window-${observedAt}`, label: '5h', durationMs: null },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: 0.25 },
+      confidence: 'exact',
+      limitState: 'allowed',
+      resetsAt: null,
+    }],
+  };
 }
 
 const AUDIT = { actor: 'user' as const };
@@ -488,6 +529,86 @@ test('a runtime that omits its native-session receipt fails with one canonical a
     error: 'runtime session evidence was missing or invalid',
     source: 'internal',
   }]);
+});
+
+test('specialist quota ingress requires its exact receipt and never contaminates the transcript', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('specialist-passive-quota');
+  const admitted: SubscriptionQuotaObservationBatch[] = [];
+  const adapter: AgentRuntimeAdapter = {
+    id: CLAUDE_RUNTIME_ID,
+    capabilities: async (accountId) => testCapabilities(CLAUDE_RUNTIME_ID, accountId),
+    observeSubscriptionQuota: async (accountId) =>
+      testSubscriptionQuotaUnavailable(CLAUDE_RUNTIME_ID, accountId),
+    listModels: async () => testModelDiscovery(),
+    createSession: async (input): Promise<RuntimeSession> => ({
+      async *sendTurn() {
+        const exactAttribution = {
+          runtimeId: input.selection.runtimeId,
+          accountId: input.selection.accountId,
+        };
+        yield {
+          type: 'subscription-quota',
+          batch: specialistQuotaBatch(100, exactAttribution),
+        };
+        yield {
+          type: 'session-started',
+          receipt: {
+            mode: 'created',
+            continuationAttemptId: input.continuationAttemptId,
+            selection: input.selection,
+            nativeSessionId: 'native-specialist-quota',
+            requestedNativeSessionId: null,
+          },
+        };
+        yield {
+          type: 'subscription-quota',
+          batch: specialistQuotaBatch(200, {
+            ...exactAttribution,
+            runtimeId: 'foreign-runtime',
+          }),
+        };
+        yield {
+          type: 'subscription-quota',
+          batch: specialistQuotaBatch(300, exactAttribution),
+        };
+        yield OK_RESULT;
+      },
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
+      interrupt: async () => {},
+      dispose: async () => {},
+    }),
+    resumeSession: async () => {
+      throw new Error('resume is not expected');
+    },
+  };
+  const dispatch = rig(adapter, {
+    onSubscriptionQuota: (batch) => {
+      admitted.push(batch);
+      throw new Error('forced non-critical quota sink failure');
+    },
+  });
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'observe quota without transcript telemetry',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+  await until(() => getAgentRunRow(runId)?.status === 'failed');
+
+  assert.deepEqual(admitted.map((batch) => batch.observedAt), [300]);
+  assert.equal(getAgentRunRow(runId)?.failureCause, 'no-deliverable');
+  assert.deepEqual(turnTerminals(runId), [{
+    kind: 'turn-end', text: '', stopReason: 'complete',
+  }]);
+  assert.equal(
+    JSON.stringify(listConversationEvents(runId)).includes('specialist-window-'),
+    false,
+  );
+  await dispatch.disposeAll();
 });
 
 test('a synchronous continuation send failure records resume-failed before terminal settlement', async () => {

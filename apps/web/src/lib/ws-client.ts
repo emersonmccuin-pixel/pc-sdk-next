@@ -14,6 +14,7 @@ import {
   isConversationEventFrame,
   isLiveResetFrame,
   isOrchestratorStateFrame,
+  isResourceCursor,
   isResourceFrame,
   isSendQueueSnapshotFrame,
   isSessionChangedFrame,
@@ -32,7 +33,7 @@ import { useChatStore } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
 import { useResourceStore } from '@/state/resource-store';
 import { useSessionNav } from '@/state/sessions';
-import { useUsageStore } from '@/state/usage-store';
+import { useSubscriptionQuotaStore } from '@/state/subscription-quota-store';
 import { useMcpStatus } from '@/state/mcp-status';
 
 const PING_INTERVAL_MS = 15_000;
@@ -44,7 +45,11 @@ function cursorKey(projectId: string): string {
 }
 function readCursor(projectId: string): string | undefined {
   try {
-    return localStorage.getItem(cursorKey(projectId)) ?? undefined;
+    const value = localStorage.getItem(cursorKey(projectId));
+    if (value === null) return undefined;
+    if (isResourceCursor(value)) return value;
+    localStorage.removeItem(cursorKey(projectId));
+    return undefined;
   } catch {
     return undefined;
   }
@@ -260,6 +265,7 @@ export class ProjectSocket {
         this.cursor = undefined;
         writeCursor(this.projectId, null);
         useResourceStore.getState().applyLiveReset(frame);
+        useSubscriptionQuotaStore.getState().clear();
         useConnectionStore.getState().bumpEpoch();
         break;
       case 'agent-event':
@@ -280,8 +286,8 @@ export class ProjectSocket {
     writeCursor(this.projectId, ev.cursor);
     // Identity-keyed store — feeds agent-run/contract consumers (activity rail).
     useResourceStore.getState().applyResourceFrame(frame);
-    if (ev.entity === 'usage') {
-      useUsageStore.getState().setSnapshot(ev.payload);
+    if (ev.entity === 'subscription-quota') {
+      useSubscriptionQuotaStore.getState().setSnapshot(ev.payload);
     } else if (ev.entity === 'mcp-server') {
       const server = ev.payload.server;
       const store = useMcpStatus.getState();

@@ -8,7 +8,8 @@ import type { Server } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { serve } from '@hono/node-server';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { UsageSnapshot } from '@pc/contracts';
+import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
+import type { SubscriptionQuotaService } from '@pc/app-services';
 import type { ULID } from '@pc/domain';
 import type {
   RuntimeContinuationRequest,
@@ -18,7 +19,6 @@ import type {
 } from './runner/runtime.ts';
 import type { DispatchService } from './dispatch/service.ts';
 import type { AccountRegistry } from './runner/account-env.ts';
-import type { UsageCache } from './usage/cache.ts';
 import { SessionRegistry } from './chat/registry.ts';
 import { ConversationRelay } from './chat/conversation-relay.ts';
 import { ResourceRelay } from './resources/relay.ts';
@@ -47,16 +47,16 @@ export interface StartServerOptions {
   interruptTimeoutMs?: number;
   /** Composition root defers chat execution until dispatch/MCP boot is ready. */
   deferConversationQueueDrain?: boolean;
-  onRateLimit?: (snapshot: UsageSnapshot) => void;
+  onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   /** Rev of the orchestrator agent row — SessionService re-mints the backend
    *  between turns when it changes (prompt/model edits apply next message). */
   orchestratorRev?: () => number | null;
   version?: string;
-  /** Account switcher registry — mounts the accounts + usage HTTP routes. */
+  /** Account switcher registry — mounts the accounts + quota HTTP routes. */
   accounts?: AccountRegistry;
   orchestratorRuntimeId?: string;
-  /** Usage cache — served by the `/api/usage` re-prime route. */
-  usage?: UsageCache;
+  /** Durable quota component — served by the HTTP re-prime route. */
+  subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch service — mounts the agent-run routes when set. */
   dispatch?: DispatchService;
   /** In-app engine restart hook (composition root owns the respawn). */
@@ -110,7 +110,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
     interruptTimeoutMs: opts.interruptTimeoutMs,
-    onRateLimit: opts.onRateLimit,
+    onSubscriptionQuota: opts.onSubscriptionQuota,
     orchestratorRev: opts.orchestratorRev,
   });
 
@@ -120,7 +120,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     instanceId: opts.instanceId ?? process.env.PC_INSTANCE_ID ?? 'pc-sdk-next',
     accounts: opts.accounts,
     orchestratorRuntimeId: opts.orchestratorRuntimeId,
-    usage: opts.usage,
+    subscriptionQuota: opts.subscriptionQuota,
     dispatch: opts.dispatch,
     onRestartRequest: opts.onRestartRequest,
   });

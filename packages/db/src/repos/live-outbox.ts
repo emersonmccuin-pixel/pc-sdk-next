@@ -148,7 +148,7 @@ export function listLiveEventsAfter(
 
 /**
  * The single most-recent row for an entity, as a fully-formed event. Powers the
- * cold-load seed for last-write-wins global entities (e.g. `usage`): the replay
+ * cold-load seed for last-write-wins global entities (e.g. `session-title`): the replay
  * route is catch-up-from-cursor (returns nothing without a prior cursor), so a
  * fresh page load needs this "current state" snapshot instead. Null when the
  * entity has never emitted.
@@ -169,10 +169,9 @@ export function getLatestLiveEventForEntity<TPayload = unknown>(
 
 /**
  * Latest row PER entityId for an entity — the multi-key sibling of
- * `getLatestLiveEventForEntity`. Powers boot re-hydration of last-write-wins
- * per-key entities (e.g. `usage`, keyed by account id). Prune caveat: rows
- * older than the prune window are gone, so this is best-effort state, not
- * history.
+ * `getLatestLiveEventForEntity`. This is best-effort transport inspection for
+ * multi-key entities only: pruning can remove older keys, so callers must not
+ * treat it as current product state or history.
  */
 export function getLatestLiveEventsPerEntityId<TPayload = unknown>(
   entity: LiveOutboxEntity,

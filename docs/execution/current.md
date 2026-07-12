@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-003 guarded landing and teardown.
+Updated: 2026-07-12 after RS-004 sealed verification.
 
 ## Repository
 
@@ -76,26 +76,44 @@ Updated: 2026-07-12 after RS-003 guarded landing and teardown.
 - RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
 - RS-003 feature worktree: removed after positive landing/tree proof; verified
   dependency residue was removed
+- RS-003 closeout landing:
+  `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- Active slice: `docs/execution/slices/RS-004.md`
+- RS-004 base: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 feature branch: `codex/rs-004-quota-observations`
+- RS-004 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
+- RS-004 sealed implementation:
+  `f7bcb60e9f242c72a56ffda508da6451012e172b`
+- RS-004 sealed tree: `316ec12a2f94991cb89ed069886feec17e02ad03`
 
 ## Status
 
 RS-001 through RS-003 are complete, guarded-landed, pushed, and torn down.
-RS-003 landed as `9fde98518aca92742040ed8e0e82a4825f258f5a`.
+RS-003 closeout landed as `6a0beb90a7b730dbee94181f012c0918f464af8b`.
 Exact specialist snapshots, selection/attempt/native identity, continuation/
 revival/reviewer behavior, legacy quarantine, safe browser/MCP projection,
 landing/reviewer races, and recovery CAS are covered. Full pre- and post-merge
 `pnpm ci:check`, production web build, isolated browser QA, hostile review, and
-the 50-path/provider-boundary audit passed. Quota normalization is next and
-there is no user-direction blocker.
+the 50-path/provider-boundary audit passed.
+
+RS-004 is complete and sealed from that clean pushed base, awaiting guarded
+landing. It replaces the inherited Claude-shaped cache/wire with durable
+provider-neutral current-state quota truth, atomic outbox publication, strict
+source observations and used normalization, runtime/account attribution,
+per-window freshness, bounded polling, adapter-local Claude acquisition, and a
+strict browser projection. Three hostile audits, full `pnpm ci:check` (including
+331/331 server tests), production Vite build, final path/provider audits, and
+isolated desktop/narrow browser QA passed. No live provider call was required.
 
 ## Next safe action
 
-Define RS-004 as the bounded provider-neutral subscription-quota slice from
-clean pushed base `9fde98518aca92742040ed8e0e82a4825f258f5a`.
-Replace Claude-shaped quota DTO/source assumptions with explicit runtime/account
-attribution, source semantics (`used`/`remaining`), normalized used fraction,
-window, observation time, confidence, and staleness. Preserve context as a
-separate resource and do not add Codex or selector UI in the same slice.
+Guarded-merge the sealed RS-004 feature record into clean pushed `main`, rerun
+`pnpm ci:check`, prove sealed/feature ancestry and exact tree equality, push,
+and remove the feature worktree only after the positive receipts. After RS-004
+closeout, define the deferred read-only N1
+AInativePM domain/code/UI/MCP discovery and ownership/idempotency proposal; do
+not perform automated PM writes or silently jump to Codex/N5.
 
 ## Startup checks
 
@@ -106,9 +124,11 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-No implementation worktree is active after RS-003 teardown. Create a fresh
-`codex/rs-004-*` sibling worktree from the pushed landing merge before any
-tracked mutation; keep the main checkout read-only.
+At the guarded-merge checkpoint, require the isolated RS-004 worktree to be
+clean at a feature-record tip containing the sealed implementation. Keep the
+main checkout read-only until that proof. Verify its branch/status/origin state
+before landing, then install only if dependencies are absent and run the
+post-merge workspace gate before push or teardown.
 
 ## Known blockers
 

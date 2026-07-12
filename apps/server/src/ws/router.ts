@@ -80,7 +80,12 @@ export function attachSocket(socket: RouterSocket, projectId: ULID, deps: Router
         break;
       }
       case 'subscribe': {
-        deps.relay.catchUp(socket, m.lastVersion, projectId);
+        try {
+          deps.relay.catchUp(socket, m.lastVersion, projectId);
+        } catch {
+          // Replay failure is isolated to this attempt. The client can
+          // reconnect/re-prime; an event-listener exception must not escape.
+        }
         break;
       }
       case 'client-ping': {

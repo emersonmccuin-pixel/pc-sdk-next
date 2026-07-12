@@ -5,7 +5,7 @@ import {
   RUNTIME_SELECTION_ERROR_CODES,
   type RuntimeSelectionErrorCode,
 } from '../runtime.ts';
-import type { ULID } from '../shared.ts';
+import { isResourceCursor, type ULID } from '../shared.ts';
 
 // ── Client → server conversation commands ───────────────────────────────────
 
@@ -286,7 +286,7 @@ export function isClientMessage(value: unknown): value is ClientMessage {
     case 'ask-reply':
       return nonEmptyString(value.askId) && typeof value.answer === 'string';
     case 'subscribe':
-      return value.lastVersion === undefined || typeof value.lastVersion === 'string';
+      return value.lastVersion === undefined || isResourceCursor(value.lastVersion);
     case 'client-ping':
       return nonEmptyString(value.nonce) && finiteNumber(value.sentAt);
   }

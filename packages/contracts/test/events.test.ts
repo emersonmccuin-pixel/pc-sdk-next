@@ -16,7 +16,6 @@ import {
   isResourceEntity,
   isResourceFrame,
   isLiveResetFrame,
-  isUsageSnapshot,
   isMcpServerStatus,
   isSessionChangedFrame,
   isSessionUpdatedFrame,
@@ -30,6 +29,7 @@ import {
   type ChatEvent,
   type ConversationEventFrame,
   type ResourceFrame,
+  type SubscriptionQuotaSnapshot,
   type SendQueueItem,
   type ServerFrame,
   type ToolStateEvent,
@@ -402,20 +402,100 @@ test('ResourceEntity is a closed set (guard rule 7)', () => {
     'project',
     'session-title',
     'specialist',
-    'usage',
+    'subscription-quota',
   ]);
   for (const e of RESOURCE_ENTITIES) assert.equal(isResourceEntity(e), true);
   // dead entities from the old wire must not classify
-  for (const dead of ['work-item', 'workflow-run', 'pod', 'stage', 'host-health']) {
+  for (const dead of ['work-item', 'workflow-run', 'pod', 'stage', 'host-health', 'usage']) {
     assert.equal(isResourceEntity(dead), false);
   }
+});
+
+test('subscription-quota resources require exact global identity and revision binding', () => {
+  const snapshot: SubscriptionQuotaSnapshot = {
+    id: '01KXAV00000000000000000001',
+    runtimeId: 'runtime-a',
+    accountId: 'personal',
+    revision: 2,
+    availability: 'available',
+    unavailableReason: null,
+    observedAt: 1_000,
+    observations: [{
+      window: { id: 'five-hour', label: '5 hours', durationMs: 18_000_000 },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: 0.4 },
+      usedFraction: 0.4,
+      confidence: 'exact',
+      limitState: 'allowed',
+      resetsAt: 2_000,
+      observedAt: 1_000,
+      staleAt: 2_000,
+    }],
+  };
+  const frame = {
+    type: 'resource',
+    event: {
+      id: '01KXAV00000000000000000002',
+      cursor: '12',
+      scope: 'global',
+      projectId: null,
+      entity: 'subscription-quota',
+      entityId: snapshot.id,
+      eventType: 'subscription-quota.changed',
+      version: snapshot.revision,
+      createdAt: 1_000,
+      payload: snapshot,
+    },
+  };
+  assert.equal(isResourceFrame(frame), true);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, scope: 'project', projectId: 'project-a' },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, projectId: 'project-a' },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, entityId: '01KXAV00000000000000000003' },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, version: snapshot.revision + 1 },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, version: null },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: { ...frame.event, payload: { ...snapshot, rawRateLimitInfo: {} } },
+  }), false);
+  assert.equal(isResourceFrame({
+    ...frame,
+    event: {
+      ...frame.event,
+      entity: 'usage',
+      eventType: 'usage.changed',
+      payload: {
+        accountId: 'personal',
+        fiveHour: { utilization: 0.4, resetsAt: 2_000 },
+        sevenDay: null,
+        fable: null,
+        status: 'allowed',
+        model: null,
+        updatedAt: 1_000,
+      },
+    },
+  }), false, 'the old usage entity and UsageSnapshot wire are dead');
 });
 
 test('isResourceFrame checks entity + eventType agreement', () => {
   const frame: ResourceFrame = {
     type: 'resource',
     event: {
-      id: 'e1',
+      id: '01KXAV00000000000000000004',
       cursor: '12',
       scope: 'project',
       projectId: 'p1',
@@ -438,28 +518,22 @@ test('isResourceFrame checks entity + eventType agreement', () => {
     isResourceFrame({ ...frame, event: { ...frame.event, entity: 'work-item', eventType: 'work-item.changed' } }),
     false,
   );
+  for (const cursor of ['', '-1', '01', '1.5', '1e3', '9007199254740992']) {
+    assert.equal(isResourceFrame({ ...frame, event: { ...frame.event, cursor } }), false);
+  }
+  assert.equal(isResourceFrame({ ...frame, event: { ...frame.event, id: 'event-1' } }), false);
+  assert.equal(isResourceFrame({ ...frame, event: { ...frame.event, createdAt: Number.NaN } }), false);
+  assert.equal(isResourceFrame({ ...frame, event: { ...frame.event, version: 1.5 } }), false);
 });
 
 test('isLiveResetFrame', () => {
   assert.equal(isLiveResetFrame({ type: 'live-reset', projectId: null, cursor: null }), true);
   assert.equal(isLiveResetFrame({ type: 'live-reset', projectId: 'p', cursor: '9' }), true);
+  assert.equal(isLiveResetFrame({ type: 'live-reset', projectId: 'p', cursor: '09' }), false);
   assert.equal(isLiveResetFrame({ type: 'resource' }), false);
 });
 
-test('isUsageSnapshot + isMcpServerStatus', () => {
-  assert.equal(
-    isUsageSnapshot({
-      accountId: 'personal',
-      fiveHour: { utilization: 0.4, resetsAt: 123 },
-      sevenDay: null,
-      fable: { utilization: 0.92, resetsAt: 456 },
-      status: 'allowed_warning',
-      model: 'opus',
-      updatedAt: 1,
-    }),
-    true,
-  );
-  assert.equal(isUsageSnapshot({ accountId: 'x', fiveHour: {}, sevenDay: null, fable: null, status: 'allowed', model: null, updatedAt: 1 }), false);
+test('isMcpServerStatus', () => {
   assert.equal(
     isMcpServerStatus({
       id: 'm1',
@@ -634,6 +708,9 @@ test('client message guards close every durable send and interrupt command shape
   assert.equal(isClientMessage({ ...messages[4], replacement: { kind: 'queued', queueItemId: 'q', expectedRevision: -1 } }), false);
   assert.equal(isClientMessage({ ...messages[4], replacement: { kind: 'later' } }), false);
   assert.equal(isClientMessage({ type: 'interrupt', sessionId: 's', targetTurnId: 'turn-1' }), false);
+  for (const lastVersion of ['', '-1', '08', '1.5', '1e3', '9007199254740992']) {
+    assert.equal(isClientMessage({ type: 'subscribe', lastVersion }), false);
+  }
   assert.equal(isClientMessage({ type: 'legacy-send', text: 'nope' }), false);
 });
 

@@ -5,12 +5,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ContractService } from '@pc/app-services';
+import { ContractService, SubscriptionQuotaService } from '@pc/app-services';
 import { insertAgentRunRow, markAgentRunTerminal, newId } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
-import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
@@ -39,7 +38,7 @@ async function boot(): Promise<{ server: RunningServer; base: string }> {
     runRecovery: false,
     accounts: new AccountRegistry(),
     orchestratorRuntimeId: TEST_RUNTIME_ID,
-    usage: new UsageCache(),
+    subscriptionQuota: new SubscriptionQuotaService(),
     // The agent-run/contract routes mount only when dispatch is supplied.
     dispatch: new DispatchService({
       ...testDispatchRuntimeDeps(dispatchRuntimes),

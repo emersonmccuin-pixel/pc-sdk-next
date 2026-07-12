@@ -10,6 +10,7 @@
 
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isSubscriptionQuotaIdentity } from '@pc/contracts';
 import { getProjectById } from '@pc/db';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import type { ULID } from '@pc/domain';
@@ -120,10 +121,7 @@ function accountKey(runtimeId: string, accountId: string): string {
 }
 
 function isCanonicalIdentity(value: unknown): value is string {
-  return typeof value === 'string' &&
-    value.length > 0 &&
-    value === value.trim() &&
-    !value.includes('\u0000');
+  return isSubscriptionQuotaIdentity(value);
 }
 
 function validateAccount(account: Account): Account {

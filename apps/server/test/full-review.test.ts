@@ -63,6 +63,7 @@ import {
   testCapabilities,
   testModelDiscovery,
   testSessionSelectionDeps,
+  testSubscriptionQuotaUnavailable,
   withRuntimeReceipt,
 } from './runtime-fixtures.ts';
 
@@ -102,6 +103,9 @@ class QueueAdapter implements AgentRuntimeAdapter {
   }
 
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
 
   private async mint(
