@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-004 guarded landing and teardown.
+Last updated: 2026-07-12 after PM-001 definition and startup preparation.
 
 ## Preserved baseline
 
@@ -79,6 +79,10 @@ only in PC-SDK Next.
   `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
 - RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
+- PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
+- PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
+- PM-001 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
 
 Isolation defaults in the planning slice:
 
@@ -226,6 +230,18 @@ temporary listener/data were removed. Feature record
 Sealed/feature ancestry and exact tree equality were proven, post-merge
 `pnpm ci:check` passed, and the feature worktree plus verified dependency/build
 residue were removed. The feature branch is preserved.
+
+## Active N1 AInativePM discovery
+
+`PM-001` is defined from clean pushed PC-SDK Next base
+`a7c5423cb5a4aa8549521badcfdd320437a74def`. The AInativePM source checkout is
+clean on pushed `main` at `5033d5e` and remains read-only. The slice jointly
+maps AInativePM's generic domain/persistence model, human UI/REST workflows, MCP
+surface, and every existing PC-SDK `pmRef`/MCP touchpoint before proposing an
+ownership and idempotency seam. No integration implementation, remote PM write,
+folder registration, auth/config change, or AInativePM repository mutation is
+authorized. Evidence gathering requires no current product-direction decision;
+the synthesized ownership choice will be surfaced when it is concrete.
 
 ## Known architectural gaps
 

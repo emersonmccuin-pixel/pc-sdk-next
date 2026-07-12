@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-004 guarded landing and teardown.
+Updated: 2026-07-12 after PM-001 definition and startup preparation.
 
 ## Repository
 
@@ -90,6 +90,12 @@ Updated: 2026-07-12 after RS-004 guarded landing and teardown.
   `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
 - RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
+- Active slice: `docs/execution/slices/PM-001.md`
+- PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
+- PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
+- PM-001 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- AInativePM read-only source: clean pushed `main` at `5033d5e`
 
 ## Status
 
@@ -111,13 +117,18 @@ isolated desktop/narrow browser QA passed. Post-merge `pnpm ci:check`, sealed an
 feature ancestry, exact feature/merge tree equality, push, and teardown also
 passed. No live provider call was required.
 
+PM-001 is active from the clean pushed RS-004 closeout. It is documentation-only
+and fixes the clean AInativePM source at `5033d5e` for parallel domain,
+UI/REST, MCP, and PC-SDK-touchpoint inspection. No source, database, remote PM,
+configuration, auth, or deployment mutation is in scope.
+
 ## Next safe action
 
-Define `PM-001` as the deferred read-only N1 AInativePM domain/code/UI/MCP
-discovery and ownership/idempotency proposal. Confirm the local repository and
-remote MCP/UI surfaces in scope, gather evidence in parallel, and bring only
-the resulting ownership/product choice to the user. Do not perform automated PM
-writes or silently jump to Codex/N5.
+Run PM-001's three read-only code lanes in parallel, then use bounded read-only
+browser/MCP checks only where code cannot establish behavior. Synthesize the
+domain map, ownership table, sequences, typed port, failure matrix, and rejected
+duplications before bringing the resulting ownership/product choice to the
+user. Do not perform automated PM writes or silently jump to Codex/N5.
 
 ## Startup checks
 
@@ -128,9 +139,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-No implementation worktree is active after RS-004 teardown. Create a fresh
-`codex/pm-001-*` sibling worktree from the pushed closeout landing before any
-tracked mutation; keep the main checkout read-only.
+The isolated PM-001 worktree is active for documentation only. Keep the PC-SDK
+Next and AInativePM main checkouts read-only; all tracked PM-001 changes stay in
+the PM-001 worktree until guarded landing.
 
 ## Known blockers
 
