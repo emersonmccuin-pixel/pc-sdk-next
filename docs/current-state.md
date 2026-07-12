@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-001 implementation and full verification.
+Last updated: 2026-07-12 after RS-002 definition and worktree preparation.
 
 ## Preserved baseline
 
@@ -168,3 +168,12 @@ orchestrator session surfaces, clean console, and bounded layout.
 Specialist-wide stamps, attributed handoff, Codex, context observation, and
 provider-neutral quota semantics remain later N3 slices; this receipt does not
 claim those global requirements complete.
+
+## Active N3 context slice
+
+`RS-002` is defined and prepared from clean pushed
+`bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`. It establishes honest per-session
+context observation through the canonical conversation/outbox path, using the
+pinned Claude runtime's positive context-control receipt and never cumulative
+turn usage. Quota normalization, Codex, and specialist widening remain separate
+slices.
