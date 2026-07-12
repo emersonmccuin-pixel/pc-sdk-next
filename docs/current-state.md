@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-003 definition and startup verification.
+Last updated: 2026-07-12 after RS-003 sealed implementation and verification.
 
 ## Preserved baseline
 
@@ -59,6 +59,9 @@ only in PC-SDK Next.
   and removed
 - RS-003 base: `ff5b04bbb799293b31800267f061dcc6edb13742`
 - RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
+- RS-003 sealed implementation:
+  `2f10a96ae0c56747ff25d868d15514bbef7359d3`
+- RS-003 sealed tree: `01285d07cc23b2652b41d4c277628199da0e324c`
 - RS-003 active worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
 
@@ -135,6 +138,15 @@ Isolation defaults in the planning slice:
   create/resume mint. Positive receipts and failure callbacks use exact DB CAS,
   so output from abandoned creates, resumes, restarts, or disposed services
   cannot advance a successor attempt.
+- Complete immutable execution-effective specialist snapshots and runtime/
+  account/model/effort selections on fresh, continuation, auto-continuation,
+  revived, and independent-review runs. Exact create/resume attempts, bind-once
+  native identity, legacy quarantine, and parent-derived scope guards make the
+  run row authoritative rather than the mutable roster.
+- Browser/MCP-safe specialist provenance: complete selection, opaque revision,
+  native-ID presence, and typed continuation state without native or attempt
+  identifiers. Reconnect terminal tombstones, project-scoped resource ingress,
+  and exact MCP response admission fail closed.
 - Runtime-aware immutable account records and credential-environment isolation;
   Claude subscription launches scrub API/auth variables that could shadow the
   selected credential home.
@@ -145,36 +157,31 @@ Isolation defaults in the planning slice:
   unavailable, and compaction states; and a shared context-used bar that never
   renders a percentage without fresh accepted evidence.
 
-## Active N3 specialist-selection slice
+## Completed N3 specialist-selection slice (awaiting guarded landing)
 
-`RS-003` is active from clean pushed base
-`ff5b04bbb799293b31800267f061dcc6edb13742`. Its locked boundary is the
-specialist execution/run seam: freeze the execution-effective specialist
-snapshot and complete runtime selection; add durable create/resume attempt
-receipts; eliminate placeholder/provider-named session identity from browser
-and pending-ask surfaces; and make continuation, paused revival, and reviewer
-dispatch consume durable evidence. Locked offline preparation reused all 471
-packages with zero downloads and baseline `pnpm typecheck` passed.
+`RS-003` completed its implementation and verification gate from clean pushed
+base `ff5b04bbb799293b31800267f061dcc6edb13742`. The sealed implementation is
+`2f10a96ae0c56747ff25d868d15514bbef7359d3`, with tree
+`01285d07cc23b2652b41d4c277628199da0e324c`. It freezes the exact specialist
+snapshot and complete selection, fences native create/resume by durable attempt
+receipt, quarantines unverifiable legacy rows, and removes native/attempt
+identity from browser, websocket, pending-ask, and MCP seams.
 
-Quota normalization, Codex, selector UI, full revisioned-builder defaults,
-permission/MCP policy changes, and attributed handoff remain separate work.
-There is no user-direction blocker.
+Independent hostile audits found and regressed landing/continuation and review
+races, mutable continuation scope, stale legacy contract recovery, reconnect
+resurrection, foreign-project resource ingress, impossible provenance, and raw
+malformed MCP response relay. Full `pnpm ci:check`, the 319-test server suite,
+production web build, final source/path audits, and isolated no-provider browser
+QA passed. Guarded landing, push, and worktree teardown remain; quota
+normalization is the next safe slice and needs no product direction.
 
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
   defaults; there is no Codex adapter or deliberate runtime/model/effort
   selector yet.
-- RS-001 completes the orchestrator half of runtime selection. Specialist
-  definitions/runs do not yet persist the same complete effort and durable
-  continuation-attempt stamp, and cross-runtime handoff is not implemented.
-- Existing specialist browser surfaces still expose native session-shaped
-  fields: `AgentRunDto.sessionId` mirrors `ccSessionId`, and
-  `PendingAskDto.ccSessionId` is provider-named. Specialist dispatch also
-  imports/selects `CLAUDE_RUNTIME_ID` outside the composition root. Removing
-  those leaks and routing specialists solely through registry-owned selection
-  remain later N3 work; RS-001's browser-boundary claim covers orchestrator
-  session surfaces only.
+- Full specialist-builder defaults, attributed cross-runtime handoff, and
+  deliberate runtime/account/model/effort selector UI remain unimplemented.
 - Subscription-quota DTOs are Claude-shaped and do not retain general source
   semantics, confidence, staleness, or runtime attribution; some runtime-notice
   vocabulary is also not yet fully provider-neutral.
@@ -200,9 +207,8 @@ guards. Isolated no-provider browser QA confirmed cold-reload provenance,
 view-only unavailable continuation, no native/attempt identity leakage through
 orchestrator session surfaces, clean console, and bounded layout.
 
-Specialist-wide stamps, attributed handoff, Codex, context observation, and
-provider-neutral quota semantics remain later N3 slices; this receipt does not
-claim those global requirements complete.
+Attributed handoff, Codex, and provider-neutral quota semantics remain later N3
+slices; this receipt does not claim those global requirements complete.
 
 ## Completed N3 context slice
 

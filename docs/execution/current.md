@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-003 definition and startup verification.
+Updated: 2026-07-12 after RS-003 sealed implementation and verification.
 
 ## Repository
 
@@ -70,27 +70,29 @@ Updated: 2026-07-12 after RS-003 definition and startup verification.
 - RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
 - RS-003 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
+- RS-003 sealed implementation:
+  `2f10a96ae0c56747ff25d868d15514bbef7359d3`
+- RS-003 sealed tree: `01285d07cc23b2652b41d4c277628199da0e324c`
 
 ## Status
 
 RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-003
-is active from the clean pushed RS-002 closeout. It freezes the current
-execution-effective specialist revision plus complete runtime selection on
-agent runs, adds durable native create/resume attempt receipts, removes native
-session identity from browser/pending-ask seams, and makes continuation/restart
-consume frozen evidence rather than mutable roster defaults. Locked offline
-preparation reused 471 packages with zero downloads and baseline workspace
-typecheck passed. Quota normalization, Codex, selector UI, full revisioned
-builder defaults, and handoff compilation remain out of scope. There is no
-user-direction blocker.
+implementation is sealed and verification-complete at
+`2f10a96ae0c56747ff25d868d15514bbef7359d3`. Exact specialist snapshots,
+selection/attempt/native identity, continuation/revival/reviewer behavior,
+legacy quarantine, safe browser/MCP projection, landing/reviewer races, and
+recovery CAS are covered. Full `pnpm ci:check`, production web build, isolated
+browser QA, hostile review, and the 50-path/provider-boundary audit passed.
+Guarded landing, push, and teardown remain. Quota normalization is next and
+there is no user-direction blocker.
 
 ## Next safe action
 
-Implement RS-003 from `docs/execution/slices/RS-003.md`: land the strict
-snapshot/selection contract and migration first, then move every dispatch,
-continuation, paused-revival, and review path through the durable attempt
-receipt seam. Preserve `main` read-only until all hostile and workspace gates
-pass.
+Record the RS-003 sealed verification receipt, then guarded-merge the feature
+tip into current clean `main`. Prove feature/sealed ancestry and exact tree
+equality, rerun the post-merge workspace gate, push `origin/main`, and remove
+the feature worktree only after positive landing proof. Then define and begin
+the provider-neutral subscription-quota slice.
 
 ## Startup checks
 
@@ -101,8 +103,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The RS-003 feature worktree is prepared and baseline-green. All tracked RS-003
-mutation occurs there; the main checkout remains read-only.
+The RS-003 feature worktree is sealed and final-gate green. All tracked RS-003
+mutation remains there until guarded landing; the main checkout remains
+read-only.
 
 ## Known blockers
 

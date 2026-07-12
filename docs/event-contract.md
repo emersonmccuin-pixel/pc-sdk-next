@@ -542,13 +542,12 @@ native-to-canonical ID map and emits canonical runtime events:
 | supersession | `retract` with canonical stream IDs |
 | unknown native variant | dropped/logged by the adapter; loop continues |
 
-On the orchestrator path, native session and attempt identities remain
-adapter/persistence metadata and never become conversation message identifiers
-or orchestrator session browser data. This is not yet a specialist-wide claim:
-the existing browser-facing `AgentRunDto.sessionId` mirrors `ccSessionId`, and
-`PendingAskDto.ccSessionId` retains provider-native session-shaped vocabulary.
-Those DTOs and specialist dispatch's direct `CLAUDE_RUNTIME_ID` selection are
-later N3 boundary work.
+On orchestrator and specialist paths, native session and attempt identities
+remain adapter/persistence metadata. They never become conversation message
+identifiers, browser data, pending-ask identity, websocket resource identity,
+or MCP output. Specialist dispatch resolves through the composition-owned
+runtime registry; public agent-run data exposes only safe selection, opaque
+specialist revision, native-ID presence, and typed continuation provenance.
 
 ## Guard rules
 
@@ -621,13 +620,16 @@ later N3 boundary work.
     boundary clears any pre-boundary exact numerator even when it arrives after
     the turn terminal; malformed assistant ownership cannot preserve earlier
     exact evidence.
+27. Every new specialist run commits one exact execution snapshot and complete
+    runtime selection before native execution. Continuation/revival/review use
+    frozen run evidence; only an attempt-correlated positive receipt advances
+    native identity.
+28. Agent-run resource ingress is exact and project-scoped. HTTP terminal rows
+    remain revision tombstones during reconnect, and malformed localhost 2xx
+    responses fail closed before MCP output.
 
 ## Deliberately unfinished boundaries
 
-- specialist-wide immutable runtime/account/model/effort and attempt stamps;
-- removal of native session-shaped fields from existing agent-run/pending-ask
-  browser DTOs and of direct `CLAUDE_RUNTIME_ID` selection from specialist
-  dispatch;
 - attributed cross-runtime handoff compilation;
 - provider-neutral subscription-quota observations and source semantics;
 - Codex adapter and conformance.
