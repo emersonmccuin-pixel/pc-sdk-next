@@ -60,10 +60,10 @@ of scope. There is no user-direction blocker.
 
 ## Next safe action
 
-Prepare the RS-001 worktree with a locked offline dependency install and
-baseline typecheck, then implement the canonical selection/capability contract,
-legacy-safe migration, stamped session creation/minting, bind-once native
-receipt, preflighted resume, and minimum honest account/session presentation.
+Implement the canonical selection/capability contract, legacy-safe migration,
+stamped session creation/minting, bind-once native receipt, preflighted resume,
+and minimum honest account/session presentation. Locked offline preparation and
+the baseline workspace typecheck are green.
 
 ## Startup checks
 
