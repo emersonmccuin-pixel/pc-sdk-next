@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after SF-002 guarded landing, push, and feature-worktree
-cleanup.
+Updated: 2026-07-12 after SEC-003 contract definition and isolated feature-
+worktree preparation.
 
 ## Repository
 
@@ -281,9 +281,11 @@ concurrent-write prohibition remains. `OPS-005` stays accepted.
 
 ## Active action
 
-Define a bounded `SEC-003` runtime/setup child-environment allowlist/scrub slice
-with explicit acceptance criteria. Do not bundle `OPS-006`: the master plan
-retains loopback listener binding in N7.
+Implement and verify `docs/execution/slices/SEC-003.md`: replace broad runtime,
+setup/readiness/verification/cleanup, and Git-child inheritance with one
+provider-neutral positive allowlist while retaining only the selected runtime
+credential home. Do not bundle `OPS-006`, launcher/browser policy, or other N7
+work.
 
 ## Startup checks
 
