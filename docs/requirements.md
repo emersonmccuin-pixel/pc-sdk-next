@@ -28,7 +28,8 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | OPS-006 | accepted | The local HTTP/WS listener binds only to loopback unless a separately approved remote-access design replaces it. |
 
 SF-001 verification receipt (2026-07-12): the data-directory half of `OPS-005`
-is implemented and sealed. Before migrations or listener activity, production
+is guarded-landed and post-merge verified. Before migrations or listener
+activity, production
 must hold both a non-replaceable kernel IPC witness and a dedicated zero-wait
 SQLite write transaction for the canonical data directory. Cross-process same-
 directory exclusion, distinct-directory coexistence, graceful handoff, hard-
