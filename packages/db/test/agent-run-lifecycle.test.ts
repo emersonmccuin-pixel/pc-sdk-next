@@ -19,12 +19,21 @@ const {
   createProject,
   getAgentRunRow,
   getRawDb,
+  confirmAgentRunRuntimeSessionReceipt,
   insertAgentRunRow,
   markAgentRunTerminal,
   newId,
+  prepareAgentRunCreate,
   runMigrations,
   updateAgentRunStatus,
 } = await import('../src/index.ts');
+
+const selection = {
+  runtimeId: 'runtime',
+  accountId: 'account',
+  model: 'model',
+  effort: { kind: 'none' as const },
+};
 
 before(() => runMigrations());
 after(() => {
@@ -38,15 +47,39 @@ function newRun(lifecycleState: Parameters<typeof insertAgentRunRow>[0]['lifecyc
   insertAgentRunRow({
     id,
     projectId: project.id,
-    podName: 'code-writer',
     dispatcherSessionId: 'S1',
-    ccSessionId: `cc-${id}`,
+    specialistSnapshot: {
+      specialistId: 'specialist-code-writer' as ULID,
+      revision: 'sha256:test-code-writer',
+      name: 'code-writer',
+      charter: 'Write code.',
+      contextDocs: [],
+      maxTurns: 10,
+    },
+    selection,
+    continuation: { mode: 'create' },
     status: 'queued',
     input: 'go',
     lifecycleState,
     queuedAt: Date.now(),
   });
   return id;
+}
+
+function bindRun(id: ULID): void {
+  const prepared = prepareAgentRunCreate(id);
+  assert.ok(prepared?.continuationAttemptId);
+  assert.equal(updateAgentRunStatus({ id, status: 'spawning' }), true);
+  assert.equal(confirmAgentRunRuntimeSessionReceipt({
+    runId: id,
+    receipt: {
+      mode: 'created',
+      selection,
+      continuationAttemptId: prepared.continuationAttemptId,
+      nativeSessionId: `native-${id}`,
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
 }
 
 test('0003 creates agent_runs.lifecycle_state; schema intact', () => {
@@ -62,6 +95,7 @@ test('insert defaults lifecycleState to NULL (legacy/non-repo); explicit value p
 
 test('legal transition stamps state + status together', () => {
   const id = newRun('provisioning');
+  bindRun(id);
   updateAgentRunStatus({ id, status: 'running', readyAt: 1, lifecycleState: 'building' });
   const row = getAgentRunRow(id)!;
   assert.equal(row.lifecycleState, 'building');
@@ -71,6 +105,7 @@ test('legal transition stamps state + status together', () => {
 
 test('illegal transition throws typed and writes NOTHING (status rejected too)', () => {
   const id = newRun('building');
+  bindRun(id);
   const before = getAgentRunRow(id)!;
   assert.throws(
     () => updateAgentRunStatus({ id, status: 'running', lifecycleState: 'merged' }),
@@ -89,6 +124,7 @@ test('illegal transition throws typed and writes NOTHING (status rejected too)',
 
 test('NULL adopts any state; same-state re-stamp is an idempotent no-throw', () => {
   const id = newRun(null);
+  bindRun(id);
   updateAgentRunStatus({ id, status: 'running', lifecycleState: 'verifying' });
   assert.equal(getAgentRunRow(id)!.lifecycleState, 'verifying');
   updateAgentRunStatus({ id, status: 'running', lifecycleState: 'verifying' });
@@ -97,6 +133,7 @@ test('NULL adopts any state; same-state re-stamp is an idempotent no-throw', () 
 
 test('omitting lifecycleState leaves it untouched', () => {
   const id = newRun('verifying');
+  bindRun(id);
   updateAgentRunStatus({ id, status: 'paused' });
   assert.equal(getAgentRunRow(id)!.lifecycleState, 'verifying');
   markAgentRunTerminal({ id, status: 'completed', result: 'ok', failureCause: null, failureReason: null, completedAt: 2 });

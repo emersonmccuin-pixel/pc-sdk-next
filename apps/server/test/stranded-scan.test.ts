@@ -31,7 +31,13 @@ import {
 } from '@pc/db';
 import type { AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
 import { provisionWorktree, reconcileStrandedWorktrees, sweepOrphanedWorktreeDirs, worktreesRoot } from '../src/dispatch/worktrees.ts';
-import { freshDb, newGitProject, type GitProject } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  freshDb,
+  newGitProject,
+  testAgentRunExecution,
+  type GitProject,
+} from './helpers.ts';
 
 async function provisionFor(gp: GitProject, runId: ULID) {
   const out = await provisionWorktree(gp.dir, runId, { projectId: gp.project.id });
@@ -49,15 +55,15 @@ function insertRun(input: {
   insertAgentRunRow({
     id: input.id,
     projectId: input.projectId,
-    podName: 'builder',
+    ...testAgentRunExecution('builder'),
     dispatcherSessionId: 'S1',
-    ccSessionId: `cc-${input.id}`,
-    status: input.status,
+    status: 'queued',
     input: 'go',
     worktreeDir: input.worktreeDir,
     lifecycleState: input.lifecycleState ?? null,
     queuedAt: Date.now(),
   });
+  advanceTestAgentRunStatus(input.id, input.status);
 }
 
 test('reconcile: live run excluded, dead run stranded, dir-missing stranded, abandoned excluded', async () => {

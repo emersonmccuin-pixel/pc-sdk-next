@@ -61,8 +61,8 @@ export interface AgentRunGatewayDeps {
   insertLiveEvent?: typeof insertLiveEvent;
   /** Read a run row by id. Overridable for tests. */
   getRun?: (id: ULID) => AgentRunRow | null;
-  updateStatus?: (input: UpdateAgentRunStatusInput) => void;
-  markTerminal?: (input: MarkAgentRunTerminalInput) => void;
+  updateStatus?: (input: UpdateAgentRunStatusInput) => boolean;
+  markTerminal?: (input: MarkAgentRunTerminalInput) => boolean;
   createPendingAsk?: (input: CreatePendingAskInput) => unknown;
   markPendingAskAnswered?: typeof defaultMarkPendingAskAnswered;
   markPendingAskCancelled?: typeof defaultMarkPendingAskCancelled;
@@ -72,8 +72,8 @@ export class AgentRunMutationGateway {
   private readonly tx: <T>(fn: (tx: DbExecutor) => T) => T;
   private readonly insert: typeof insertLiveEvent;
   private readonly getRun: (id: ULID) => AgentRunRow | null;
-  private readonly updateStatus: (input: UpdateAgentRunStatusInput) => void;
-  private readonly markTerminal: (input: MarkAgentRunTerminalInput) => void;
+  private readonly updateStatus: (input: UpdateAgentRunStatusInput) => boolean;
+  private readonly markTerminal: (input: MarkAgentRunTerminalInput) => boolean;
   private readonly createPendingAsk: (input: CreatePendingAskInput) => unknown;
   private readonly markAnswered: typeof defaultMarkPendingAskAnswered;
   private readonly markCancelled: typeof defaultMarkPendingAskCancelled;
@@ -148,13 +148,15 @@ export class AgentRunMutationGateway {
       ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
       mutate: () => {
         this.createPendingAsk(input.pendingAsk);
-        this.updateStatus({ id: input.pendingAsk.agentRunId, status: 'paused' });
+        if (!this.updateStatus({ id: input.pendingAsk.agentRunId, status: 'paused' })) {
+          throw new Error('agent run became terminal before pause');
+        }
         return this.getRun(input.pendingAsk.agentRunId);
       },
     });
   }
 
-  /** Answer: atomic open->answered flip + persist `spawning`/podRevisionAtResume
+  /** Answer: atomic open->answered flip + persist `spawning`
    *  + emit the fact (reason:'resumed') in one tx. Returns null (emits nothing)
    *  if the atomic flip was a no-op (already answered/cancelled/replayed).
    *  Resumability MUST be validated by the caller BEFORE this call. */
@@ -164,7 +166,6 @@ export class AgentRunMutationGateway {
     answer: string;
     answeredBy: 'orchestrator' | 'user';
     now: number;
-    podRevisionAtResume: string | null;
     worktreeDir?: string;
     startedAt?: number;
   }): AgentRunChangedPublication | null {
@@ -176,12 +177,11 @@ export class AgentRunMutationGateway {
         now: input.now,
       });
       if (!flipped) return null;
-      this.updateStatus({
+      if (!this.updateStatus({
         id: input.agentRunId,
         status: 'spawning',
         spawnedAt: input.now,
-        podRevisionAtResume: input.podRevisionAtResume,
-      });
+      })) throw new Error('agent run became terminal before answer resume');
       const row = this.getRun(input.agentRunId);
       if (!row) throw new Error('agent run mutation produced no row');
       const run = toAgentRunDto(row, {
@@ -241,31 +241,37 @@ export class AgentRunMutationGateway {
     failureCause: AgentRunFailureCause | null;
     failureReason: string | null;
     completedAt: number;
+    /** Exact runtime attempt for async terminal callbacks. Omit for user/app
+     * control such as kill or boot recovery. */
+    continuationAttemptId?: string;
     /** Worktree-pipeline stamp (guarded in @pc/db). Omit for null-lifecycle
      *  rows and for repo completions (verify/land continue past terminal). */
     lifecycleState?: RunLifecycleState;
     worktreeDir?: string;
     startedAt?: number;
   }): AgentRunChangedPublication | null {
-    const existing = this.getRun(input.runId);
-    if (!existing) return null;
-    if (TERMINAL.has(existing.status)) return null;
-    return this.commitRunChange({
-      reason: input.status,
-      ...(input.worktreeDir !== undefined ? { worktreeDir: input.worktreeDir } : {}),
-      ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
-      mutate: () => {
-        this.markTerminal({
-          id: input.runId,
-          status: input.status,
-          result: input.result,
-          failureCause: input.failureCause,
-          failureReason: input.failureReason,
-          completedAt: input.completedAt,
-          ...(input.lifecycleState !== undefined ? { lifecycleState: input.lifecycleState } : {}),
-        });
-        return this.getRun(input.runId);
-      },
+    return this.tx((tx) => {
+      const changed = this.markTerminal({
+        id: input.runId,
+        status: input.status,
+        result: input.result,
+        failureCause: input.failureCause,
+        failureReason: input.failureReason,
+        completedAt: input.completedAt,
+        ...(input.continuationAttemptId !== undefined
+          ? { continuationAttemptId: input.continuationAttemptId }
+          : {}),
+        ...(input.lifecycleState !== undefined ? { lifecycleState: input.lifecycleState } : {}),
+      });
+      if (!changed) return null;
+      const row = this.getRun(input.runId);
+      if (!row) throw new Error('agent run terminal mutation produced no row');
+      const run = toAgentRunDto(row, {
+        ...(input.worktreeDir !== undefined ? { worktreeDir: input.worktreeDir } : {}),
+        ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
+      });
+      const liveEvent = this.insert(tx, buildDraft(input.status, run));
+      return { liveEvent, run };
     });
   }
 }

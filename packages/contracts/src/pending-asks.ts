@@ -26,8 +26,6 @@ export interface PendingAskOptionDto {
 export interface PendingAskDto {
   id: ULID;
   agentRunId: ULID;
-  /** = ccSessionId (CC provider session id). */
-  ccSessionId: string;
   projectId: ULID;
   /** External PM-item ref (AInativePM over MCP), or null. Replaces the dead
    *  internal work-item FK — mirrors the @pc/domain PendingAskRow. */
@@ -72,15 +70,32 @@ export function isPendingAskStatus(value: unknown): value is PendingAskStatus {
 }
 
 export function isPendingAskOptionDto(value: unknown): value is PendingAskOptionDto {
-  return isRecord(value) && typeof value.label === 'string' && typeof value.value === 'string';
+  return isRecord(value) &&
+    hasOnlyKeys(value, ['label', 'value']) &&
+    typeof value.label === 'string' &&
+    typeof value.value === 'string';
 }
 
 export function isPendingAskDto(value: unknown): value is PendingAskDto {
   if (!isRecord(value)) return false;
   return (
+    hasOnlyKeys(value, [
+      'id',
+      'agentRunId',
+      'projectId',
+      'pmRef',
+      'kind',
+      'promptBody',
+      'context',
+      'options',
+      'status',
+      'answeredBy',
+      'createdAt',
+      'answeredAt',
+      'cancelledAt',
+    ]) &&
     typeof value.id === 'string' &&
     typeof value.agentRunId === 'string' &&
-    typeof value.ccSessionId === 'string' &&
     typeof value.projectId === 'string' &&
     (value.pmRef === null || typeof value.pmRef === 'string') &&
     isPendingAskKind(value.kind) &&
@@ -102,10 +117,13 @@ export function parseCreatePendingAskRequest(
   input: unknown,
 ): ParseResult<CreatePendingAskRequest> {
   if (!isRecord(input)) return parseErr('request body must be an object');
+  if (!hasOnlyKeys(input, ['agentRunId', 'kind', 'promptBody', 'context', 'options'])) {
+    return parseErr('request body contains unsupported fields');
+  }
   const agentRunId = typeof input.agentRunId === 'string' ? input.agentRunId.trim() : '';
   if (!agentRunId) return parseErr('agentRunId required');
   if (!isPendingAskKind(input.kind)) {
-    return parseErr('kind must be orchestrator | user | approval');
+    return parseErr('kind must be orchestrator | approval');
   }
   const promptBody = typeof input.promptBody === 'string' ? input.promptBody : '';
   if (!promptBody.trim()) return parseErr('promptBody required');
@@ -137,6 +155,9 @@ export function parseAnswerPendingAskRequest(
   input: unknown,
 ): ParseResult<AnswerPendingAskRequest> {
   if (!isRecord(input)) return parseErr('request body must be an object');
+  if (!hasOnlyKeys(input, ['answer', 'answeredBy'])) {
+    return parseErr('request body contains unsupported fields');
+  }
   const answer = typeof input.answer === 'string' ? input.answer : '';
   if (!answer) return parseErr('answer required');
   if (input.answeredBy !== 'orchestrator' && input.answeredBy !== 'user') {
@@ -151,9 +172,17 @@ export function parseCancelPendingAskRequest(
   if (input !== undefined && input !== null && !isRecord(input)) {
     return parseErr('request body must be an object');
   }
+  if (isRecord(input) && !hasOnlyKeys(input, [])) {
+    return parseErr('request body contains unsupported fields');
+  }
   return parseOk({});
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }

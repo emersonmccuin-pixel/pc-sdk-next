@@ -12,8 +12,67 @@ const BASE = {
   agentRunId: 'AR1',
 };
 
+function agentRun(runId = 'RUN1') {
+  return {
+    runId,
+    agentName: 'researcher',
+    selection: {
+      runtimeId: 'runtime-a',
+      accountId: 'account-a',
+      model: 'model-a',
+      effort: { kind: 'none' },
+    },
+    specialistRevision: 'sha256:researcher',
+    nativeSessionIdPresent: false,
+    continuationState: 'clean-pending',
+    projectId: 'P01',
+    dispatcherSessionId: 'DSESS',
+    worktreeDir: '',
+    startedAt: 1,
+    status: 'queued',
+    lifecycleState: null,
+    result: '',
+    failureReason: null,
+    failureCause: null,
+    endedAt: null,
+    rev: 1,
+  };
+}
+
+function pendingAsk(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'PA1',
+    agentRunId: 'AR1',
+    projectId: 'P01',
+    pmRef: null,
+    kind: 'orchestrator',
+    promptBody: 'which way?',
+    context: null,
+    options: null,
+    status: 'open',
+    answeredBy: null,
+    createdAt: 1,
+    answeredAt: null,
+    cancelledAt: null,
+    ...overrides,
+  };
+}
+
+function invokeResponse(run = agentRun()) {
+  return { ok: true, mode: 'async', run };
+}
+
+function createAskResponse(ask = pendingAsk()) {
+  return {
+    ok: true,
+    pendingAsk: ask,
+    status: 'waiting',
+    message: 'run paused',
+  };
+}
+
 test('pc_invoke_agent success: emits raw body; posts invoke payload', async () => {
-  const serverBody = JSON.stringify({ ok: true, mode: 'async', runId: 'RUN1' });
+  const serverBody = JSON.stringify(invokeResponse());
   const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok(serverBody) });
   const res = await handleAgentRunTool(
     'pc_invoke_agent',
@@ -45,7 +104,7 @@ test('pc_invoke_agent failure: exact failure string', async () => {
 });
 
 test('pc_continue_agent success: emits raw body; posts continue payload', async () => {
-  const serverBody = JSON.stringify({ ok: true, runId: 'RUN2' });
+  const serverBody = JSON.stringify(invokeResponse(agentRun('RUN2')));
   const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok(serverBody) });
   const res = await handleAgentRunTool(
     'pc_continue_agent',
@@ -61,7 +120,7 @@ test('pc_continue_agent success: emits raw body; posts continue payload', async 
 });
 
 test('pc_ask_orchestrator success: emits raw body; posts pending-ask', async () => {
-  const serverBody = JSON.stringify({ ok: true, pendingAskId: 'PA1', status: 'waiting' });
+  const serverBody = JSON.stringify(createAskResponse());
   const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok(serverBody) });
   const res = await handleAgentRunTool(
     'pc_ask_orchestrator',
@@ -78,7 +137,11 @@ test('pc_ask_orchestrator success: emits raw body; posts pending-ask', async () 
 
 // M7 (FD-6): ☠ pc_ask_user — options now ride the ONE ask door.
 test('pc_ask_orchestrator with options: options forwarded', async () => {
-  const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok('{}') });
+  const ask = pendingAsk({ options: [{ value: 'a', label: 'A' }] });
+  const { ctx, calls } = makeFakeContext({
+    ...BASE,
+    responder: () => ok(createAskResponse(ask)),
+  });
   await handleAgentRunTool(
     'pc_ask_orchestrator',
     { question: 'pick', options: [{ value: 'a', label: 'A' }] },
@@ -103,7 +166,15 @@ test('pc_ask_user is gone (M7 FD-6): unknown tool returns null', async () => {
 });
 
 test('pc_request_approval success: kind=approval', async () => {
-  const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok('{}') });
+  const ask = pendingAsk({
+    kind: 'approval',
+    promptBody: 'proceed?',
+    options: [{ value: 'y', label: 'Yes' }],
+  });
+  const { ctx, calls } = makeFakeContext({
+    ...BASE,
+    responder: () => ok(createAskResponse(ask)),
+  });
   await handleAgentRunTool(
     'pc_request_approval',
     { decision: 'proceed?', options: [{ value: 'y', label: 'Yes' }] },
@@ -129,7 +200,14 @@ test('pc_request_approval failure: exact failure string preserves toolName prefi
 });
 
 test('pc_answer_pending success: emits raw body; posts answer', async () => {
-  const serverBody = JSON.stringify({ ok: true, cause: 'answered' });
+  const serverBody = JSON.stringify({
+    ok: true,
+    pendingAsk: pendingAsk({
+      status: 'answered',
+      answeredBy: 'orchestrator',
+      answeredAt: 2,
+    }),
+  });
   const { ctx, calls } = makeFakeContext({ ...BASE, responder: () => ok(serverBody) });
   const res = await handleAgentRunTool(
     'pc_answer_pending',
@@ -142,6 +220,42 @@ test('pc_answer_pending success: emits raw body; posts answer', async () => {
     path: '/api/projects/P01/agent-pending-asks/PA1/answer',
     body: { answer: '42', answeredBy: 'orchestrator' },
   });
+});
+
+test('typed agent and pending-ask tools never relay malformed 2xx bodies', async () => {
+  const secret = 'provider-native-secret';
+  const cases = [
+    {
+      tool: 'pc_invoke_agent',
+      args: { name: 'researcher', input: 'Begin.' },
+      body: invokeResponse({ ...agentRun(), nativeSessionId: secret }),
+    },
+    {
+      tool: 'pc_continue_agent',
+      args: { runId: 'RUN1', input: 'Continue.' },
+      body: { ...invokeResponse(), continuationAttemptId: secret },
+    },
+    {
+      tool: 'pc_ask_orchestrator',
+      args: { question: 'which way?' },
+      body: createAskResponse({ ...pendingAsk(), nativeSessionId: secret }),
+    },
+    {
+      tool: 'pc_answer_pending',
+      args: { pendingAskId: 'PA1', answer: '42', answeredBy: 'orchestrator' },
+      body: { ok: true, pendingAsk: pendingAsk(), continuationAttemptId: secret },
+    },
+  ] as const;
+
+  for (const candidate of cases) {
+    const raw = JSON.stringify(candidate.body);
+    const { ctx } = makeFakeContext({ ...BASE, responder: () => ok(raw) });
+    const result = await handleAgentRunTool(candidate.tool, candidate.args, ctx);
+    assert.equal(result?.isError, true, `${candidate.tool} must reject malformed 2xx`);
+    assert.match(firstText(result), /invalid localhost response/);
+    assert.doesNotMatch(firstText(result), new RegExp(secret));
+    assert.notEqual(firstText(result), raw);
+  }
 });
 
 test('pc_submit_deliverable success: posts to run deliverable route, merges kind', async () => {

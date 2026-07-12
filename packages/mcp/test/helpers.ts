@@ -16,7 +16,6 @@ export interface FakeContextOptions {
   dispatcherSessionId?: string;
   agentRunId?: string;
   agentParentWorkItemId?: string;
-  agentSessionId?: string;
   /** Map a path (or method+path key) → canned response. Falls back to `default`. */
   responder: (method: RecordedCall['method'], path: string, body: unknown) => ServerResponse;
   /** Optional resolver override for resolveWorkItemIdViaServer. */
@@ -71,7 +70,6 @@ export function makeFakeContext(opts: FakeContextOptions): {
 
   const ctx: ToolContext = {
     projectId,
-    agentSessionId: opts.agentSessionId ?? '',
     sessionId: opts.sessionId ?? '',
     dispatcherSessionId: opts.dispatcherSessionId ?? '',
     agentRunId: opts.agentRunId,

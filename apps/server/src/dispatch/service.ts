@@ -13,14 +13,17 @@
 // - DB is the source of truth; live handles are projections (a kill/answer on
 //   a phantom run works off the row, not the handle).
 
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { basename, resolve as resolvePath } from 'node:path';
 import {
   closeOpenConversationToolCalls,
   commitConversationEvent,
+  confirmAgentRunRuntimeSessionReceipt,
   countAgentRunsForSessionAndPod,
   findActiveContinuation,
   findContractByReviewRun,
+  failAgentRunRuntimeResume,
+  failAgentRunRuntimeResumeInDb,
   getAgentRunRow,
   getPendingAsk,
   getPodForSpawn,
@@ -29,16 +32,21 @@ import {
   hasOpenPendingAskForRun,
   hasPendingAskForRun,
   insertAgentRunRow,
+  isAgentRunNativeResumeReady,
   listAgentRunsForContract,
   listConversationEvents,
   listOpenPendingAsksForProject,
   listTurnBudgetExhaustedRuns,
   markAgentRunDelivered,
   newId,
-  setAgentRunCcSession,
+  prepareAgentRunCreate,
+  prepareAgentRunResume,
+  prepareAgentRunResumeInDb,
+  runtimeSelectionForAgentRun,
   setAgentRunFailureReason,
   setAgentRunPhaseReceipt,
   setWorktreeContractId,
+  specialistSnapshotForAgentRun,
   updateAgentRunStatus,
 } from '@pc/db';
 import {
@@ -70,15 +78,21 @@ import {
   type PendingAskOption,
   type Project,
   type RunLifecycleState,
+  type SpecialistExecutionSnapshot,
+  type PodSpawnBundle,
   type ULID,
   type WorktreeCommandStep,
   type WorktreeGitReceipt,
   type WorktreeProfile,
 } from '@pc/domain';
-import type { AccountRegistry } from '../runner/account-env.ts';
-import { CLAUDE_RUNTIME_ID } from '../runner/claude-adapter.ts';
-import type { RuntimeEvent, RuntimeRegistry, RuntimeSelection, RuntimeSession } from '../runner/runtime.ts';
-import type { McpManager } from '../mcp/manager.ts';
+import type {
+  CreateRuntimeSession,
+  RuntimeContinuationRequest,
+  RuntimeEvent,
+  RuntimeSelection,
+  RuntimeSelectionValidation,
+  RuntimeSession,
+} from '../runner/runtime.ts';
 import type { SessionRegistry } from '../chat/registry.ts';
 import type { ConversationRelay } from '../chat/conversation-relay.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
@@ -102,15 +116,30 @@ import {
 } from './worktrees.ts';
 
 const WALL_CLOCK_DEFAULT_MS = 2 * 60 * 60 * 1000;
-const DEFAULT_AGENT_MODEL = 'sonnet';
 const DEFAULT_AGENT_MAX_TURNS = 100;
 
-/** Specialist effort persistence is widened in a later N3 slice. Until then,
- * preserve the existing pod value explicitly; null means no override, never a
- * provider fallback. Adapter validation still rejects an incompatible model. */
-function specialistEffort(value: string | null | undefined): RuntimeSelection['effort'] {
-  const selected = value?.trim();
-  return selected ? { kind: 'selected', value: selected } : { kind: 'none' };
+function specialistSnapshot(bundle: PodSpawnBundle): SpecialistExecutionSnapshot {
+  const material = {
+    specialistId: bundle.agent.id,
+    name: bundle.agent.name,
+    charter: bundle.agent.prompt,
+    contextDocs: bundle.contextDocs.map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      body: doc.body,
+      updatedAt: doc.updatedAt,
+    })),
+    maxTurns: bundle.agent.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+  };
+  const revision = `sha256:${createHash('sha256').update(JSON.stringify(material)).digest('hex')}`;
+  return {
+    specialistId: material.specialistId,
+    revision,
+    name: material.name,
+    charter: material.charter,
+    contextDocs: material.contextDocs,
+    maxTurns: material.maxTurns,
+  };
 }
 /** Full-review policy (docs/worktree-lifecycle.md 'Full independent review'). */
 const REVIEWER_POD_NAME = 'contract-reviewer';
@@ -154,6 +183,7 @@ export type DispatchFailureCause =
   | 'worktree-provision-failed'
   | 'project-missing'
   | 'invalid-spec'
+  | 'runtime-selection-unavailable'
   | 'run-not-found'
   | 'not-continuable'
   | 'concurrent-continuation'
@@ -176,12 +206,26 @@ export interface DispatchFreshInput {
 }
 
 export interface DispatchServiceDeps {
-  runtimes: RuntimeRegistry;
-  accounts: AccountRegistry;
-  mcp: McpManager;
+  resolveNewSpecialistSelection(input: {
+    projectId: ULID;
+    /** A specialist may omit its model; provider-specific defaulting belongs
+     *  to the composition root, not this provider-neutral dispatcher. */
+    model: string | null;
+    effort: string | null;
+  }): Promise<RuntimeSelectionValidation>;
+  preflightRuntimeSession(
+    selection: RuntimeSelection,
+    continuation: RuntimeContinuationRequest,
+  ): Promise<RuntimeSelectionValidation>;
+  mintSpecialistRuntimeSession(
+    input: CreateRuntimeSession & { continuation: RuntimeContinuationRequest },
+  ): Promise<RuntimeSession>;
   /** Injectable command boundary keeps async repository evidence races
    * deterministic under guard tests. Production uses the canonical helper. */
   gitCommand?: typeof git;
+  /** Injectable verification boundary keeps evidence-drift races
+   * deterministic under guard tests. Production uses the canonical helper. */
+  verifyContract?: typeof verifyContract;
 }
 
 interface AttachContext {
@@ -208,6 +252,7 @@ interface LiveRun {
   selection: RuntimeSelection;
   /** Process-local correlation until specialist attempt stamps land in N3. */
   continuationAttemptId: string;
+  receiptConfirmed: boolean;
   wallClock: ReturnType<typeof setTimeout>;
 }
 
@@ -215,8 +260,7 @@ interface StartRunInput {
   row: { runId: string };
   runId: ULID;
   projectId: ULID;
-  pod: { name: string; prompt: string; model: string | null; maxTurns: number | null; tools: string[] };
-  contextDocs: ReadonlyArray<{ title: string; body: string }>;
+  snapshot: SpecialistExecutionSnapshot;
   contract: Contract;
   spec: ExpectedOutput;
   selection: RuntimeSelection;
@@ -269,6 +313,11 @@ export class DispatchService {
    *  active landing mutation per repository at a time. Keyed by canonical
    *  resolved folderPath — two project rows over one folder share the lock. */
   private readonly landingLocks = new Map<string, Promise<unknown>>();
+  /** Review reservations are durable before their reviewer row exists. A
+   * process-local admission in this set is still provisioning/validating, not
+   * a crashed no-row marker for review recovery to replace. A real restart
+   * naturally clears the set, making the durable orphan re-dispatchable. */
+  private readonly reviewAdmissions = new Set<string>();
   /** F3 (comms-hardening): envelopes minted pre-attach (boot recovery, e.g.
    *  recoverSealedRuns, runs BEFORE dispatch.attach) have nowhere live to
    *  land — queued here instead of dropped, then replayed in order by
@@ -354,16 +403,25 @@ export class DispatchService {
     }
     if (spec.kind === 'repo') spec = { ...spec, isolation: 'worktree' };
 
+    const snapshot = specialistSnapshot(bundle);
+    const resolvedSelection = await this.deps.resolveNewSpecialistSelection({
+      projectId: input.projectId,
+      model: pod.model,
+      effort: pod.effort,
+    });
+    if (resolvedSelection.status === 'invalid') {
+      return refuse(
+        'runtime-selection-unavailable',
+        `specialist runtime selection unavailable (${resolvedSelection.code})`,
+        422,
+      );
+    }
+    if (this.ctx !== ctx || this.shuttingDown) {
+      return refuse('not-attached', 'dispatch service changed while validating runtime selection', 503);
+    }
+    const selection = resolvedSelection.selection;
     const runId = newId() as ULID;
-    const ccPlaceholder = randomUUID();
     const now = Date.now();
-    const account = this.deps.accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
-    const selection: RuntimeSelection = {
-      runtimeId: CLAUDE_RUNTIME_ID,
-      accountId: account.id,
-      model: pod.model ?? DEFAULT_AGENT_MODEL,
-      effort: specialistEffort(pod.effort),
-    };
 
     // Repo isolation invariant: provision BEFORE the agent starts; a provision
     // failure is a loud terminal, never a fallback to the live checkout.
@@ -375,16 +433,14 @@ export class DispatchService {
           insertAgentRunRow({
             id: runId,
             projectId: input.projectId,
-            podName: input.agentName,
             dispatcherSessionId: input.dispatcherSessionId,
-            ccSessionId: ccPlaceholder,
+            specialistSnapshot: snapshot,
+            selection,
+            continuation: { mode: 'create' },
             status: 'queued',
             input: input.input,
             pmRef: input.pmRef ?? null,
             parentInvokeDepth: input.parentInvokeDepth ?? 0,
-            runtimeId: selection.runtimeId,
-            accountId: selection.accountId,
-            model: selection.model,
             lifecycleState: 'provisioning',
             queuedAt: now,
           }),
@@ -449,9 +505,10 @@ export class DispatchService {
         insertAgentRunRow({
           id: runId,
           projectId: input.projectId,
-          podName: input.agentName,
           dispatcherSessionId: input.dispatcherSessionId,
-          ccSessionId: ccPlaceholder,
+          specialistSnapshot: snapshot,
+          selection,
+          continuation: { mode: 'create' },
           status: 'queued',
           input: input.input,
           pmRef: input.pmRef ?? null,
@@ -461,9 +518,6 @@ export class DispatchService {
           worktreeBaseBranch: worktree?.baseBranch ?? null,
           worktreeBaseSha: worktree?.baseSha ?? null,
           gitReceipt,
-          runtimeId: selection.runtimeId,
-          accountId: selection.accountId,
-          model: selection.model,
           // Lifecycle (docs/worktree-lifecycle.md): the worktree pipeline only
           // applies to repo runs; everything else stays NULL forever. The row
           // is born post-provision, so 'provisioning' is its first state.
@@ -479,8 +533,7 @@ export class DispatchService {
       row: publication.run as unknown as { runId: string },
       runId,
       projectId: input.projectId,
-      pod,
-      contextDocs: bundle.contextDocs,
+      snapshot,
       contract,
       spec,
       selection,
@@ -543,14 +596,54 @@ export class DispatchService {
     }
     const project = getProjectById(input.projectId);
     if (!project) return refuse('project-missing', `unknown project ${input.projectId}`, 404);
-    const bundle = getPodForSpawn(parent.podName, input.projectId);
-    if (!bundle) return refuse('unknown-agent', `agent '${parent.podName}' no longer exists`, 422);
+    const snapshot = specialistSnapshotForAgentRun(parent);
+    const selection = runtimeSelectionForAgentRun(parent);
+    if (!snapshot || !selection || !isAgentRunNativeResumeReady(parent) || !parent.nativeSessionId) {
+      return refuse(
+        'runtime-selection-unavailable',
+        'parent run has no complete trusted specialist selection/native identity to continue',
+        409,
+      );
+    }
+    const continuation = { mode: 'resume' as const, nativeSessionId: parent.nativeSessionId };
+    const preflight = await this.deps.preflightRuntimeSession(selection, continuation);
+    if (preflight.status === 'invalid') {
+      return refuse(
+        'runtime-selection-unavailable',
+        `specialist native continuation unavailable (${preflight.code})`,
+        409,
+      );
+    }
+    if (this.ctx !== ctx || this.shuttingDown) {
+      return refuse('not-attached', 'dispatch service changed while validating continuation', 503);
+    }
+    // Preflight awaited provider/account discovery. Another request may have
+    // reserved this parent while we were suspended; recheck for the useful
+    // typed refusal. The DB insert trigger is the cross-process authority.
+    if (findActiveContinuation(input.runId)) {
+      return refuse('concurrent-continuation', 'an active continuation for this run already exists', 409);
+    }
 
     // Contract carries forward — a continuation never spawns contract-less.
     const contractId = parent.contractId;
     const contract = contractId ? this.contracts.get(contractId) : null;
     if (!contract || !contract.expectedOutput) {
       return refuse('contract-required', 'parent run has no resolvable contract to carry forward', 422);
+    }
+    // Landing owns the worktree from its durable `pending` reservation through
+    // merge + teardown. A continuation admitted in that interval could mutate
+    // or lose its cwd underneath the runtime. A positive landed/abandoned
+    // receipt is final; failed/conflict/stale-base parks remain fixable.
+    if (
+      contract.landingStatus === 'pending' ||
+      contract.landingStatus === 'landed' ||
+      contract.landingStatus === 'abandoned'
+    ) {
+      return refuse(
+        'not-continuable',
+        `contract landing is '${contract.landingStatus}' — continuation cannot mutate this worktree`,
+        409,
+      );
     }
     // A LIVE independent review reads this contract's worktree and sealed
     // commit: a continuation would mutate the tree under review and could
@@ -559,7 +652,7 @@ export class DispatchService {
     // marker must not close the review-rejected Fix door.
     if (contract.reviewRunId) {
       const reviewRun = getAgentRunRow(contract.reviewRunId as ULID);
-      if (reviewRun && !['completed', 'failed', 'cancelled'].includes(reviewRun.status)) {
+      if (!reviewRun || !['completed', 'failed', 'cancelled'].includes(reviewRun.status)) {
         return refuse(
           'concurrent-continuation',
           `an independent review (run ${contract.reviewRunId}) is in flight for this contract — wait for the verdict (or kill the review run) before continuing`,
@@ -585,52 +678,49 @@ export class DispatchService {
 
     const runId = newId() as ULID;
     const now = Date.now();
-    const runtimeId = parent.runtimeId ?? CLAUDE_RUNTIME_ID;
-    const account = this.deps.accounts.resolveForProject(input.projectId, runtimeId);
-    const selection: RuntimeSelection = {
-      runtimeId,
-      accountId: parent.accountId ?? account.id,
-      model: parent.model ?? bundle.agent.model ?? DEFAULT_AGENT_MODEL,
-      effort: specialistEffort(bundle.agent.effort),
-    };
 
-    const publication = this.gateway.commitRunChange({
-      reason: 'queued',
-      mutate: () =>
-        insertAgentRunRow({
-          id: runId,
-          projectId: input.projectId,
-          podName: parent.podName,
-          dispatcherSessionId: input.dispatcherSessionId,
-          ccSessionId: parent.ccSessionId,
-          status: 'queued',
-          input: input.input,
-          pmRef: parent.pmRef,
-          continues: parent.id,
-          parentInvokeDepth: parent.parentInvokeDepth,
-          contractId: contract.id as ULID,
-          worktreeDir: parent.worktreeDir,
-          worktreeBaseBranch: parent.worktreeBaseBranch,
-          worktreeBaseSha: parent.worktreeBaseSha,
-          runtimeId: selection.runtimeId,
-          accountId: selection.accountId,
-          model: selection.model,
-          // Repo continuation: the workspace already exists — born 'ready'
-          // ('preparing' when the profile re-checks readiness first); the
-          // turn start stamps 'building'.
-          lifecycleState: spec.kind === 'repo' ? (recheckReadiness ? 'preparing' : 'ready') : null,
-          autoContinueCount: input.autoContinueCount,
-          queuedAt: now,
-        }),
-    });
+    let publication: ReturnType<AgentRunMutationGateway['commitRunChange']>;
+    try {
+      publication = this.gateway.commitRunChange({
+        reason: 'queued',
+        mutate: () =>
+          insertAgentRunRow({
+            id: runId,
+            projectId: input.projectId,
+            dispatcherSessionId: input.dispatcherSessionId,
+            specialistSnapshot: snapshot,
+            selection,
+            continuation,
+            status: 'queued',
+            input: input.input,
+            pmRef: parent.pmRef,
+            continues: parent.id,
+            parentInvokeDepth: parent.parentInvokeDepth,
+            contractId: contract.id as ULID,
+            worktreeDir: parent.worktreeDir,
+            worktreeBaseBranch: parent.worktreeBaseBranch,
+            worktreeBaseSha: parent.worktreeBaseSha,
+            // Repo continuation: the workspace already exists — born 'ready'
+            // ('preparing' when the profile re-checks readiness first); the
+            // turn start stamps 'building'.
+            lifecycleState: spec.kind === 'repo' ? (recheckReadiness ? 'preparing' : 'ready') : null,
+            autoContinueCount: input.autoContinueCount,
+            queuedAt: now,
+          }),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('active continuation')) {
+        return refuse('concurrent-continuation', 'an active continuation for this run already exists', 409);
+      }
+      throw error;
+    }
     this.contracts.setRun(contract.id, runId);
 
     void this.prepareAndStart({
       row: publication.run as unknown as { runId: string },
       runId,
       projectId: input.projectId,
-      pod: bundle.agent,
-      contextDocs: bundle.contextDocs,
+      snapshot,
       contract,
       spec,
       selection,
@@ -638,7 +728,7 @@ export class DispatchService {
         ? { dir: parent.worktreeDir, branch: '', baseBranch: parent.worktreeBaseBranch ?? '', baseSha: parent.worktreeBaseSha ?? '' }
         : null,
       firstMessage: input.input,
-      resumeNativeSessionId: parent.ccSessionId,
+      resumeNativeSessionId: parent.nativeSessionId,
       profile,
       freshProvision: false,
     }).catch(() => {
@@ -731,28 +821,79 @@ export class DispatchService {
     // terminal on the row only. Starting anyway would spawn a bypassPermissions
     // agent for a cancelled run — and the 'spawning' announce below would
     // overwrite the terminal status, resurrecting it. Refuse instead.
-    const preflight = getAgentRunRow(input.runId);
-    if (!preflight || preflight.status === 'completed' || preflight.status === 'failed' || preflight.status === 'cancelled') {
+    const initialRow = getAgentRunRow(input.runId);
+    if (!initialRow || initialRow.status === 'completed' || initialRow.status === 'failed' || initialRow.status === 'cancelled') {
       console.warn(
-        `[pc-sdk][dispatch] run ${input.runId} is '${preflight?.status ?? 'missing'}' before agent start — not launching`,
+        `[pc-sdk][dispatch] run ${input.runId} is '${initialRow?.status ?? 'missing'}' before agent start — not launching`,
       );
       return;
     }
-    const ctx = this.ctx!;
+    const persistedSelection = runtimeSelectionForAgentRun(initialRow);
+    const persistedSnapshot = specialistSnapshotForAgentRun(initialRow);
+    if (
+      !persistedSelection ||
+      !persistedSnapshot ||
+      !runtimeSelectionsEqual(persistedSelection, input.selection) ||
+      persistedSnapshot.revision !== input.snapshot.revision
+    ) {
+      this.settleTerminal(input.runId, {
+        status: 'failed',
+        result: null,
+        failureCause: 'spawn-error',
+        failureReason: 'agent run execution stamp is unavailable or inconsistent',
+      });
+      return;
+    }
+    const ctx = this.ctx;
+    if (!ctx || this.shuttingDown) return;
     const project = getProjectById(input.projectId);
     const cwd = input.worktree?.dir ?? project?.folderPath ?? process.cwd();
 
-    this.announce(input.runId, 'spawning', { spawnedAt: Date.now() });
+    const continuation: RuntimeContinuationRequest = input.resumeNativeSessionId
+      ? { mode: 'resume', nativeSessionId: input.resumeNativeSessionId }
+      : { mode: 'create' };
+    const validation = await this.deps.preflightRuntimeSession(input.selection, continuation);
+    if (validation.status === 'invalid') {
+      this.settleTerminal(input.runId, {
+        status: 'failed',
+        result: null,
+        failureCause: 'spawn-error',
+        failureReason: `agent runtime selection rejected (${validation.code})`,
+      });
+      return;
+    }
+    if (this.ctx !== ctx || this.shuttingDown || this.runIsTerminal(input.runId)) return;
+
+    const prepared = continuation.mode === 'resume'
+      ? prepareAgentRunResume(input.runId)
+      : prepareAgentRunCreate(input.runId);
+    if (!prepared?.continuationAttemptId) {
+      if (!this.runIsTerminal(input.runId)) {
+        this.settleTerminal(input.runId, {
+          status: 'failed',
+          result: null,
+          failureCause: 'spawn-error',
+          failureReason: 'agent runtime continuation attempt could not be prepared',
+        });
+      }
+      return;
+    }
+    const continuationAttemptId = prepared.continuationAttemptId;
+    const preparedContinuation: RuntimeContinuationRequest = continuation.mode === 'resume'
+      ? { mode: 'resume', nativeSessionId: prepared.nativeSessionId! }
+      : { mode: 'create' };
+
+    if (!this.announce(input.runId, 'spawning', { spawnedAt: Date.now() })) return;
 
     let instructions = buildSpecialistInstructions({
-      charter: input.pod.prompt,
-      podName: input.pod.name,
+      charter: input.snapshot.charter,
+      podName: input.snapshot.name,
       expectedOutput: input.spec,
       acceptanceCriteria: (input.contract.acceptanceCriteria ?? []) as never,
       worktreeDir: input.worktree?.dir ?? null,
     });
-    if (input.contextDocs.length > 0) {
-      instructions += `\n\n## Context documents\n${input.contextDocs
+    if (input.snapshot.contextDocs.length > 0) {
+      instructions += `\n\n## Context documents\n${input.snapshot.contextDocs
         .map((d) => `### ${d.title}\n${d.body}`)
         .join('\n\n')}`;
     }
@@ -764,14 +905,11 @@ export class DispatchService {
         projectId: input.projectId,
         dispatcherSessionId: run?.dispatcherSessionId ?? '',
         agentRunId: input.runId,
-        agentSessionId: run?.ccSessionId ?? '',
         invokeDepth: (run?.parentInvokeDepth ?? 0) + 1,
         serverPort: ctx.serverPort,
       }),
     );
 
-    const adapter = this.deps.runtimes.get(input.selection.runtimeId);
-    const continuationAttemptId = randomUUID();
     const sessionInput = {
       appSessionId: input.runId,
       projectId: input.projectId,
@@ -780,18 +918,46 @@ export class DispatchService {
       instructions,
       cwd,
       tools,
-      maxTurns: input.pod.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
+      maxTurns: input.snapshot.maxTurns,
       bypassPermissions: true, // headless specialist — never blocks on a browser ask
+      continuation: preparedContinuation,
     };
-    const session = input.resumeNativeSessionId
-      ? await adapter.resumeSession({ ...sessionInput, nativeSessionId: input.resumeNativeSessionId })
-      : await adapter.createSession(sessionInput);
+    let session: RuntimeSession;
+    try {
+      session = await this.deps.mintSpecialistRuntimeSession(sessionInput);
+    } catch {
+      if (preparedContinuation.mode === 'resume') {
+        failAgentRunRuntimeResume(input.runId, continuationAttemptId);
+      }
+      this.settleTerminal(input.runId, {
+        status: 'failed',
+        result: null,
+        failureCause: 'spawn-error',
+        failureReason: RUNTIME_START_FAILURE_REASON,
+      }, continuationAttemptId);
+      return;
+    }
 
     // Session creation is asynchronous. A kill can land while the provider is
     // minting the native session; the row must be re-read before installing a
     // live projection, starting the wall clock, or sending a turn that could
     // mutate the run-owned worktree.
-    if (this.runIsTerminal(input.runId)) {
+    const afterMint = getAgentRunRow(input.runId);
+    const afterMintSelection = afterMint ? runtimeSelectionForAgentRun(afterMint) : null;
+    if (
+      !afterMint ||
+      this.ctx !== ctx ||
+      this.shuttingDown ||
+      afterMint.status === 'completed' ||
+      afterMint.status === 'failed' ||
+      afterMint.status === 'cancelled' ||
+      afterMint.continuationAttemptId !== continuationAttemptId ||
+      !afterMintSelection ||
+      !runtimeSelectionsEqual(afterMintSelection, input.selection) ||
+      (preparedContinuation.mode === 'create'
+        ? afterMint.continuationState !== 'clean-pending'
+        : afterMint.continuationState !== 'resume-pending')
+    ) {
       await session.dispose().catch(() => {});
       return;
     }
@@ -800,6 +966,7 @@ export class DispatchService {
       session,
       selection: input.selection,
       continuationAttemptId,
+      receiptConfirmed: false,
       wallClock: setTimeout(() => {
         void this.killRun(input.projectId, input.runId, {
           failureCause: 'wall-clock-timeout',
@@ -817,48 +984,66 @@ export class DispatchService {
       turn = session.sendTurn(input.firstMessage);
     } catch {
       console.error(`[pc-sdk][dispatch] runtime send failed for ${input.runId}: ${RUNTIME_SEND_FAILURE_REASON}`);
+      if (!this.persistAppAuthoredTurnFailure(input.projectId, input.runId, RUNTIME_SEND_FAILURE_REASON)) return;
+      if (preparedContinuation.mode === 'resume') {
+        failAgentRunRuntimeResume(input.runId, continuationAttemptId);
+      }
       this.settleTerminal(input.runId, {
         status: 'failed',
         result: null,
         failureCause: 'send-failed',
         failureReason: RUNTIME_SEND_FAILURE_REASON,
-      });
+      }, continuationAttemptId);
       return;
     }
     await this.consumeTurn(input.runId, input.projectId, turn, { firstTurn: true });
   }
 
-  /** F1 (comms-hardening): re-mint a live runtime session for a run row
-   *  WITHOUT sending a turn — resumes the adapter-native session (via its
-   *  persisted `ccSessionId`) so the run has a live handle again after a
-   *  restart. Used to re-attach a 'paused' run whose in-process `this.live`
-   *  entry died with the old process, so `answerPendingAsk` can resume it
-   *  instead of 410ing on a dead handle. Never throws — a row whose pod/
-   *  contract/project can no longer be resolved degrades to null; the caller
-   *  leaves the ask open for a manual `pc_continue_agent` (degrade, never
-   *  block). */
+  /** Re-mint a paused run from its exact frozen snapshot/selection. The ask
+   * remains open until this native resume is positively receipted on the next
+   * sendTurn; a failed or stale mint never falls back to current defaults. */
   private async reviveLiveSession(run: AgentRunRow): Promise<LiveRun | null> {
     const ctx = this.ctx;
-    if (!ctx) return null;
+    if (!ctx || this.shuttingDown || run.status !== 'paused') return null;
+    const snapshot = specialistSnapshotForAgentRun(run);
+    const selection = runtimeSelectionForAgentRun(run);
+    if (!snapshot || !selection || !isAgentRunNativeResumeReady(run) || !run.nativeSessionId) {
+      return null;
+    }
     try {
       const project = getProjectById(run.projectId);
       if (!project) return null;
-      const bundle = getPodForSpawn(run.podName, run.projectId);
-      if (!bundle) return null;
       const contract = run.contractId ? this.contracts.get(run.contractId) : null;
       const spec = (contract?.expectedOutput ?? null) as ExpectedOutput | null;
       if (!contract || !spec) return null;
 
+      const continuation = { mode: 'resume' as const, nativeSessionId: run.nativeSessionId };
+      const validation = await this.deps.preflightRuntimeSession(selection, continuation);
+      if (validation.status === 'invalid' || this.ctx !== ctx || this.shuttingDown) return null;
+      const beforePrepare = getAgentRunRow(run.id);
+      if (!beforePrepare || beforePrepare.status !== 'paused') return null;
+      try {
+        this.gateway.commitRunChange({
+          reason: 'reconciled',
+          mutate: (tx) => prepareAgentRunResumeInDb(run.id, tx),
+        });
+      } catch {
+        return null;
+      }
+      const prepared = getAgentRunRow(run.id);
+      if (!prepared?.continuationAttemptId || !prepared.nativeSessionId) return null;
+      const continuationAttemptId = prepared.continuationAttemptId;
+
       const cwd = run.worktreeDir ?? project.folderPath ?? process.cwd();
       let instructions = buildSpecialistInstructions({
-        charter: bundle.agent.prompt,
-        podName: bundle.agent.name,
+        charter: snapshot.charter,
+        podName: snapshot.name,
         expectedOutput: spec,
         acceptanceCriteria: (contract.acceptanceCriteria ?? []) as never,
         worktreeDir: run.worktreeDir ?? null,
       });
-      if (bundle.contextDocs.length > 0) {
-        instructions += `\n\n## Context documents\n${bundle.contextDocs
+      if (snapshot.contextDocs.length > 0) {
+        instructions += `\n\n## Context documents\n${snapshot.contextDocs
           .map((d) => `### ${d.title}\n${d.body}`)
           .join('\n\n')}`;
       }
@@ -868,39 +1053,47 @@ export class DispatchService {
           projectId: run.projectId,
           dispatcherSessionId: run.dispatcherSessionId,
           agentRunId: run.id,
-          agentSessionId: run.ccSessionId,
           invokeDepth: (run.parentInvokeDepth ?? 0) + 1,
           serverPort: ctx.serverPort,
         }),
       );
-      const selection: RuntimeSelection = {
-        runtimeId: run.runtimeId ?? CLAUDE_RUNTIME_ID,
-        accountId: run.accountId ?? this.deps.accounts.resolveForProject(
-          run.projectId,
-          run.runtimeId ?? CLAUDE_RUNTIME_ID,
-        ).id,
-        model: run.model ?? bundle.agent.model ?? DEFAULT_AGENT_MODEL,
-        effort: specialistEffort(bundle.agent.effort),
-      };
-      const adapter = this.deps.runtimes.get(selection.runtimeId);
-      const continuationAttemptId = randomUUID();
-      const session = await adapter.resumeSession({
-        appSessionId: run.id,
-        projectId: run.projectId,
-        continuationAttemptId,
-        selection,
-        instructions,
-        cwd,
-        tools,
-        maxTurns: bundle.agent.maxTurns ?? DEFAULT_AGENT_MAX_TURNS,
-        bypassPermissions: true,
-        nativeSessionId: run.ccSessionId,
-      });
+      let session: RuntimeSession;
+      try {
+        session = await this.deps.mintSpecialistRuntimeSession({
+          appSessionId: run.id,
+          projectId: run.projectId,
+          continuationAttemptId,
+          selection,
+          instructions,
+          cwd,
+          tools,
+          maxTurns: snapshot.maxTurns,
+          bypassPermissions: true,
+          continuation: { mode: 'resume', nativeSessionId: prepared.nativeSessionId },
+        });
+      } catch {
+        try {
+          this.gateway.commitRunChange({
+            reason: 'reconciled',
+            mutate: (tx) => failAgentRunRuntimeResumeInDb(run.id, continuationAttemptId, tx),
+          });
+        } catch {
+          // A kill/answer/racing recovery may already have advanced the row.
+        }
+        return null;
+      }
       // The stale `run` snapshot predates an async provider resume. Only a
       // still-paused row may receive this projection; kill/answer/recovery can
       // have made the native session obsolete while it was being minted.
       const current = getAgentRunRow(run.id);
-      if (!current || current.status !== 'paused') {
+      if (
+        !current ||
+        this.ctx !== ctx ||
+        this.shuttingDown ||
+        current.status !== 'paused' ||
+        current.continuationAttemptId !== continuationAttemptId ||
+        current.continuationState !== 'resume-pending'
+      ) {
         await session.dispose().catch(() => {});
         return null;
       }
@@ -908,6 +1101,7 @@ export class DispatchService {
         session,
         selection,
         continuationAttemptId,
+        receiptConfirmed: false,
         // A revived run gets a fresh wall clock from the moment of revival —
         // the original timer died with the old process along with everything
         // else in `this.live`.
@@ -952,7 +1146,12 @@ export class DispatchService {
       }
       if (!candidate) return null;
       const current = getAgentRunRow(run.id);
-      if (!current || current.status !== 'paused') {
+      if (
+        !current ||
+        current.status !== 'paused' ||
+        current.continuationAttemptId !== candidate.continuationAttemptId ||
+        current.continuationState !== 'resume-pending'
+      ) {
         clearTimeout(candidate.wallClock);
         await candidate.session.dispose().catch(() => {});
         return null;
@@ -968,6 +1167,19 @@ export class DispatchService {
     }
   }
 
+  private liveAttemptIsCurrent(runId: ULID, liveRun: LiveRun): boolean {
+    if (this.shuttingDown || this.live.get(runId) !== liveRun) return false;
+    const row = getAgentRunRow(runId);
+    const selection = row ? runtimeSelectionForAgentRun(row) : null;
+    return !!row &&
+      row.status !== 'completed' &&
+      row.status !== 'failed' &&
+      row.status !== 'cancelled' &&
+      row.continuationAttemptId === liveRun.continuationAttemptId &&
+      selection !== null &&
+      runtimeSelectionsEqual(selection, liveRun.selection);
+  }
+
   /** Drive one turn to its terminal and settle/park by the run row's status. */
   private async consumeTurn(
     runId: ULID,
@@ -978,51 +1190,88 @@ export class DispatchService {
     const liveRun = this.live.get(runId);
     if (!liveRun) return;
     let lastText = '';
-    let markedRunning = !opts.firstTurn;
+    let markedRunning = liveRun.receiptConfirmed && !opts.firstTurn;
     const transcriptTurnId = newId();
 
-    const terminalResult = await runTurn(turn, {
-      emitChat: (event, identity) => {
-        if (event.kind === 'assistant-text') lastText = event.text;
-        this.persistAgentEvent(projectId, runId, transcriptTurnId, event, identity?.itemId);
-      },
-      emitDelta: () => {
-        /* agent transcripts are persisted-event only; the modal heals over HTTP */
-      },
-      onRuntimeSessionReceipt: (receipt) => {
-        // Provider output may arrive after kill/dispose. A late init is not a
-        // positive receipt that a terminal run restarted; ignore it before it
-        // can rewrite the native id or announce `running` over cancellation.
-        const current = getAgentRunRow(runId);
-        if (
-          !current
-          || current.status === 'paused'
-          || current.status === 'completed'
-          || current.status === 'failed'
-          || current.status === 'cancelled'
-        ) return;
-        if (
-          receipt.continuationAttemptId !== liveRun.continuationAttemptId
-          || !runtimeSelectionsEqual(receipt.selection, liveRun.selection)
-        ) return;
-        setAgentRunCcSession(runId, receipt.nativeSessionId);
-        if (!markedRunning) {
-          markedRunning = true;
-          this.announce(runId, 'running', { readyAt: Date.now() });
+    let terminalResult: Awaited<ReturnType<typeof runTurn>>;
+    try {
+      terminalResult = await runTurn(turn, {
+        emitChat: (event, identity) => {
+          if (!this.liveAttemptIsCurrent(runId, liveRun)) {
+            throw new Error('agent runtime emitted outside its active durable attempt');
+          }
+          if (!liveRun.receiptConfirmed) {
+            throw new Error('agent runtime emitted before its session receipt was confirmed');
+          }
+          if (event.kind === 'assistant-text') lastText = event.text;
+          this.persistAgentEvent(projectId, runId, transcriptTurnId, event, identity?.itemId);
+        },
+        emitDelta: () => {
+          /* agent transcripts are persisted-event only; the modal heals over HTTP */
+        },
+        onRuntimeSessionReceipt: (receipt) => {
+          if (!this.liveAttemptIsCurrent(runId, liveRun)) {
+            throw new Error('agent runtime session receipt arrived outside its active attempt');
+          }
+          const confirmation = confirmAgentRunRuntimeSessionReceipt({ runId, receipt });
+          if (confirmation.status === 'rejected') {
+            if (
+              confirmation.reason !== 'continuation-attempt-mismatch' &&
+              getAgentRunRow(runId)?.continuationState === 'resume-pending'
+            ) {
+              failAgentRunRuntimeResume(runId, liveRun.continuationAttemptId);
+            }
+            throw new Error(`agent runtime session receipt rejected: ${confirmation.reason}`);
+          }
+          liveRun.receiptConfirmed = true;
+          if (!markedRunning) {
+            if (!this.announce(runId, 'running', { readyAt: Date.now() })) {
+              throw new Error('agent run became terminal before receipt publication');
+            }
+            markedRunning = true;
+          }
+        },
+        onDropped: () => {},
+      });
+    } catch {
+      if (this.liveAttemptIsCurrent(runId, liveRun)) {
+        if (!liveRun.receiptConfirmed) {
+          try {
+            // Provider output is never admitted before its positive receipt,
+            // but the app still owes this attempted turn one canonical
+            // terminal. Persist app-authored evidence outside that gate.
+            this.persistAgentEvent(projectId, runId, transcriptTurnId, {
+              kind: 'turn-failed',
+              error: 'runtime session evidence was missing or invalid',
+              source: 'internal',
+            }, `${transcriptTurnId}:terminal`);
+          } catch (error) {
+            console.error(`[pc-sdk][dispatch] could not persist runtime-evidence terminal for ${runId}:`, error);
+            return;
+          }
         }
-      },
-      onDropped: () => {},
-    });
+        if (getAgentRunRow(runId)?.continuationState === 'resume-pending') {
+          failAgentRunRuntimeResume(runId, liveRun.continuationAttemptId);
+        }
+        this.settleTerminal(runId, {
+          status: 'failed',
+          result: lastText || null,
+          failureCause: 'unexpected-exit',
+          failureReason: 'agent runtime evidence was missing or invalid',
+        }, liveRun.continuationAttemptId);
+      }
+      return;
+    }
 
     // The row is the truth: an ask route may have flipped this run to paused
     // mid-turn — park the live session and wait for the answer.
     const row = getAgentRunRow(runId);
-    if (!row) return;
+    if (!row || !this.liveAttemptIsCurrent(runId, liveRun)) return;
     if (row.status === 'paused') return;
     if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') return; // killed already
 
     if (terminalResult.terminal === 'turn-end') {
-      this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null });
+      this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null }, liveRun.continuationAttemptId);
     } else if (terminalResult.outcome === 'budget-exhausted') {
       // A canonical budget-exhausted terminal, not a crash — distinct
       // failureCause so the run reads as resumable.
@@ -1034,14 +1283,14 @@ export class DispatchService {
           terminalResult.numTurns !== null
             ? `hit turn budget (${terminalResult.numTurns} turns) — resumable`
             : 'hit turn budget — resumable',
-      });
+      }, liveRun.continuationAttemptId);
     } else {
       this.settleTerminal(runId, {
         status: 'failed',
         result: lastText || null,
         failureCause: 'unexpected-exit',
         failureReason: 'agent turn failed (see transcript)',
-      });
+      }, liveRun.continuationAttemptId);
     }
   }
 
@@ -1088,13 +1337,34 @@ export class DispatchService {
     }
   }
 
+  /** A synchronous `sendTurn` exception never enters `runTurn`, so persist its
+   * closed app-authored terminal before the agent-run row becomes terminal. */
+  private persistAppAuthoredTurnFailure(projectId: ULID, runId: ULID, error: string): boolean {
+    const transcriptTurnId = newId();
+    try {
+      this.persistAgentEvent(projectId, runId, transcriptTurnId, {
+        kind: 'turn-failed',
+        error,
+        source: 'internal',
+      }, `${transcriptTurnId}:terminal`);
+      return true;
+    } catch (persistError) {
+      console.error(
+        `[pc-sdk][dispatch] refusing terminal run state without a canonical turn failure for ${runId}:`,
+        persistError,
+      );
+      return false;
+    }
+  }
+
   private announce(
     runId: ULID,
     status: 'spawning' | 'running',
     stamps: { spawnedAt?: number; readyAt?: number },
-  ): void {
-    updateAgentRunStatus({ id: runId, status, ...stamps });
+  ): boolean {
+    if (!updateAgentRunStatus({ id: runId, status, ...stamps })) return false;
     this.gateway.announceRunChange({ runId, reason: status });
+    return true;
   }
 
   /** Durable worktree-pipeline stamp (docs/worktree-lifecycle.md). No-op on
@@ -1139,7 +1409,6 @@ export class DispatchService {
       pendingAsk: {
         id: askId,
         agentRunId: input.agentRunId,
-        ccSessionId: row.ccSessionId,
         projectId: input.projectId,
         pmRef: row.pmRef,
         kind: input.kind,
@@ -1208,26 +1477,31 @@ export class DispatchService {
       answer: input.answer,
       answeredBy: input.answeredBy,
       now: Date.now(),
-      podRevisionAtResume: null,
     });
     if (!flipped) return { ok: false, message: 'ask already answered (replay)', httpStatus: 409 };
 
-    const run = getAgentRunRow(ask.agentRunId);
-    if (run) {
-      updateAgentRunStatus({ id: ask.agentRunId, status: 'running' });
-      this.gateway.announceRunChange({ runId: ask.agentRunId, reason: 'running' });
+    if (liveRun.receiptConfirmed) {
+      if (!this.announce(ask.agentRunId, 'running', { readyAt: Date.now() })) {
+        return { ok: false, message: 'run became terminal before answer delivery', httpStatus: 409 };
+      }
     }
     let turn: AsyncIterable<RuntimeEvent>;
     try {
       turn = liveRun.session.sendTurn(`[answer from ${input.answeredBy}] ${input.answer}`);
     } catch {
       console.error(`[pc-sdk][dispatch] runtime resume-send failed for ${ask.agentRunId}: ${RUNTIME_SEND_FAILURE_REASON}`);
+      if (!this.persistAppAuthoredTurnFailure(ask.projectId, ask.agentRunId as ULID, RUNTIME_SEND_FAILURE_REASON)) {
+        return { ok: false, message: 'could not persist the failed resumed turn', httpStatus: 500 };
+      }
+      if (!liveRun.receiptConfirmed) {
+        failAgentRunRuntimeResume(ask.agentRunId, liveRun.continuationAttemptId);
+      }
       this.settleTerminal(ask.agentRunId, {
         status: 'failed',
         result: null,
         failureCause: 'send-failed',
         failureReason: RUNTIME_SEND_FAILURE_REASON,
-      });
+      }, liveRun.continuationAttemptId);
       return { ok: true };
     }
     void this.consumeTurn(
@@ -1242,7 +1516,7 @@ export class DispatchService {
         result: null,
         failureCause: 'send-failed',
         failureReason: RUNTIME_SEND_FAILURE_REASON,
-      });
+      }, liveRun.continuationAttemptId);
     });
     return { ok: true };
   }
@@ -1486,30 +1760,67 @@ export class DispatchService {
         });
       }
     }
+    // Clearing/killing a reviewer can await. Bind this decision to the same
+    // settled producer the caller reviewed; a continuation that moved the
+    // contract during that window wins and makes this verdict stale.
+    let decision = this.contracts.get(contract.id);
+    const decisionProducer = decision?.agentRunId
+      ? getAgentRunRow(decision.agentRunId as ULID)
+      : null;
+    if (
+      !decision ||
+      decision.agentRunId !== contract.agentRunId ||
+      decision.reviewRunId !== null ||
+      decision.landingStatus === 'pending' ||
+      decision.landingStatus === 'landed' ||
+      decision.landingStatus === 'abandoned' ||
+      !decisionProducer ||
+      !['completed', 'failed', 'cancelled'].includes(decisionProducer.status)
+    ) {
+      return {
+        ok: false,
+        message: 'contract producer changed while applying the review verdict — review the current producer instead',
+        httpStatus: 409,
+      };
+    }
     const notes = input.notes ?? null;
     if (input.verdict === 'reject') {
       const updated = this.contracts.setVerification({
-        id: contract.id,
+        id: decision.id,
         verificationStatus: 'failed',
         verificationNotes: notes ?? 'rejected by orchestrator review',
       });
       // review-rejected is NOT necessarily terminal — fixing stays legal.
-      if (contract.agentRunId) this.stampLifecycle(contract.agentRunId as ULID, 'review-rejected');
+      if (decision.agentRunId) this.stampLifecycle(decision.agentRunId as ULID, 'review-rejected');
       return updated ? { ok: true, contract: updated } : { ok: false, message: 'contract vanished', httpStatus: 500 };
     }
     // Accept IS the revalidation (guard 7's recovery door): the orchestrator
     // reviewed against the repo as it stands NOW, so the verified base moves
     // to the current target tip — a stale-base park re-lands on re-accept.
     let verifiedBaseSha: string | undefined;
-    if ((contract.expectedOutput as ExpectedOutput | null)?.kind === 'repo') {
-      const project = getProjectById(contract.projectId as ULID);
-      if (project?.folderPath && contract.worktreeBaseBranch) {
-        const tip = await git(['rev-parse', `refs/heads/${contract.worktreeBaseBranch}`], project.folderPath);
+    if ((decision.expectedOutput as ExpectedOutput | null)?.kind === 'repo') {
+      const project = getProjectById(decision.projectId as ULID);
+      if (project?.folderPath && decision.worktreeBaseBranch) {
+        const tip = await git(['rev-parse', `refs/heads/${decision.worktreeBaseBranch}`], project.folderPath);
         if (tip.ok) verifiedBaseSha = tip.stdout;
       }
     }
+    const afterBaseRead = this.contracts.get(decision.id);
+    if (
+      !afterBaseRead ||
+      afterBaseRead.version !== decision.version ||
+      afterBaseRead.agentRunId !== decision.agentRunId ||
+      JSON.stringify(afterBaseRead.deliverable) !== JSON.stringify(decision.deliverable)
+    ) {
+      return {
+        ok: false,
+        message: 'contract evidence changed while applying the review verdict — review the current evidence instead',
+        httpStatus: 409,
+      };
+    }
+    decision = afterBaseRead;
     let updated = this.contracts.setVerification({
-      id: contract.id,
+      id: decision.id,
       verificationStatus: 'passed',
       verificationNotes: notes ?? 'accepted by orchestrator review',
       ...(verifiedBaseSha !== undefined ? { verifiedBaseSha } : {}),
@@ -1537,9 +1848,14 @@ export class DispatchService {
       failureCause: AgentRunRow['failureCause'];
       failureReason: string | null;
     },
+    continuationAttemptId?: string,
   ): void {
     const row = getAgentRunRow(runId);
     if (!row) return;
+    if (
+      continuationAttemptId !== undefined &&
+      row.continuationAttemptId !== continuationAttemptId
+    ) return;
     try {
       closeOpenConversationToolCalls({
         conversationId: runId,
@@ -1552,13 +1868,6 @@ export class DispatchService {
       console.error(`[pc-sdk][dispatch] refusing terminal run state with an open transcript for ${runId}:`, error);
       return;
     }
-    const liveRun = this.live.get(runId);
-    if (liveRun) {
-      clearTimeout(liveRun.wallClock);
-      this.live.delete(runId);
-      void liveRun.session.dispose().catch(() => {});
-    }
-
     // The completion gate: delivery is the sole done-signal.
     let status = input.status;
     let failureCause = input.failureCause;
@@ -1601,9 +1910,20 @@ export class DispatchService {
       failureCause: status === 'completed' ? null : failureCause,
       failureReason: status === 'completed' ? null : failureReason,
       completedAt: Date.now(),
+      ...(continuationAttemptId !== undefined ? { continuationAttemptId } : {}),
       ...(lifecycleState !== undefined ? { lifecycleState } : {}),
     });
-    if (!publication) return; // already terminal (idempotent)
+    if (!publication) return; // already terminal or stale runtime attempt
+
+    const liveRun = this.live.get(runId);
+    if (liveRun && (
+      continuationAttemptId === undefined ||
+      liveRun.continuationAttemptId === continuationAttemptId
+    )) {
+      clearTimeout(liveRun.wallClock);
+      this.live.delete(runId);
+      void liveRun.session.dispose().catch(() => {});
+    }
 
     if (autoContinue) {
       // Suppressed envelope: this terminal is an intermediate stop on the
@@ -1693,8 +2013,12 @@ export class DispatchService {
     // Fresh outcome from THIS settlement — the auto-land gate refuses to read
     // a stale row status (guard 5: missing evidence never means pass).
     let outcome: VerificationOutcome | null = null;
-    if (contract && terminalStatus === 'completed') {
-      outcome = await verifyContract({
+    let verificationDrifted = false;
+    if (contract && terminalStatus === 'completed' && contract.agentRunId === runId) {
+      const verifiedVersion = contract.version;
+      const verifiedProducer = contract.agentRunId;
+      const verifiedDeliverable = JSON.stringify(contract.deliverable);
+      outcome = await (this.deps.verifyContract ?? verifyContract)({
         expectedOutput: contract.expectedOutput as ExpectedOutput,
         acceptanceCriteria: contract.acceptanceCriteria as never,
         verificationTier: contract.verificationTier,
@@ -1717,6 +2041,19 @@ export class DispatchService {
       const latest = this.contracts.get(contract.id);
       if (latest?.landingStatus === 'landed') {
         contract = latest;
+      } else if (
+        !latest ||
+        latest.version !== verifiedVersion ||
+        latest.agentRunId !== verifiedProducer ||
+        JSON.stringify(latest.deliverable) !== verifiedDeliverable
+      ) {
+        // A continuation/reseal/review changed the evidence while predicates
+        // awaited git or tools. Never apply A's result to B, and never enter a
+        // landing gate from this stale verification.
+        verificationDrifted = true;
+        outcome = null;
+        contract = latest;
+        console.warn(`[pc-sdk][dispatch] verification evidence drifted for contract ${row.contractId}; stale outcome discarded`);
       } else {
         contract = this.contracts.setVerification({
           id: contract.id,
@@ -1728,7 +2065,10 @@ export class DispatchService {
         // resumes at verification/review as evidence permits).
         if (outcome.verificationStatus === 'failed') this.stampLifecycle(runId, 'verification-failed');
       }
-    } else if (contract && terminalStatus === 'failed') {
+    } else if (contract && terminalStatus === 'completed') {
+      verificationDrifted = true;
+      console.warn(`[pc-sdk][dispatch] contract ${contract.id} moved to producer ${contract.agentRunId ?? '(none)'} before run ${runId} verification; skipped`);
+    } else if (contract && terminalStatus === 'failed' && contract.agentRunId === runId) {
       // Same landed-receipt finality as above.
       const latest = this.contracts.get(contract.id);
       contract =
@@ -1739,6 +2079,8 @@ export class DispatchService {
               verificationStatus: 'failed',
               verificationNotes: `run failed (${row.failureCause ?? 'unknown'}) before verification`,
             });
+    } else if (contract && terminalStatus === 'failed') {
+      verificationDrifted = true;
     }
 
     // Landing policy (docs/worktree-lifecycle.md): auto-merge is OPT-IN. A
@@ -1747,7 +2089,7 @@ export class DispatchService {
     // auto_land); otherwise it parks merge-ready for the orchestrator to
     // review the diff and authorize via pc_review_contract accept.
     const spec = contract?.expectedOutput as ExpectedOutput | null;
-    if (contract && contract.landingStatus !== 'landed' && contract.verificationStatus === 'passed' && spec?.kind === 'repo') {
+    if (!verificationDrifted && contract && contract.landingStatus !== 'landed' && contract.verificationStatus === 'passed' && spec?.kind === 'repo') {
       const policy = effectiveLandingPolicy(contract.landingPolicy, spec);
       if (policy === 'auto-merge') {
         // Guard 5: auto-merge is policy + POSITIVE evidence, never model
@@ -1859,6 +2201,35 @@ export class DispatchService {
       terminalStatus === 'completed' && reviewerContract?.verificationStatus === 'passed'
         ? parseReviewVerdictPayload((reviewerContract.deliverable as { data?: unknown } | null)?.data)
         : null;
+    const sealedNow = (target.deliverable as { commit?: string } | null)?.commit ?? null;
+    const briefedSeal = target.reviewSealedCommit ?? null;
+    const producingRow = producingRunId ? getAgentRunRow(producingRunId) : null;
+    const producingTerminal =
+      producingRow !== null && ['completed', 'failed', 'cancelled'].includes(producingRow.status);
+    if (
+      verdict &&
+      (
+        target.verificationStatus !== 'passed' ||
+        briefedSeal === null ||
+        sealedNow !== briefedSeal ||
+        !producingTerminal
+      )
+    ) {
+      console.warn(
+        `[pc-sdk][dispatch] review run ${reviewRunId} returned a verdict for ${briefedSeal ?? '(unrecorded)'} but contract ` +
+          `${targetId} now seals ${sealedNow ?? '(none)'}, verification is ${target.verificationStatus ?? 'unset'}, ` +
+          `and its producer is ${producingRow?.status ?? 'missing'} — verdict void`,
+      );
+      this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
+      // Seal-only drift on an otherwise passed, settled producer needs a fresh
+      // review. A live/missing producer or stale failed verification instead
+      // belongs to that producer's settlement/recovery path; never overwrite
+      // it with this old review.
+      if (target.verificationStatus === 'passed' && producingTerminal) {
+        await this.ensureIndependentReview(targetId);
+      }
+      return;
+    }
 
     if (verdict?.verdict === 'approve') {
       // Bind the approval to the EXACT seal the reviewer was briefed on and
@@ -1867,21 +2238,6 @@ export class DispatchService {
       // reviewed, and a live continuation means landing would merge + tear
       // down a worktree under a running agent (the same hazard reviewContract
       // refuses). Either way the verdict is unusable — re-enter the gate.
-      const sealedNow = (target.deliverable as { commit?: string } | null)?.commit ?? null;
-      const briefedSeal = target.reviewSealedCommit ?? null;
-      const producingRow = producingRunId ? getAgentRunRow(producingRunId) : null;
-      const producingLive =
-        producingRow !== null && !['completed', 'failed', 'cancelled'].includes(producingRow.status);
-      if ((briefedSeal !== null && sealedNow !== briefedSeal) || producingLive) {
-        console.warn(
-          `[pc-sdk][dispatch] review run ${reviewRunId} approved seal ${briefedSeal ?? '(unrecorded)'} but contract ` +
-            `${targetId} now seals ${sealedNow ?? '(none)'}${producingLive ? ' with a live producing run' : ''} — `,
-          'verdict void; re-entering the review gate.',
-        );
-        this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
-        await this.ensureIndependentReview(targetId);
-        return;
-      }
       // Verification stays 'passed'; the approval receipt is appended.
       const note =
         `independent review approved (run ${reviewRunId}, round ${target.reviewRound ?? '?'})` +
@@ -1944,11 +2300,25 @@ export class DispatchService {
     if (!contract) return null;
     if (contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned') return contract;
     if (contract.verificationStatus !== 'passed') return contract;
+    // A reviewer may be admitted only against a settled producer. In
+    // particular, boot review recovery can race a continuation that moved the
+    // contract to a live child before this contract is visited. That child
+    // owns the next verification decision; reviewing the inherited old seal
+    // would burn a round and could later overwrite its failure.
+    const producingRun = contract.agentRunId
+      ? getAgentRunRow(contract.agentRunId as ULID)
+      : null;
+    if (!producingRun || !['completed', 'failed', 'cancelled'].includes(producingRun.status)) {
+      return contract;
+    }
     // Live in-flight review — nothing to do. A TERMINAL run behind the marker
     // is a crash without a verdict: fall through and re-dispatch.
     if (contract.reviewRunId) {
       const reviewRun = getAgentRunRow(contract.reviewRunId as ULID);
-      if (reviewRun && !['completed', 'failed', 'cancelled'].includes(reviewRun.status)) return contract;
+      if (
+        this.reviewAdmissions.has(contract.reviewRunId) ||
+        (reviewRun && !['completed', 'failed', 'cancelled'].includes(reviewRun.status))
+      ) return contract;
     }
     const round = contract.reviewRound ?? 0;
     if (round >= MAX_REVIEW_ROUNDS) {
@@ -1986,29 +2356,70 @@ export class DispatchService {
     const sealedCommit = (target.deliverable as { commit?: string } | null)?.commit ?? null;
     // Fail-closed park: an undispatchable review routes to the SAME recovery
     // door as every refused auto-land — orchestrator review of the diff.
-    const parkForOrchestrator = (why: string): Contract | null => {
-      // Clear any stale in-flight marker first: a park with reviewRunId still
-      // pointing at a dead reviewer would be hidden from the merge-ready
-      // surface (the web filters reviewRunId === null) — the park's own
-      // recovery door would be obscured.
-      this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
+    const recordPark = (current: Contract, why: string): Contract | null => {
       const note = `independent review not dispatchable — ${why}; parked for orchestrator review (pc_review_contract)`;
       const updated = this.contracts.setVerification({
-        id: target.id,
+        id: current.id,
         verificationStatus: 'passed',
-        verificationNotes: target.verificationNotes ? `${target.verificationNotes}\n${note}` : note,
+        verificationNotes: current.verificationNotes ? `${current.verificationNotes}\n${note}` : note,
       });
-      this.stampLifecycleWhenLegal((target.agentRunId ?? null) as ULID | null, 'merge-ready');
+      this.stampLifecycleWhenLegal((current.agentRunId ?? null) as ULID | null, 'merge-ready');
       return updated;
     };
-    if (!target.worktreePath || !sealedCommit) return parkForOrchestrator('missing worktree or sealed commit');
+    const parkUnreserved = (why: string): Contract | null => {
+      // No await has occurred on this path. Refuse a stale caller snapshot
+      // instead of clearing a marker/state that a newer admission now owns.
+      const current = this.contracts.get(target.id);
+      if (
+        !current ||
+        current.version !== target.version ||
+        current.reviewRunId !== target.reviewRunId ||
+        current.agentRunId !== target.agentRunId ||
+        current.landingStatus !== null ||
+        current.verificationStatus !== 'passed'
+      ) return current;
+      const cleared = this.contracts.setReviewState({ id: current.id, reviewRunId: null, reviewSealedCommit: null });
+      return cleared ? recordPark(cleared, why) : this.contracts.get(target.id);
+    };
+    if (!target.worktreePath || !sealedCommit) return parkUnreserved('missing worktree or sealed commit');
     const bundle = getPodForSpawn(REVIEWER_POD_NAME, projectId);
-    if (!bundle) return parkForOrchestrator(`no '${REVIEWER_POD_NAME}' agent available`);
+    if (!bundle) return parkUnreserved(`no '${REVIEWER_POD_NAME}' agent available`);
     const project = getProjectById(projectId);
-    if (!project?.folderPath) return parkForOrchestrator('project folder missing');
+    if (!project?.folderPath) return parkUnreserved('project folder missing');
     const producing = target.agentRunId ? getAgentRunRow(target.agentRunId as ULID) : null;
+    const snapshot = specialistSnapshot(bundle);
 
     const runId = newId() as ULID;
+    const reserved = this.contracts.reserveReview({
+      id: target.id,
+      expectedVersion: target.version,
+      expectedReviewRunId: target.reviewRunId,
+      expectedAgentRunId: target.agentRunId,
+      reviewRound: round,
+      reviewRunId: runId,
+      reviewSealedCommit: sealedCommit,
+    });
+    if (!reserved) return this.contracts.get(target.id);
+    this.reviewAdmissions.add(runId);
+    const parkOwnedReservation = (why: string): Contract | null => {
+      // Release only this admission. If an override/newer reservation moved
+      // the marker while an async step was pending, it wins untouched.
+      const released = this.contracts.clearReviewReservation({ id: target.id, reviewRunId: runId });
+      return released ? recordPark(released, why) : this.contracts.get(target.id);
+    };
+    try {
+      const resolvedSelection = await this.deps.resolveNewSpecialistSelection({
+        projectId,
+        model: bundle.agent.model,
+        effort: bundle.agent.effort,
+      });
+      if (resolvedSelection.status === 'invalid') {
+        return parkOwnedReservation(`runtime selection unavailable (${resolvedSelection.code})`);
+      }
+      if (this.ctx !== ctx || this.shuttingDown) {
+        return parkOwnedReservation('dispatch service changed while validating reviewer selection');
+      }
+      const selection = resolvedSelection.selection;
     // Reviewer isolation: a disposable DETACHED checkout of the sealed commit,
     // never the builder's live worktree. Read-only is otherwise enforced by
     // prompt alone (the reviewer runs bypassPermissions) — a stray reviewer
@@ -2016,15 +2427,26 @@ export class DispatchService {
     // tip==seal guard) and untracked check artifacts would dirty the tree the
     // Fix door resubmits from. Reclaimed at the reviewer's terminal.
     const checkout = await provisionReviewCheckout(project.folderPath, runId, sealedCommit);
-    if (!checkout.ok) return parkForOrchestrator(`review checkout provisioning failed: ${checkout.error}`);
+    if (!checkout.ok) {
+      return parkOwnedReservation(`review checkout provisioning failed: ${checkout.error}`);
+    }
+    const admitted = this.contracts.get(target.id);
+    if (
+      !admitted ||
+      admitted.reviewRunId !== runId ||
+      admitted.reviewSealedCommit !== sealedCommit ||
+      admitted.agentRunId !== target.agentRunId ||
+      (admitted.deliverable as { commit?: string } | null)?.commit !== sealedCommit
+    ) {
+      await removeReviewCheckout(project.folderPath, checkout.dir).catch(() => false);
+      // A producer/seal/override moved while checkout provisioning awaited.
+      // Clear only our still-owned reservation; never clear the newer marker.
+      if (admitted?.reviewRunId === runId) {
+        return this.contracts.clearReviewReservation({ id: target.id, reviewRunId: runId }) ?? this.contracts.get(target.id);
+      }
+      return admitted;
+    }
     const now = Date.now();
-    const account = this.deps.accounts.resolveForProject(projectId, CLAUDE_RUNTIME_ID);
-    const selection: RuntimeSelection = {
-      runtimeId: CLAUDE_RUNTIME_ID,
-      accountId: account.id,
-      model: bundle.agent.model ?? DEFAULT_AGENT_MODEL,
-      effort: specialistEffort(bundle.agent.effort),
-    };
     const spec = reviewVerdictExpectedOutput();
     const reviewContract = this.contracts.create({
       projectId,
@@ -2052,9 +2474,10 @@ export class DispatchService {
         insertAgentRunRow({
           id: runId,
           projectId,
-          podName: REVIEWER_POD_NAME,
           dispatcherSessionId: producing?.dispatcherSessionId ?? 'full-review',
-          ccSessionId: randomUUID(),
+          specialistSnapshot: snapshot,
+          selection,
+          continuation: { mode: 'create' },
           status: 'queued',
           input: brief,
           pmRef: target.pmRef ?? null,
@@ -2064,26 +2487,12 @@ export class DispatchService {
           // commit — never the builder's live worktree. Payload-kind
           // contract ⇒ no lifecycle vocabulary.
           worktreeDir: checkout.dir,
-          runtimeId: selection.runtimeId,
-          accountId: selection.accountId,
-          model: selection.model,
           queuedAt: now,
         }),
     });
     this.contracts.setRun(reviewContract.id, runId);
-    // Durable round + in-flight marker BEFORE the agent starts: a crash after
-    // this write finds the marker (dead run ⇒ re-enter, round consumed); a
-    // crash before it re-enters cleanly on the same round. The briefed seal
-    // rides the marker — approve settlement re-checks it (a mid-review reseal
-    // voids the verdict).
-    const marked = this.contracts.setReviewState({
-      id: target.id,
-      reviewRound: round,
-      reviewRunId: runId,
-      reviewSealedCommit: sealedCommit,
-    });
     const note = `independent review round ${round} dispatched (run ${runId})`;
-    const priorNotes = marked?.verificationNotes ?? target.verificationNotes;
+    const priorNotes = admitted.verificationNotes;
     this.contracts.setVerification({
       id: target.id,
       verificationStatus: 'passed',
@@ -2094,8 +2503,7 @@ export class DispatchService {
       row: publication.run as unknown as { runId: string },
       runId,
       projectId,
-      pod: bundle.agent,
-      contextDocs: bundle.contextDocs,
+      snapshot,
       contract: reviewContract,
       spec,
       selection,
@@ -2119,6 +2527,9 @@ export class DispatchService {
       });
     });
     return this.contracts.get(target.id);
+    } finally {
+      this.reviewAdmissions.delete(runId);
+    }
   }
 
   /** Boot entry (index.ts, AFTER attach — a review dispatch needs the live
@@ -2150,8 +2561,8 @@ export class DispatchService {
    *  resume is in-process — the live SDK session lives only in `this.live`,
    *  which does not survive a restart. The boot sweep (boot-recovery.ts) now
    *  SKIPS failing 'paused' runs and leaves their open ask exactly as it was;
-   *  this door re-attaches a live session per the row's persisted native
-   *  session id (`ccSessionId`) so `answerPendingAsk` resumes it instead of
+   *  this door re-attaches a live session per the row's trusted persisted
+   *  native identity so `answerPendingAsk` resumes it instead of
    *  410ing on a handle that died with the old process. Best-effort per row:
    *  a row whose pod/contract/project can no longer be resolved stays paused
    *  with its ask open (degrade, never block) — `answerPendingAsk`'s own
@@ -2197,16 +2608,55 @@ export class DispatchService {
   }
 
   private async landAcceptedContractLocked(
-    contract: Contract,
+    authorized: Contract,
     authorizer: ContractLandingAuthorizer,
   ): Promise<Contract | null> {
     // Re-read under the lock: the pre-lock snapshot may be stale (auto-land
     // racing review-accept, boot re-drive racing accept). A landed receipt is
     // final — a second drive must never overwrite its authorizer/landedAt.
-    const current = this.contracts.get(contract.id);
+    const current = this.contracts.get(authorized.id);
     if (!current) return null;
     if (current.landingStatus === 'landed') return current;
-    contract = current;
+    if (current.landingStatus === 'abandoned') return current;
+
+    // The caller's accepted contract is the authorization receipt. Re-check
+    // its exact version/producer/seal under the repository lock: a continuation
+    // can finish preflight while verification/review is awaiting and move the
+    // contract to a different producer before this callback runs.
+    const authorizedSeal = (authorized.deliverable as { commit?: string } | null)?.commit ?? null;
+    const currentSeal = (current.deliverable as { commit?: string } | null)?.commit ?? null;
+    const producer = current.agentRunId ? getAgentRunRow(current.agentRunId as ULID) : null;
+    const producerTerminal =
+      producer !== null && ['completed', 'failed', 'cancelled'].includes(producer.status);
+    if (
+      current.version !== authorized.version ||
+      current.agentRunId !== authorized.agentRunId ||
+      current.verificationStatus !== 'passed' ||
+      currentSeal !== authorizedSeal ||
+      !producerTerminal
+    ) {
+      console.warn(
+        `[pc-sdk][dispatch] landing authorization for contract ${authorized.id} became stale ` +
+          `(authorized v${authorized.version}/${authorized.agentRunId ?? 'no-producer'}, ` +
+          `current v${current.version}/${current.agentRunId ?? 'no-producer'}/${producer?.status ?? 'missing'}) — refused`,
+      );
+      return current;
+    }
+
+    // Reserve ownership before the first Git await. Continuation admission
+    // rejects `pending`, so no new runtime can mutate or lose this worktree
+    // while merge/teardown is in flight. A boot re-drive already owns pending.
+    let contract = current;
+    if (contract.landingStatus !== 'pending') {
+      const reserved = this.contracts.setLanding({
+        id: contract.id,
+        landingStatus: 'pending',
+        landingAuthorizer: authorizer,
+        landingError: null,
+      });
+      if (!reserved) return this.contracts.get(contract.id);
+      contract = reserved;
+    }
     // Lifecycle stamps ride the producing run (null for legacy contracts).
     const lifecycleRunId = (contract.agentRunId ?? null) as ULID | null;
     const stamp = (to: RunLifecycleState) => {
@@ -2311,8 +2761,6 @@ export class DispatchService {
           : `no verified base recorded for '${contract.worktreeBaseBranch}' — re-land via pc_review_contract accept, which revalidates against the current tip`,
       });
     }
-    // Authorizer is stamped at 'pending' so a boot re-drive keeps who asked.
-    this.contracts.setLanding({ id: contract.id, landingStatus: 'pending', landingAuthorizer: authorizer });
     stamp('merging');
     const landed = await landBranch({
       projectDir: project.folderPath,

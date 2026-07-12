@@ -245,13 +245,20 @@ export type {
 } from './agent-comms.ts';
 export { AGENT_CHANNEL_EVENT_KINDS } from './agent-comms.ts';
 export type {
+  AgentRunContinuationState,
+  AgentRunEffortState,
   AgentInboxEventKind,
   AgentRunFailureCause,
+  AgentRunNativeIdentityState,
   AgentRunRow,
+  AgentRunSelectionState,
+  AgentRunSnapshotState,
   AgentRunStatus,
   PendingAskKind,
   PendingAskRow,
   PendingAskStatus,
+  SpecialistContextSnapshot,
+  SpecialistExecutionSnapshot,
 } from './agent-system.ts';
 export {
   AGENT_INBOX_EVENT_KINDS,
@@ -259,6 +266,7 @@ export {
   AGENT_RUN_STATUSES,
   PENDING_ASK_KINDS,
   PENDING_ASK_STATUSES,
+  isSpecialistExecutionSnapshot,
 } from './agent-system.ts';
 export type { RunLifecycleState } from './run-lifecycle.ts';
 export {

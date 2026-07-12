@@ -7,6 +7,11 @@
 // PROJECT-scoped; the frame's `version` carries `agent_runs.rev`.
 
 import { type ULID } from './shared.ts';
+import { isRuntimeSelection, type RuntimeSelection } from './runtime.ts';
+import {
+  isSessionContinuationState,
+  type SessionContinuationState,
+} from './events/session.ts';
 
 export const AGENT_RUN_STATUSES = [
   'queued',
@@ -90,10 +95,14 @@ export interface WorktreePhaseReceiptDto {
 /** Browser-safe mirror of the agent-run row. */
 export interface AgentRunDto {
   runId: ULID;
-  /** = ccSessionId. */
-  sessionId: string;
   agentName: string;
-  model: string;
+  /** Null only for conservatively quarantined legacy rows. */
+  selection: RuntimeSelection | null;
+  /** Opaque specialist snapshot revision; null for legacy rows. */
+  specialistRevision: string | null;
+  /** Presence only. Adapter-native identity never crosses this seam. */
+  nativeSessionIdPresent: boolean;
+  continuationState: SessionContinuationState;
   projectId: ULID;
   dispatcherSessionId: string;
   worktreeDir: string;
@@ -173,10 +182,35 @@ export function isAgentRunChangedReason(value: unknown): value is AgentRunChange
 export function isAgentRunDto(value: unknown): value is AgentRunDto {
   if (!isRecord(value)) return false;
   return (
+    hasOnlyKeys(value, [
+      'runId',
+      'agentName',
+      'selection',
+      'specialistRevision',
+      'nativeSessionIdPresent',
+      'continuationState',
+      'projectId',
+      'dispatcherSessionId',
+      'worktreeDir',
+      'startedAt',
+      'status',
+      'lifecycleState',
+      'result',
+      'failureReason',
+      'failureCause',
+      'endedAt',
+      'rev',
+      'gitReceipt',
+      'preparationReceipt',
+      'readinessReceipt',
+    ]) &&
     typeof value.runId === 'string' &&
-    typeof value.sessionId === 'string' &&
     typeof value.agentName === 'string' &&
-    typeof value.model === 'string' &&
+    (value.selection === null || isRuntimeSelection(value.selection)) &&
+    (value.specialistRevision === null || exactNonEmptyString(value.specialistRevision)) &&
+    typeof value.nativeSessionIdPresent === 'boolean' &&
+    isSessionContinuationState(value.continuationState) &&
+    validExecutionProvenance(value) &&
     typeof value.projectId === 'string' &&
     typeof value.dispatcherSessionId === 'string' &&
     typeof value.worktreeDir === 'string' &&
@@ -188,21 +222,65 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
     (value.failureCause === null || typeof value.failureCause === 'string') &&
     (value.endedAt === null || typeof value.endedAt === 'number') &&
     typeof value.rev === 'number' &&
-    isOptionalRecord(value.gitReceipt) &&
-    isOptionalRecord(value.preparationReceipt) &&
-    isOptionalRecord(value.readinessReceipt)
+    isOptionalGitReceipt(value.gitReceipt) &&
+    isOptionalPhaseReceipt(value.preparationReceipt, 'preparation') &&
+    isOptionalPhaseReceipt(value.readinessReceipt, 'readiness')
   );
 }
 
-/** Receipts are additive + shape-owned by the server; presence-checked only. */
-function isOptionalRecord(value: unknown): boolean {
-  return value === undefined || value === null || isRecord(value);
+function isOptionalGitReceipt(value: unknown): boolean {
+  return value === undefined || value === null || (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['worktreePath', 'branch', 'baseBranch', 'baseSha', 'cleanStatus']) &&
+    typeof value.worktreePath === 'string' &&
+    typeof value.branch === 'string' &&
+    typeof value.baseBranch === 'string' &&
+    typeof value.baseSha === 'string' &&
+    typeof value.cleanStatus === 'boolean'
+  );
+}
+
+function isCommandStep(value: unknown): value is WorktreeCommandStepDto {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'command',
+      'exitCode',
+      'durationMs',
+      'stdoutTail',
+      'stderrTail',
+      'timedOut',
+    ]) &&
+    typeof value.command === 'string' &&
+    typeof value.exitCode === 'number' &&
+    typeof value.durationMs === 'number' &&
+    typeof value.stdoutTail === 'string' &&
+    typeof value.stderrTail === 'string' &&
+    typeof value.timedOut === 'boolean';
+}
+
+function isOptionalPhaseReceipt(
+  value: unknown,
+  phase: WorktreePhaseReceiptDto['phase'],
+): boolean {
+  return value === undefined || value === null || (
+    isRecord(value) &&
+    hasOnlyKeys(value, ['phase', 'ok', 'steps', 'finishedAt']) &&
+    value.phase === phase &&
+    typeof value.ok === 'boolean' &&
+    Array.isArray(value.steps) &&
+    value.steps.every(isCommandStep) &&
+    typeof value.finishedAt === 'number'
+  );
 }
 
 export function isAgentRunChangedLivePayload(
   value: unknown,
 ): value is AgentRunChangedLivePayload {
-  if (!isRecord(value) || !isAgentRunChangedReason(value.reason)) return false;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['reason', 'run', 'pendingAskId']) ||
+    !isAgentRunChangedReason(value.reason)
+  ) return false;
   if (!isAgentRunDto(value.run)) return false;
   if (
     value.pendingAskId !== undefined &&
@@ -211,9 +289,74 @@ export function isAgentRunChangedLivePayload(
   ) {
     return false;
   }
-  return true;
+  return validLiveReason(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function exactNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim();
+}
+
+function validExecutionProvenance(value: Record<string, unknown>): boolean {
+  if (value.continuationState === 'legacy-unavailable') {
+    return value.selection === null &&
+      value.specialistRevision === null &&
+      value.nativeSessionIdPresent === false;
+  }
+  if (!isRuntimeSelection(value.selection) || !exactNonEmptyString(value.specialistRevision)) {
+    return false;
+  }
+  if (value.continuationState === 'clean-pending') {
+    return value.nativeSessionIdPresent === false &&
+      (value.status === 'queued' || value.status === 'spawning' ||
+        value.status === 'failed' || value.status === 'cancelled');
+  }
+  if (value.continuationState === 'resume-pending') {
+    return value.nativeSessionIdPresent === true &&
+      (value.status === 'queued' || value.status === 'spawning' || value.status === 'paused' ||
+        value.status === 'failed' || value.status === 'cancelled');
+  }
+  if (value.continuationState === 'resume-failed') {
+    return value.nativeSessionIdPresent === true &&
+      (value.status === 'spawning' || value.status === 'paused' ||
+        value.status === 'failed' || value.status === 'cancelled');
+  }
+  if (
+    value.continuationState === 'clean-started' ||
+    value.continuationState === 'native-resumed'
+  ) {
+    return value.nativeSessionIdPresent === true &&
+      (value.status === 'spawning' || value.status === 'running' ||
+        value.status === 'paused' || value.status === 'completed' ||
+        value.status === 'failed' || value.status === 'cancelled');
+  }
+  return false;
+}
+
+function validLiveReason(value: Record<string, unknown>): boolean {
+  const run = value.run as AgentRunDto;
+  if (value.reason === 'paused') {
+    return run.status === 'paused' && exactNonEmptyString(value.pendingAskId);
+  }
+  if (value.pendingAskId !== undefined && value.pendingAskId !== null) return false;
+  switch (value.reason) {
+    case 'queued': return run.status === 'queued';
+    case 'spawning': return run.status === 'spawning';
+    case 'running': return run.status === 'running';
+    case 'resumed': return run.status === 'spawning';
+    case 'stalled': return run.status === 'spawning' || run.status === 'running';
+    case 'completed': return run.status === 'completed';
+    case 'failed': return run.status === 'failed';
+    case 'cancelled': return run.status === 'cancelled';
+    case 'reconciled': return true;
+    default: return false;
+  }
 }

@@ -33,21 +33,41 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import type { Contract, Deliverable } from '@pc/contracts';
 import { createContract, createPendingAsk, getContract, insertAgentRunRow, markPendingAskAnswered, newId, updateAgentRunStatus } from '@pc/db';
 import type { AcceptanceCriteria, ExpectedOutput, ULID } from '@pc/domain';
 import { AccountRegistry } from '../src/runner/account-env.ts';
+import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
-import { DispatchService } from '../src/dispatch/service.ts';
+import { DispatchService, type DispatchServiceDeps } from '../src/dispatch/service.ts';
 import { git, landBranch, provisionWorktree } from '../src/dispatch/worktrees.ts';
-import { commitFile, freshDb, newGitProject, type GitProject } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  commitFile,
+  freshDb,
+  newGitProject,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  type GitProject,
+} from './helpers.ts';
+import { withRuntimeReceipt } from './runtime-fixtures.ts';
 
 // No attach(): submit + land never touch the live server context.
-function rig(): DispatchService {
-  return new DispatchService({ runtimes: new RuntimeRegistry(), accounts: new AccountRegistry(), mcp: {} as McpManager });
+function rig(overrides: Partial<DispatchServiceDeps> = {}): DispatchService {
+  const runtimes = new RuntimeRegistry();
+  const accounts = new AccountRegistry();
+  return new DispatchService({
+    ...testDispatchRuntimeDeps(runtimes, accounts),
+    ...overrides,
+  });
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
 }
 
 async function provisionOk(projectDir: string, runId: string) {
@@ -65,6 +85,7 @@ function deliveredContract(
   tip: string,
   landingPolicy: Contract['landingPolicy'] = null,
 ): Contract {
+  const runId = newId() as ULID;
   const contract = contracts.create({
     projectId: gp.project.id,
     podName: 'code-writer',
@@ -76,10 +97,31 @@ function deliveredContract(
     worktreeBaseSha: wt.baseSha,
     landingPolicy,
   });
+  insertAgentRunRow({
+    id: runId,
+    projectId: gp.project.id,
+    ...testAgentRunExecution('code-writer'),
+    dispatcherSessionId: 'landing-guard',
+    status: 'queued',
+    input: 'land the sealed contract',
+    contractId: contract.id as ULID,
+    worktreeDir: wt.dir,
+    worktreeBaseBranch: wt.baseBranch,
+    worktreeBaseSha: wt.baseSha,
+    queuedAt: Date.now(),
+  });
+  contracts.setRun(contract.id, runId);
+  advanceTestAgentRunStatus(runId, 'completed');
   const deliverable: Deliverable = { kind: 'repo', branch: wt.branch, commit: tip };
   const updated = contracts.setDeliverable({ id: contract.id, deliverable });
   assert.ok(updated, 'deliverable recorded');
-  return updated;
+  const verified = contracts.setVerification({
+    id: contract.id,
+    verificationStatus: 'passed',
+    verifiedBaseSha: wt.baseSha,
+  });
+  assert.ok(verified, 'verification recorded');
+  return verified;
 }
 
 test('submit seal: dirty worktree ⇒ 409; committed resubmit backfills receipts', async () => {
@@ -102,10 +144,9 @@ test('submit seal: dirty worktree ⇒ 409; committed resubmit backfills receipts
     insertAgentRunRow({
       id: runId,
       projectId: gp.project.id,
-      podName: 'code-writer',
+      ...testAgentRunExecution('code-writer'),
       dispatcherSessionId: 'S1',
-      ccSessionId: 'cc-1',
-      status: 'running',
+      status: 'queued',
       input: 'go',
       contractId: contract.id,
       worktreeDir: wt.dir,
@@ -114,6 +155,7 @@ test('submit seal: dirty worktree ⇒ 409; committed resubmit backfills receipts
       queuedAt: Date.now(),
     });
 
+    advanceTestAgentRunStatus(runId, 'running');
     writeFileSync(join(wt.dir, 'wip.txt'), 'uncommitted\n');
     const refused = await dispatch.submitDeliverable({
       projectId: gp.project.id,
@@ -169,10 +211,9 @@ test('submit seal: failing `git status` refuses the submit (worktree state unrea
     insertAgentRunRow({
       id: runId,
       projectId: gp.project.id,
-      podName: 'code-writer',
+      ...testAgentRunExecution('code-writer'),
       dispatcherSessionId: 'S1',
-      ccSessionId: 'cc-1',
-      status: 'running',
+      status: 'queued',
       input: 'go',
       contractId: contract.id,
       worktreeDir: goneDir,
@@ -180,6 +221,7 @@ test('submit seal: failing `git status` refuses the submit (worktree state unrea
       worktreeBaseSha: '0'.repeat(40),
       queuedAt: Date.now(),
     });
+    advanceTestAgentRunStatus(runId, 'running');
     const submitted = await dispatch.submitDeliverable({
       projectId: gp.project.id,
       agentRunId: runId,
@@ -218,10 +260,9 @@ test('submit seal: a builder-supplied commit that is not the worktree HEAD is re
     insertAgentRunRow({
       id: runId,
       projectId: gp.project.id,
-      podName: 'code-writer',
+      ...testAgentRunExecution('code-writer'),
       dispatcherSessionId: 'S1',
-      ccSessionId: 'cc-1',
-      status: 'running',
+      status: 'queued',
       input: 'go',
       contractId: contract.id,
       worktreeDir: wt.dir,
@@ -229,6 +270,7 @@ test('submit seal: a builder-supplied commit that is not the worktree HEAD is re
       worktreeBaseSha: wt.baseSha,
       queuedAt: Date.now(),
     });
+    advanceTestAgentRunStatus(runId, 'running');
     // In-scope commit, then a second commit at the tip.
     const inScope = await commitFile(wt.dir, 'feature.txt', 'ok\n');
     const tip = await commitFile(wt.dir, 'smuggled.txt', 'extra\n');
@@ -643,6 +685,9 @@ async function completedRepoRun(
     acceptanceCriteria: AcceptanceCriteria;
     landingPolicy?: Contract['landingPolicy'];
     verificationTier?: 'auto' | 'orchestrator-review';
+    /** Most verify/land tests consume a terminal row; submit-door tests need
+     *  the run to remain live until the deliverable has been accepted. */
+    runStatus?: 'running' | 'completed';
     /** Row-level evidence sabotage (e.g. null base SHA ⇒ unreadable git). */
     rowBaseSha?: string | null;
   },
@@ -661,13 +706,13 @@ async function completedRepoRun(
     worktreeBaseSha: wt.baseSha,
     landingPolicy: opts.landingPolicy === undefined ? 'auto-merge' : opts.landingPolicy,
   });
+  const desiredStatus = opts.runStatus ?? 'completed';
   insertAgentRunRow({
     id: runId,
     projectId: gp.project.id,
-    podName: 'code-writer',
+    ...testAgentRunExecution('code-writer'),
     dispatcherSessionId: 'S1',
-    ccSessionId: `cc-${runId}`,
-    status: 'completed',
+    status: 'queued',
     input: 'go',
     contractId: contract.id as ULID,
     worktreeDir: wt.dir,
@@ -675,6 +720,8 @@ async function completedRepoRun(
     worktreeBaseSha: opts.rowBaseSha === undefined ? wt.baseSha : opts.rowBaseSha,
     queuedAt: Date.now(),
   });
+  contracts.setRun(contract.id, runId);
+  advanceTestAgentRunStatus(runId, desiredStatus);
   const updated = contracts.setDeliverable({
     id: contract.id,
     deliverable: { kind: 'repo', branch: wt.branch, commit: tip },
@@ -707,6 +754,166 @@ test('guard 5 happy path: all-positive evidence auto-lands with authorizer auto'
     assert.equal(row.landingAuthorizer, 'auto');
     assert.doesNotMatch(row.verificationNotes ?? '', /auto-land refused/);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, true, 'branch really merged');
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('landing authorization is stale when the contract moves to a live producer before the lock', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const dispatch = rig();
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
+    const authorized = deliveredContract(contracts, gp, wt, tip);
+
+    const childRunId = newId() as ULID;
+    insertAgentRunRow({
+      id: childRunId,
+      projectId: gp.project.id,
+      ...testAgentRunExecution('code-writer'),
+      dispatcherSessionId: 'landing-race',
+      status: 'queued',
+      input: 'continue before landing lock',
+      contractId: authorized.id as ULID,
+      worktreeDir: wt.dir,
+      worktreeBaseBranch: wt.baseBranch,
+      worktreeBaseSha: wt.baseSha,
+      queuedAt: Date.now(),
+    });
+    contracts.setRun(authorized.id, childRunId);
+    advanceTestAgentRunStatus(childRunId, 'running');
+
+    const refused = await dispatch.landAcceptedContract(authorized, 'reviewer');
+    assert.ok(refused);
+    assert.equal(refused.landingStatus, null, 'stale approval does not land');
+    assert.equal(refused.agentRunId, childRunId, 'new producer remains authoritative');
+    assert.equal(existsSync(wt.dir), true, 'live producer worktree is not torn down');
+  } finally {
+    gp.cleanup();
+  }
+});
+
+test('deferred continuation preflight wins before queued landing and invalidates the stale approval', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const continuationGate = deferred();
+  const preflightStarted = deferred();
+  const landingGate = deferred();
+  let preflightCalls = 0;
+  const dispatch = rig({
+    preflightRuntimeSession: async (selection) => {
+      preflightCalls += 1;
+      if (preflightCalls === 1) {
+        preflightStarted.resolve();
+        await continuationGate.promise;
+      }
+      return { status: 'valid' as const, selection };
+    },
+    mintSpecialistRuntimeSession: async (input) => withRuntimeReceipt(
+      () => new FakeRuntime({ turns: [[{ hang: true }]] }),
+    )(input),
+  });
+  dispatch.attach({
+    registry: {
+      get: () => ({ injectAgentEnvelope: async () => {} }),
+    } as never,
+    hub: {} as never,
+    serverPort: 5124,
+  });
+  try {
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
+    const authorized = deliveredContract(contracts, gp, wt, tip);
+    const parentRunId = authorized.agentRunId as ULID;
+
+    const key = process.platform === 'win32'
+      ? resolvePath(gp.dir).toLowerCase()
+      : resolvePath(gp.dir);
+    (dispatch as unknown as { landingLocks: Map<string, Promise<unknown>> })
+      .landingLocks.set(key, landingGate.promise);
+
+    const continuation = dispatch.dispatchContinue({
+      projectId: gp.project.id,
+      runId: parentRunId,
+      input: 'continue while approval is waiting for the repository lock',
+      dispatcherSessionId: 'landing-race',
+    });
+    await preflightStarted.promise;
+    const landing = dispatch.landAcceptedContract(authorized, 'reviewer');
+
+    continuationGate.resolve();
+    const continued = await continuation;
+    assert.equal(continued.ok, true, JSON.stringify(continued));
+    const childRunId = (continued as { run: { runId: string } }).run.runId as ULID;
+
+    landingGate.resolve();
+    const refused = await landing;
+    assert.ok(refused);
+    assert.equal(refused.agentRunId, childRunId, 'continuation owns the current producer');
+    assert.equal(refused.landingStatus, null, 'approval snapshot cannot land after producer drift');
+    assert.equal(existsSync(wt.dir), true, 'continuation worktree remains available');
+
+    await dispatch.killRun(gp.project.id, childRunId);
+  } finally {
+    continuationGate.resolve();
+    landingGate.resolve();
+    await dispatch.disposeAll();
+    gp.cleanup();
+  }
+});
+
+test('verification drift: a reseal while predicates await discards the stale pass and never lands it', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const verificationStarted = deferred();
+    const releaseVerification = deferred();
+    let verifiedCommit: string | null | undefined;
+    const dispatch = rig({
+      verifyContract: async (input) => {
+        verifiedCommit = input.scope.deliverableCommit;
+        verificationStarted.resolve();
+        await releaseVerification.promise;
+        return {
+          verificationStatus: 'passed',
+          notes: 'stale pass must be discarded',
+          escalatedToReview: false,
+          evaluatedPredicateKinds: ['git_diff_nonempty', 'changed_paths_within'],
+          inconclusiveCount: 0,
+        };
+      },
+    });
+    const contracts = new ContractService();
+    const { runId, contract, wt, tip } = await completedRepoRun(contracts, gp, {
+      spec: SCOPED_SPEC,
+      acceptanceCriteria: SCOPED_CRITERIA,
+    });
+
+    const verification = driveVerifyAndLand(dispatch, runId);
+    await verificationStarted.promise;
+    assert.equal(verifiedCommit, tip, 'the pending verification is bound to the original seal');
+
+    const resealedCommit = await commitFile(wt.dir, 'feature.txt', 'resealed while verification waits\n');
+    assert.ok(contracts.setDeliverable({
+      id: contract.id,
+      deliverable: { kind: 'repo', branch: wt.branch, commit: resealedCommit },
+      report: 'newer evidence',
+    }));
+    releaseVerification.resolve();
+    await verification;
+
+    const current = getContract(contract.id as ULID)!;
+    assert.equal((current.deliverable as { commit?: string }).commit, resealedCommit, 'newer seal remains authoritative');
+    assert.equal(current.verificationStatus, null, 'the original seal pass is not written onto the reseal');
+    assert.equal(current.landingStatus, null, 'stale verification cannot enter the landing gate');
+    assert.doesNotMatch(current.verificationNotes ?? '', /stale pass must be discarded/);
+    assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'old seal did not land');
+    assert.equal((await git(['merge-base', '--is-ancestor', resealedCommit, 'main'], gp.dir)).ok, false, 'new seal did not land unverified');
+    assert.equal(existsSync(wt.dir), true, 'worktree stays available for the newer evidence path');
   } finally {
     gp.cleanup();
   }
@@ -797,7 +1004,6 @@ test('guard 5: an unresolved ask blocks auto-land even on a verified pass', asyn
     createPendingAsk({
       id: newId() as ULID,
       agentRunId: runId,
-      ccSessionId: `cc-${runId}`,
       projectId: gp.project.id,
       kind: 'orchestrator',
       promptBody: 'may I?',
@@ -830,7 +1036,6 @@ test('guard 5: an ANSWERED ask is resolved — it does not block auto-land', asy
     createPendingAsk({
       id: askId,
       agentRunId: runId,
-      ccSessionId: `cc-${runId}`,
       projectId: gp.project.id,
       kind: 'orchestrator',
       promptBody: 'may I?',
@@ -888,11 +1093,11 @@ test('policy is issuer-owned: a deliverable payload cannot flip landingPolicy/au
       spec: { kind: 'repo' }, // no auto_land
       acceptanceCriteria: [{ kind: 'git_diff_nonempty', cwd: 'worktree' }],
       landingPolicy: 'default-review',
+      runStatus: 'running',
     });
     // The builder door — smuggle policy keys inside the deliverable payload.
     // (The door refuses terminal runs now, so submit while 'running' like a
     // real builder, then settle before driving verification.)
-    updateAgentRunStatus({ id: runId, status: 'running' });
     const submitted = await dispatch.submitDeliverable({
       projectId: gp.project.id,
       agentRunId: runId,

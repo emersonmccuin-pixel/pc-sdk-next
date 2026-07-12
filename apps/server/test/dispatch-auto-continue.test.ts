@@ -19,6 +19,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  confirmAgentRunRuntimeSessionReceipt,
   createContract,
   getActiveOrchestratorSession,
   getAgentRunRow,
@@ -28,11 +29,17 @@ import {
   listConversationEvents,
   markAgentRunTerminal,
   newId,
+  prepareAgentRunCreate,
+  prepareAgentRunResume,
+  updateAgentRunStatus,
 } from '@pc/db';
-import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
+import {
+  safeToolSummary,
+  type RuntimeSessionReceipt,
+  type ToolStateEvent,
+} from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
-import { AccountRegistry } from '../src/runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
 import { FakeRuntime, type ScriptedTurn } from '../src/runner/fake-runtime.ts';
 import {
@@ -45,8 +52,14 @@ import {
 import { DispatchService } from '../src/dispatch/service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
-import { freshDb, newProject, until } from './helpers.ts';
+import {
+  freshDb,
+  newProject,
+  TEST_RUNTIME_SELECTION,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  until,
+} from './helpers.ts';
 import {
   TEST_SELECTION,
   testCapabilities,
@@ -137,6 +150,7 @@ class LateAfterDisposeRuntime implements RuntimeSession {
       },
     } as const;
     await this.disposed;
+    this.markLateDelivered();
     yield {
       type: 'session-started',
       receipt: {
@@ -151,7 +165,6 @@ class LateAfterDisposeRuntime implements RuntimeSession {
         ...requested, callId: 'late-after-kill-call', state: 'requested',
       },
     } as const;
-    this.markLateDelivered();
     yield {
       type: 'result', ok: false, stopReason: null, usage: null, durationMs: null,
       error: 'interrupted', outcome: 'aborted', numTurns: null,
@@ -242,9 +255,7 @@ function rig(adapter: AgentRuntimeAdapter): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
   const dispatch = new DispatchService({
-    runtimes,
-    accounts: new AccountRegistry(),
-    mcp: {} as McpManager,
+    ...testDispatchRuntimeDeps(runtimes),
   });
   const hub = new ProjectWebSocketHub<ULID>();
   const registry = new SessionRegistry({
@@ -421,12 +432,12 @@ test('runtime output with a fresh call id after kill cannot reopen a terminal ag
     (row.payload as { kind?: string; state?: string }).kind === 'tool-state'
     && (row.payload as { state?: string }).state === 'running'
   )));
-  const liveNativeSessionId = getAgentRunRow(runId)!.ccSessionId;
+  const liveNativeSessionId = getAgentRunRow(runId)!.nativeSessionId;
   assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
   await runtime.lateDelivered;
   const cancelled = getAgentRunRow(runId)!;
   assert.equal(cancelled.status, 'cancelled');
-  assert.equal(cancelled.ccSessionId, liveNativeSessionId, 'late init cannot replace the last live native id');
+  assert.equal(cancelled.nativeSessionId, liveNativeSessionId, 'late init cannot replace the last live native id');
   const callIds = listConversationEvents(runId)
     .map((row) => row.payload)
     .filter((event): event is ToolStateEvent => (
@@ -481,21 +492,51 @@ test('the auto-continue counter is durable and survives a simulated restart — 
     verificationTier: 'auto',
   });
   let previousId: ULID | null = null;
+  const nativeSessionId = 'native-restart-chain';
   for (let i = 0; i <= 4; i++) {
     const id = newId() as ULID;
+    const continuation = previousId === null
+      ? { mode: 'create' as const }
+      : { mode: 'resume' as const, nativeSessionId };
     insertAgentRunRow({
       id,
       projectId: project.id,
-      podName: 'researcher',
       dispatcherSessionId: 'S1',
-      ccSessionId: newId(),
-      status: 'running',
+      ...testAgentRunExecution('researcher'),
+      continuation,
+      status: 'queued',
       input: i === 0 ? 'find the answer' : null,
       contractId: contract.id as ULID,
       continues: previousId,
       autoContinueCount: i,
       queuedAt: Date.now(),
     });
+    const prepared = continuation.mode === 'create'
+      ? prepareAgentRunCreate(id)
+      : prepareAgentRunResume(id);
+    assert.ok(prepared?.continuationAttemptId, 'runtime continuation attempt prepared');
+    updateAgentRunStatus({ id, status: 'spawning', spawnedAt: Date.now() });
+    const receipt: RuntimeSessionReceipt = continuation.mode === 'create'
+      ? {
+          mode: 'created',
+          selection: TEST_RUNTIME_SELECTION,
+          continuationAttemptId: prepared.continuationAttemptId,
+          nativeSessionId,
+          requestedNativeSessionId: null,
+        }
+      : {
+          mode: 'resumed',
+          selection: TEST_RUNTIME_SELECTION,
+          continuationAttemptId: prepared.continuationAttemptId,
+          nativeSessionId,
+          requestedNativeSessionId: nativeSessionId,
+        };
+    const confirmation = confirmAgentRunRuntimeSessionReceipt({
+      runId: id,
+      receipt,
+    });
+    assert.equal(confirmation.status, 'confirmed', 'native session receipt confirmed');
+    updateAgentRunStatus({ id, status: 'running', readyAt: Date.now() });
     markAgentRunTerminal({
       id,
       status: 'failed',

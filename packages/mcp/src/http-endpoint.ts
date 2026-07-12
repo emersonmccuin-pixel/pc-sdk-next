@@ -34,8 +34,6 @@ export interface PcMcpClaims {
   projectId: string;
   /** PC session id (orchestrator session ULID, modal `ad-*`/`wb-*`/`sw-*`). */
   sessionId: string;
-  /** CC session uuid — handshake routing + dispatched-agent identity. */
-  agentSessionId: string;
   agentRunId: string;
   dispatcherSessionId: string;
   parentWorkItemId: string;
@@ -45,7 +43,6 @@ export interface PcMcpClaims {
 export const PC_MCP_CLAIM_HEADERS = {
   projectId: 'x-pc-project-id',
   sessionId: 'x-pc-session-id',
-  agentSessionId: 'x-pc-agent-session-id',
   agentRunId: 'x-pc-agent-run-id',
   dispatcherSessionId: 'x-pc-dispatcher-session-id',
   parentWorkItemId: 'x-pc-parent-work-item-id',
@@ -64,7 +61,6 @@ export function parseClaimsFromHeaders(headers: IncomingMessage['headers']): PcM
   return {
     projectId: headerValue(headers, PC_MCP_CLAIM_HEADERS.projectId),
     sessionId: headerValue(headers, PC_MCP_CLAIM_HEADERS.sessionId),
-    agentSessionId: headerValue(headers, PC_MCP_CLAIM_HEADERS.agentSessionId),
     agentRunId: headerValue(headers, PC_MCP_CLAIM_HEADERS.agentRunId),
     dispatcherSessionId: headerValue(headers, PC_MCP_CLAIM_HEADERS.dispatcherSessionId),
     parentWorkItemId: headerValue(headers, PC_MCP_CLAIM_HEADERS.parentWorkItemId),
@@ -103,7 +99,6 @@ export function createPcRigHttpEndpoint(deps: PcRigHttpEndpointDeps): PcRigHttpE
   function contextFor(claims: PcMcpClaims) {
     return createToolContext({
       projectId: claims.projectId,
-      agentSessionId: claims.agentSessionId,
       sessionId: claims.sessionId,
       dispatcherSessionId: claims.sessionId || claims.dispatcherSessionId,
       agentRunId: claims.agentRunId,
@@ -181,7 +176,7 @@ export function createPcRigHttpEndpoint(deps: PcRigHttpEndpointDeps): PcRigHttpE
               sessionIdRef.id = newSid;
               sessions.set(newSid, { transport, claims });
               log(
-                `pc-rig http: session ${newSid} opened (project=${claims.projectId} cc=${claims.agentSessionId || '-'})`,
+                `pc-rig http: session ${newSid} opened (project=${claims.projectId} run=${claims.agentRunId || '-'})`,
               );
             },
           });
@@ -194,7 +189,9 @@ export function createPcRigHttpEndpoint(deps: PcRigHttpEndpointDeps): PcRigHttpE
           // The ReadyGate handshake signal — same semantics as the stdio
           // child's oninitialized POST, minus the HTTP hop.
           server.oninitialized = () => {
-            if (claims.projectId && claims.agentSessionId) deps.onInitialized?.(claims);
+            if (claims.projectId && (claims.agentRunId || claims.sessionId)) {
+              deps.onInitialized?.(claims);
+            }
           };
           await server.connect(transport);
           await transport.handleRequest(req, res, body);

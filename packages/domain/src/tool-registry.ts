@@ -851,7 +851,7 @@ export const PC_RIG_TOOL_REGISTRY: readonly PcRigToolDef[] = [
     "name": "pc_answer_pending",
     "family": "agent-run",
     "label": "Answer a pending ask",
-    "description": "Resume a paused agent with an answer. Atomic open→answered flip. Idempotent: a second call returns `cause: \"already-answered\"`. Pod-revision drift (pod edited between dispatch and resume) surfaces in the response as `podRevisionDrifted: true`. Orchestrator usage only — agents that need to forward an answer should use pc_ask_orchestrator instead.",
+    "description": "Resume a paused agent with an answer. Atomic open→answered flip. Idempotent: a second call returns `cause: \"already-answered\"`. Resume uses the run's immutable specialist snapshot, runtime selection, and positively bound native continuation evidence; later roster edits cannot rewrite it. Orchestrator usage only — agents that need to forward an answer should use pc_ask_orchestrator instead.",
     "catalogDescription": "Reply to an earlier ask-orchestrator / ask-user / approval.",
     "inputSchema": {
       "type": "object",

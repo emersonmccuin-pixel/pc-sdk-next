@@ -40,13 +40,21 @@ import { SessionService } from '../src/chat/session-service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
-import { AccountRegistry } from '../src/runner/account-env.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
 import { git, provisionWorktree, type ProvisionedWorktree } from '../src/dispatch/worktrees.ts';
 import { reconcileStrandedWorktreesAtBoot, runBootRecovery } from '../src/boot-recovery.ts';
-import { commitFile, freshDb, newGitProject, newProject, until, type GitProject } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  commitFile,
+  freshDb,
+  newGitProject,
+  newProject,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  until,
+  type GitProject,
+} from './helpers.ts';
 import { testSessionSelectionDeps, withRuntimeReceipt } from './runtime-fixtures.ts';
 
 function kinds(sessionId: string): string[] {
@@ -156,7 +164,10 @@ async function bootAll(dispatch: DispatchService): Promise<void> {
 
 /** Pre-attach, exactly like boot (recovery runs before dispatch.attach). */
 function dispatchRig(): DispatchService {
-  return new DispatchService({ runtimes: new RuntimeRegistry(), accounts: new AccountRegistry(), mcp: {} as McpManager });
+  const runtimes = new RuntimeRegistry();
+  return new DispatchService({
+    ...testDispatchRuntimeDeps(runtimes),
+  });
 }
 
 /** The durable state a crashed repo run leaves behind: provisioned worktree
@@ -195,10 +206,9 @@ async function crashedRepoRun(
   insertAgentRunRow({
     id: runId,
     projectId: gp.project.id,
-    podName: 'code-writer',
+    ...testAgentRunExecution('code-writer'),
     dispatcherSessionId: 'S1',
-    ccSessionId: `cc-${runId}`,
-    status: opts.status,
+    status: 'queued',
     input: 'go',
     contractId: contract.id as ULID,
     worktreeDir: wt.dir,
@@ -207,6 +217,7 @@ async function crashedRepoRun(
     lifecycleState: opts.lifecycleState,
     queuedAt: Date.now(),
   });
+  advanceTestAgentRunStatus(runId, opts.status);
   contract = contracts.setRun(contract.id, runId) ?? contract;
   if (opts.seal) {
     const sealed = contracts.setDeliverable({

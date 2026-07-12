@@ -34,6 +34,14 @@ test('only runner/claude-adapter.ts imports the Claude Agent SDK', () => {
   assert.deepEqual(importers, ['runner/claude-adapter.ts'], `unexpected SDK importers: ${importers.join(', ')}`);
 });
 
+test('specialist dispatch contains no concrete provider or model selection', () => {
+  const dispatch = readFileSync(join(SRC, 'dispatch', 'service.ts'), 'utf8');
+  assert.doesNotMatch(
+    dispatch,
+    /\b(?:CLAUDE_RUNTIME_ID|ClaudeRuntimeAdapter)\b|(?:from|require\(\s*)\s*['"][^'"]*claude-adapter[^'"]*['"]|['"](?:sonnet|opus|haiku)['"]/,
+  );
+});
+
 test('canonical contracts and browser contain no provider-native or retired raw-tool vocabulary', () => {
   const forbidden = /\b(?:sdkUuid|sdkSessionId|chat-delta|thinking-delta|ThinkingBubble|end_turn|toolUseId|toolUseID|tool_use_id|tool-input-delta|input_json_delta|partial_json)\b|(?:kind|case)\s*:?\s*['"](?:thinking|tool-call|tool-result|tool-denied)['"]/;
   const offenders: string[] = [];
@@ -43,4 +51,26 @@ test('canonical contracts and browser contain no provider-native or retired raw-
     }
   }
   assert.deepEqual(offenders, [], `provider-native chat vocabulary leaked into: ${offenders.join(', ')}`);
+});
+
+test('public specialist and app-tool seams contain no native or attempt identity fields', () => {
+  const forbidden = /\bccSessionId\b|\bagentSessionId\b|\bnativeSessionId(?!Present)\b|\bcontinuationAttemptId\b/;
+  const roots = [
+    join(REPO, 'apps', 'web', 'src'),
+    join(REPO, 'packages', 'contracts', 'src', 'agent-runs.ts'),
+    join(REPO, 'packages', 'contracts', 'src', 'pending-asks.ts'),
+    join(REPO, 'packages', 'mcp', 'src', 'tools', 'context.ts'),
+    join(REPO, 'packages', 'mcp', 'src', 'http-endpoint.ts'),
+    join(REPO, 'apps', 'server', 'src', 'dispatch', 'pc-bridge.ts'),
+  ];
+  const offenders: string[] = [];
+  for (const root of roots) {
+    const files = statSync(root).isDirectory() ? walk(root) : [root];
+    for (const file of files) {
+      if (forbidden.test(readFileSync(file, 'utf8'))) {
+        offenders.push(relative(REPO, file).replace(/\\/g, '/'));
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `native specialist identity leaked into: ${offenders.join(', ')}`);
 });

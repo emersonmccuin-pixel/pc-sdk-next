@@ -248,7 +248,12 @@ export class ProjectSocket {
         }
         break;
       case 'resource':
-        if (isResourceFrame(frame)) this.onResource(frame);
+        if (
+          isResourceFrame(frame) &&
+          (frame.event.scope === 'global' || frame.event.projectId === this.projectId)
+        ) {
+          this.onResource(frame);
+        }
         break;
       case 'live-reset':
         if (!isLiveResetFrame(frame)) break;

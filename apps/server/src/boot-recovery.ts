@@ -32,6 +32,7 @@ import {
   getActiveOrchestratorSession,
   listConversationEvents,
   listNonTerminalAgentRuns,
+  isAgentRunNativeResumeReady,
   listOpenPendingAsksForProject,
   listProjects,
   markPendingAskCancelled,
@@ -158,13 +159,11 @@ function recoverAgentRuns(): string[] {
   for (const run of listNonTerminalAgentRuns()) {
     // Per-run isolation: one bad row must never abort the sweep (or boot).
     try {
-      // F1 (comms-hardening): a paused run's ask is durable (pending_asks
-      // table) — failing the run and cancelling the ask would orphan it for
-      // good. Leave it exactly as-is; DispatchService.recoverPausedAsks
-      // (index.ts, AFTER attach) re-mints a live session from the row's
-      // persisted native session id so `answerPendingAsk` resumes it instead
-      // of 410ing on a dead in-process handle.
-      if (run.status === 'paused') {
+      // A paused run survives restart only with a complete frozen snapshot,
+      // immutable selection, and positively bound native identity. Legacy or
+      // corrupt rows cannot be revived from today's defaults; they flow
+      // through the normal ask-cancel + terminal publication below.
+      if (run.status === 'paused' && isAgentRunNativeResumeReady(run)) {
         closeOpenConversationToolCalls({
           conversationId: run.id,
           reason: 'runtime-lost',
@@ -212,18 +211,35 @@ function recoverAgentRuns(): string[] {
         status: 'failed',
         result: null,
         failureCause: 'server-restart',
-        failureReason: 'server restarted while the run was live',
+        failureReason: run.status === 'paused'
+          ? 'server restarted but the paused run has no trusted execution selection to resume'
+          : 'server restarted while the run was live',
         completedAt: now,
         ...(lifecycleState !== undefined ? { lifecycleState } : {}),
       });
       if (!publication) continue;
       failed.push(run.id);
       if (run.contractId) {
-        contracts.setVerification({
-          id: run.contractId,
-          verificationStatus: 'pending',
-          verificationNotes: 'run lost to a server restart before finishing — re-dispatch or continue',
-        });
+        const contract = contracts.get(run.contractId);
+        if (contract) {
+          const parked = contracts.setRunRecoveryVerification({
+            id: contract.id,
+            expectedVersion: contract.version,
+            projectId: run.projectId,
+            producerRunId: run.id,
+            verificationNotes: 'run lost to a server restart before finishing — re-dispatch or continue',
+            // Dispatch durably creates contract -> run -> reciprocal binding.
+            // Only an otherwise-issued null producer can be the crash between
+            // the latter two writes; the repository CAS rejects every other
+            // null or differently-bound contract.
+            allowIssuedUnbound: true,
+          });
+          if (!parked) {
+            console.warn(
+              `[pc-sdk][boot-recovery] contract ${contract.id} no longer belongs to recovered run ${run.id} — verification left untouched.`,
+            );
+          }
+        }
       }
       console.warn(`[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) was live — failed loudly (server-restart).`);
     } catch (err) {

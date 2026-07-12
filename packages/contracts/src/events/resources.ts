@@ -9,7 +9,10 @@
 // Browser-safe, zero runtime deps.
 
 import type { ULID } from '../shared.ts';
-import type { AgentRunChangedLivePayload } from '../agent-runs.ts';
+import {
+  isAgentRunChangedLivePayload,
+  type AgentRunChangedLivePayload,
+} from '../agent-runs.ts';
 import type { ContractChangedLivePayload } from '../contracts.ts';
 import type { SessionSummary } from './session.ts';
 
@@ -130,9 +133,27 @@ export function isResourceEntity(value: unknown): value is ResourceEntity {
 }
 
 export function isResourceFrame(value: unknown): value is ResourceFrame {
-  if (!isRecord(value) || value.type !== 'resource' || !isRecord(value.event)) return false;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['type', 'event']) ||
+    value.type !== 'resource' ||
+    !isRecord(value.event)
+  ) return false;
   const e = value.event;
-  return (
+  if (
+    !hasOnlyKeys(e, [
+      'id',
+      'cursor',
+      'scope',
+      'projectId',
+      'entity',
+      'entityId',
+      'eventType',
+      'version',
+      'createdAt',
+      'payload',
+    ]) ||
+    !(
     typeof e.id === 'string' &&
     typeof e.cursor === 'string' &&
     (e.scope === 'project' || e.scope === 'global') &&
@@ -143,16 +164,34 @@ export function isResourceFrame(value: unknown): value is ResourceFrame {
     (e.version === null || typeof e.version === 'number') &&
     typeof e.createdAt === 'number' &&
     'payload' in e
-  );
+    )
+  ) return false;
+
+  // Full-snapshot agent-run resources cross directly into the activity rail
+  // and transcript modal. Validate their owned payload before advancing the
+  // cursor or admitting anything to browser state.
+  if (e.entity !== 'agent-run') return true;
+  if (!isAgentRunChangedLivePayload(e.payload)) return false;
+  return e.scope === 'project' &&
+    e.projectId !== null &&
+    e.entityId === e.payload.run.runId &&
+    e.projectId === e.payload.run.projectId &&
+    e.version === e.payload.run.rev;
 }
 
 export function isLiveResetFrame(value: unknown): value is LiveResetFrame {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'projectId', 'cursor']) &&
     value.type === 'live-reset' &&
     (value.projectId === null || typeof value.projectId === 'string') &&
     (value.cursor === null || typeof value.cursor === 'string')
   );
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 export function isUsageSnapshot(value: unknown): value is UsageSnapshot {

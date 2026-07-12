@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ULID } from '@pc/domain';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-contracts-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -24,11 +25,11 @@ const {
   listContractsForRun,
   newId,
   runMigrations,
-  setAgentRunContractId,
   setContractDeliverable,
   setContractLanding,
   setContractReviewState,
   setContractRun,
+  setContractRunRecoveryVerification,
   setContractVerification,
 } = await import('../src/index.ts');
 
@@ -118,6 +119,86 @@ test('contracts repo: create / setRun / setDeliverable / setVerification + versi
   // missing-id mutations return null
   assert.equal(setContractDeliverable('nope', { deliverable: null }), null);
   assert.equal(setContractVerification('nope', { verificationStatus: 'failed' }), null);
+});
+
+test('run-recovery verification park is producer/project/version CAS with one issued-unbound window', () => {
+  const p = seedProject('recovery-cas');
+  const otherProject = seedProject('recovery-cas-other');
+  const producerRunId = newId();
+  const movedRunId = newId();
+  const bound = createContract({
+    projectId: p.id,
+    podName: 'writer',
+    expectedOutput: { kind: 'prose', doc_type: 'note' },
+  });
+  setContractRun(bound.id, producerRunId);
+  const passed = setContractVerification(bound.id, {
+    verificationStatus: 'passed',
+    verificationNotes: 'newer producer evidence',
+  })!;
+
+  for (const input of [
+    { expectedVersion: passed.version - 1, projectId: p.id, producerRunId },
+    { expectedVersion: passed.version, projectId: otherProject.id, producerRunId },
+    { expectedVersion: passed.version, projectId: p.id, producerRunId: movedRunId },
+  ]) {
+    assert.equal(setContractRunRecoveryVerification(bound.id, {
+      ...input,
+      verificationNotes: 'must not land',
+      allowIssuedUnbound: true,
+    }), null);
+    assert.deepEqual(getContract(bound.id), passed, 'failed CAS leaves newer evidence byte-for-byte intact');
+  }
+
+  const parked = setContractRunRecoveryVerification(bound.id, {
+    expectedVersion: passed.version,
+    projectId: p.id,
+    producerRunId,
+    verificationNotes: 'producer lost at restart',
+    allowIssuedUnbound: false,
+  });
+  assert.ok(parked);
+  assert.equal(parked!.verificationStatus, 'pending');
+  assert.equal(parked!.verificationNotes, 'producer lost at restart');
+  assert.equal(parked!.status, 'verifying');
+  assert.equal(parked!.version, passed.version + 1);
+
+  const issued = createContract({
+    projectId: p.id,
+    podName: 'writer',
+    expectedOutput: { kind: 'prose', doc_type: 'note' },
+  });
+  assert.equal(setContractRunRecoveryVerification(issued.id, {
+    expectedVersion: issued.version,
+    projectId: p.id,
+    producerRunId,
+    verificationNotes: 'not allowed without crash-window authority',
+    allowIssuedUnbound: false,
+  }), null);
+  const unboundPark = setContractRunRecoveryVerification(issued.id, {
+    expectedVersion: issued.version,
+    projectId: p.id,
+    producerRunId,
+    verificationNotes: 'crashed before reciprocal binding',
+    allowIssuedUnbound: true,
+  });
+  assert.ok(unboundPark);
+  assert.equal(unboundPark!.agentRunId, null);
+  assert.equal(unboundPark!.verificationStatus, 'pending');
+
+  const unboundButMoved = createContract({
+    projectId: p.id,
+    podName: 'writer',
+    expectedOutput: { kind: 'prose', doc_type: 'note' },
+    status: 'submitted',
+  });
+  assert.equal(setContractRunRecoveryVerification(unboundButMoved.id, {
+    expectedVersion: unboundButMoved.version,
+    projectId: p.id,
+    producerRunId,
+    verificationNotes: 'must remain untouched',
+    allowIssuedUnbound: true,
+  }), null, 'null producer is accepted only while the contract is still issued');
 });
 
 test('merge receipt + landing policy round-trip; legacy fields keep their meaning', () => {
@@ -215,16 +296,29 @@ test('contracts carry an external pm_ref and list by run, newest first', () => {
   assert.deepEqual(list.map((c) => c.id), [b.id, a.id]);
 });
 
-test('agent_runs.contract_id round-trips via insert + setter', () => {
+test('agent_runs.contract_id is frozen at stamped admission', () => {
   const p = seedProject('runlink');
   const runId = newId();
   const contractId = newId();
   insertAgentRunRow({
     id: runId,
     projectId: p.id,
-    podName: 'x',
     dispatcherSessionId: 's',
-    ccSessionId: 'cc',
+    specialistSnapshot: {
+      specialistId: 'specialist-x' as ULID,
+      revision: 'sha256:test-x',
+      name: 'x',
+      charter: 'Test.',
+      contextDocs: [],
+      maxTurns: 10,
+    },
+    selection: {
+      runtimeId: 'runtime',
+      accountId: 'account',
+      model: 'model',
+      effort: { kind: 'none' },
+    },
+    continuation: { mode: 'create' },
     status: 'queued',
     input: null,
     contractId,
@@ -236,9 +330,12 @@ test('agent_runs.contract_id round-trips via insert + setter', () => {
   };
   assert.equal(row.contract_id, contractId);
 
-  setAgentRunContractId(runId, null);
+  assert.throws(
+    () => raw.prepare('UPDATE agent_runs SET contract_id = NULL WHERE id = ?').run(runId),
+    /agent run execution scope is immutable/,
+  );
   row = raw.prepare('SELECT contract_id FROM agent_runs WHERE id = ?').get(runId) as {
     contract_id: string | null;
   };
-  assert.equal(row.contract_id, null);
+  assert.equal(row.contract_id, contractId);
 });

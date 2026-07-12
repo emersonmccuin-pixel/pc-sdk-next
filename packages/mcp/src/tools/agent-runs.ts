@@ -5,6 +5,16 @@ import type { ToolContext, ToolResult } from './context.ts';
 // canonical pc-rig tool metadata source). This file now owns only the
 // executable handler (localhost-HTTP dispatch).
 
+function invalidTypedResponse(toolName: string, reason: string): ToolResult {
+  return {
+    content: [{
+      type: 'text',
+      text: `${toolName} failed: invalid localhost response (${reason})`,
+    }],
+    isError: true,
+  };
+}
+
 export async function handleAgentRunTool(
   name: string,
   args: Record<string, unknown>,
@@ -65,6 +75,7 @@ export async function handleAgentRunTool(
           payload,
         );
         if (res.status >= 200 && res.status < 300) {
+          if (!res.parsed.ok) return invalidTypedResponse('pc_invoke_agent', res.parsed.error);
           // A1: after a successful invoke the run is in flight — track it or
           // inspect its early output.
           return {
@@ -129,6 +140,7 @@ export async function handleAgentRunTool(
           continuePayload,
         );
         if (res.status >= 200 && res.status < 300) {
+          if (!res.parsed.ok) return invalidTypedResponse('pc_continue_agent', res.parsed.error);
           return { content: [{ type: 'text', text: res.body }] };
         }
         return {
@@ -324,6 +336,7 @@ export async function handleAgentRunTool(
       try {
         const res = await ctx.client.createPendingAsk(ctx.projectPath('agent-pending-asks'), payload);
         if (res.status >= 200 && res.status < 300) {
+          if (!res.parsed.ok) return invalidTypedResponse(toolName, res.parsed.error);
           return { content: [{ type: 'text', text: res.body }] };
         }
         return {
@@ -367,6 +380,7 @@ export async function handleAgentRunTool(
           { answer, answeredBy: answeredByRaw },
         );
         if (res.status >= 200 && res.status < 300) {
+          if (!res.parsed.ok) return invalidTypedResponse('pc_answer_pending', res.parsed.error);
           return { content: [{ type: 'text', text: res.body }] };
         }
         return {

@@ -18,20 +18,25 @@ import {
   createAgent,
   createContract,
   createPendingAsk,
+  confirmAgentRunRuntimeSessionReceipt,
   getAgentRunRow,
   getContract,
   getPendingAsk,
+  getRawDb,
   insertAgentRunRow,
   listAgentRunsForSession,
   listConversationEvents,
   listContractsForProject,
+  listLiveOutboxRowsAfter,
   listNonTerminalAgentRuns,
   newId,
+  prepareAgentRunCreate,
+  setContractRun,
+  updateAgentRunStatus,
 } from '@pc/db';
 import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import type { ULID } from '@pc/domain';
-import { AccountRegistry } from '../src/runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
 import { FakeRuntime, type ScriptedTurn } from '../src/runner/fake-runtime.ts';
 import {
@@ -45,9 +50,17 @@ import { DispatchService } from '../src/dispatch/service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
 import { git } from '../src/dispatch/worktrees.ts';
-import { freshDb, newGitProject, newProject, until } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  freshDb,
+  newGitProject,
+  newProject,
+  TEST_RUNTIME_SELECTION,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+  until,
+} from './helpers.ts';
 import {
   testCapabilities,
   testModelDiscovery,
@@ -188,16 +201,26 @@ class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   }
 }
 
+class UnreceiptedAdapter implements AgentRuntimeAdapter {
+  readonly id = CLAUDE_RUNTIME_ID;
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
+  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
+    return new FakeRuntime({ turns: [[OK_RESULT]] });
+  }
+  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return new FakeRuntime({ turns: [[OK_RESULT]] });
+  }
+}
+
 function rig(
   adapter: AgentRuntimeAdapter,
-  opts: { gitCommand?: typeof git } = {},
+  opts: Partial<ConstructorParameters<typeof DispatchService>[0]> = {},
 ): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
   const dispatch = new DispatchService({
-    runtimes,
-    accounts: new AccountRegistry(),
-    mcp: {} as McpManager,
+    ...testDispatchRuntimeDeps(runtimes),
     ...opts,
   });
   const hub = new ProjectWebSocketHub<ULID>();
@@ -210,7 +233,39 @@ function rig(
   return dispatch;
 }
 
+function turnTerminals(runId: ULID): unknown[] {
+  return listConversationEvents(runId)
+    .map((event) => event.payload)
+    .filter((event) => (
+      typeof event === 'object' && event !== null &&
+      (((event as { kind?: unknown }).kind === 'turn-failed') ||
+        ((event as { kind?: unknown }).kind === 'turn-end'))
+    ));
+}
+
 const AUDIT = { actor: 'user' as const };
+
+function bindCreatedNativeSession(
+  runId: ULID,
+  nativeSessionId: string,
+  finalStatus: 'running' | 'paused',
+): void {
+  const prepared = prepareAgentRunCreate(runId);
+  assert.ok(prepared?.continuationAttemptId, 'clean create attempt prepared');
+  updateAgentRunStatus({ id: runId, status: 'spawning', spawnedAt: Date.now() });
+  const confirmation = confirmAgentRunRuntimeSessionReceipt({
+    runId,
+    receipt: {
+      mode: 'created',
+      selection: TEST_RUNTIME_SELECTION,
+      continuationAttemptId: prepared.continuationAttemptId,
+      nativeSessionId,
+      requestedNativeSessionId: null,
+    },
+  });
+  assert.equal(confirmation.status, 'confirmed', 'native session receipt confirmed');
+  updateAgentRunStatus({ id: runId, status: finalStatus });
+}
 
 function seedPausedRun(projectId: ULID): { runId: ULID; askId: ULID } {
   const contract = createContract({
@@ -224,19 +279,18 @@ function seedPausedRun(projectId: ULID): { runId: ULID; askId: ULID } {
   insertAgentRunRow({
     id: runId,
     projectId,
-    podName: 'researcher',
     dispatcherSessionId: 'S1',
-    ccSessionId: 'native-paused',
-    status: 'paused',
+    ...testAgentRunExecution('researcher'),
+    status: 'queued',
     input: 'go',
     contractId: contract.id,
     queuedAt: Date.now(),
   });
+  bindCreatedNativeSession(runId, 'native-paused', 'paused');
   const askId = newId() as ULID;
   createPendingAsk({
     id: askId,
     agentRunId: runId,
-    ccSessionId: 'native-paused',
     projectId,
     kind: 'orchestrator',
     promptBody: 'which way?',
@@ -307,16 +361,17 @@ test('a dispatch loop past the max dispatch loop is refused (loop-cap) — no ro
   // Seed 20 prior dispatches of the same agent by the same dispatcher
   // session — a looping pattern, at the cap, before the 21st attempt.
   for (let i = 0; i < 20; i++) {
+    const id = newId() as ULID;
     insertAgentRunRow({
-      id: newId() as ULID,
+      id,
       projectId: project.id,
-      podName: 'researcher',
       dispatcherSessionId: 'S1',
-      ccSessionId: `cc-${i}`,
-      status: 'completed',
+      ...testAgentRunExecution('researcher'),
+      status: 'queued',
       input: 'go',
       queuedAt: Date.now(),
     });
+    advanceTestAgentRunStatus(id, 'completed');
   }
   const dispatch = rig(new FakeAdapter([]));
   const result = await dispatch.dispatchFresh({
@@ -394,6 +449,189 @@ test('provider send exceptions retain send-failed classification without storing
   assert.equal(row.failureReason, 'agent runtime turn could not be sent');
   assert.equal(JSON.stringify(row).includes('SECRET'), false);
   assert.equal(JSON.stringify(listConversationEvents(runId)).includes('SECRET'), false);
+  assert.deepEqual(turnTerminals(runId), [{
+    kind: 'turn-failed',
+    error: 'agent runtime turn could not be sent',
+    source: 'internal',
+  }]);
+});
+
+test('a runtime that omits its native-session receipt fails with one canonical app-authored terminal', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('missing-agent-receipt');
+  const dispatch = rig(new UnreceiptedAdapter());
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'start without a receipt',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true);
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+  await until(() => getAgentRunRow(runId)?.status === 'failed');
+
+  const row = getAgentRunRow(runId)!;
+  assert.equal(row.failureCause, 'unexpected-exit');
+  assert.equal(row.failureReason, 'agent runtime evidence was missing or invalid');
+  assert.equal(row.nativeIdentityState, 'unbound');
+  assert.equal(row.continuationState, 'clean-pending');
+  const terminals = listConversationEvents(runId)
+    .map((event) => event.payload)
+    .filter((event): event is Record<string, unknown> => (
+      typeof event === 'object' && event !== null
+      && (((event as { kind?: unknown }).kind === 'turn-failed')
+        || ((event as { kind?: unknown }).kind === 'turn-end'))
+    ));
+  assert.deepEqual(terminals, [{
+    kind: 'turn-failed',
+    error: 'runtime session evidence was missing or invalid',
+    source: 'internal',
+  }]);
+});
+
+test('a synchronous continuation send failure records resume-failed before terminal settlement', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('continuation-send-failure');
+  const parentRunId = newId() as ULID;
+  const contract = createContract({
+    projectId: project.id,
+    podName: 'researcher',
+    expectedOutput: { kind: 'answer' },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  insertAgentRunRow({
+    id: parentRunId,
+    projectId: project.id,
+    ...testAgentRunExecution('researcher'),
+    dispatcherSessionId: 'S1',
+    status: 'queued',
+    input: 'parent',
+    contractId: contract.id,
+    queuedAt: Date.now(),
+  });
+  setContractRun(contract.id, parentRunId);
+  advanceTestAgentRunStatus(parentRunId, 'completed');
+
+  const dispatch = rig(new SingleRuntimeAdapter(new ThrowingSendRuntime()));
+  const result = await dispatch.dispatchContinue({
+    projectId: project.id,
+    runId: parentRunId,
+    input: 'resume',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const childRunId = (result as { run: { runId: string } }).run.runId as ULID;
+  await until(() => getAgentRunRow(childRunId)?.status === 'failed');
+
+  const child = getAgentRunRow(childRunId)!;
+  assert.equal(child.failureCause, 'send-failed');
+  assert.equal(child.failureReason, 'agent runtime turn could not be sent');
+  assert.equal(child.continuationState, 'resume-failed');
+  assert.equal(child.nativeSessionId, getAgentRunRow(parentRunId)!.nativeSessionId);
+  assert.deepEqual(turnTerminals(childRunId), [{
+    kind: 'turn-failed',
+    error: 'agent runtime turn could not be sent',
+    source: 'internal',
+  }]);
+});
+
+test('a synchronous revived-answer send failure records resume-failed and closes the run', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('revived-answer-send-failure');
+  const { runId, askId } = seedPausedRun(project.id);
+  const dispatch = rig(new SingleRuntimeAdapter(new ThrowingSendRuntime()));
+
+  const answered = await dispatch.answerPendingAsk({
+    projectId: project.id,
+    pendingAskId: askId,
+    answer: 'continue',
+    answeredBy: 'orchestrator',
+  });
+  assert.equal(answered.ok, true, JSON.stringify(answered));
+  await until(() => getAgentRunRow(runId)?.status === 'failed');
+
+  const row = getAgentRunRow(runId)!;
+  assert.equal(row.failureCause, 'send-failed');
+  assert.equal(row.failureReason, 'agent runtime turn could not be sent');
+  assert.equal(row.continuationState, 'resume-failed');
+  assert.equal(getPendingAsk(askId)?.status, 'answered');
+  assert.deepEqual(turnTerminals(runId), [{
+    kind: 'turn-failed',
+    error: 'agent runtime turn could not be sent',
+    source: 'internal',
+  }]);
+});
+
+test('continuation admission rechecks after deferred preflight and mints exactly one active child', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('continuation-preflight-race');
+  const parentRunId = newId() as ULID;
+  const contract = createContract({
+    projectId: project.id,
+    podName: 'researcher',
+    expectedOutput: { kind: 'answer' },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  insertAgentRunRow({
+    id: parentRunId,
+    projectId: project.id,
+    ...testAgentRunExecution('researcher'),
+    dispatcherSessionId: 'S1',
+    status: 'queued',
+    input: 'parent',
+    contractId: contract.id,
+    queuedAt: Date.now(),
+  });
+  setContractRun(contract.id, parentRunId);
+  advanceTestAgentRunStatus(parentRunId, 'completed');
+
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  let preflightCalls = 0;
+  const dispatch = rig(new FakeAdapter([[{ hang: true }]]), {
+    preflightRuntimeSession: async (selection) => {
+      preflightCalls += 1;
+      if (preflightCalls === 1) {
+        markFirstStarted();
+        await firstGate;
+      }
+      return { status: 'valid' as const, selection };
+    },
+  });
+
+  const firstPromise = dispatch.dispatchContinue({
+    projectId: project.id,
+    runId: parentRunId,
+    input: 'first contender',
+    dispatcherSessionId: 'S1',
+  });
+  await firstStarted;
+  const second = await dispatch.dispatchContinue({
+    projectId: project.id,
+    runId: parentRunId,
+    input: 'second contender',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  const admittedRunId = (second as { run: { runId: string } }).run.runId as ULID;
+
+  releaseFirst();
+  const first = await firstPromise;
+  assert.equal(first.ok, false);
+  if (!first.ok) assert.equal(first.cause, 'concurrent-continuation');
+  const children = listAgentRunsForSession(project.id, 'S1', { limit: 10 })
+    .filter((run) => run.continues === parentRunId);
+  assert.equal(children.length, 1, 'the provider-preflight race mints one child only');
+  assert.equal(children[0]?.id, admittedRunId);
+  await dispatch.killRun(project.id, admittedRunId);
 });
 
 test('submitDeliverable rejects a late repo seal when kill wins during async Git evidence', async () => {
@@ -571,19 +809,18 @@ test('kill-test: boot recovery fails live runs loudly, cancels open asks, parks 
   insertAgentRunRow({
     id: runId,
     projectId: project.id,
-    podName: 'researcher',
     dispatcherSessionId: 'S1',
-    ccSessionId: 'cc-1',
-    status: 'running',
+    ...testAgentRunExecution('researcher'),
+    status: 'queued',
     input: 'go',
     contractId: contract.id,
     queuedAt: Date.now(),
   });
+  bindCreatedNativeSession(runId, 'native-1', 'running');
   const askId = newId() as ULID;
   createPendingAsk({
     id: askId,
     agentRunId: runId,
-    ccSessionId: 'cc-1',
     projectId: project.id,
     kind: 'orchestrator',
     promptBody: 'which way?',
@@ -597,6 +834,133 @@ test('kill-test: boot recovery fails live runs loudly, cancels open asks, parks 
   assert.equal(row.failureCause, 'server-restart');
   assert.equal(getPendingAsk(askId)!.status, 'cancelled');
   assert.equal(getContract(contract.id)!.verificationStatus, 'pending');
+});
+
+test('boot recovery quarantines a migrated legacy paused run while preserving repository evidence', () => {
+  freshDb();
+  const project = newProject();
+  const contract = createContract({
+    projectId: project.id,
+    podName: 'legacy-builder',
+    expectedOutput: { kind: 'repo', isolation: 'worktree' },
+    acceptanceCriteria: [],
+    verificationTier: 'auto',
+  });
+  const runId = newId() as ULID;
+  const askId = newId() as ULID;
+  const worktreeDir = 'C:\\preserved\\legacy-worktree';
+  const baseSha = 'a'.repeat(40);
+  const gitReceipt = {
+    worktreePath: worktreeDir,
+    branch: 'agent/legacy-work',
+    baseBranch: 'main',
+    baseSha,
+    cleanStatus: true,
+  };
+  const preparationReceipt = {
+    phase: 'preparation',
+    ok: true,
+    steps: [],
+    finishedAt: 20,
+  };
+  const readinessReceipt = {
+    phase: 'readiness',
+    ok: true,
+    steps: [],
+    finishedAt: 21,
+  };
+
+  // Migration 0013 is the only code allowed to create this quarantined shape.
+  // Drop its post-migration admission trigger in this isolated test DB so the
+  // exact output of that migration can be exercised through real boot code.
+  const raw = getRawDb();
+  raw.exec('DROP TRIGGER agent_runs_complete_stamp_insert_guard');
+  raw.prepare(`INSERT INTO agent_runs (
+      id, project_id, dispatcher_session_id,
+      snapshot_state, specialist_snapshot,
+      native_session_id, native_identity_state,
+      continuation_state, continuation_attempt_id,
+      pod_name, status, lifecycle_state, continues, parent_invoke_depth,
+      pm_ref, contract_id, input, queued_at, spawned_at, ready_at, rev,
+      worktree_dir, worktree_base_branch, worktree_base_sha,
+      git_receipt, preparation_receipt, readiness_receipt,
+      selection_state, runtime_id, account_id, model, effort_state, effort,
+      auto_continue_count
+    ) VALUES (
+      ?, ?, 'legacy-dispatcher',
+      'legacy-unavailable', NULL,
+      'placeholder-native-evidence', 'legacy-untrusted',
+      'legacy-unavailable', NULL,
+      'legacy-builder', 'paused', 'building', 'historical-parent', 2,
+      'PM-LEGACY', ?, 'continue legacy work', 10, 11, 12, 7,
+      ?, 'main', ?,
+      ?, ?, ?,
+      'legacy-unavailable', NULL, NULL, NULL, 'legacy-unknown', NULL,
+      0
+    )`).run(
+    runId,
+    project.id,
+    contract.id,
+    worktreeDir,
+    baseSha,
+    JSON.stringify(gitReceipt),
+    JSON.stringify(preparationReceipt),
+    JSON.stringify(readinessReceipt),
+  );
+  createPendingAsk({
+    id: askId,
+    agentRunId: runId,
+    projectId: project.id,
+    pmRef: 'PM-LEGACY',
+    kind: 'orchestrator',
+    promptBody: 'Which legacy path?',
+    now: 13,
+  });
+  const cursor = listLiveOutboxRowsAfter('0', 1_000).at(-1)?.cursor ?? '0';
+
+  const recovery = runBootRecovery();
+
+  assert.ok(recovery.failedRuns.includes(runId));
+  const row = getAgentRunRow(runId)!;
+  assert.equal(row.status, 'failed');
+  assert.equal(row.failureCause, 'server-restart');
+  assert.match(row.failureReason ?? '', /no trusted execution selection to resume/);
+  assert.equal(row.snapshotState, 'legacy-unavailable');
+  assert.equal(row.specialistSnapshot, null);
+  assert.equal(row.selectionState, 'legacy-unavailable');
+  assert.equal(row.runtimeId, null);
+  assert.equal(row.accountId, null);
+  assert.equal(row.model, null);
+  assert.equal(row.continuationState, 'legacy-unavailable');
+  assert.equal(row.continuationAttemptId, null);
+  assert.equal(row.lifecycleState, 'failed');
+  assert.equal(row.continues, 'historical-parent');
+  assert.equal(row.worktreeDir, worktreeDir);
+  assert.equal(row.worktreeBaseBranch, 'main');
+  assert.equal(row.worktreeBaseSha, baseSha);
+  assert.deepEqual(row.gitReceipt, gitReceipt);
+  assert.deepEqual(row.preparationReceipt, preparationReceipt);
+  assert.deepEqual(row.readinessReceipt, readinessReceipt);
+
+  const ask = getPendingAsk(askId)!;
+  assert.equal(ask.status, 'cancelled');
+  assert.ok(ask.cancelledAt !== null);
+  assert.equal(getContract(contract.id)!.verificationStatus, 'pending');
+
+  const outbox = listLiveOutboxRowsAfter(cursor, 100);
+  const runEvent = outbox.find((event) => event.entity === 'agent-run' && event.entityId === runId);
+  assert.ok(runEvent, 'boot terminalization emits a durable agent-run fact');
+  assert.equal(runEvent.type, 'agent-run.changed');
+  assert.equal(runEvent.version, row.rev);
+  const payload = runEvent.payload as { reason?: unknown; run?: unknown };
+  assert.equal(payload.reason, 'failed');
+  const projected = payload.run as Record<string, unknown>;
+  assert.equal(projected.failureCause, 'server-restart');
+  assert.equal(projected.continuationState, 'legacy-unavailable');
+  assert.equal(projected.selection, null);
+  assert.equal(projected.nativeSessionIdPresent, false);
+  assert.equal(projected.worktreeDir, worktreeDir);
+  assert.deepEqual(projected.gitReceipt, gitReceipt);
 });
 
 // ── F1 (comms-hardening): a paused ask survives a server restart ───────────
@@ -615,19 +979,18 @@ test('F1: boot leaves a paused run + its open ask intact (never failed/cancelled
   insertAgentRunRow({
     id: runId,
     projectId: project.id,
-    podName: 'researcher',
     dispatcherSessionId: 'S1',
-    ccSessionId: 'native-cc-1',
-    status: 'paused',
+    ...testAgentRunExecution('researcher'),
+    status: 'queued',
     input: 'go',
     contractId: contract.id,
     queuedAt: Date.now(),
   });
+  bindCreatedNativeSession(runId, 'native-1', 'paused');
   const askId = newId() as ULID;
   createPendingAsk({
     id: askId,
     agentRunId: runId,
-    ccSessionId: 'native-cc-1',
     projectId: project.id,
     kind: 'orchestrator',
     promptBody: 'which way?',
@@ -682,19 +1045,18 @@ test('F1: recoverPausedAsks revives a paused run across a restart — answering 
   insertAgentRunRow({
     id: runId,
     projectId: project.id,
-    podName: 'researcher',
     dispatcherSessionId: 'S1',
-    ccSessionId: 'native-cc-1',
-    status: 'paused',
+    ...testAgentRunExecution('researcher'),
+    status: 'queued',
     input: 'go find it',
     contractId: contract.id,
     queuedAt: Date.now(),
   });
+  bindCreatedNativeSession(runId, 'native-1', 'paused');
   const askId = newId() as ULID;
   createPendingAsk({
     id: askId,
     agentRunId: runId,
-    ccSessionId: 'native-cc-1',
     projectId: project.id,
     kind: 'orchestrator',
     promptBody: 'which way?',
@@ -711,7 +1073,7 @@ test('F1: recoverPausedAsks revives a paused run across a restart — answering 
   await dispatch.recoverPausedAsks();
 
   assert.equal(adapter.resumed.length, 1, 'the native session was resumed at boot, not created fresh');
-  assert.equal(adapter.resumed[0]!.nativeSessionId, 'native-cc-1');
+  assert.equal(adapter.resumed[0]!.nativeSessionId, 'native-1');
   assert.equal(adapter.created.length, 0);
   assert.equal(dispatch.hasLiveRun(runId), true);
 

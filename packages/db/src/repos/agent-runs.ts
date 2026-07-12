@@ -11,41 +11,50 @@
 import { and, count, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import {
+  isRuntimeSelection,
+  isRuntimeSessionReceipt,
+  runtimeSelectionsEqual,
+  type RuntimeSelection,
+  type RuntimeSessionReceipt,
+} from '@pc/contracts';
+
+import {
   IllegalLifecycleTransitionError,
   PRESERVED_LIFECYCLE_STATES,
   RUN_LIFECYCLE_STATES,
   canTransition,
+  isSpecialistExecutionSnapshot,
   type AgentRunFailureCause,
   type AgentRunRow,
   type AgentRunStatus,
   type RunLifecycleState,
+  type SpecialistExecutionSnapshot,
   type ULID,
   type WorktreeGitReceipt,
   type WorktreePhaseReceipt,
 } from '@pc/domain';
 
-import { getDb } from '../connection.ts';
+import { getDb, type DbExecutor } from '../connection.ts';
+import { newId } from '../id.ts';
 import { agentRuns } from '../schema-agent-system.ts';
 
 export interface InsertAgentRunRowInput {
   /** PC-minted ULID. Matches the AgentRun wrapper's `agentRunId`. */
   id: ULID;
   projectId: ULID;
-  podName: string;
   dispatcherSessionId: string;
-  ccSessionId: string;
-  /** Initial status. Usually `'queued'` at admission time; a downstream
-   *  caller flips it to `'spawning'` when the cap frees. */
-  status: AgentRunStatus;
+  specialistSnapshot: SpecialistExecutionSnapshot;
+  selection: RuntimeSelection;
+  continuation:
+    | { mode: 'create' }
+    | { mode: 'resume'; nativeSessionId: string };
+  /** One admission state only. Receipt-gated transitions happen afterward. */
+  status: 'queued';
   input: string | null;
   pmRef?: string | null;
   parentInvokeDepth?: number;
   /** Null for original dispatches; FK to parent row for continuations. */
   continues?: ULID | null;
-  /** Pod row's `updated_at` (or revision hash) at dispatch time. Stored for
-   *  drift detection on resume. Null when the materialiser didn't supply a
-   *  revision. */
-  podRevisionAtDispatch?: string | null;
   /** Slice 013 — FK to the first-class `agent_contracts` row this run is
    *  producing. NULL for legacy/non-contract dispatches. */
   contractId?: ULID | null;
@@ -59,10 +68,6 @@ export interface InsertAgentRunRowInput {
    *  time (provision precedes the row); preparation/readiness receipts land
    *  later via setAgentRunPhaseReceipt. */
   gitReceipt?: WorktreeGitReceipt | null;
-  /** Runtime-selection stamp: adapter id / account / model for this run. */
-  runtimeId?: string | null;
-  accountId?: string | null;
-  model?: string | null;
   /** Initial worktree-pipeline state. NULL (default) = non-repo/legacy run —
    *  no lifecycle vocabulary applies to the row, ever. */
   lifecycleState?: RunLifecycleState | null;
@@ -73,18 +78,30 @@ export interface InsertAgentRunRowInput {
   queuedAt: number;
 }
 
-/** Insert a fresh row. Status starts at the caller's choice (typically
- *  'queued'); subsequent transitions go through `updateAgentRunStatus` +
- *  `markAgentRunTerminal`. */
+/** Insert a fresh queued row; subsequent transitions go through the guarded
+ * status/receipt/terminal doors. */
 export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
+  if (!isSpecialistExecutionSnapshot(input.specialistSnapshot)) {
+    throw new Error('agent run requires an exact specialist execution snapshot');
+  }
+  if (!isRuntimeSelection(input.selection)) {
+    throw new Error('agent run requires an exact complete runtime selection');
+  }
+  const nativeSessionId = input.continuation.mode === 'resume'
+    ? exactNonEmpty(input.continuation.nativeSessionId, 'nativeSessionId')
+    : null;
+  const effort = flattenEffort(input.selection);
   const row: AgentRunRow = {
     id: input.id,
     projectId: input.projectId,
     dispatcherSessionId: input.dispatcherSessionId,
-    ccSessionId: input.ccSessionId,
-    podName: input.podName,
-    podRevisionAtDispatch: input.podRevisionAtDispatch ?? null,
-    podRevisionAtResume: null,
+    snapshotState: 'stamped',
+    specialistSnapshot: structuredClone(input.specialistSnapshot),
+    nativeSessionId,
+    nativeIdentityState: nativeSessionId === null ? 'unbound' : 'bound',
+    continuationState: nativeSessionId === null ? 'clean-pending' : 'resume-pending',
+    continuationAttemptId: newId(),
+    podName: input.specialistSnapshot.name,
     status: input.status,
     lifecycleState: input.lifecycleState ?? null,
     continues: input.continues ?? null,
@@ -109,13 +126,35 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     gitReceipt: input.gitReceipt ?? null,
     preparationReceipt: null,
     readinessReceipt: null,
-    runtimeId: input.runtimeId ?? null,
-    accountId: input.accountId ?? null,
-    model: input.model ?? null,
+    selectionState: 'stamped',
+    runtimeId: input.selection.runtimeId,
+    accountId: input.selection.accountId,
+    model: input.selection.model,
+    ...effort,
     autoContinueCount: input.autoContinueCount ?? 0,
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
+}
+
+function exactNonEmpty(value: string, field: string): string {
+  if (!value.trim() || value !== value.trim()) {
+    throw new Error(`${field} must be an exact non-empty value`);
+  }
+  return value;
+}
+
+function flattenEffort(selection: RuntimeSelection): {
+  effortState: 'selected' | 'none' | 'unavailable';
+  effort: string | null;
+} {
+  if (selection.effort.kind === 'selected') {
+    return {
+      effortState: 'selected',
+      effort: exactNonEmpty(selection.effort.value, 'effort.value'),
+    };
+  }
+  return { effortState: selection.effort.kind, effort: null };
 }
 
 export interface UpdateAgentRunStatusInput {
@@ -130,9 +169,6 @@ export interface UpdateAgentRunStatusInput {
    *  the host snapshot (null after exit). Persisted so peek/kill can answer
    *  "is anything actually alive" — host runs used to always show pid null. */
   pid?: number | null;
-  /** Set on the resume path (paused → spawning). Captures pod-row revision
-   *  at resume time for drift detection. */
-  podRevisionAtResume?: string | null;
   /** Worktree-pipeline transition to stamp alongside. Guarded: an illegal
    *  move (per ALLOWED_LIFECYCLE_TRANSITIONS) rejects the WHOLE update with
    *  a typed IllegalLifecycleTransitionError. Omit = leave untouched. */
@@ -159,25 +195,49 @@ function throwIfIllegalTransition(id: ULID, to: RunLifecycleState): void {
 /** Non-terminal status transition. Idempotent at the row level — caller is
  *  responsible for ordering. A supplied `lifecycleState` is rejected (typed
  *  error, nothing written) when the move is illegal. */
-export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): void {
+export function updateAgentRunStatus(input: UpdateAgentRunStatusInput): boolean {
   const patch: Partial<AgentRunRow> = { status: input.status, rev: REV_INC };
   if (input.spawnedAt !== undefined) patch.spawnedAt = input.spawnedAt;
   if (input.readyAt !== undefined) patch.readyAt = input.readyAt;
   if (input.pid !== undefined) patch.pid = input.pid;
-  if (input.podRevisionAtResume !== undefined) {
-    patch.podRevisionAtResume = input.podRevisionAtResume;
-  }
+  const statuses = ['queued', 'spawning', 'running', 'paused'].includes(input.status)
+    ? inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused'])
+    : eq(agentRuns.status, input.status);
+  const receiptEvidence = input.status === 'running'
+    ? and(
+        eq(agentRuns.nativeIdentityState, 'bound'),
+        inArray(agentRuns.continuationState, ['clean-started', 'native-resumed']),
+      )
+    : undefined;
   if (input.lifecycleState === undefined) {
-    getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
-    return;
+    return getDb().update(agentRuns).set(patch)
+      .where(and(eq(agentRuns.id, input.id), statuses, receiptEvidence)).run().changes === 1;
   }
   patch.lifecycleState = input.lifecycleState;
   const result = getDb()
     .update(agentRuns)
     .set(patch)
-    .where(and(eq(agentRuns.id, input.id), legalLifecycleSources(input.lifecycleState)))
+    .where(and(
+      eq(agentRuns.id, input.id),
+      statuses,
+      receiptEvidence,
+      legalLifecycleSources(input.lifecycleState),
+    ))
     .run();
-  if (result.changes === 0) throwIfIllegalTransition(input.id, input.lifecycleState);
+  if (result.changes === 0) {
+    const current = getAgentRunRow(input.id);
+    if (!current || (
+      ['queued', 'spawning', 'running', 'paused'].includes(input.status) &&
+      ['completed', 'failed', 'cancelled'].includes(current.status)
+    ) || (
+      input.status === 'running' &&
+      (current.nativeIdentityState !== 'bound' ||
+        (current.continuationState !== 'clean-started' && current.continuationState !== 'native-resumed'))
+    )) return false;
+    throwIfIllegalTransition(input.id, input.lifecycleState);
+    return false;
+  }
+  return true;
 }
 
 /** Persist the spawned OS pid for an in-process run. Called once right after
@@ -211,6 +271,8 @@ export interface MarkAgentRunTerminalInput {
   failureCause: AgentRunFailureCause | null;
   failureReason: string | null;
   completedAt: number;
+  /** Optional durable generation fence for async runtime callbacks. */
+  continuationAttemptId?: string;
   /** Worktree-pipeline transition to stamp alongside (same guard as
    *  updateAgentRunStatus). Omit = leave untouched — a repo run's lifecycle
    *  outlives its dispatch terminal (verify/land continue past 'completed'). */
@@ -220,7 +282,7 @@ export interface MarkAgentRunTerminalInput {
 /** Flip to a terminal status. Idempotent at the row level — repeated calls
  *  with the same terminal status are no-ops. A supplied `lifecycleState` is
  *  rejected (typed error, nothing written) when the move is illegal. */
-export function markAgentRunTerminal(input: MarkAgentRunTerminalInput): void {
+export function markAgentRunTerminal(input: MarkAgentRunTerminalInput): boolean {
   const patch: Partial<AgentRunRow> = {
     status: input.status,
     result: input.result,
@@ -229,17 +291,34 @@ export function markAgentRunTerminal(input: MarkAgentRunTerminalInput): void {
     completedAt: input.completedAt,
     rev: REV_INC,
   };
+  const sources = [
+    eq(agentRuns.id, input.id),
+    inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
+  ];
+  if (input.continuationAttemptId !== undefined) {
+    sources.push(eq(agentRuns.continuationAttemptId, input.continuationAttemptId));
+  }
   if (input.lifecycleState === undefined) {
-    getDb().update(agentRuns).set(patch).where(eq(agentRuns.id, input.id)).run();
-    return;
+    return getDb().update(agentRuns).set(patch).where(and(...sources)).run().changes === 1;
   }
   patch.lifecycleState = input.lifecycleState;
   const result = getDb()
     .update(agentRuns)
     .set(patch)
-    .where(and(eq(agentRuns.id, input.id), legalLifecycleSources(input.lifecycleState)))
+    .where(and(...sources, legalLifecycleSources(input.lifecycleState)))
     .run();
-  if (result.changes === 0) throwIfIllegalTransition(input.id, input.lifecycleState);
+  if (result.changes === 0) {
+    const current = getAgentRunRow(input.id);
+    if (
+      !current ||
+      ['completed', 'failed', 'cancelled'].includes(current.status) ||
+      (input.continuationAttemptId !== undefined &&
+        current.continuationAttemptId !== input.continuationAttemptId)
+    ) return false;
+    throwIfIllegalTransition(input.id, input.lifecycleState);
+    return false;
+  }
+  return true;
 }
 
 /** Workflow-engine redesign — stamp the delivery receipt when the worker
@@ -273,6 +352,285 @@ export function setAgentRunPhaseReceipt(
 export function getAgentRunRow(id: ULID): AgentRunRow | null {
   const row = getDb().select().from(agentRuns).where(eq(agentRuns.id, id)).get();
   return row ?? null;
+}
+
+export function runtimeSelectionForAgentRun(row: AgentRunRow): RuntimeSelection | null {
+  if (
+    row.selectionState !== 'stamped' ||
+    !row.runtimeId ||
+    !row.accountId ||
+    !row.model ||
+    row.effortState === 'legacy-unknown'
+  ) return null;
+  const effort: RuntimeSelection['effort'] | null = row.effortState === 'selected'
+    ? row.effort
+      ? { kind: 'selected', value: row.effort }
+      : null
+    : { kind: row.effortState };
+  if (!effort) return null;
+  const selection = {
+    runtimeId: row.runtimeId,
+    accountId: row.accountId,
+    model: row.model,
+    effort,
+  };
+  return isRuntimeSelection(selection) ? selection : null;
+}
+
+export function specialistSnapshotForAgentRun(
+  row: AgentRunRow,
+): SpecialistExecutionSnapshot | null {
+  return row.snapshotState === 'stamped' &&
+    isSpecialistExecutionSnapshot(row.specialistSnapshot)
+    ? structuredClone(row.specialistSnapshot)
+    : null;
+}
+
+export function isAgentRunNativeResumeReady(row: AgentRunRow): boolean {
+  return row.selectionState === 'stamped' &&
+    runtimeSelectionForAgentRun(row) !== null &&
+    row.snapshotState === 'stamped' &&
+    specialistSnapshotForAgentRun(row) !== null &&
+    row.nativeIdentityState === 'bound' &&
+    typeof row.nativeSessionId === 'string' &&
+    row.nativeSessionId.trim().length > 0 &&
+    row.continuationState !== 'clean-pending' &&
+    row.continuationState !== 'legacy-unavailable' &&
+    typeof row.continuationAttemptId === 'string' &&
+    row.continuationAttemptId.trim().length > 0;
+}
+
+function nonTerminalStatus(row: AgentRunRow): boolean {
+  return row.status === 'queued' ||
+    row.status === 'spawning' ||
+    row.status === 'running' ||
+    row.status === 'paused';
+}
+
+function freshAttemptId(previous: string): ULID {
+  let attemptId = newId();
+  while (attemptId === previous) attemptId = newId();
+  return attemptId;
+}
+
+/** Rotate the durable generation immediately before an adapter clean create. */
+export function prepareAgentRunCreate(id: ULID): AgentRunRow | null {
+  return getDb().transaction((tx) => {
+    const row = tx.select().from(agentRuns).where(eq(agentRuns.id, id)).get();
+    if (
+      !row ||
+      !nonTerminalStatus(row) ||
+      row.status === 'paused' ||
+      runtimeSelectionForAgentRun(row) === null ||
+      specialistSnapshotForAgentRun(row) === null ||
+      row.nativeIdentityState !== 'unbound' ||
+      row.nativeSessionId !== null ||
+      row.continuationState !== 'clean-pending' ||
+      !row.continuationAttemptId
+    ) return null;
+    const continuationAttemptId = freshAttemptId(row.continuationAttemptId);
+    const changed = tx.update(agentRuns)
+      .set({ continuationAttemptId })
+      .where(and(
+        eq(agentRuns.id, id),
+        inArray(agentRuns.status, ['queued', 'spawning', 'running']),
+        eq(agentRuns.selectionState, 'stamped'),
+        eq(agentRuns.snapshotState, 'stamped'),
+        eq(agentRuns.nativeIdentityState, 'unbound'),
+        eq(agentRuns.continuationState, 'clean-pending'),
+        eq(agentRuns.continuationAttemptId, row.continuationAttemptId),
+        isNull(agentRuns.nativeSessionId),
+      ))
+      .run();
+    return changed.changes === 1 ? { ...row, continuationAttemptId } : null;
+  });
+}
+
+/** Rotate the durable generation immediately before an adapter native resume. */
+export function prepareAgentRunResume(id: ULID): AgentRunRow | null {
+  return getDb().transaction((tx) => prepareAgentRunResumeInDb(id, tx));
+}
+
+/** Executor-aware resume preparation for atomic state + outbox publication. */
+export function prepareAgentRunResumeInDb(
+  id: ULID,
+  db: DbExecutor,
+): AgentRunRow | null {
+  const row = db.select().from(agentRuns).where(eq(agentRuns.id, id)).get();
+  if (
+    !row ||
+    (row.status !== 'queued' && row.status !== 'paused') ||
+    !isAgentRunNativeResumeReady(row)
+  ) return null;
+  const continuationAttemptId = freshAttemptId(row.continuationAttemptId!);
+  const changed = db.update(agentRuns)
+    .set({ continuationState: 'resume-pending', continuationAttemptId, rev: REV_INC })
+    .where(and(
+      eq(agentRuns.id, id),
+      inArray(agentRuns.status, ['queued', 'paused']),
+      eq(agentRuns.selectionState, 'stamped'),
+      eq(agentRuns.snapshotState, 'stamped'),
+      eq(agentRuns.nativeIdentityState, 'bound'),
+      eq(agentRuns.nativeSessionId, row.nativeSessionId!),
+      eq(agentRuns.continuationState, row.continuationState),
+      eq(agentRuns.continuationAttemptId, row.continuationAttemptId!),
+    ))
+    .run();
+  return changed.changes === 1
+    ? { ...row, continuationState: 'resume-pending', continuationAttemptId, rev: row.rev + 1 }
+    : null;
+}
+
+export type AgentRunRuntimeReceiptRejection =
+  | 'not-found'
+  | 'run-inactive'
+  | 'legacy-unavailable'
+  | 'malformed-receipt'
+  | 'selection-mismatch'
+  | 'continuation-attempt-mismatch'
+  | 'receipt-mode-mismatch'
+  | 'native-session-id-conflict'
+  | 'continuation-state-conflict';
+
+export type ConfirmAgentRunRuntimeReceiptResult =
+  | { status: 'confirmed'; duplicate: boolean; run: AgentRunRow }
+  | { status: 'rejected'; reason: AgentRunRuntimeReceiptRejection };
+
+/** Confirm one exact current create/resume receipt. Every rejection is read-only. */
+export function confirmAgentRunRuntimeSessionReceipt(input: {
+  runId: ULID;
+  receipt: RuntimeSessionReceipt;
+}): ConfirmAgentRunRuntimeReceiptResult {
+  return getDb().transaction((tx) => {
+    const row = tx.select().from(agentRuns).where(eq(agentRuns.id, input.runId)).get();
+    if (!row) return { status: 'rejected', reason: 'not-found' };
+    if (row.status !== 'spawning' && row.status !== 'running') {
+      return { status: 'rejected', reason: 'run-inactive' };
+    }
+    const selection = runtimeSelectionForAgentRun(row);
+    if (!selection || specialistSnapshotForAgentRun(row) === null) {
+      return { status: 'rejected', reason: 'legacy-unavailable' };
+    }
+    if (!isRuntimeSessionReceipt(input.receipt)) {
+      return { status: 'rejected', reason: 'malformed-receipt' };
+    }
+    if (!runtimeSelectionsEqual(selection, input.receipt.selection)) {
+      return { status: 'rejected', reason: 'selection-mismatch' };
+    }
+    if (row.continuationAttemptId !== input.receipt.continuationAttemptId) {
+      return { status: 'rejected', reason: 'continuation-attempt-mismatch' };
+    }
+    const expectedMode = row.continuationState === 'clean-pending' ||
+      row.continuationState === 'clean-started'
+      ? 'created'
+      : 'resumed';
+    if (input.receipt.mode !== expectedMode) {
+      return { status: 'rejected', reason: 'receipt-mode-mismatch' };
+    }
+    const nativeSessionId = input.receipt.nativeSessionId;
+    if (input.receipt.mode === 'created') {
+      if (input.receipt.requestedNativeSessionId !== null) {
+        return { status: 'rejected', reason: 'receipt-mode-mismatch' };
+      }
+      if (
+        row.nativeIdentityState === 'bound' &&
+        row.nativeSessionId === nativeSessionId &&
+        row.continuationState === 'clean-started'
+      ) return { status: 'confirmed', duplicate: true, run: row };
+      if (row.nativeIdentityState === 'bound' && row.nativeSessionId !== nativeSessionId) {
+        return { status: 'rejected', reason: 'native-session-id-conflict' };
+      }
+      if (
+        row.nativeIdentityState !== 'unbound' ||
+        row.nativeSessionId !== null ||
+        row.continuationState !== 'clean-pending'
+      ) return { status: 'rejected', reason: 'continuation-state-conflict' };
+      const bound = tx.update(agentRuns).set({
+        nativeSessionId,
+        nativeIdentityState: 'bound',
+        continuationState: 'clean-started',
+        rev: REV_INC,
+      }).where(and(
+        eq(agentRuns.id, row.id),
+        eq(agentRuns.status, 'spawning'),
+        eq(agentRuns.selectionState, 'stamped'),
+        eq(agentRuns.snapshotState, 'stamped'),
+        eq(agentRuns.continuationAttemptId, input.receipt.continuationAttemptId),
+        eq(agentRuns.nativeIdentityState, 'unbound'),
+        eq(agentRuns.continuationState, 'clean-pending'),
+        isNull(agentRuns.nativeSessionId),
+      )).run();
+      if (bound.changes !== 1) {
+        return { status: 'rejected', reason: 'continuation-state-conflict' };
+      }
+    } else {
+      if (
+        input.receipt.requestedNativeSessionId !== nativeSessionId ||
+        row.nativeIdentityState !== 'bound' ||
+        row.nativeSessionId !== nativeSessionId
+      ) return { status: 'rejected', reason: 'native-session-id-conflict' };
+      if (row.continuationState === 'native-resumed') {
+        return { status: 'confirmed', duplicate: true, run: row };
+      }
+      if (row.continuationState !== 'resume-pending') {
+        return { status: 'rejected', reason: 'continuation-state-conflict' };
+      }
+      const resumed = tx.update(agentRuns).set({
+        continuationState: 'native-resumed',
+        rev: REV_INC,
+      }).where(and(
+        eq(agentRuns.id, row.id),
+        eq(agentRuns.status, 'spawning'),
+        eq(agentRuns.selectionState, 'stamped'),
+        eq(agentRuns.snapshotState, 'stamped'),
+        eq(agentRuns.continuationAttemptId, input.receipt.continuationAttemptId),
+        eq(agentRuns.nativeIdentityState, 'bound'),
+        eq(agentRuns.nativeSessionId, nativeSessionId),
+        eq(agentRuns.continuationState, 'resume-pending'),
+      )).run();
+      if (resumed.changes !== 1) {
+        return { status: 'rejected', reason: 'continuation-state-conflict' };
+      }
+    }
+    const confirmed = tx.select().from(agentRuns).where(eq(agentRuns.id, row.id)).get();
+    return confirmed
+      ? { status: 'confirmed', duplicate: false, run: confirmed }
+      : { status: 'rejected', reason: 'not-found' };
+  });
+}
+
+/** Fail only the exact still-current native resume attempt. */
+export function failAgentRunRuntimeResume(
+  runId: ULID,
+  continuationAttemptId: string,
+): boolean {
+  if (!continuationAttemptId.trim()) return false;
+  return getDb().transaction((tx) =>
+    failAgentRunRuntimeResumeInDb(runId, continuationAttemptId, tx) !== null,
+  );
+}
+
+/** Executor-aware exact failure stamp for atomic state + outbox publication. */
+export function failAgentRunRuntimeResumeInDb(
+  runId: ULID,
+  continuationAttemptId: string,
+  db: DbExecutor,
+): AgentRunRow | null {
+  if (!continuationAttemptId.trim()) return null;
+  const changed = db.update(agentRuns)
+    .set({ continuationState: 'resume-failed', rev: REV_INC })
+    .where(and(
+      eq(agentRuns.id, runId),
+      inArray(agentRuns.status, ['spawning', 'paused']),
+      eq(agentRuns.selectionState, 'stamped'),
+      eq(agentRuns.snapshotState, 'stamped'),
+      eq(agentRuns.continuationState, 'resume-pending'),
+      eq(agentRuns.continuationAttemptId, continuationAttemptId),
+    ))
+    .run();
+  return changed.changes === 1
+    ? db.select().from(agentRuns).where(eq(agentRuns.id, runId)).get() ?? null
+    : null;
 }
 
 export interface ListAgentRunsForSessionOptions {
@@ -465,22 +823,3 @@ export function setAgentRunFailureReason(id: ULID, failureReason: string): void 
 // UPDATE — bypassing the one terminal authority — and killed `paused` rows (FD-14
 // violation). The agent-run reconciler loop (apps/server agent-run-reconciler.ts)
 // owns orphan detection now; every finalize routes through applyAgentRunTerminalEffects.
-
-// ── Slice 013 — agent_runs.contract_id link (additive) ───────────────────────
-
-/** Point an agent_run at the first-class contract it's producing. Does NOT
- *  bump rev — the contract link is dispatch bookkeeping, not a status
- *  transition the frontend versions. Idempotent. */
-/** Stamp the adapter-native session id once the runtime's init event lands
- *  (the SDK mints it; we can't choose it up front). Resume routes through it. */
-export function setAgentRunCcSession(id: ULID, ccSessionId: string): void {
-  getDb()
-    .update(agentRuns)
-    .set({ ccSessionId, rev: sql`${agentRuns.rev} + 1` })
-    .where(eq(agentRuns.id, id))
-    .run();
-}
-
-export function setAgentRunContractId(id: ULID, contractId: ULID | null): void {
-  getDb().update(agentRuns).set({ contractId }).where(eq(agentRuns.id, id)).run();
-}

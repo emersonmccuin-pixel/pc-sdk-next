@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  AgentRunAdapterError,
   AgentRunMutationGateway,
   toAgentRunDto,
   type AgentRunGatewayDeps,
@@ -14,10 +15,26 @@ function makeRow(over: Partial<AgentRunRow> = {}): AgentRunRow {
     id: 'run1' as AgentRunRow['id'],
     projectId: 'p1' as AgentRunRow['projectId'],
     dispatcherSessionId: 'disp1',
-    ccSessionId: 'cc-uuid-1',
+    snapshotState: 'stamped',
+    specialistSnapshot: {
+      specialistId: 'specialist-builder' as never,
+      revision: 'sha256:builder',
+      name: 'builder',
+      charter: 'Build.',
+      contextDocs: [],
+      maxTurns: 10,
+    },
+    nativeSessionId: 'native-1',
+    nativeIdentityState: 'bound',
+    continuationState: 'clean-started',
+    continuationAttemptId: 'attempt-1',
     podName: 'builder',
-    podRevisionAtDispatch: 'rev-a',
-    podRevisionAtResume: null,
+    selectionState: 'stamped',
+    runtimeId: 'runtime-a',
+    accountId: 'account-a',
+    model: 'model-a',
+    effortState: 'none',
+    effort: null,
     status: 'running',
     continues: null,
     parentInvokeDepth: 1,
@@ -88,9 +105,11 @@ function makeGateway(opts: {
     updateStatus: (input) => {
       calls.push(`updateStatus:${input.status}`);
       if (current) current = { ...current, status: input.status, rev: current.rev + 1 };
+      return current !== null;
     },
     markTerminal: (input) => {
       calls.push(`markTerminal:${input.status}`);
+      if (current && ['completed', 'failed', 'cancelled'].includes(current.status)) return false;
       if (current) {
         current = {
           ...current,
@@ -101,6 +120,7 @@ function makeGateway(opts: {
           failureReason: input.failureReason,
         };
       }
+      return current !== null;
     },
     createPendingAsk: (input) => {
       calls.push(`createPendingAsk:${input.id}`);
@@ -163,7 +183,6 @@ test('pauseRun writes the ask + paused row + one paused fact with pendingAskId',
     pendingAsk: {
       id: 'ask1' as never,
       agentRunId: 'run1' as never,
-      ccSessionId: 'cc-uuid-1',
       projectId: 'p1' as never,
       kind: 'orchestrator',
       promptBody: 'q?',
@@ -185,7 +204,6 @@ test('answerAndResume: a no-op flip (replayed answer) emits nothing', () => {
     answer: 'yes',
     answeredBy: 'orchestrator',
     now: 300,
-    podRevisionAtResume: 'rev-b',
   });
   assert.equal(pub, null);
   assert.equal(inserted.length, 0);
@@ -205,7 +223,6 @@ test('answerAndResume: a successful flip persists spawning + emits one resumed f
     answer: 'yes',
     answeredBy: 'orchestrator',
     now: 300,
-    podRevisionAtResume: 'rev-b',
   });
   assert.ok(pub);
   assert.equal(inserted.length, 1);
@@ -247,10 +264,60 @@ test('commitTerminal on an already-terminal run is idempotent (emits nothing)', 
   assert.equal(inserted.length, 0);
 });
 
-test('toAgentRunDto mirrors the v1 record (model opus, queuedAt as startedAt)', () => {
+test('toAgentRunDto exposes safe immutable selection and presence-only native provenance', () => {
   const dto = toAgentRunDto(makeRow({ rev: 2 }));
-  assert.equal(dto.model, 'opus');
+  assert.equal(dto.selection?.model, 'model-a');
   assert.equal(dto.startedAt, 100);
-  assert.equal(dto.sessionId, 'cc-uuid-1');
+  assert.equal(dto.specialistRevision, 'sha256:builder');
+  assert.equal(dto.nativeSessionIdPresent, true);
+  assert.equal('sessionId' in dto, false);
   assert.equal(dto.rev, 2);
+});
+
+test('toAgentRunDto fails closed on corrupt nested execution receipts', () => {
+  const corruptRows = [
+    makeRow({
+      gitReceipt: {
+        worktreePath: '/tmp/wt',
+        branch: 'agent/run1',
+        baseBranch: 'main',
+        baseSha: 'abc123',
+        cleanStatus: true,
+        nativeSessionId: 'nested-leak',
+      } as never,
+    }),
+    makeRow({
+      preparationReceipt: {
+        phase: 'preparation',
+        ok: true,
+        steps: [],
+        finishedAt: 200,
+        providerReceipt: { sessionId: 'nested-leak' },
+      } as never,
+    }),
+    makeRow({
+      readinessReceipt: {
+        phase: 'readiness',
+        ok: true,
+        steps: [{
+          command: 'pnpm test',
+          exitCode: 0,
+          durationMs: 10,
+          stdoutTail: '',
+          stderrTail: '',
+          timedOut: false,
+          nativeSessionId: 'nested-leak',
+        }],
+        finishedAt: 220,
+      } as never,
+    }),
+  ];
+
+  for (const row of corruptRows) {
+    assert.throws(
+      () => toAgentRunDto(row),
+      (error: unknown) => error instanceof AgentRunAdapterError &&
+        /unsafe or inconsistent projection/.test(error.message),
+    );
+  }
 });

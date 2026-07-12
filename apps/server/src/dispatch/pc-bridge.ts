@@ -37,8 +37,6 @@ export interface PcToolIdentity {
   dispatcherSessionId: string;
   /** Set only for dispatched agents. */
   agentRunId?: string;
-  /** Native session id of the dispatched agent (identity/diagnostics). */
-  agentSessionId?: string;
   invokeDepth?: number;
   /** This server's live HTTP port (handlers loop back over localhost). */
   serverPort: number;
@@ -50,7 +48,6 @@ export function buildPcToolDefs(
 ): BridgeToolDef[] {
   const ctx = createToolContext({
     projectId: identity.projectId,
-    agentSessionId: identity.agentSessionId ?? '',
     sessionId: identity.dispatcherSessionId,
     dispatcherSessionId: identity.dispatcherSessionId,
     agentRunId: identity.agentRunId ?? '',

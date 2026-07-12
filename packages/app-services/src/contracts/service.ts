@@ -24,9 +24,12 @@ import {
   insertLiveEvent,
   listContractsForProjectInDb,
   listContractsForRunInDb,
+  reserveContractReview as reserveContractReviewInDb,
+  clearContractReviewReservation as clearContractReviewReservationInDb,
   setContractDeliverable as setContractDeliverableInDb,
   setContractLanding as setContractLandingInDb,
   setContractReviewState as setContractReviewStateInDb,
+  setContractRunRecoveryVerification as setContractRunRecoveryVerificationInDb,
   setContractRun as setContractRunInDb,
   setContractVerification as setContractVerificationInDb,
   type ContractRow,
@@ -227,6 +230,49 @@ export class ContractService {
     });
   }
 
+  reserveReview(input: {
+    id: ULID;
+    expectedVersion: number;
+    expectedReviewRunId: ULID | null;
+    expectedAgentRunId: ULID | null;
+    reviewRound: number;
+    reviewRunId: ULID;
+    reviewSealedCommit: string;
+  }): Contract | null {
+    return this.tx((tx) => {
+      const row = reserveContractReviewInDb(
+        input.id as DomainULID,
+        {
+          expectedVersion: input.expectedVersion,
+          expectedReviewRunId: input.expectedReviewRunId as DomainULID | null,
+          expectedAgentRunId: input.expectedAgentRunId as DomainULID | null,
+          reviewRound: input.reviewRound,
+          reviewRunId: input.reviewRunId as DomainULID,
+          reviewSealedCommit: input.reviewSealedCommit,
+        },
+        tx,
+      );
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'patched', contract }));
+      return contract;
+    });
+  }
+
+  clearReviewReservation(input: { id: ULID; reviewRunId: ULID }): Contract | null {
+    return this.tx((tx) => {
+      const row = clearContractReviewReservationInDb(
+        input.id as DomainULID,
+        input.reviewRunId as DomainULID,
+        tx,
+      );
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'patched', contract }));
+      return contract;
+    });
+  }
+
   /** Record the verification outcome onto the contract. */
   setVerification(input: {
     id: ULID;
@@ -251,6 +297,36 @@ export class ContractService {
           ...(input.verifiedBaseSha !== undefined
             ? { verifiedBaseSha: input.verifiedBaseSha }
             : {}),
+        },
+        tx,
+      );
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'verification-set', contract }));
+      return contract;
+    });
+  }
+
+  /** Boot-only verification park, fenced to the exact producer/project and
+   * contract version. The issued+unbound exception covers only the durable
+   * create-contract -> insert-run -> bind-contract crash window. */
+  setRunRecoveryVerification(input: {
+    id: ULID;
+    expectedVersion: number;
+    projectId: ULID;
+    producerRunId: ULID;
+    verificationNotes: string;
+    allowIssuedUnbound: boolean;
+  }): Contract | null {
+    return this.tx((tx) => {
+      const row = setContractRunRecoveryVerificationInDb(
+        input.id as DomainULID,
+        {
+          expectedVersion: input.expectedVersion,
+          projectId: input.projectId as DomainULID,
+          producerRunId: input.producerRunId as DomainULID,
+          verificationNotes: input.verificationNotes,
+          allowIssuedUnbound: input.allowIssuedUnbound,
         },
         tx,
       );

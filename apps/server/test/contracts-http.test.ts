@@ -13,9 +13,14 @@ import { RuntimeRegistry } from '../src/runner/runtime.ts';
 import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
-import type { McpManager } from '../src/mcp/manager.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
-import { freshDb, newProject } from './helpers.ts';
+import {
+  advanceTestAgentRunStatus,
+  freshDb,
+  newProject,
+  testAgentRunExecution,
+  testDispatchRuntimeDeps,
+} from './helpers.ts';
 import {
   TEST_RUNTIME_ID,
   testSessionSelectionDeps,
@@ -26,6 +31,7 @@ type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-ex
 const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
 
 async function boot(): Promise<{ server: RunningServer; base: string }> {
+  const dispatchRuntimes = new RuntimeRegistry();
   const server = await startServer({
     mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 })),
     ...testSessionSelectionDeps(),
@@ -36,9 +42,7 @@ async function boot(): Promise<{ server: RunningServer; base: string }> {
     usage: new UsageCache(),
     // The agent-run/contract routes mount only when dispatch is supplied.
     dispatch: new DispatchService({
-      runtimes: new RuntimeRegistry(),
-      accounts: new AccountRegistry(),
-      mcp: {} as McpManager,
+      ...testDispatchRuntimeDeps(dispatchRuntimes),
     }),
   });
   return { server, base: `http://localhost:${server.port}` };
@@ -124,14 +128,14 @@ test('run list retention: preserved lifecycle states outlive the 24h window; une
       insertAgentRunRow({
         id,
         projectId: project.id,
-        podName: 'builder',
+        ...testAgentRunExecution('builder'),
         dispatcherSessionId: 'disp-1',
-        ccSessionId: `cc-${id}`,
-        status,
+        status: 'queued',
         input: 'x',
         lifecycleState: lifecycleState ?? null,
         queuedAt: old,
       });
+      advanceTestAgentRunStatus(id, status);
       return id;
     };
     const finish = (id: ULID, completedAt: number) =>
@@ -145,13 +149,13 @@ test('run list retention: preserved lifecycle states outlive the 24h window; une
       });
 
     const active = mk('running');
-    const agedOut = mk('queued');
+    const agedOut = mk('running');
     finish(agedOut, old); // uneventful, outside the window
-    const recentTerminal = mk('queued');
+    const recentTerminal = mk('running');
     finish(recentTerminal, now - 1000); // uneventful, inside the window
-    const parkedMergeReady = mk('queued', 'merge-ready');
+    const parkedMergeReady = mk('running', 'merge-ready');
     finish(parkedMergeReady, old); // preserved — stays despite age
-    const strandedRun = mk('queued', 'stranded');
+    const strandedRun = mk('running', 'stranded');
     finish(strandedRun, old); // preserved — stays despite age
 
     const res = await fetch(`${base}/api/projects/${project.id}/agent-runs`).then(body);
