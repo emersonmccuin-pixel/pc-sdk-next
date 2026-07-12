@@ -316,6 +316,11 @@ Implement `DL-001` from `docs/execution/slices/DL-001.md`: explicit positive
 preparation/readiness receipts for repository builder runs and continuations,
 with immutable persistence and pre-mint/revival guards. Keep the detached
 reviewer permission/check-out boundary explicit and leave `WT-002` accepted.
+The implementation is sealed as
+`f5b32a67e814b43f2fe9ed65853c43af2f71cbe7` with exact tree
+`1d34749590c1bdfd1f5a1f72e697c5d674c4229a`; feature verification and hostile
+re-review are complete, so the next action is its documentation-only feature
+record followed by guarded landing.
 After guarded landing and cleanup, continue directly to the separately scoped
 `DL-002` approved-abandonment receipt and teardown authority slice. Do not
 bundle the broader process-failure gate, recovery UI implementation,
