@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-004 guarded landing and teardown.
+Updated: 2026-07-11 after RS-001 provisioning.
 
 ## Repository
 
@@ -43,24 +43,27 @@ Updated: 2026-07-11 after CF-004 guarded landing and teardown.
   `b1a377e7a75007e29a51e36dcdd5f283aaa1378f`
 - CF-004 feature record: `3e80d8fdcae208dabcf46bd01538418e8dc89ad4`
 - CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
+- RS-001 base: `c52713770a7196c5b7cd805e0d2d8dc8700f223f`
+- Active slice: `docs/execution/slices/RS-001.md`
+- RS-001 feature branch: `codex/rs-001-session-selection-stamps`
+- RS-001 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-001`
 
 ## Status
 
-CF-004 is complete: closed honest activity, guarded safe tool lifecycle,
-replayable approval state, strict live/HTTP transcript ingestion, and terminal
-closure across normal, error, interrupt, recovery, kill, and shutdown paths are
-verified and guarded-landed. The sealed implementation and feature record are
-both proven ancestors of the landing merge; the landed tree exactly matches the
-fully verified feature tree. The feature worktree is torn down. There is no
-user-direction blocker.
+RS-001 is provisioned from clean pushed `main`. The bounded slice replaces
+mutable/default-derived orchestrator runtime selection with a complete immutable
+runtime/account/model/effort app-session stamp, bind-once native identity, typed
+capability/resume availability, and exact stamped continuation through Claude.
+Codex, context, quota, specialist widening, and handoff compilation remain out
+of scope. There is no user-direction blocker.
 
 ## Next safe action
 
-Define and provision the first bounded N3 slice: immutable runtime/account/
-model/effort selection stamps on app sessions plus the minimum capability
-contract needed to make continuation and selection changes honest. Prove the
-shape with Claude before Codex, and keep context/quota widening out until the
-session-selection invariant is guarded.
+Prepare the RS-001 worktree with a locked offline dependency install and
+baseline typecheck, then implement the canonical selection/capability contract,
+legacy-safe migration, stamped session creation/minting, bind-once native
+receipt, preflighted resume, and minimum honest account/session presentation.
 
 ## Startup checks
 
@@ -71,8 +74,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Run startup checks and read the N3 master-plan/runtime/account boundaries before
-provisioning a new run-owned worktree. The main checkout remains read-only.
+Run startup checks in the recorded feature worktree and confirm its HEAD equals
+the RS-001 base before writing. The main checkout remains read-only.
 
 ## Known blockers
 
