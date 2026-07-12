@@ -90,6 +90,13 @@ only in PC-SDK Next.
   `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
 - PM-001 accepted-decision tree:
   `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
+- PM-001 feature record:
+  `16ed919628fd12f5f74bf5713e02fb2f3d89eb7b`
+- PM-001 landing merge:
+  `1adaad7926ca64a47fc3935c8afffbc799ada70e`
+- PM-001 landed tree: `18cfeb9177130f697ad30358d76b5db27104bae4`
+- PM-001 feature worktree: removed after positive ancestry/tree proof; feature
+  branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -260,6 +267,10 @@ events. The product owner accepted that ownership direction and its future
 immutable verification/landing evidence policy on 2026-07-12. No current
 integration, folder-registration, auth/config, or remote PM mutation is
 authorized by the decision.
+
+The accepted feature record `16ed919` was guarded-landed as merge `1adaad7` and
+pushed to `origin/main`. Exact feature/merge tree equality and ancestry passed;
+post-merge `pnpm ci:check` passed, and the clean feature worktree was removed.
 
 No explicit live mutation tool was called. A source audit after one
 `get_started` call found that the tool invokes first-run domain seeding. Five
