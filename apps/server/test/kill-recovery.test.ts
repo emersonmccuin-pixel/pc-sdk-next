@@ -214,6 +214,14 @@ async function crashedRepoRun(
     worktreeDir: wt.dir,
     worktreeBaseBranch: wt.baseBranch,
     worktreeBaseSha: wt.baseSha,
+    gitReceipt: {
+      worktreePath: wt.dir,
+      branch: wt.branch,
+      baseBranch: wt.baseBranch,
+      baseSha: wt.baseSha,
+      cleanStatus: wt.cleanStatus,
+      repositoryIdentity: wt.repositoryIdentity,
+    },
     lifecycleState: opts.lifecycleState,
     queuedAt: Date.now(),
   });
@@ -279,7 +287,7 @@ test('guard 10: killed after seal, before verification — boot resumes to verif
     assert.equal(again.landedAt, row.landedAt);
     assert.equal(again.version, row.version, 'no second write at all');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -319,7 +327,7 @@ test('guard 10: killed after merge, before the receipt — boot converges via th
     assert.equal(getActiveWorktreeByName(wt.branch), null);
     assert.equal(listStrandedWorktrees().length, 0);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -368,7 +376,7 @@ test('guard 10: killed after the receipt, before teardown — boot resumes teard
     assert.equal(after.landingAuthorizer, 'auto');
     assert.equal(after.version, receipt!.version);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -404,7 +412,7 @@ test('guard 10 / guard 7: a re-driven pending landing revalidates the base — a
     assert.notEqual(getActiveWorktreeByName(wt.branch), null, 'row stays active awaiting the re-accept door');
     assert.equal(listStrandedWorktrees().length, 0);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -439,7 +447,7 @@ test('guard 10: killed mid-prep (no seal) — failed loudly, worktree preserved,
     assert.equal(stranded[0].name, wt.branch);
     assert.equal(stranded[0].strandedReason, 'no-live-run');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -493,6 +501,6 @@ test('F3: a terminal envelope minted before attach is queued, not dropped — re
       5000,
     );
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });

@@ -24,6 +24,12 @@ import {
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import type { SessionRegistry } from '../chat/registry.ts';
+import {
+  requireRepositoryWorktreeRoot,
+  RepositoryLeaseError,
+  repositoryLeaseManager,
+  type RepositoryLeaseGuard,
+} from '../dispatch/repository-lease.ts';
 import { toProjectDto } from './dto.ts';
 
 function slugify(name: string): string {
@@ -64,12 +70,38 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
     const body = await c.req.json().catch(() => ({}));
     const parsed = parseCreateProjectRequest(body);
     if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400);
-    // Phase 2 creates the project row over an existing (probed) folder. Git
-    // scaffolding per `mode` is deferred — the folder is adopted as-is.
+    let repositoryLease: RepositoryLeaseGuard;
+    let folderPath: string;
+    try {
+      repositoryLease = await repositoryLeaseManager.acquireForProjectCreation(
+        parsed.value.folder_path,
+        parsed.value.mode,
+      );
+      folderPath = await requireRepositoryWorktreeRoot(parsed.value.folder_path);
+      await repositoryLeaseManager.assertHeld(
+        repositoryLease,
+        folderPath,
+        repositoryLease.identity,
+      );
+    } catch (error) {
+      return c.json(
+        {
+          ok: false,
+          error: error instanceof Error
+            ? error.message
+            : 'repository authority is unavailable',
+        },
+        repositoryCreationStatus(error),
+      );
+    }
+    // Creation-mode Git effects complete under the live guard first; the row
+    // then inserts with that exact immutable identity. An attach request can
+    // never silently become init-in-place after the original probe.
     const project = createProject({
       name: parsed.value.name,
       slug: uniqueSlug(parsed.value.name),
-      folderPath: parsed.value.folder_path,
+      folderPath,
+      repositoryIdentity: repositoryLease.identity,
       gitRemote: parsed.value.git_remote ?? null,
     });
     return c.json({ ok: true, project: toProjectDto(project) }, 201);
@@ -157,4 +189,15 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
     }
     return c.json({ ok: true, probe: { path, exists, isDirectory, hasFiles, fileCount, isGitRepo } });
   });
+}
+
+function repositoryCreationStatus(error: unknown): 409 | 503 {
+  if (error instanceof RepositoryLeaseError) {
+    if (error.code === 'repository-occupied') return 409;
+    if (error.reasonCode.startsWith('PROJECT_CREATION_')) return 409;
+  }
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? (error as { code?: unknown }).code
+    : null;
+  return code === 'PROJECT_PATH_NOT_REPOSITORY_ROOT' ? 409 : 503;
 }

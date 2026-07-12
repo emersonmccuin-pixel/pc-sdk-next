@@ -14,7 +14,7 @@ import {
 } from '../src/runner/account-env.ts';
 import { freshDb, newProject } from './helpers.ts';
 
-test('buildAccountEnv scrubs ANTHROPIC_* and forces CLAUDE_CONFIG_DIR', () => {
+test('buildAccountEnv scrubs credentials and ambient Git selectors, then forces CLAUDE_CONFIG_DIR', () => {
   const base = {
     PATH: '/usr/bin',
     ANTHROPIC_API_KEY: 'sk-should-be-removed',
@@ -23,6 +23,9 @@ test('buildAccountEnv scrubs ANTHROPIC_* and forces CLAUDE_CONFIG_DIR', () => {
     anthropic_api_key: 'lowercase-key',
     Anthropic_Auth_Token: 'mixed-case-token',
     claude_config_dir: '/lowercase/stale-dir',
+    GIT_DIR: '/malicious/repository',
+    git_work_tree: '/malicious/worktree',
+    Git_Common_Dir: '/malicious/common-dir',
   };
   const env = buildAccountEnv('C:/Users/emers/.claude-work', base);
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
@@ -31,6 +34,9 @@ test('buildAccountEnv scrubs ANTHROPIC_* and forces CLAUDE_CONFIG_DIR', () => {
   assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'ANTHROPIC_API_KEY'), false);
   assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'ANTHROPIC_AUTH_TOKEN'), false);
   assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === 'CLAUDE_CONFIG_DIR').length, 1);
+  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_DIR'), false);
+  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_WORK_TREE'), false);
+  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_COMMON_DIR'), false);
   assert.equal(env.PATH, '/usr/bin'); // inherited vars survive
 });
 
@@ -42,9 +48,14 @@ test('registry.buildEnv scrubs for a named account', () => {
     ],
     'personal',
   );
-  const env = reg.buildEnv('claude-agent-sdk', 'work', { ANTHROPIC_API_KEY: 'x', KEEP: '1' });
+  const env = reg.buildEnv('claude-agent-sdk', 'work', {
+    ANTHROPIC_API_KEY: 'x',
+    GIT_DIR: '/wrong/repository',
+    KEEP: '1',
+  });
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
   assert.equal(env.CLAUDE_CONFIG_DIR, '/home/.claude-work');
+  assert.equal(env.GIT_DIR, undefined);
   assert.equal(env.KEEP, '1');
   assert.throws(() => reg.buildEnv('claude-agent-sdk', 'nope'), /unknown account/);
 });

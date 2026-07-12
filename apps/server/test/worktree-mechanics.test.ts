@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getActiveWorktreeByName, newId } from '@pc/db';
@@ -61,7 +61,7 @@ test('provision refuses a detached HEAD', async () => {
     assert.equal(out.ok, false);
     if (!out.ok) assert.match(out.error, /detached HEAD/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -74,7 +74,7 @@ test('provision refuses when the main copy is checked out on a feature branch', 
     assert.equal(out.ok, false);
     if (!out.ok) assert.match(out.error, /checked out on 'feature-x', not the base branch 'main'/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -106,7 +106,7 @@ test('provision falls back to master when main does not exist', async () => {
     const wt = await provisionOk(gp.dir);
     assert.equal(wt.baseBranch, 'master');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -126,7 +126,73 @@ test('provision branches from the base branch TIP and registers the row', async 
     assert.equal((await git(['rev-parse', 'HEAD'], wt.dir)).stdout, wt.baseSha, 'worktree starts at base SHA');
     assert.equal(getActiveWorktreeByName(wt.branch)?.path, wt.dir, 'durable row registered');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
+  }
+});
+
+test('provision refuses a repository subdirectory before creating an in-checkout worktree root', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const subdir = join(gp.dir, 'selected-subdirectory');
+  try {
+    mkdirSync(subdir);
+    writeFileSync(join(subdir, 'tracked.txt'), 'tracked\n');
+    assert.equal((await git(['add', 'selected-subdirectory/tracked.txt'], gp.dir)).ok, true);
+    assert.equal((await git(['commit', '-m', 'add selected subdirectory'], gp.dir)).ok, true);
+    const head = (await git(['rev-parse', 'HEAD'], gp.dir)).stdout;
+
+    const out = await provisionWorktree(subdir, newId());
+    assert.equal(out.ok, false);
+    if (!out.ok) assert.match(out.error, /project folder must be the repository worktree root/);
+    assert.equal(existsSync(worktreesRoot(subdir)), false);
+    assert.equal((await git(['rev-parse', 'HEAD'], gp.dir)).stdout, head);
+    assert.equal((await git(['status', '--porcelain'], gp.dir)).stdout, '');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('app-owned Git commands ignore ambient selectors and mutate only the agent branch', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  let wt: Awaited<ReturnType<typeof provisionOk>> | null = null;
+  const selectorNames = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'] as const;
+  const prior = new Map(selectorNames.map((name) => [name, process.env[name]]));
+  try {
+    wt = await provisionOk(gp.dir);
+    const mainHead = (await git(['rev-parse', 'HEAD'], gp.dir)).stdout;
+    process.env.GIT_DIR = join(gp.dir, '.git');
+    process.env.GIT_WORK_TREE = gp.dir;
+    process.env.GIT_COMMON_DIR = join(gp.dir, '.git');
+
+    assert.equal(
+      (await git(['rev-parse', '--abbrev-ref', 'HEAD'], wt.dir)).stdout,
+      wt.branch,
+    );
+    const committed = await git([
+      '-c',
+      'user.name=PC-SDK Test',
+      '-c',
+      'user.email=test@pc-sdk.invalid',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'agent-scoped ambient-selector guard',
+    ], wt.dir);
+    assert.equal(committed.ok, true, committed.stderr);
+    assert.notEqual((await git(['rev-parse', 'HEAD'], wt.dir)).stdout, mainHead);
+    assert.equal((await git(['rev-parse', 'HEAD'], gp.dir)).stdout, mainHead);
+    assert.equal((await git(['status', '--porcelain'], gp.dir)).stdout, '');
+  } finally {
+    for (const name of selectorNames) {
+      const value = prior.get(name);
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    if (wt) {
+      await teardownWorktree(gp.dir, wt.dir, [], wt.repositoryIdentity).catch(() => false);
+    }
+    await gp.cleanup();
   }
 });
 
@@ -141,7 +207,7 @@ test('landBranch refuses a dirty project tree', async () => {
     assert.equal(out.outcome, 'conflict');
     if (out.outcome === 'conflict') assert.match(out.error, /uncommitted changes/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -156,7 +222,7 @@ test('landBranch refuses when HEAD left the base branch', async () => {
     assert.equal(out.outcome, 'conflict');
     if (out.outcome === 'conflict') assert.match(out.error, /not the dispatch base/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -174,7 +240,7 @@ test('landBranch fails typed when the agent branch is missing', async () => {
     assert.equal(out.outcome, 'failed');
     if (out.outcome === 'failed') assert.match(out.error, /agent branch missing/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -194,7 +260,7 @@ test('merge conflict aborts and leaves the project tree clean', async () => {
     assert.equal((await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], gp.dir)).ok, false, 'no merge in progress');
     assert.equal((await git(['rev-parse', 'HEAD'], gp.dir)).stdout, mainTip);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -215,7 +281,7 @@ test('successful land returns the positive ancestry receipt (guard 8)', async ()
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'HEAD'], gp.dir)).ok, true);
     assert.ok(existsSync(join(gp.dir, 'feature.txt')), 'merged content present in the project');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -240,7 +306,7 @@ test('teardown reclaims the directory but ALWAYS preserves the branch', async ()
     assert.equal(existsSync(unlandedWt.dir), false);
     assert.equal((await git(['rev-parse', unlandedWt.branch], gp.dir)).stdout, unlandedTip, 'unlanded branch preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -259,7 +325,7 @@ test('teardown: git remove fails but the filesystem fallback still removes the d
     assert.equal(existsSync(wt.dir), false, 'directory removed by the fallback');
     assert.equal(getActiveWorktreeByName(wt.branch), null, 'row marked destroyed');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 

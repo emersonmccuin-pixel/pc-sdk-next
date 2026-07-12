@@ -2,9 +2,17 @@
 // Real Hono app on an ephemeral port; asserts the response SHAPES the client
 // reducers/stores destructure (a 404 or a wrong key here is a broken app).
 
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubscriptionQuotaService } from '@pc/app-services';
@@ -18,11 +26,14 @@ import {
   getProjectById,
   getRawDb,
   listLiveOutboxRowsAfter,
+  listProjects,
   pruneLiveOutbox,
 } from '@pc/db';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
+import { releaseAllRepositoryLeasesForTesting } from '../src/dispatch/repository-lease.ts';
+import { git } from '../src/dispatch/worktrees.ts';
 import { freshDb, until } from './helpers.ts';
 import {
   TEST_RUNTIME_ID,
@@ -33,6 +44,10 @@ import {
 // Response bodies are `unknown` under strict fetch types; tests assert on shapes.
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
+
+afterEach(async () => {
+  await releaseAllRepositoryLeasesForTesting();
+});
 
 async function boot(): Promise<{
   server: RunningServer;
@@ -51,6 +66,49 @@ async function boot(): Promise<{
     subscriptionQuota,
   });
   return { server, base: `http://localhost:${server.port}`, subscriptionQuota };
+}
+
+type ProjectCreationMode = 'init-empty' | 'init-in-place' | 'attach-to-git';
+
+function requestProjectCreation(
+  base: string,
+  input: { name: string; folderPath: string; mode: ProjectCreationMode },
+): Promise<Response> {
+  return fetch(`${base}/api/projects`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: input.name,
+      folder_path: input.folderPath,
+      mode: input.mode,
+    }),
+  });
+}
+
+async function requiredGit(args: string[], cwd: string): Promise<string> {
+  const result = await git(args, cwd);
+  assert.equal(
+    result.ok,
+    true,
+    `git ${args.join(' ')} failed in ${cwd}: ${result.stderr || result.stdout}`,
+  );
+  return result.stdout;
+}
+
+async function initializeCommittedRepository(dir: string): Promise<void> {
+  mkdirSync(dir, { recursive: true });
+  await requiredGit(['init', '-b', 'main'], dir);
+  await requiredGit(['config', 'user.name', 'PC-SDK Test'], dir);
+  await requiredGit(['config', 'user.email', 'test@pc-sdk.invalid'], dir);
+  writeFileSync(join(dir, 'README.md'), 'seed\n', 'utf8');
+  await requiredGit(['add', 'README.md'], dir);
+  await requiredGit(['commit', '-m', 'fixture'], dir);
+}
+
+async function closeFixture(server: RunningServer, root: string): Promise<void> {
+  await server.close();
+  await releaseAllRepositoryLeasesForTesting();
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }
 
 test('health positively identifies the PC-SDK Next instance', async () => {
@@ -102,6 +160,19 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.equal(probe.probe.exists, true);
     assert.equal(probe.probe.isDirectory, true);
 
+    const invalidAttachDir = mkdtempSync(join(tmpdir(), 'pc-attach-invalid-'));
+    const invalidAttach = await fetch(`${base}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Invalid attach',
+        folder_path: invalidAttachDir,
+        mode: 'attach-to-git',
+      }),
+    });
+    assert.equal(invalidAttach.status, 503);
+    assert.equal(existsSync(join(invalidAttachDir, '.git')), false);
+
     // create — the contract request body (folder_path + mode)
     const created = await fetch(`${base}/api/projects`, {
       method: 'POST',
@@ -109,6 +180,8 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
       body: JSON.stringify({ name: 'Alpha', folder_path: dir, mode: 'init-empty' }),
     }).then(body);
     assert.equal(created.ok, true);
+    assert.equal(existsSync(join(dir, '.git', 'HEAD')), true);
+    assert.ok(getProjectById(created.project.id)?.repositoryIdentity);
     const project = created.project;
     assert.ok(project.id && project.slug);
     assert.deepEqual(project.stages, []);
@@ -176,6 +249,193 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.ok(img.path.endsWith('.png'));
   } finally {
     await server.close();
+  }
+});
+
+test('projects: init-empty rejects a directory that became nonempty after probing', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-project-mode-drift-empty-'));
+  const dir = join(root, 'selected');
+  mkdirSync(dir);
+  try {
+    const projectCountBefore = listProjects().length;
+    const probe = await fetch(`${base}/api/fs/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: dir }),
+    }).then(body);
+    assert.equal(probe.probe.hasFiles, false);
+    assert.equal(probe.probe.isGitRepo, false);
+
+    const arrivedAfterProbe = join(dir, 'arrived-after-probe.txt');
+    writeFileSync(arrivedAfterProbe, 'preserve me\n', 'utf8');
+    const response = await requestProjectCreation(base, {
+      name: 'Stale init-empty',
+      folderPath: dir,
+      mode: 'init-empty',
+    });
+
+    assert.equal(response.status, 409);
+    assert.equal((await body(response)).ok, false);
+    assert.equal(listProjects().length, projectCountBefore);
+    assert.equal(existsSync(join(dir, '.git')), false);
+    assert.equal(readFileSync(arrivedAfterProbe, 'utf8'), 'preserve me\n');
+  } finally {
+    await closeFixture(server, root);
+  }
+});
+
+test('projects: init-in-place rejects a directory that became empty after probing', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-project-mode-drift-in-place-'));
+  const dir = join(root, 'selected');
+  mkdirSync(dir);
+  const removedAfterProbe = join(dir, 'removed-after-probe.txt');
+  writeFileSync(removedAfterProbe, 'temporary\n', 'utf8');
+  try {
+    const projectCountBefore = listProjects().length;
+    const probe = await fetch(`${base}/api/fs/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: dir }),
+    }).then(body);
+    assert.equal(probe.probe.hasFiles, true);
+    assert.equal(probe.probe.isGitRepo, false);
+
+    rmSync(removedAfterProbe);
+    assert.deepEqual(readdirSync(dir), []);
+    const response = await requestProjectCreation(base, {
+      name: 'Stale init-in-place',
+      folderPath: dir,
+      mode: 'init-in-place',
+    });
+
+    assert.equal(response.status, 409);
+    assert.equal((await body(response)).ok, false);
+    assert.equal(listProjects().length, projectCountBefore);
+    assert.equal(existsSync(join(dir, '.git')), false);
+    assert.deepEqual(readdirSync(dir), []);
+  } finally {
+    await closeFixture(server, root);
+  }
+});
+
+test('projects: init modes reject an existing Git repository instead of attaching it', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-project-init-existing-git-'));
+  try {
+    const projectCountBefore = listProjects().length;
+    for (const mode of ['init-empty', 'init-in-place'] as const) {
+      const dir = join(root, mode);
+      await initializeCommittedRepository(dir);
+      const probe = await fetch(`${base}/api/fs/probe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: dir }),
+      }).then(body);
+      assert.equal(probe.probe.isGitRepo, true);
+      const headBefore = await requiredGit(['rev-parse', 'HEAD'], dir);
+      const statusBefore = await requiredGit(['status', '--porcelain'], dir);
+      assert.equal(statusBefore, '');
+
+      const response = await requestProjectCreation(base, {
+        name: `Existing Git via ${mode}`,
+        folderPath: dir,
+        mode,
+      });
+
+      assert.equal(response.status, 409);
+      assert.equal((await body(response)).ok, false);
+      assert.equal(listProjects().length, projectCountBefore);
+      assert.equal(await requiredGit(['rev-parse', 'HEAD'], dir), headBefore);
+      assert.equal(await requiredGit(['status', '--porcelain'], dir), statusBefore);
+    }
+  } finally {
+    await closeFixture(server, root);
+  }
+});
+
+test('projects: valid init-in-place imports files, commits, and binds repository identity', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-project-init-in-place-'));
+  const dir = join(root, 'selected');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'seed.txt'), 'seed\n', 'utf8');
+  try {
+    const projectCountBefore = listProjects().length;
+    const probe = await fetch(`${base}/api/fs/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: dir }),
+    }).then(body);
+    assert.equal(probe.probe.hasFiles, true);
+    assert.equal(probe.probe.isGitRepo, false);
+
+    const response = await requestProjectCreation(base, {
+      name: 'Initial import project',
+      folderPath: dir,
+      mode: 'init-in-place',
+    });
+    assert.equal(response.status, 201);
+    const created = await body(response);
+    assert.equal(created.ok, true);
+    const persisted = getProjectById(created.project.id);
+
+    assert.equal(listProjects().length, projectCountBefore + 1);
+    assert.equal(persisted?.folderPath, dir);
+    assert.equal(persisted?.repositoryIdentity?.protocol, 'git-common-dir-v1');
+    assert.ok(persisted?.repositoryIdentity?.gitCommonDir);
+    assert.match(persisted?.repositoryIdentity?.leaseKey ?? '', /^sha256:/);
+    assert.equal(await requiredGit(['log', '-1', '--format=%s'], dir), 'Initial import');
+    assert.equal(await requiredGit(['rev-list', '--count', 'HEAD'], dir), '1');
+    assert.equal(await requiredGit(['ls-files'], dir), 'seed.txt');
+    assert.equal(await requiredGit(['status', '--porcelain'], dir), '');
+  } finally {
+    await closeFixture(server, root);
+  }
+});
+
+test('projects: attach-to-git rejects a repository subdirectory without side effects', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-project-attach-subdir-'));
+  const repo = join(root, 'repository');
+  await initializeCommittedRepository(repo);
+  const selected = join(repo, 'nested');
+  mkdirSync(selected);
+  const trackedPath = join(selected, 'tracked.txt');
+  writeFileSync(trackedPath, 'tracked before attach\n', 'utf8');
+  await requiredGit(['add', 'nested/tracked.txt'], repo);
+  await requiredGit(['commit', '-m', 'add nested fixture'], repo);
+  try {
+    const projectCountBefore = listProjects().length;
+    const headBefore = await requiredGit(['rev-parse', 'HEAD'], repo);
+    const commitCountBefore = await requiredGit(['rev-list', '--count', 'HEAD'], repo);
+    const statusBefore = await requiredGit(['status', '--porcelain'], repo);
+    assert.equal(statusBefore, '');
+    assert.equal(existsSync(join(selected, '.git')), false);
+
+    const response = await requestProjectCreation(base, {
+      name: 'Nested attach',
+      folderPath: selected,
+      mode: 'attach-to-git',
+    });
+
+    assert.equal(response.status, 409);
+    assert.equal((await body(response)).ok, false);
+    assert.equal(listProjects().length, projectCountBefore);
+    assert.equal(listProjects().some((project) => project.folderPath === selected), false);
+    assert.equal(await requiredGit(['rev-parse', 'HEAD'], repo), headBefore);
+    assert.equal(await requiredGit(['rev-list', '--count', 'HEAD'], repo), commitCountBefore);
+    assert.equal(await requiredGit(['status', '--porcelain'], repo), statusBefore);
+    assert.equal(readFileSync(trackedPath, 'utf8'), 'tracked before attach\n');
+    assert.equal(existsSync(join(selected, '.git')), false);
+  } finally {
+    await closeFixture(server, root);
   }
 });
 

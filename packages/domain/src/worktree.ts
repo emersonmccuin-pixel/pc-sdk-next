@@ -127,6 +127,40 @@ export function parseWorktreeProfile(value: unknown): WorktreeProfileParse {
 
 // ── Provisioning receipts (doc: Git / preparation / readiness receipts) ──────
 
+/** Stable protocol discriminator for the canonical local-repository identity
+ *  frozen into every new Git provisioning receipt. */
+export const REPOSITORY_IDENTITY_PROTOCOL = 'git-common-dir-v1' as const;
+
+/** Immutable authority receipt for one physical local Git repository.
+ *
+ * `gitCommonDir` is the native real path derived from Git's absolute common-
+ * directory result. `leaseKey` is the protocol-stable digest used by the
+ * cooperative same-host lease. Both are independently revalidated before a
+ * later repository-writing authority door may act. */
+export interface RepositoryIdentityReceipt {
+  readonly protocol: typeof REPOSITORY_IDENTITY_PROTOCOL;
+  readonly gitCommonDir: string;
+  readonly leaseKey: string;
+}
+
+export function isRepositoryIdentityReceipt(value: unknown): value is RepositoryIdentityReceipt {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return (
+    keys.length === 3 &&
+    keys[0] === 'gitCommonDir' &&
+    keys[1] === 'leaseKey' &&
+    keys[2] === 'protocol' &&
+    record.protocol === REPOSITORY_IDENTITY_PROTOCOL &&
+    typeof record.gitCommonDir === 'string' &&
+    record.gitCommonDir.length > 0 &&
+    record.gitCommonDir === record.gitCommonDir.trim() &&
+    typeof record.leaseKey === 'string' &&
+    /^sha256:[0-9a-f]{64}$/u.test(record.leaseKey)
+  );
+}
+
 /** Git receipt — recorded after `git worktree add`. `cleanStatus` is the
  *  positive clean-initial-status check; provisioning refuses when false. */
 export interface WorktreeGitReceipt {
@@ -135,6 +169,9 @@ export interface WorktreeGitReceipt {
   baseBranch: string;
   baseSha: string;
   cleanStatus: boolean;
+  /** Required on every new receipt; legacy persisted receipts without it do
+   *  not carry repository-mutation authority. */
+  readonly repositoryIdentity: RepositoryIdentityReceipt;
 }
 
 /** One executed profile command, output bounded to a tail. */

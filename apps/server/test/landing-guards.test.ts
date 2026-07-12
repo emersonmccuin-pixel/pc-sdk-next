@@ -32,12 +32,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve as resolvePath } from 'node:path';
+import { join } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import type { Contract, Deliverable } from '@pc/contracts';
 import { createContract, createPendingAsk, getContract, insertAgentRunRow, markPendingAskAnswered, newId, updateAgentRunStatus } from '@pc/db';
-import type { AcceptanceCriteria, ExpectedOutput, ULID } from '@pc/domain';
+import type {
+  AcceptanceCriteria,
+  ExpectedOutput,
+  RepositoryIdentityReceipt,
+  ULID,
+} from '@pc/domain';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
@@ -76,12 +80,35 @@ async function provisionOk(projectDir: string, runId: string) {
   return out;
 }
 
+function gitReceiptFor(wt: {
+  dir: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  repositoryIdentity: RepositoryIdentityReceipt;
+}) {
+  return {
+    worktreePath: wt.dir,
+    branch: wt.branch,
+    baseBranch: wt.baseBranch,
+    baseSha: wt.baseSha,
+    cleanStatus: true,
+    repositoryIdentity: wt.repositoryIdentity,
+  };
+}
+
 /** Contract + delivered repo deliverable for one provisioned worktree —
  *  everything landAcceptedContract needs. */
 function deliveredContract(
   contracts: ContractService,
   gp: GitProject,
-  wt: { dir: string; branch: string; baseBranch: string; baseSha: string },
+  wt: {
+    dir: string;
+    branch: string;
+    baseBranch: string;
+    baseSha: string;
+    repositoryIdentity: RepositoryIdentityReceipt;
+  },
   tip: string,
   landingPolicy: Contract['landingPolicy'] = null,
 ): Contract {
@@ -108,6 +135,7 @@ function deliveredContract(
     worktreeDir: wt.dir,
     worktreeBaseBranch: wt.baseBranch,
     worktreeBaseSha: wt.baseSha,
+    gitReceipt: gitReceiptFor(wt),
     queuedAt: Date.now(),
   });
   contracts.setRun(contract.id, runId);
@@ -152,6 +180,7 @@ test('submit seal: dirty worktree ⇒ 409; committed resubmit backfills receipts
       worktreeDir: wt.dir,
       worktreeBaseBranch: wt.baseBranch,
       worktreeBaseSha: wt.baseSha,
+      gitReceipt: gitReceiptFor(wt),
       queuedAt: Date.now(),
     });
 
@@ -184,29 +213,33 @@ test('submit seal: dirty worktree ⇒ 409; committed resubmit backfills receipts
       assert.equal(d.baseCommit, wt.baseSha);
     }
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
-// If `git status` itself errors (worktree dir gone, git broken), the worktree
+// If `git status` itself errors after repository authority is proven, the worktree
 // state is unreadable — the submit is refused with the same retryable 409
 // shape as the dirty-tree seal, never accepted unsealed.
 test('submit seal: failing `git status` refuses the submit (worktree state unreadable)', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
-    const dispatch = rig();
     const runId = newId() as ULID;
-    const goneDir = join(tmpdir(), `pc-sdk-gone-${newId().toLowerCase()}`); // never created
+    const wt = await provisionOk(gp.dir, runId);
+    const dispatch = rig({
+      gitCommand: async (args, cwd) => args[0] === 'status'
+        ? { ok: false, stdout: '', stderr: 'injected status failure', code: 1 }
+        : git(args, cwd),
+    });
     const contract = createContract({
       projectId: gp.project.id,
       podName: 'code-writer',
       expectedOutput: { kind: 'repo' },
       acceptanceCriteria: [],
       verificationTier: 'auto',
-      worktreePath: goneDir,
+      worktreePath: wt.dir,
       worktreeBaseBranch: 'main',
-      worktreeBaseSha: '0'.repeat(40),
+      worktreeBaseSha: wt.baseSha,
     });
     insertAgentRunRow({
       id: runId,
@@ -216,9 +249,10 @@ test('submit seal: failing `git status` refuses the submit (worktree state unrea
       status: 'queued',
       input: 'go',
       contractId: contract.id,
-      worktreeDir: goneDir,
+      worktreeDir: wt.dir,
       worktreeBaseBranch: 'main',
-      worktreeBaseSha: '0'.repeat(40),
+      worktreeBaseSha: wt.baseSha,
+      gitReceipt: gitReceiptFor(wt),
       queuedAt: Date.now(),
     });
     advanceTestAgentRunStatus(runId, 'running');
@@ -233,7 +267,7 @@ test('submit seal: failing `git status` refuses the submit (worktree state unrea
       assert.match(submitted.message, /worktree state unreadable/);
     }
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -268,6 +302,7 @@ test('submit seal: a builder-supplied commit that is not the worktree HEAD is re
       worktreeDir: wt.dir,
       worktreeBaseBranch: wt.baseBranch,
       worktreeBaseSha: wt.baseSha,
+      gitReceipt: gitReceiptFor(wt),
       queuedAt: Date.now(),
     });
     advanceTestAgentRunStatus(runId, 'running');
@@ -309,7 +344,7 @@ test('submit seal: a builder-supplied commit that is not the worktree HEAD is re
       assert.equal(d.diffStat?.files, 2, 'diffStat derived over the FULL base..HEAD range');
     }
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -338,7 +373,7 @@ test('guard 9: landing receipt recorded, teardown done, merged branch deleted', 
     );
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'HEAD'], gp.dir)).ok, true, 'ancestry receipt holds');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -364,7 +399,7 @@ test('guard 9: teardown failure cannot lose the landing receipt', async () => {
     // Durable, not just the in-memory return value.
     assert.equal(getContract(landed.id as ULID)?.landingStatus, 'landed');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -412,7 +447,7 @@ test('merge receipt: full receipt persists on a real landing; authorizer auto vs
     assert.equal(landedB?.landedSha, tipB);
     assert.equal(getContract(contractB.id as ULID)?.landingAuthorizer, 'auto', 'auto-land is auto-authorized');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -448,7 +483,7 @@ test('guard 6: concurrent accepts on one repository land serialized', async () =
     // Exactly initial + A's branch commit + A's --no-ff merge commit.
     assert.equal((await git(['rev-list', '--count', 'HEAD'], gp.dir)).stdout, '3');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -475,7 +510,7 @@ test('guard 7: base advanced after verification ⇒ parked stale-base, nothing m
     assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip, 'branch preserved');
     assert.equal(getContract(contract.id as ULID)?.landingStatus, 'stale-base', 'durable, not just in-memory');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -506,7 +541,7 @@ test('guard 7 / recovery: re-driving an already-merged branch converges — no d
     assert.equal(existsSync(wt.dir), false, 'teardown completed on convergence');
     assert.equal(getContract(contract.id as ULID)?.landingStatus, 'landed', 'durable receipt');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -533,7 +568,7 @@ test('landing merges only the provisioned worktree branch — a spoofed delivera
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved — work never silently marked landed');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -556,7 +591,7 @@ test('landing refuses when the branch tip moved off the sealed deliverable commi
     assert.equal((await git(['merge-base', '--is-ancestor', sealed, 'main'], gp.dir)).ok, false, 'nothing merged at all');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -581,7 +616,7 @@ test('probe: a branch reset onto the advanced base tip never stamps a false land
     assert.equal((await git(['merge-base', '--is-ancestor', sealed, 'main'], gp.dir)).ok, false, 'verified work never merged');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -606,7 +641,7 @@ test('probe: a zero-commit branch never converges to landed (no stolen merge rec
     assert.equal(parked?.mergeSha ?? null, null, 'no other contract merge attributed to this receipt');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -636,7 +671,7 @@ test('stale-base recovery: review accept revalidates against the new tip, then r
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, true, 'branch really merged');
     assert.equal((await git(['rev-parse', `${row!.mergeSha}^1`], gp.dir)).stdout, advanced, 'merged onto the new tip');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -661,7 +696,7 @@ test('a second land of an already-landed contract short-circuits — receipt nev
     assert.equal(after?.landedAt, receipt?.landedAt, 'landedAt preserved');
     assert.equal(after?.version, receipt?.version, 'no second write at all');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -691,7 +726,12 @@ async function completedRepoRun(
     /** Row-level evidence sabotage (e.g. null base SHA ⇒ unreadable git). */
     rowBaseSha?: string | null;
   },
-): Promise<{ runId: ULID; contract: Contract; wt: { dir: string; branch: string; baseBranch: string; baseSha: string }; tip: string }> {
+): Promise<{
+  runId: ULID;
+  contract: Contract;
+  wt: Awaited<ReturnType<typeof provisionOk>>;
+  tip: string;
+}> {
   const runId = newId() as ULID;
   const wt = await provisionOk(gp.dir, runId);
   const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
@@ -718,6 +758,7 @@ async function completedRepoRun(
     worktreeDir: wt.dir,
     worktreeBaseBranch: wt.baseBranch,
     worktreeBaseSha: opts.rowBaseSha === undefined ? wt.baseSha : opts.rowBaseSha,
+    gitReceipt: gitReceiptFor(wt),
     queuedAt: Date.now(),
   });
   contracts.setRun(contract.id, runId);
@@ -755,7 +796,7 @@ test('guard 5 happy path: all-positive evidence auto-lands with authorizer auto'
     assert.doesNotMatch(row.verificationNotes ?? '', /auto-land refused/);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, true, 'branch really merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -781,6 +822,7 @@ test('landing authorization is stale when the contract moves to a live producer 
       worktreeDir: wt.dir,
       worktreeBaseBranch: wt.baseBranch,
       worktreeBaseSha: wt.baseSha,
+      gitReceipt: gitReceiptFor(wt),
       queuedAt: Date.now(),
     });
     contracts.setRun(authorized.id, childRunId);
@@ -792,7 +834,7 @@ test('landing authorization is stale when the contract moves to a live producer 
     assert.equal(refused.agentRunId, childRunId, 'new producer remains authoritative');
     assert.equal(existsSync(wt.dir), true, 'live producer worktree is not torn down');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -830,9 +872,7 @@ test('deferred continuation preflight wins before queued landing and invalidates
     const authorized = deliveredContract(contracts, gp, wt, tip);
     const parentRunId = authorized.agentRunId as ULID;
 
-    const key = process.platform === 'win32'
-      ? resolvePath(gp.dir).toLowerCase()
-      : resolvePath(gp.dir);
+    const key = wt.repositoryIdentity.leaseKey;
     (dispatch as unknown as { landingLocks: Map<string, Promise<unknown>> })
       .landingLocks.set(key, landingGate.promise);
 
@@ -862,7 +902,7 @@ test('deferred continuation preflight wins before queued landing and invalidates
     continuationGate.resolve();
     landingGate.resolve();
     await dispatch.disposeAll();
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -915,7 +955,7 @@ test('verification drift: a reseal while predicates await discards the stale pas
     assert.equal((await git(['merge-base', '--is-ancestor', resealedCommit, 'main'], gp.dir)).ok, false, 'new seal did not land unverified');
     assert.equal(existsSync(wt.dir), true, 'worktree stays available for the newer evidence path');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -937,7 +977,7 @@ test('guard 5: pending verification (review tier) cannot auto-land', async () =>
     assert.equal(row.landingAuthorizer, null);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -959,7 +999,7 @@ test('guard 5: failed verification cannot auto-land', async () => {
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -987,7 +1027,7 @@ test('guard 5: an inconclusive subset parks pending — a partial pass never aut
     assert.equal(row.landingAuthorizer, null);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -1018,7 +1058,7 @@ test('guard 5: an unresolved ask blocks auto-land even on a verified pass', asyn
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
     assert.equal(existsSync(wt.dir), true, 'worktree preserved for the review door');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -1050,7 +1090,7 @@ test('guard 5: an ANSWERED ask is resolved — it does not block auto-land', asy
     assert.doesNotMatch(row.verificationNotes ?? '', /unresolved pending ask/);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, true, 'branch really merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -1079,7 +1119,7 @@ test('guard 5: declared paths_touched without scope evidence parks for review (m
     assert.equal(getContract(contract.id as ULID)?.landingStatus, 'landed');
     assert.equal(getContract(contract.id as ULID)?.landingAuthorizer, 'orchestrator');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -1114,7 +1154,7 @@ test('policy is issuer-owned: a deliverable payload cannot flip landingPolicy/au
     assert.equal(row.landingAuthorizer, null);
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -1138,6 +1178,6 @@ test('guard 7: landBranch refuses when the target HEAD moved between check and m
     assert.equal((await git(['rev-parse', 'main'], gp.dir)).stdout, moved, 'refusal never mutates the target');
     assert.equal((await git(['merge-base', '--is-ancestor', tip, 'main'], gp.dir)).ok, false, 'nothing merged');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });

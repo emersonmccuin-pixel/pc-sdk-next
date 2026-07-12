@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   confirmRuntimeSessionReceipt,
+  createProject,
   getActiveConversationTurn,
   getActiveOrchestratorSession,
   getConversationQueueSnapshot,
@@ -544,6 +545,142 @@ test('session-list availability preflight deduplicates identical selections per 
     service.resumeAvailabilityCode(getOrchestratorSession(second.id)!, cache),
   ]), [null, null]);
   assert.equal(preflightCalls, 1);
+  await service.dispose();
+});
+
+test('historical resume is unavailable before preflight when repository identity is missing', async () => {
+  const projectFolder = freshDb();
+  const project = createProject({
+    name: 'Resume without repository identity',
+    slug: 'resume-without-repository-identity',
+    folderPath: projectFolder,
+  });
+  let preflightCalls = 0;
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: testSessionSelectionDeps().resolveNewSessionSelection,
+    preflightRuntimeSession: async (selection) => {
+      preflightCalls += 1;
+      return { status: 'valid', selection };
+    },
+    queueDrainEnabled: false,
+  });
+
+  const historical = await service.ensureActiveSession();
+  assert.equal(confirmRuntimeSessionReceipt({
+    sessionId: historical.id,
+    receipt: {
+      mode: 'created',
+      continuationAttemptId: historical.continuationAttemptId!,
+      selection: TEST_SELECTION,
+      nativeSessionId: `native-${historical.id}`,
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
+  const current = await service.startNewSession();
+  const historicalBefore = getOrchestratorSession(historical.id)!;
+  const activeBefore = getActiveOrchestratorSession(project.id)!;
+  assert.equal(historicalBefore.status, 'ended');
+  assert.equal(activeBefore.id, current.id);
+
+  assert.equal(
+    await service.resumeAvailabilityCode(historicalBefore),
+    'repository-identity-unavailable',
+  );
+  assert.equal(preflightCalls, 0);
+  await assert.rejects(
+    () => service.resumeSession(historical.id),
+    (error: unknown) =>
+      error instanceof RuntimeSelectionRejectedError &&
+      error.code === 'repository-identity-unavailable',
+  );
+
+  assert.equal(preflightCalls, 0);
+  assert.deepEqual(getOrchestratorSession(historical.id), historicalBefore);
+  assert.deepEqual(getActiveOrchestratorSession(project.id), activeBefore);
+  await service.dispose();
+});
+
+test('active remint refuses missing repository identity before resume state or preflight changes', async () => {
+  const projectFolder = freshDb();
+  const project = createProject({
+    name: 'Active remint without repository identity',
+    slug: 'active-remint-without-repository-identity',
+    folderPath: projectFolder,
+  });
+  let preflightCalls = 0;
+  let mintCalls = 0;
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => {
+      mintCalls += 1;
+      return new FakeRuntime({ turns: [[terminal]] });
+    }),
+    resolveNewSessionSelection: testSessionSelectionDeps().resolveNewSessionSelection,
+    preflightRuntimeSession: async (selection) => {
+      preflightCalls += 1;
+      return { status: 'valid', selection };
+    },
+  });
+
+  const session = await service.ensureActiveSession();
+  assert.equal(confirmRuntimeSessionReceipt({
+    sessionId: session.id,
+    receipt: {
+      mode: 'created',
+      continuationAttemptId: session.continuationAttemptId!,
+      selection: TEST_SELECTION,
+      nativeSessionId: `native-${session.id}`,
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
+  const before = structuredClone(getOrchestratorSession(session.id)!);
+  assert.equal(before.continuationState, 'clean-started');
+
+  assert.equal((await service.handleSend({
+    type: 'send',
+    commandId: 'missing-repository-remint',
+    sessionId: session.id,
+    text: 'must refuse before native resume',
+    clientMessageId: 'missing-repository-remint-client',
+  })).status, 'applied');
+  await until(() => terminalCount(session.id) === 1);
+
+  assert.equal(preflightCalls, 0);
+  assert.equal(mintCalls, 0);
+  const after = getOrchestratorSession(session.id)!;
+  assert.deepEqual({
+    status: after.status,
+    nativeIdentityState: after.nativeIdentityState,
+    nativeSessionId: after.nativeSessionId,
+    continuationState: after.continuationState,
+    continuationAttemptId: after.continuationAttemptId,
+    selectionState: after.selectionState,
+    runtimeId: after.runtimeId,
+    accountId: after.accountId,
+    model: after.model,
+    effortState: after.effortState,
+    effort: after.effort,
+  }, {
+    status: before.status,
+    nativeIdentityState: before.nativeIdentityState,
+    nativeSessionId: before.nativeSessionId,
+    continuationState: before.continuationState,
+    continuationAttemptId: before.continuationAttemptId,
+    selectionState: before.selectionState,
+    runtimeId: before.runtimeId,
+    accountId: before.accountId,
+    model: before.model,
+    effortState: before.effortState,
+    effort: before.effort,
+  });
+  const queued = getConversationQueueSnapshot(session.id).items;
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.status, 'failed');
+  assert.equal(queued[0]?.failureReason, 'runtime failed to start');
   await service.dispose();
 });
 

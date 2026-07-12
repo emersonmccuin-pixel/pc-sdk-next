@@ -27,6 +27,10 @@ import { AccountRegistry } from '../src/runner/account-env.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
 import type { DispatchServiceDeps } from '../src/dispatch/service.ts';
 import { git } from '../src/dispatch/worktrees.ts';
+import {
+  discoverRepositoryIdentity,
+  releaseAllRepositoryLeasesForTesting,
+} from '../src/dispatch/repository-lease.ts';
 
 export const TEST_RUNTIME_SELECTION: RuntimeSelection = {
   runtimeId: 'claude-agent-sdk',
@@ -181,8 +185,9 @@ export interface GitProject {
   project: Project;
   /** Repo root — also the project's folderPath. */
   dir: string;
-  /** Best-effort: removes the repo AND its sibling `<dir>-worktrees`. */
-  cleanup: () => void;
+  /** Awaited barrier: releases process-wide repository authority, then removes
+   * the repo and its sibling `<dir>-worktrees`. */
+  cleanup: () => Promise<void>;
 }
 
 /** Real temp git repo (local identity, one initial commit on `main`)
@@ -195,7 +200,12 @@ export async function newGitProject(name = 'GitTest'): Promise<GitProject> {
   writeFileSync(join(dir, 'README.md'), 'seed\n');
   await gitOk(['add', '.'], dir);
   await gitOk(['commit', '-m', 'initial'], dir);
-  const project = createProject({ name, slug: `t-${newId().toLowerCase()}`, folderPath: dir });
+  const project = createProject({
+    name,
+    slug: `t-${newId().toLowerCase()}`,
+    folderPath: dir,
+    repositoryIdentity: await discoverRepositoryIdentity(dir),
+  });
   const rm = (p: string) => {
     try {
       rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -203,7 +213,18 @@ export async function newGitProject(name = 'GitTest'): Promise<GitProject> {
       /* temp dir — leave it to the OS */
     }
   };
-  return { project, dir, cleanup: () => { rm(`${dir}-worktrees`); rm(dir); } };
+  return {
+    project,
+    dir,
+    cleanup: async () => {
+      // The production manager retains repository authority until engine exit.
+      // Fixtures explicitly release so their temporary .git SQLite handle is
+      // closed before recursive removal.
+      await releaseAllRepositoryLeasesForTesting();
+      rm(`${dir}-worktrees`);
+      rm(dir);
+    },
+  };
 }
 
 /** Write + stage + commit one file. Returns the new HEAD sha. */

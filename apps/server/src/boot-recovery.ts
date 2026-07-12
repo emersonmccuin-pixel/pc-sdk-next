@@ -43,6 +43,11 @@ import { AgentRunMutationGateway, ContractService } from '@pc/app-services';
 import type { ChatEvent } from '@pc/contracts';
 import { canTransition, type RunLifecycleState, type ULID } from '@pc/domain';
 import { reconcileStrandedWorktrees, sweepOrphanedWorktreeDirs } from './dispatch/worktrees.ts';
+import {
+  requireRepositoryWorktreeRoot,
+  repositoryLeaseManager,
+  type RepositoryLeaseGuard,
+} from './dispatch/repository-lease.ts';
 
 const RESTART_ERROR = 'server restarted mid-turn';
 
@@ -266,9 +271,38 @@ function recoverAgentRuns(): string[] {
  *  a prior `pnpm install`'s node_modules), which the stranded scan above only
  *  ever flags, never reclaims. Never throws. */
 export async function reconcileStrandedWorktreesAtBoot(): Promise<string[]> {
+  const projects = listProjects();
+  const authorized = new Map<string, RepositoryLeaseGuard>();
+  for (const project of projects) {
+    if (!project.folderPath) continue;
+    if (!project.repositoryIdentity) {
+      console.warn(
+        `[pc-sdk][boot-recovery] repository recovery deferred for project ${project.id}: ` +
+          'immutable repository identity is unavailable',
+      );
+      continue;
+    }
+    try {
+      const guard = await repositoryLeaseManager.acquire(
+        project.folderPath,
+        project.repositoryIdentity,
+      );
+      const root = await requireRepositoryWorktreeRoot(project.folderPath);
+      await repositoryLeaseManager.assertHeld(guard, root, project.repositoryIdentity);
+      authorized.set(project.id, guard);
+    } catch (error) {
+      console.warn(
+        `[pc-sdk][boot-recovery] repository recovery deferred for project ${project.id}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
   let strandedNames: string[] = [];
   try {
-    const { stranded, revived, resolved } = reconcileStrandedWorktrees();
+    const { stranded, revived, resolved } = reconcileStrandedWorktrees(
+      new Set(authorized.keys()),
+    );
     for (const w of stranded) {
       console.warn(`[pc-sdk][boot-recovery] stranded worktree ${w.name} at ${w.path} (${w.reason}) — row marked stranded.`);
     }
@@ -283,10 +317,14 @@ export async function reconcileStrandedWorktreesAtBoot(): Promise<string[]> {
     console.warn('[pc-sdk][boot-recovery] stranded-worktree scan failed:', err);
   }
 
-  for (const project of listProjects()) {
-    if (!project.folderPath) continue;
+  for (const project of projects) {
+    const guard = authorized.get(project.id);
+    if (!project.folderPath || !guard) continue;
     try {
-      const removed = await sweepOrphanedWorktreeDirs(project.folderPath);
+      const removed = await sweepOrphanedWorktreeDirs(
+        project.folderPath,
+        guard.identity,
+      );
       for (const name of removed) {
         console.warn(`[pc-sdk][boot-recovery] orphan sweep removed worktree dir ${name} (project ${project.id}).`);
       }

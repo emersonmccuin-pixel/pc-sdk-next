@@ -81,6 +81,62 @@ test('isAgentRunDto accepts a full DTO and rejects malformed', () => {
   assert.equal(isAgentRunDto(null), false);
 });
 
+test('repository identity receipts are strict while retained legacy receipts remain readable', () => {
+  const gitReceipt = {
+    worktreePath: '/tmp/wt',
+    branch: 'run-1',
+    baseBranch: 'main',
+    baseSha: 'abc123',
+    cleanStatus: true,
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1' as const,
+      gitCommonDir: '/tmp/repo/.git',
+      leaseKey: `sha256:${'a'.repeat(64)}`,
+    },
+  };
+
+  assert.equal(isAgentRunDto(makeDto({ gitReceipt })), true);
+  assert.equal(isAgentRunDto(makeDto({
+    gitReceipt: { ...gitReceipt, repositoryIdentity: undefined },
+  })), true);
+  assert.equal(isAgentRunDto(makeDto({
+    gitReceipt: { ...gitReceipt, repositoryIdentity: null },
+  })), true);
+  assert.equal(isAgentRunDto({ ...makeDto(),
+    gitReceipt: {
+      ...gitReceipt,
+      repositoryIdentity: { ...gitReceipt.repositoryIdentity, protocol: 'git-dir-v0' },
+    },
+  }), false);
+  assert.equal(isAgentRunDto({ ...makeDto(),
+    gitReceipt: {
+      ...gitReceipt,
+      repositoryIdentity: { ...gitReceipt.repositoryIdentity, gitCommonDir: '  ' },
+    },
+  }), false);
+  assert.equal(isAgentRunDto({ ...makeDto(),
+    gitReceipt: {
+      ...gitReceipt,
+      repositoryIdentity: { ...gitReceipt.repositoryIdentity, leaseKey: `sha256:${'A'.repeat(64)}` },
+    },
+  }), false);
+  assert.equal(isAgentRunDto({ ...makeDto(),
+    gitReceipt: {
+      ...gitReceipt,
+      repositoryIdentity: {
+        ...gitReceipt.repositoryIdentity,
+        leaseKey: { toString: () => gitReceipt.repositoryIdentity.leaseKey },
+      },
+    },
+  }), false);
+  assert.equal(isAgentRunDto({ ...makeDto(),
+    gitReceipt: {
+      ...gitReceipt,
+      repositoryIdentity: { ...gitReceipt.repositoryIdentity, nativeSessionId: 'leak' },
+    },
+  }), false);
+});
+
 test('pending and failed continuation provenance accepts every legitimate durable phase', () => {
   for (const status of ['failed', 'cancelled'] as const) {
     assert.equal(isAgentRunDto(makeDto({

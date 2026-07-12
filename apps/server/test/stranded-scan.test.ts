@@ -109,7 +109,7 @@ test('reconcile: live run excluded, dead run stranded, dir-missing stranded, aba
     // A's live run untouched.
     assert.equal(getAgentRunRow(runA)!.lifecycleState, 'building');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -135,7 +135,7 @@ test('reconcile: a false positive self-heals — dir back + live run flips the r
     assert.equal(row.strandedReason, null, 'stamp cleared on revive');
     assert.equal(row.strandedAt, null);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -169,7 +169,7 @@ test('reconcile: a stranded row whose contract landed (dir gone) resolves to des
     const third = reconcileStrandedWorktrees();
     assert.deepEqual(third.resolved, []);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -187,7 +187,7 @@ test('reconcile: a stranded row whose contract is NOT landed (dir gone) stays su
     assert.deepEqual(second.resolved, []);
     assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch), true, 'genuine stranded case stays surfaced');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -206,7 +206,7 @@ test('reconcile: legacy rows (no projectId) still classify by dir + live set', a
     assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === out.branch), false);
     assert.equal(listStrandedWorktrees().some((w) => w.name === out.branch), true);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -255,6 +255,6 @@ test('sweepOrphanedWorktreeDirs: registered/active-row/awaiting-review dirs are 
     assert.equal(existsSync(dirC), true, 'stranded-but-awaiting-review directory kept');
     assert.equal(existsSync(dirD), false, 'true orphan removed');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });

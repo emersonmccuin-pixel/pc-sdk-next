@@ -4,6 +4,7 @@ export { newId } from './id.ts';
 export { runMigrations, assertSchemaIntact } from './migrate.ts';
 
 export {
+  bindProjectRepositoryIdentity,
   createProject,
   createProjectInDb,
   getProjectById,

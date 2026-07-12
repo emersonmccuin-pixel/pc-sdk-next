@@ -49,7 +49,7 @@ import { DispatchService, type DispatchServiceDeps } from '../src/dispatch/servi
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
-import { git } from '../src/dispatch/worktrees.ts';
+import { git, provisionWorktree } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
   commitFile,
@@ -177,7 +177,12 @@ function driveIndependentReview(dispatch: DispatchService, contractId: ULID): Pr
 }
 
 async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>): Promise<{ contractId: ULID; sealedCommit: string }> {
-  const sealedCommit = (await git(['rev-parse', 'HEAD'], gp.dir)).stdout;
+  const producingRunId = newId() as ULID;
+  const provisioned = await provisionWorktree(gp.dir, producingRunId, {
+    projectId: gp.project.id,
+  });
+  if (!provisioned.ok) throw new Error(provisioned.error);
+  const sealedCommit = (await git(['rev-parse', 'HEAD'], provisioned.dir)).stdout;
   const created = createContract({
     projectId: gp.project.id,
     podName: 'code-writer',
@@ -185,11 +190,10 @@ async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>):
     acceptanceCriteria: [],
     verificationTier: 'auto',
     landingPolicy: 'full-review',
-    worktreePath: gp.dir,
-    worktreeBaseBranch: 'main',
-    worktreeBaseSha: sealedCommit,
+    worktreePath: provisioned.dir,
+    worktreeBaseBranch: provisioned.baseBranch,
+    worktreeBaseSha: provisioned.baseSha,
   });
-  const producingRunId = newId() as ULID;
   insertAgentRunRow({
     id: producingRunId,
     projectId: gp.project.id,
@@ -198,15 +202,23 @@ async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>):
     status: 'queued',
     input: 'produce review target',
     contractId: created.id,
-    worktreeDir: gp.dir,
-    worktreeBaseBranch: 'main',
-    worktreeBaseSha: sealedCommit,
+    worktreeDir: provisioned.dir,
+    worktreeBaseBranch: provisioned.baseBranch,
+    worktreeBaseSha: provisioned.baseSha,
+    gitReceipt: {
+      worktreePath: provisioned.dir,
+      branch: provisioned.branch,
+      baseBranch: provisioned.baseBranch,
+      baseSha: provisioned.baseSha,
+      cleanStatus: provisioned.cleanStatus,
+      repositoryIdentity: provisioned.repositoryIdentity,
+    },
     queuedAt: Date.now(),
   });
   setContractRun(created.id, producingRunId);
   advanceTestAgentRunStatus(producingRunId, 'completed');
   assert.ok(setContractDeliverable(created.id, {
-    deliverable: { kind: 'repo', branch: 'main', commit: sealedCommit },
+    deliverable: { kind: 'repo', branch: provisioned.branch, commit: sealedCommit },
     report: 'ready for independent review',
   }));
   assert.ok(setContractVerification(created.id, { verificationStatus: 'passed' }));
@@ -346,7 +358,7 @@ test('concurrent review re-entry shares the active reservation and mints exactly
     await until(() => adapter.created.length === 1, 20000);
     await dispatch.disposeAll();
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -390,7 +402,7 @@ test('failed async admission cleanup cannot clear a newer review reservation', a
     assert.equal(getAgentRunRow(staleReservation), null);
     await dispatch.disposeAll();
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -469,7 +481,7 @@ test('full-review pass does NOT land or park merge-ready — a reviewer is dispa
     assert.equal(existsSync(worktreeDir), false, 'worktree torn down after the landed receipt');
     await until(() => !existsSync(reviewCheckout), 20000);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -557,7 +569,7 @@ test('reject stamps review-rejected + structured findings; a Fix continuation re
     assert.equal(getAgentRunRow(builderRunId)!.lifecycleState, 'completed');
     assert.equal(getAgentRunRow(fixRunId)!.lifecycleState, 'completed');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -612,7 +624,7 @@ test('crashed reviewer (kill-recovery style): boot fails the run loudly and revi
     assert.equal(getContract(contractId)!.landedSha, sealedCommit);
     await until(() => getAgentRunRow(builderRunId)?.lifecycleState === 'completed', 20000);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -639,7 +651,7 @@ test('a garbage verdict payload never lands or rejects — it re-enters the gate
     assert.ok(c.reviewRunId, 'round 2 in flight');
     assert.notEqual(c.reviewRunId, round1ReviewId);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -661,7 +673,7 @@ test('killed reviewer re-enters the gate immediately (no reboot needed)', async 
     assert.ok(c.reviewRunId, 'next round dispatched');
     assert.notEqual(c.reviewRunId, round1ReviewId);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -709,7 +721,7 @@ test('review dispatch refusal fails closed: no contract-reviewer pod ⇒ parked 
     assert.equal(accepted.ok, true);
     assert.equal(getContract(c.id)!.landingStatus, 'landed');
   } finally {
-    project.cleanup();
+    await project.cleanup();
   }
 });
 
@@ -750,7 +762,7 @@ test('the seal is locked: terminal-run resubmission and mid-review continuation 
     const c = getContract(contractId)!;
     assert.equal((c.deliverable as { commit?: string }).commit, c.reviewSealedCommit);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -777,7 +789,7 @@ test('a mid-review reseal voids an approve verdict — the never-reviewed commit
     assert.notEqual(c.reviewRunId, round1ReviewId);
     assert.equal(c.reviewSealedCommit, swapped, 'round 2 is briefed on the new seal');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -827,7 +839,7 @@ test('review approval cannot overwrite a newer producer failure with the inherit
     assert.equal(current.landingStatus, null);
     assert.equal(existsSync(worktreeDir), true, 'failed producer worktree is preserved');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -869,6 +881,6 @@ test('orchestrator override kills the live reviewer: no verdict race, no burned 
     await until(() => !existsSync(reviewCheckout), 20000);
     await until(() => getAgentRunRow(builderRunId)?.lifecycleState === 'completed', 20000);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });

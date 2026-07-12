@@ -14,6 +14,7 @@ import { isSubscriptionQuotaIdentity } from '@pc/contracts';
 import { getProjectById } from '@pc/db';
 import { withProjectSettingsDefaults } from '@pc/domain';
 import type { ULID } from '@pc/domain';
+import { withoutAmbientGitRepositorySelectors } from '../operations/git-environment.ts';
 
 export interface Account {
   id: string;
@@ -153,9 +154,9 @@ function credentialHomeKey(runtimeId: string, configDir: string): string {
   return `${runtimeId}\u0000${process.platform === 'win32' ? canonical.toLowerCase() : canonical}`;
 }
 
-/** Pure env builder — extracted so the credential scrub is unit-testable away
- *  from the registry. Deletes `ANTHROPIC_API_KEY` + `ANTHROPIC_AUTH_TOKEN`,
- *  forces `CLAUDE_CONFIG_DIR`. */
+/** Pure env builder — extracted so the child-env scrub is unit-testable away
+ *  from the registry. Deletes subscription-shadowing credentials and ambient
+ *  Git repository selectors, then forces `CLAUDE_CONFIG_DIR`. */
 export function buildAccountEnv(
   configDir: string,
   base: NodeJS.ProcessEnv = process.env,
@@ -173,7 +174,7 @@ export function buildAccountEnv(
     'ANTHROPIC_AUTH_TOKEN',
     'CLAUDE_CONFIG_DIR',
   ]);
-  for (const [key, value] of Object.entries(base)) {
+  for (const [key, value] of Object.entries(withoutAmbientGitRepositorySelectors(base))) {
     if (value !== undefined && !blocked.has(key.toUpperCase())) env[key] = value;
   }
   env.CLAUDE_CONFIG_DIR = configDir;

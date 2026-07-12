@@ -77,6 +77,7 @@ export const RUNTIME_SELECTION_ERROR_CODES = [
   'native-session-missing',
   'selection-unavailable',
   'native-resume-mismatch',
+  'repository-identity-unavailable',
   'session-active',
   'resume-failed',
 ] as const;

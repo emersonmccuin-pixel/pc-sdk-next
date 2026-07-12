@@ -50,6 +50,15 @@ test('typed resume availability keeps legacy and unsupported history view-only',
   assert.equal(canResumeSession(unsupported), false);
   assert.equal(sessionResumeLabel(unsupported), 'native resume unsupported · view only');
 
+  const repositoryUnavailable = session({
+    resumeAvailability: { status: 'unavailable', code: 'repository-identity-unavailable' },
+  });
+  assert.equal(canResumeSession(repositoryUnavailable), false);
+  assert.equal(
+    sessionResumeLabel(repositoryUnavailable),
+    'repository identity unavailable · view only',
+  );
+
   assert.equal(canResumeSession(session({
     status: 'active',
     resumeAvailability: { status: 'unavailable', code: 'session-active' },

@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after BC-002 guarded landing and teardown.
+Updated: 2026-07-12 with SF-002 verified and ready to seal/land.
 
 ## Repository
 
@@ -121,6 +121,16 @@ Updated: 2026-07-12 after BC-002 guarded landing and teardown.
 - SF-001 feature record: `8b6a08dcde66cb190dcbb96edf500c7276f91cb2`
 - SF-001 landing merge: `a8b52c666d3fc3284b94f441ce602b908689539a`
 - SF-001 landed tree: `e7d6dc7d8318f40be698b0564b8f5d65874187d7`
+- Active slice: `docs/execution/slices/SF-002.md`
+- SF-002 base: `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`
+- SF-002 branch: `codex/sf-002-repository-lease`
+- SF-002 contract commit: `0be8912`
+- SF-002 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002`
+- SF-002 receipt: `docs/execution/receipts/SF-002.md`
+- SF-002 verification: both independent hostile re-reviews and full
+  feature-tree `pnpm ci:check` green
+- SF-002 seal/landing/push/teardown: pending
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
 - BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
@@ -214,20 +224,57 @@ shutdown snapshots, and known runtime-disposal uncertainty propagates.
 The 11-case focused matrix, launcher parser, full `pnpm ci:check` (342/342
 server tests), 14-path scope audit, process/temp-root cleanup, and final hostile
 reviews pass. No live provider/integration call or stable-data/external-repo
-mutation was made. `OPS-005` remains accepted because its cross-process
-repository-lease half is still open.
+mutation was made. At the SF-001 checkpoint, `OPS-005` remained accepted
+because its repository half was still open; the SF-002 feature status below
+supersedes that historical gap without promoting the global requirement.
 
 Feature record `8b6a08d` landed as `a8b52c6` with exact feature/merge tree
 `e7d6dc7`. Sealed/feature ancestry, post-merge `pnpm ci:check`, exact
 `origin/main` push, feature-worktree deregistration, and guarded residual
 dependency/build cleanup all passed.
 
+SF-002's cooperative engine-lifetime repository lease is verified and ready to
+seal/land on its feature branch. Canonical Git common-directory identity keys a
+protocol-stable kernel witness plus repository-local zero-wait SQLite
+admission. Project creation authoritatively rechecks `init-empty`,
+`init-in-place`, and `attach-to-git`: initialization claims a crash-visible
+future `.git` identity and produces a clean `Initial scaffold` or
+`Initial import`, while attach requires the selected canonical worktree root
+and refuses a repository subdirectory. Project rows and worktree receipts
+durably bind the resulting identity.
+
+Immutable identity and expected-identity revalidation guard every Git-backed
+runtime, fresh/continued dispatch, delivery, verification/review, boot
+recovery, landing, teardown, and recursive-cleanup door. Ambient `GIT_DIR`,
+`GIT_WORK_TREE`, and `GIT_COMMON_DIR` are scrubbed from direct Git, shell, and
+provider child seams. Migrated sessions with a folder but no durable project
+identity expose typed historical-resume and active-remint refusal before
+preflight or state transition. Same-engine isolated builders remain parallel;
+the existing local FIFO serializes landing.
+
+Repository lease tests pass 19/19, runtime session selection 17/17, HTTP
+contract 12/12, and the landing + independent-review + kill-recovery matrix
+47/47 (27 + 12 + 8). The full server suite passes 370/370. Awaited fixture
+cleanup, migration diagnostics, actual-path/mutation-door audits,
+`git diff --check`, and full feature-tree `pnpm ci:check` pass. Both independent
+hostile re-reviews are clean after fixes with no remaining P0/P1/P2 blocker.
+
+The protection is deliberately cooperative. The working PC-SDK does not
+participate, an escaped child is not contained, and the manual stable-vs-Next
+concurrent-write prohibition remains. `OPS-005` stays accepted.
+
 ## Active action
 
-Define SF-002 as the smallest cross-process repository-lease slice. It must
-serialize repository mutation across distinct PC-SDK data directories/processes
-without bundling `SEC-003` child-environment scrubbing, `OPS-006` loopback
-binding, or N7 accessibility work.
+Seal and land `docs/execution/slices/SF-002.md` without widening it: audit the
+final complete diff and actual paths, record the sealed feature commit/tree,
+guarded-merge into current `main`, prove ancestry and exact tree equality, run
+post-merge `pnpm ci:check`, push exact `origin/main`, and remove the feature
+worktree only after positive landing proof. Do not claim any of those receipts
+before the corresponding action succeeds.
+
+After SF-002 is landed and torn down, the next safe N4 action is to contract a
+bounded `SEC-003` runtime/setup child-environment allowlist/scrub slice. Do not
+bundle `OPS-006`: the master plan retains loopback listener binding in N7.
 
 ## Startup checks
 
@@ -239,11 +286,15 @@ git log --oneline --decorate -8
 ```
 
 The PM-001, BC-002, and SF-001 feature worktrees are removed. Keep the PC-SDK
-Next main checkout read-only; define SF-002 in a new recorded feature worktree.
+Next main checkout read-only. SF-002 closing work remains in
+`E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002` on
+`codex/sf-002-repository-lease`.
 
 ## Known blockers
 
 No PM-001 blocker remains. Its `get_started` remote-state uncertainty is retained
 in the completion receipt rather than repaired through private-data inspection.
 The Next shortcut code is isolated but has not been installed; regular daily
-driving remains on the original PC-SDK until the migration gate.
+driving remains on the original PC-SDK until the migration gate. SF-002 has no
+product-direction or verification blocker; only seal/landing/push/teardown
+receipts remain, and none may be inferred before success.

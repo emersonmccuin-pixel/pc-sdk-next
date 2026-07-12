@@ -29,14 +29,42 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 
 SF-001 verification receipt (2026-07-12): the data-directory half of `OPS-005`
 is guarded-landed and post-merge verified. Before migrations or listener
-activity, production
-must hold both a non-replaceable kernel IPC witness and a dedicated zero-wait
-SQLite write transaction for the canonical data directory. Cross-process same-
-directory exclusion, distinct-directory coexistence, graceful handoff, hard-
-kill recovery, simultaneous reclaim, path replacement, filesystem aliases,
-permission/corruption failure, startup ordering, shutdown admission gating, and
-launcher-visible typed failure are guarded. `OPS-005` remains `accepted`, not
-`verified`, until SF-002 supplies the separate cross-process repository lease.
+activity, production must hold both a non-replaceable kernel IPC witness and a
+dedicated zero-wait SQLite write transaction for the canonical data directory.
+Cross-process same-directory exclusion, distinct-directory coexistence,
+graceful handoff, hard-kill recovery, simultaneous reclaim, path replacement,
+filesystem aliases, permission/corruption failure, startup ordering, shutdown
+admission gating, and launcher-visible typed failure are guarded.
+
+SF-002 feature verification receipt (2026-07-12): the separate repository half
+is verified and ready to seal/land on `codex/sf-002-repository-lease`; both
+independent hostile re-reviews and full feature-tree `pnpm ci:check` are green.
+Cooperating updated engines use a protocol-stable kernel witness plus
+repository-local zero-wait SQLite admission keyed by the native real Git common
+directory. Immutable project/run receipts and expected-identity checks cover
+Git-backed orchestrator/specialist runtime admission, provision, continuation,
+delivery, verification/review, boot recovery, landing, teardown, orphan
+cleanup, and recovery while preserving distinct repositories and same-engine
+parallel worktrees.
+
+Project creation re-proves `init-empty`, `init-in-place`, or `attach-to-git` at
+the mutation door. Initialization claims the future identity, retains a crash-
+visible marker, and creates a clean `Initial scaffold` or `Initial import`;
+attach requires the selected canonical worktree root and refuses a repository
+subdirectory. Ambient `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` are
+removed from Git, shell, and provider children. A migrated project without
+durable repository identity refuses historical resume and active remint with
+typed `repository-identity-unavailable` before preflight or session mutation.
+Focused evidence is repository lease 19/19, runtime session selection 17/17,
+HTTP contract 12/12, and landing + independent-review + kill-recovery 47/47;
+the full server suite is 370/370 and full feature-tree `pnpm ci:check` is green.
+
+`OPS-005` remains `accepted`, not globally `verified`: the preserved working
+PC-SDK and unrelated Git/IDE tools do not participate, and a repository child
+that survives a hard-killed server is not contained. The manual prohibition on
+simultaneous write-capable working-PC-SDK/Next use against one external
+repository remains in force. No landing claim is made until the SF-002 closing
+receipt is complete.
 
 ## Runtime sessions and selection
 
@@ -147,6 +175,16 @@ tests passed.
 | WT-005 | accepted | Merge success requires positive ancestry proof. Teardown requires proven landing or explicit approved abandonment. |
 | WT-006 | accepted | Conflict, failure, cancellation, stranding, and uncertainty preserve the branch and worktree. |
 
+SF-002 feature verification strengthens the cooperative portion of `WT-004`:
+one engine-lifetime lease covers the canonical Git common directory while the
+existing process-local FIFO serializes landing and stale-base revalidation.
+Same-engine worktrees remain parallel and an occupied repository is preserved
+without blocking unrelated repositories. Boot and landing require the exact
+durable identity, and project creation cannot silently reinterpret init as
+attach. `WT-004` stays `accepted` because the broader N4 process-failure gate
+and nonparticipant/escaped-child boundaries remain incomplete; SF-002 seal and
+landing are also still pending.
+
 ## Integrations, security, and product boundaries
 
 | ID | Status | Requirement |
@@ -160,6 +198,12 @@ tests passed.
 | SEC-002 | accepted | Tool, filesystem, network, external-side-effect, and landing authority are explicit least-privilege policies with attributable approvals. |
 | SEC-003 | accepted | Runtime and setup subprocess environments are allowlisted or scrubbed so unrelated app secrets such as PM tokens are not inherited. |
 | UI-001 | accepted | Preserve the existing visual shell unless a documented behavioral requirement requires a change; boundary rewiring is not a redesign license. |
+
+SF-002's narrow cwd-integrity scrub removes the three ambient Git repository
+selectors from direct Git, setup/readiness/verification shell, and provider
+runtime children. It does not implement the general secret/environment
+allowlist required by `SEC-003`, which remains the next safe N4 slice after
+SF-002 lands.
 
 PM-001 discovery receipt (2026-07-12): the joint source/domain/persistence/
 UI/REST/MCP/PC-SDK inspection began at AInativePM `5033d5e` and was delta-

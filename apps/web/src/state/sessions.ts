@@ -70,6 +70,7 @@ function resumeUnavailableReason(code: RuntimeSelectionErrorCode): string {
     case 'effort-value-unsupported': return 'selected effort unsupported';
     case 'native-resume-unsupported': return 'native resume unsupported';
     case 'native-session-missing': return 'native continuation unavailable';
+    case 'repository-identity-unavailable': return 'repository identity unavailable';
     case 'selection-unavailable': return 'legacy selection unavailable';
     case 'native-resume-mismatch': return 'native resume could not be confirmed';
     case 'session-active': return 'live';

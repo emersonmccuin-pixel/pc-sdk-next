@@ -124,6 +124,7 @@ export {
   withSettingsDefaults,
 } from './settings.ts';
 export type {
+  RepositoryIdentityReceipt,
   Worktree,
   WorktreeCommandStep,
   WorktreeGitReceipt,
@@ -134,7 +135,9 @@ export type {
   WorktreeStrandedReason,
 } from './worktree.ts';
 export {
+  isRepositoryIdentityReceipt,
   parseWorktreeProfile,
+  REPOSITORY_IDENTITY_PROTOCOL,
   WORKTREE_BASE_BRANCH_RE,
   WORKTREE_PROFILE_MAX_COMMANDS,
   WORKTREE_PROFILE_MAX_COMMAND_CHARS,

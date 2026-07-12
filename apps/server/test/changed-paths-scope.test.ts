@@ -32,7 +32,7 @@ test('changedPaths executor derives the real diff between base and deliverable',
     });
     assert.deepEqual(await ex.changedPaths!(), ['src/feature.ts']);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -63,7 +63,7 @@ test('in-scope change passes; out-of-scope declared scope fails with the path in
     assert.equal(fail.verificationStatus, 'failed');
     assert.match(fail.notes ?? '', /src\/feature\.ts/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -99,7 +99,7 @@ test('a rename surfaces BOTH paths — the source cannot hide from scope checks'
     assert.equal(outcome.verificationStatus, 'failed', 'the rename SOURCE is out of scope');
     assert.match(outcome.notes ?? '', /secret\/creds\.txt/);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -129,7 +129,7 @@ test('non-ASCII paths come back verbatim and match their scope globs', async () 
     });
     assert.equal(outcome.verificationStatus, 'passed', 'in-scope unicode name is not a false scope violation');
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -171,6 +171,6 @@ test('deriveDiffStat computes files/insertions/deletions from git, and null on g
     const bad = await deriveDiffStat(gp.dir, 'not-a-sha', commitSha);
     assert.equal(bad, null);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
