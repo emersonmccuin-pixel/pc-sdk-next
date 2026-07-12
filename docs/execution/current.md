@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-004 definition and startup preparation.
+Updated: 2026-07-12 after RS-004 sealed verification.
 
 ## Repository
 
@@ -83,6 +83,9 @@ Updated: 2026-07-12 after RS-004 definition and startup preparation.
 - RS-004 feature branch: `codex/rs-004-quota-observations`
 - RS-004 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
+- RS-004 sealed implementation:
+  `f7bcb60e9f242c72a56ffda508da6451012e172b`
+- RS-004 sealed tree: `316ec12a2f94991cb89ed069886feec17e02ad03`
 
 ## Status
 
@@ -94,20 +97,23 @@ landing/reviewer races, and recovery CAS are covered. Full pre- and post-merge
 `pnpm ci:check`, production web build, isolated browser QA, hostile review, and
 the 50-path/provider-boundary audit passed.
 
-RS-004 is active from that clean pushed base. Its read-only startup audits found
-that the inherited Claude-shaped quota cache uses the prunable live outbox as
-truth, collides equal account IDs across runtimes, parses Anthropic credentials
-and payloads outside the adapter boundary, conflates partial and complete
-observations, and admits malformed HTTP/websocket state. The bounded slice now
-defines a durable provider-neutral replacement; no product-direction blocker
-or live provider call is required.
+RS-004 is complete and sealed from that clean pushed base, awaiting guarded
+landing. It replaces the inherited Claude-shaped cache/wire with durable
+provider-neutral current-state quota truth, atomic outbox publication, strict
+source observations and used normalization, runtime/account attribution,
+per-window freshness, bounded polling, adapter-local Claude acquisition, and a
+strict browser projection. Three hostile audits, full `pnpm ci:check` (including
+331/331 server tests), production Vite build, final path/provider audits, and
+isolated desktop/narrow browser QA passed. No live provider call was required.
 
 ## Next safe action
 
-Implement RS-004's canonical quota contracts and durable state/outbox component,
-then move Claude acquisition behind the adapter seam and wire the generic
-scheduler and strict browser projection. Preserve context and per-turn token
-usage as separate families; do not add Codex, selector UI, routing, or billing.
+Guarded-merge the sealed RS-004 feature record into clean pushed `main`, rerun
+`pnpm ci:check`, prove sealed/feature ancestry and exact tree equality, push,
+and remove the feature worktree only after the positive receipts. After RS-004
+closeout, define the deferred read-only N1
+AInativePM domain/code/UI/MCP discovery and ownership/idempotency proposal; do
+not perform automated PM writes or silently jump to Codex/N5.
 
 ## Startup checks
 
@@ -118,10 +124,11 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The isolated RS-004 worktree is active and prepared. Locked offline install
-reused 471/471 packages with zero downloads and baseline `pnpm typecheck`
-passed. Keep the main checkout read-only; all tracked work stays in the RS-004
-worktree until the sealed/guarded landing procedure.
+At the guarded-merge checkpoint, require the isolated RS-004 worktree to be
+clean at a feature-record tip containing the sealed implementation. Keep the
+main checkout read-only until that proof. Verify its branch/status/origin state
+before landing, then install only if dependencies are absent and run the
+post-merge workspace gate before push or teardown.
 
 ## Known blockers
 

@@ -1,7 +1,7 @@
 # Event contract — PC-SDK Next
 
-As built in the active `RS-004` feature worktree, 2026-07-12. This document
-records the implemented browser wire and its
+As built through the sealed `RS-004` feature, 2026-07-12. This document records
+the implemented browser wire and its
 persistence/publication semantics. The executable source is
 `packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.

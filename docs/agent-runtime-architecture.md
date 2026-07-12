@@ -157,8 +157,14 @@ silent fallback or invented context/usage precision.
   It also owns Claude OAuth subscription-quota acquisition and strict native
   response/event mapping behind `observeSubscriptionQuota`; credential JSON,
   URL/header, token, percent scale, reset parsing, and native status never cross
-  the adapter. Orchestrator app sessions and specialist runs persist the complete
-  immutable selection and route every remint/resume through it.
+  the adapter. OAuth utilization is a used percent in `0..100` with ISO reset
+  time; passive SDK utilization is already a used fraction in `0..1` with epoch
+  reset time. The only model bucket admitted from the additive OAuth `limits[]`
+  array is positively verified bundled Fable evidence, canonicalized to
+  `model:fable`; paid overage and credit/billing fields are excluded.
+  Orchestrator app sessions and
+  specialist runs persist the complete immutable selection and route every
+  remint/resume through it.
 
 ### OpenAI Codex
 
@@ -292,7 +298,9 @@ RS-001 completed the canonical selection/capability types, Claude discovery,
 and immutable orchestrator create/remint/resume path. RS-002 added honest
 Claude-backed orchestrator context observation and projection. RS-003 completed
 specialist revision/run selection, native attempt receipts, and safe public
-provenance. Remaining gates are:
+provenance. RS-004 completed provider-neutral subscription quota on the Claude
+path. The remaining runtime-boundary N3/N5 backlog below does not reorder or
+authorize skipping the master plan's global N1/N4 gates:
 
 1. implement a Codex subscription spike against the same contract;
 2. add `CodexRuntimeAdapter` and run the same conformance suite;
