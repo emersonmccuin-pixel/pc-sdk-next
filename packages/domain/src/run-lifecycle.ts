@@ -55,8 +55,9 @@ const SINK = ['failed', 'cancelled', 'stranded'] as const;
  *  - `review-rejected` → `fixing` is legal (not necessarily terminal).
  *  - `verifying`/`merge-ready`/`conflict` → `merged` covers probe convergence
  *    (positive ancestry proof of a merge a crashed drive already made).
- *  - a NULL/empty WorktreeProfile has no prepare/readiness phase —
- *    `provisioning` keeps skip edges straight to `ready`/`planning`/`building`.
+ *  - new repository builders always enter `preparing`, including explicit
+ *    no-op phases. Historical/recovery rows can still carry old skip-edge
+ *    states, but those states do not authorize a new runtime mint.
  *  - Resolution doors (doc 'Teardown and retention' — preserved states stay
  *    visible UNTIL RESOLVED, so each needs an exit): preserved parks
  *    (`merge-ready`/`conflict`/`review-rejected`/`failed`/`stranded`) →

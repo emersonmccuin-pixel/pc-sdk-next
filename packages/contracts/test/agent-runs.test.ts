@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   isAgentRunChangedLivePayload,
   isAgentRunDto,
+  isWorktreePhaseReceiptDto,
   isPendingAskDto,
   parseAnswerPendingAskRequest,
   parseCancelPendingAskRequest,
@@ -56,13 +57,15 @@ test('isAgentRunDto accepts a full DTO and rejects malformed', () => {
   assert.equal(isAgentRunDto({
     ...makeDto(),
     preparationReceipt: {
-      phase: 'preparation', ok: true, steps: [], finishedAt: 1,
+      phase: 'preparation', outcome: 'not-required', reason: 'no-commands-configured',
+      ok: true, steps: [], finishedAt: 1,
     },
   }), true);
   assert.equal(isAgentRunDto({
     ...makeDto(),
     readinessReceipt: {
       phase: 'readiness',
+      outcome: 'executed',
       ok: true,
       steps: [{
         command: 'check', exitCode: 0, durationMs: 1, stdoutTail: '', stderrTail: '',
@@ -79,6 +82,42 @@ test('isAgentRunDto accepts a full DTO and rejects malformed', () => {
     continuationState: 'legacy-unavailable',
   }), true);
   assert.equal(isAgentRunDto(null), false);
+});
+
+test('phase receipt DTO guard enforces exact outcome-specific evidence', () => {
+  const step = {
+    command: 'pnpm test', exitCode: 0, durationMs: 1,
+    stdoutTail: '', stderrTail: '', timedOut: false,
+  };
+  const executed = {
+    phase: 'readiness', outcome: 'executed', ok: true,
+    steps: [step], finishedAt: 10,
+  };
+  const noCommands = {
+    phase: 'preparation', outcome: 'not-required', reason: 'no-commands-configured',
+    ok: true, steps: [], finishedAt: 11,
+  };
+  const inherited = {
+    phase: 'preparation', outcome: 'not-required', reason: 'existing-worktree-preparation',
+    inheritedFromRunId: '01J00000000000000000000000',
+    ok: true, steps: [], finishedAt: 12,
+  };
+  assert.equal(isWorktreePhaseReceiptDto(executed, 'readiness'), true);
+  assert.equal(isWorktreePhaseReceiptDto(noCommands, 'preparation'), true);
+  assert.equal(isWorktreePhaseReceiptDto(inherited, 'preparation'), true);
+
+  for (const receipt of [
+    { ...executed, steps: [] },
+    { ...executed, ok: false },
+    { ...executed, steps: [{ ...step, timedOut: true }] },
+    { ...executed, steps: [{ ...step, command: ' pnpm test' }] },
+    { ...executed, finishedAt: Number.POSITIVE_INFINITY },
+    { ...noCommands, inheritedFromRunId: inherited.inheritedFromRunId },
+    { ...noCommands, steps: [step] },
+    { ...inherited, phase: 'readiness' },
+    { ...inherited, inheritedFromRunId: '01j00000000000000000000000' },
+    { ...inherited, providerReceipt: 'leak' },
+  ]) assert.equal(isWorktreePhaseReceiptDto(receipt), false, JSON.stringify(receipt));
 });
 
 test('repository identity receipts are strict while retained legacy receipts remain readable', () => {

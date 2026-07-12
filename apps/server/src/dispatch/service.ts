@@ -66,10 +66,14 @@ import {
 import {
   PRESERVED_LIFECYCLE_STATES,
   canTransition,
+  createNotRequiredWorktreePhaseReceipt,
   deriveAcceptanceCriteriaV2,
   effectiveLandingPolicy,
   getPodDefaultExpectedOutput,
   isExpectedOutputKind,
+  isPositivePreparationReceiptForRun,
+  isPositiveWorktreePhaseReceipt,
+  isRepositoryIdentityReceipt,
   parseReviewVerdictPayload,
   parseWorktreeProfile,
   reviewVerdictExpectedOutput,
@@ -86,6 +90,7 @@ import {
   type ULID,
   type WorktreeCommandStep,
   type WorktreeGitReceipt,
+  type WorktreePhaseReceipt,
   type WorktreeProfile,
 } from '@pc/domain';
 import type {
@@ -769,9 +774,6 @@ export class DispatchService {
         return refuse(failure.cause, failure.message, failure.httpStatus);
       }
     }
-    const recheckReadiness =
-      spec.kind === 'repo' && parent.worktreeDir !== null && (profile?.readinessCommands.length ?? 0) > 0;
-
     const runId = newId() as ULID;
     const now = Date.now();
 
@@ -797,10 +799,10 @@ export class DispatchService {
             worktreeBaseBranch: parent.worktreeBaseBranch,
             worktreeBaseSha: parent.worktreeBaseSha,
             gitReceipt: parent.gitReceipt,
-            // Repo continuation: the workspace already exists — born 'ready'
-            // ('preparing' when the profile re-checks readiness first); the
-            // turn start stamps 'building'.
-            lifecycleState: spec.kind === 'repo' ? (recheckReadiness ? 'preparing' : 'ready') : null,
+            // Every repo continuation records an explicit preparation no-op
+            // and a fresh readiness outcome before runtime mint, even when no
+            // commands are configured. It is therefore always born preparing.
+            lifecycleState: spec.kind === 'repo' ? 'preparing' : null,
             autoContinueCount: input.autoContinueCount,
             queuedAt: now,
           }),
@@ -874,18 +876,32 @@ export class DispatchService {
       );
       return;
     }
-    const setup = input.freshProvision ? input.profile?.setupCommands ?? [] : [];
-    const readiness = input.profile?.readinessCommands ?? [];
-    if (dir && (setup.length > 0 || readiness.length > 0)) {
+    if (input.spec.kind === 'repo') {
+      if (!dir) {
+        this.failPhaseEvidence(input.runId, 'repository builder has no recorded worktree');
+        return;
+      }
+      const setup = input.freshProvision ? input.profile?.setupCommands ?? [] : [];
+      const readiness = input.profile?.readinessCommands ?? [];
       this.stampLifecycle(input.runId, 'preparing');
+      if (this.runIsTerminal(input.runId)) return;
       if (setup.length > 0) {
         const prep = await runProfileCommands(
           dir,
           setup,
           undefined,
           input.repositoryLease?.identity ?? null,
+          () => !this.runIsTerminal(input.runId),
         );
-        setAgentRunPhaseReceipt(input.runId, { phase: 'preparation', ok: prep.ok, steps: prep.steps, finishedAt: Date.now() });
+        if (prep.cancelled || this.runIsTerminal(input.runId)) return;
+        const recorded = this.persistPhaseReceipt(input.runId, {
+          phase: 'preparation',
+          outcome: 'executed',
+          ok: prep.ok,
+          steps: prep.steps,
+          finishedAt: Date.now(),
+        });
+        if (!recorded) return;
         if (!prep.ok) {
           this.failPreparation(input.runId, 'preparation', prep.steps);
           return;
@@ -894,6 +910,26 @@ export class DispatchService {
         // terminal. Re-check between phases so a cancelled run never burns
         // readiness commands (up to 20 × 10min, outside the wall clock).
         if (this.runIsTerminal(input.runId)) return;
+      } else {
+        const row = getAgentRunRow(input.runId);
+        if (!input.freshProvision && !row?.continues) {
+          this.failPhaseEvidence(input.runId, 'continuation preparation has no parent run receipt');
+          return;
+        }
+        const receipt = input.freshProvision
+          ? createNotRequiredWorktreePhaseReceipt({
+              phase: 'preparation',
+              reason: 'no-commands-configured',
+              finishedAt: Date.now(),
+            })
+          : createNotRequiredWorktreePhaseReceipt({
+              phase: 'preparation',
+              reason: 'existing-worktree-preparation',
+              inheritedFromRunId: row!.continues!,
+              finishedAt: Date.now(),
+            });
+        if (!this.persistPhaseReceipt(input.runId, receipt)) return;
+        if (this.runIsTerminal(input.runId)) return;
       }
       if (readiness.length > 0) {
         const ready = await runProfileCommands(
@@ -901,15 +937,38 @@ export class DispatchService {
           readiness,
           undefined,
           input.repositoryLease?.identity ?? null,
+          () => !this.runIsTerminal(input.runId),
         );
-        setAgentRunPhaseReceipt(input.runId, { phase: 'readiness', ok: ready.ok, steps: ready.steps, finishedAt: Date.now() });
+        if (ready.cancelled || this.runIsTerminal(input.runId)) return;
+        const recorded = this.persistPhaseReceipt(input.runId, {
+          phase: 'readiness',
+          outcome: 'executed',
+          ok: ready.ok,
+          steps: ready.steps,
+          finishedAt: Date.now(),
+        });
+        if (!recorded) return;
         if (!ready.ok) {
           this.failPreparation(input.runId, 'readiness', ready.steps);
           return;
         }
         if (this.runIsTerminal(input.runId)) return;
+      } else {
+        const receipt = createNotRequiredWorktreePhaseReceipt({
+          phase: 'readiness',
+          reason: 'no-commands-configured',
+          finishedAt: Date.now(),
+        });
+        if (!this.persistPhaseReceipt(input.runId, receipt)) return;
+        if (this.runIsTerminal(input.runId)) return;
       }
       this.stampLifecycle(input.runId, 'ready');
+      const ready = getAgentRunRow(input.runId);
+      if (!ready || this.runIsTerminal(input.runId)) return;
+      if (ready.lifecycleState !== 'ready') {
+        this.failPhaseEvidence(input.runId, 'repository builder could not enter the ready lifecycle state');
+        return;
+      }
     }
     await this.startRun(input);
   }
@@ -966,6 +1025,55 @@ export class DispatchService {
     });
   }
 
+  /** Missing or malformed builder workspace evidence is a typed provisioning
+   * failure. It can never be repaired by inference at the runtime door. */
+  private failPhaseEvidence(runId: ULID, reason: string): void {
+    this.gateway.commitTerminal({
+      runId,
+      status: 'failed',
+      result: null,
+      failureCause: 'worktree-provision-failed',
+      failureReason: `${reason} — positive Git/preparation/readiness receipts are required before runtime start`,
+      completedAt: Date.now(),
+      lifecycleState: 'failed',
+    });
+    void this.verifyAndLand(runId, 'failed').catch((error) => {
+      console.error(`[pc-sdk][dispatch] phase-evidence settlement failed for ${runId}:`, error);
+    });
+  }
+
+  /** First-write phase CAS with a loud nonterminal failure path. A cancelled
+   * run legitimately loses the race and stays terminal; any other refusal is
+   * missing evidence and must not leave a queued run wedged forever. */
+  private persistPhaseReceipt(runId: ULID, receipt: WorktreePhaseReceipt): boolean {
+    if (setAgentRunPhaseReceipt(runId, receipt)) return true;
+    if (!this.runIsTerminal(runId)) {
+      this.failPhaseEvidence(runId, `${receipt.phase} receipt could not be persisted immutably`);
+    }
+    return false;
+  }
+
+  /** Exact pre-mint/revival guard for repository builders. Review checkouts
+   * are deliberately excluded until they own an exact checkout receipt. */
+  private hasPositiveBuilderWorkspaceEvidence(
+    run: AgentRunRow,
+    worktreeDir: string | null,
+  ): boolean {
+    if (!worktreeDir || run.worktreeDir !== worktreeDir) return false;
+    const gitReceipt = run.gitReceipt;
+    if (
+      !gitReceipt ||
+      gitReceipt.worktreePath !== worktreeDir ||
+      gitReceipt.branch !== basename(worktreeDir) ||
+      gitReceipt.baseBranch !== run.worktreeBaseBranch ||
+      gitReceipt.baseSha !== run.worktreeBaseSha ||
+      gitReceipt.cleanStatus !== true ||
+      !isRepositoryIdentityReceipt(gitReceipt.repositoryIdentity)
+    ) return false;
+    return isPositivePreparationReceiptForRun(run.preparationReceipt, run.continues) &&
+      isPositiveWorktreePhaseReceipt(run.readinessReceipt, 'readiness');
+  }
+
   private async startRun(input: StartRunInput): Promise<void> {
     // Preflight: a run killed during prepare/readiness (no live handle yet) is
     // terminal on the row only. Starting anyway would spawn a bypassPermissions
@@ -992,6 +1100,13 @@ export class DispatchService {
         failureCause: 'spawn-error',
         failureReason: 'agent run execution stamp is unavailable or inconsistent',
       });
+      return;
+    }
+    if (
+      input.spec.kind === 'repo' &&
+      !this.hasPositiveBuilderWorkspaceEvidence(initialRow, input.worktree?.dir ?? null)
+    ) {
+      this.failPhaseEvidence(input.runId, 'repository builder workspace evidence is missing or inconsistent');
       return;
     }
     const ctx = this.ctx;
@@ -1185,6 +1300,15 @@ export class DispatchService {
       const contract = run.contractId ? this.contracts.get(run.contractId) : null;
       const spec = (contract?.expectedOutput ?? null) as ExpectedOutput | null;
       if (!contract || !spec) return null;
+      if (
+        spec.kind === 'repo' &&
+        !this.hasPositiveBuilderWorkspaceEvidence(run, run.worktreeDir)
+      ) {
+        console.warn(
+          `[pc-sdk][dispatch] live-session revival refused for ${run.id}: positive builder workspace evidence unavailable`,
+        );
+        return null;
+      }
       let repositoryLease: RepositoryLeaseGuard | null = null;
       let authorityPath: string | null = null;
       if (run.worktreeDir) {

@@ -340,6 +340,9 @@ export async function removeReviewCheckout(
 export interface ProfileCommandsResult {
   ok: boolean;
   steps: WorktreeCommandStep[];
+  /** The owning run became terminal while lease/command work was awaiting.
+   * No later command was admitted and callers must not persist phase evidence. */
+  cancelled: boolean;
 }
 
 /** Run profile commands sequentially IN the worktree via the platform shell
@@ -350,6 +353,7 @@ export function runProfileCommands(
   commands: readonly string[],
   timeoutMs = PROFILE_CMD_TIMEOUT_MS,
   expectedIdentity: RepositoryIdentityReceipt | null = null,
+  shouldContinue: (() => boolean) | null = null,
 ): Promise<ProfileCommandsResult> {
   return (async () => {
     try {
@@ -357,6 +361,7 @@ export function runProfileCommands(
     } catch (error) {
       return {
         ok: false,
+        cancelled: false,
         steps: commands.length === 0
           ? []
           : [{
@@ -369,13 +374,25 @@ export function runProfileCommands(
             }],
       };
     }
+    // Lease discovery is asynchronous. The owning run may have been killed
+    // after the dispatch-side check but before this mutation door reopened.
+    if (shouldContinue && !shouldContinue()) {
+      return { ok: false, steps: [], cancelled: true };
+    }
     const steps: WorktreeCommandStep[] = [];
     for (const command of commands) {
+      if (shouldContinue && !shouldContinue()) {
+        return { ok: false, steps, cancelled: true };
+      }
       const step = await runProfileCommand(dir, command, timeoutMs);
       steps.push(step);
-      if (step.exitCode !== 0) return { ok: false, steps };
+      if (step.exitCode !== 0) return { ok: false, steps, cancelled: false };
+      // A cancellation during one command prevents admission of the next.
+      if (shouldContinue && !shouldContinue()) {
+        return { ok: false, steps, cancelled: true };
+      }
     }
-    return { ok: true, steps };
+    return { ok: true, steps, cancelled: false };
   })();
 }
 

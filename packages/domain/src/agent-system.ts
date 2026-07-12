@@ -255,8 +255,10 @@ export interface AgentRunRow {
   worktreeBaseBranch: string | null;
   worktreeBaseSha: string | null;
   /** Provisioning receipts (docs/worktree-lifecycle.md 'Provisioning and
-   *  readiness'). NULL for non-repo runs, profile-less runs (preparation/
-   *  readiness), and rows predating the columns. */
+   *  readiness'). New repository builder runs always carry both phase
+   *  receipts before runtime mint, including explicit no-ops. NULL remains
+   *  valid only for non-repo, detached-review, and historical/incomplete
+   *  rows. */
   gitReceipt: WorktreeGitReceipt | null;
   preparationReceipt: WorktreePhaseReceipt | null;
   readinessReceipt: WorktreePhaseReceipt | null;

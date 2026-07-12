@@ -472,15 +472,21 @@ test('guard 6: concurrent accepts on one repository land serialized', async () =
       dispatch.landAcceptedContract(contractA),
       dispatch.landAcceptedContract(contractB),
     ]);
-    assert.equal(a?.landingStatus, 'landed', a?.landingError ?? '');
-    assert.equal(b?.landingStatus, 'stale-base', b?.landingError ?? '');
+    const outcomes = [
+      { contract: a, wt: wtA, tip: tipA, file: 'a.txt' },
+      { contract: b, wt: wtB, tip: tipB, file: 'b.txt' },
+    ];
+    const winner = outcomes.find((entry) => entry.contract?.landingStatus === 'landed');
+    const parked = outcomes.find((entry) => entry.contract?.landingStatus === 'stale-base');
+    assert.ok(winner, `one serialized landing wins: ${a?.landingStatus}/${b?.landingStatus}`);
+    assert.ok(parked, `the later landing parks stale: ${a?.landingStatus}/${b?.landingStatus}`);
 
-    assert.equal((await git(['merge-base', '--is-ancestor', tipA, 'HEAD'], gp.dir)).ok, true);
-    assert.equal((await git(['merge-base', '--is-ancestor', tipB, 'HEAD'], gp.dir)).ok, false, 'B never merged');
-    assert.ok(existsSync(join(gp.dir, 'a.txt')));
-    assert.equal(existsSync(wtB.dir), true, 'B worktree preserved for revalidation');
-    assert.equal((await git(['rev-parse', wtB.branch], gp.dir)).stdout, tipB, 'B branch preserved');
-    // Exactly initial + A's branch commit + A's --no-ff merge commit.
+    assert.equal((await git(['merge-base', '--is-ancestor', winner.tip, 'HEAD'], gp.dir)).ok, true);
+    assert.equal((await git(['merge-base', '--is-ancestor', parked.tip, 'HEAD'], gp.dir)).ok, false, 'parked work never merged');
+    assert.ok(existsSync(join(gp.dir, winner.file)));
+    assert.equal(existsSync(parked.wt.dir), true, 'parked worktree preserved for revalidation');
+    assert.equal((await git(['rev-parse', parked.wt.branch], gp.dir)).stdout, parked.tip, 'parked branch preserved');
+    // Exactly initial + winning branch commit + its --no-ff merge commit.
     assert.equal((await git(['rev-list', '--count', 'HEAD'], gp.dir)).stdout, '3');
   } finally {
     await gp.cleanup();

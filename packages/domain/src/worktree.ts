@@ -2,7 +2,7 @@
 // (packages/db/src/repos/worktrees.ts). Binding fields (project/run/contract/
 // branch provenance) are nullable — legacy rows predate them.
 
-import type { ULID } from './ulid.ts';
+import { isUlid, type ULID } from './ulid.ts';
 
 /** 'stranded' is DURABLE (docs/worktree-lifecycle.md 'Recovery'): the row's
  *  dir is gone or no live run owns it. A re-scan that no longer finds it
@@ -184,10 +184,201 @@ export interface WorktreeCommandStep {
   timedOut: boolean;
 }
 
-/** Preparation/readiness receipt — captured exit status per step. */
-export interface WorktreePhaseReceipt {
-  phase: 'preparation' | 'readiness';
+export type WorktreePhase = 'preparation' | 'readiness';
+
+export type WorktreePhaseNotRequiredReason =
+  | 'no-commands-configured'
+  | 'existing-worktree-preparation';
+
+/** A command-bearing phase receipt. Failed execution is still durable
+ * evidence, but only an `ok: true` receipt is positive authority. */
+export interface WorktreePhaseExecutedReceipt {
+  phase: WorktreePhase;
+  outcome: 'executed';
   ok: boolean;
+  /** Executed receipts are command-bearing; an empty list proves nothing. */
   steps: WorktreeCommandStep[];
   finishedAt: number;
+}
+
+/** Exact positive no-op for a phase whose configured command list is empty. */
+export interface WorktreePhaseNoCommandsReceipt {
+  phase: WorktreePhase;
+  outcome: 'not-required';
+  reason: 'no-commands-configured';
+  ok: true;
+  steps: [];
+  finishedAt: number;
+}
+
+/** Exact positive no-op for preparation already owned by a continuation's
+ * existing worktree. Readiness is never inherited and gets its own receipt. */
+export interface WorktreePhaseExistingWorktreeReceipt {
+  phase: 'preparation';
+  outcome: 'not-required';
+  reason: 'existing-worktree-preparation';
+  inheritedFromRunId: ULID;
+  ok: true;
+  steps: [];
+  finishedAt: number;
+}
+
+export type WorktreePhaseNotRequiredReceipt =
+  | WorktreePhaseNoCommandsReceipt
+  | WorktreePhaseExistingWorktreeReceipt;
+
+/** Immutable preparation/readiness evidence. Absence is unavailable, never a
+ * successful no-op. */
+export type WorktreePhaseReceipt =
+  | WorktreePhaseExecutedReceipt
+  | WorktreePhaseNotRequiredReceipt;
+
+export type CreateNotRequiredWorktreePhaseReceiptInput =
+  | {
+      phase: WorktreePhase;
+      reason: 'no-commands-configured';
+      finishedAt: number;
+      inheritedFromRunId?: never;
+    }
+  | {
+      phase: 'preparation';
+      reason: 'existing-worktree-preparation';
+      inheritedFromRunId: ULID;
+      finishedAt: number;
+    };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+function isAppMintedUlid(value: unknown): value is ULID {
+  return isUlid(value) && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(value);
+}
+
+function isWorktreeCommandStep(value: unknown): value is WorktreeCommandStep {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      'command',
+      'exitCode',
+      'durationMs',
+      'stdoutTail',
+      'stderrTail',
+      'timedOut',
+    ]) &&
+    typeof value.command === 'string' &&
+    value.command.length > 0 &&
+    value.command === value.command.trim() &&
+    isSafeInteger(value.exitCode) &&
+    isNonNegativeSafeInteger(value.durationMs) &&
+    typeof value.stdoutTail === 'string' &&
+    typeof value.stderrTail === 'string' &&
+    typeof value.timedOut === 'boolean';
+}
+
+/** Validate the exact canonical phase-receipt shape at a trust boundary. */
+export function isWorktreePhaseReceipt(
+  value: unknown,
+  phase?: WorktreePhase,
+): value is WorktreePhaseReceipt {
+  if (!isRecord(value) || (value.phase !== 'preparation' && value.phase !== 'readiness')) {
+    return false;
+  }
+  if (phase !== undefined && value.phase !== phase) return false;
+  if (!isNonNegativeSafeInteger(value.finishedAt)) return false;
+
+  if (value.outcome === 'executed') {
+    if (!hasOnlyKeys(value, ['phase', 'outcome', 'ok', 'steps', 'finishedAt'])) return false;
+    if (typeof value.ok !== 'boolean' || !Array.isArray(value.steps) || value.steps.length === 0) {
+      return false;
+    }
+    if (!value.steps.every(isWorktreeCommandStep)) return false;
+    const commandsPassed = value.steps.every((step) => step.exitCode === 0 && !step.timedOut);
+    return value.ok === commandsPassed;
+  }
+
+  if (value.outcome !== 'not-required' || value.ok !== true || !Array.isArray(value.steps) || value.steps.length !== 0) {
+    return false;
+  }
+  if (value.reason === 'no-commands-configured') {
+    return hasOnlyKeys(value, ['phase', 'outcome', 'reason', 'ok', 'steps', 'finishedAt']);
+  }
+  return value.phase === 'preparation' &&
+    value.reason === 'existing-worktree-preparation' &&
+    hasOnlyKeys(value, [
+      'phase',
+      'outcome',
+      'reason',
+      'inheritedFromRunId',
+      'ok',
+      'steps',
+      'finishedAt',
+    ]) &&
+    isAppMintedUlid(value.inheritedFromRunId);
+}
+
+/** True only for exact evidence that authorizes advancing beyond the phase. */
+export function isPositiveWorktreePhaseReceipt(
+  value: unknown,
+  phase?: WorktreePhase,
+): value is WorktreePhaseReceipt {
+  return isWorktreePhaseReceipt(value, phase) && value.ok;
+}
+
+/** Contextual preparation authority for one run. Fresh work may execute
+ * setup or positively declare no configured commands. A continuation must
+ * instead bind its no-op to its exact parent; another run's preparation can
+ * never be borrowed. */
+export function isPositivePreparationReceiptForRun(
+  value: unknown,
+  continues: ULID | null,
+): value is WorktreePhaseReceipt {
+  if (!isPositiveWorktreePhaseReceipt(value, 'preparation')) return false;
+  if (continues === null) {
+    return value.outcome !== 'not-required' || value.reason !== 'existing-worktree-preparation';
+  }
+  return value.outcome === 'not-required' &&
+    value.reason === 'existing-worktree-preparation' &&
+    value.inheritedFromRunId === continues;
+}
+
+/** Mint one exact, positive no-op receipt. Invalid runtime input fails closed. */
+export function createNotRequiredWorktreePhaseReceipt(
+  input: CreateNotRequiredWorktreePhaseReceiptInput,
+): WorktreePhaseNotRequiredReceipt {
+  const receipt: WorktreePhaseNotRequiredReceipt = input.reason === 'existing-worktree-preparation'
+    ? {
+        phase: input.phase,
+        outcome: 'not-required',
+        reason: input.reason,
+        inheritedFromRunId: input.inheritedFromRunId,
+        ok: true,
+        steps: [],
+        finishedAt: input.finishedAt,
+      }
+    : {
+        phase: input.phase,
+        outcome: 'not-required',
+        reason: input.reason,
+        ok: true,
+        steps: [],
+        finishedAt: input.finishedAt,
+      };
+  if (!isWorktreePhaseReceipt(receipt, input.phase)) {
+    throw new Error('invalid not-required worktree phase receipt');
+  }
+  return receipt;
 }

@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { TranscriptRow } from '../src/components/TranscriptRow.tsx';
+import { PhaseReceiptDetails } from '../src/components/AgentTranscriptModal.tsx';
 import {
   parseAgentRunEventsResponse,
   type AgentRunEventEntry,
@@ -105,4 +106,55 @@ test('context telemetry stays in the session bar and unknown compaction renders 
   }));
   assert.match(beforeOnly, /80 → … tokens/);
   assert.match(afterOnly, /… → 20 tokens/);
+});
+
+test('phase receipts distinguish executed evidence from an explicit positive no-op', () => {
+  const executed = renderToStaticMarkup(createElement(PhaseReceiptDetails, {
+    phase: 'readiness',
+    applicable: true,
+    receipt: {
+      phase: 'readiness',
+      outcome: 'executed',
+      ok: true,
+      steps: [{
+        command: 'pnpm test',
+        exitCode: 0,
+        durationMs: 25,
+        stdoutTail: 'passed',
+        stderrTail: '',
+        timedOut: false,
+      }],
+      finishedAt: 10,
+    },
+  }));
+  assert.match(executed, /readiness/);
+  assert.match(executed, /ok/);
+  assert.match(executed, /1 step/);
+  assert.match(executed, /pnpm test/);
+
+  const noOp = renderToStaticMarkup(createElement(PhaseReceiptDetails, {
+    phase: 'preparation',
+    applicable: true,
+    receipt: {
+      phase: 'preparation',
+      outcome: 'not-required',
+      reason: 'existing-worktree-preparation',
+      inheritedFromRunId: '01J00000000000000000000000',
+      ok: true,
+      steps: [],
+      finishedAt: 11,
+    },
+  }));
+  assert.match(noOp, /not required/);
+  assert.match(noOp, /existing worktree reused from parent 01J00000/);
+  assert.doesNotMatch(noOp, /0 steps/);
+
+  const unavailable = renderToStaticMarkup(createElement(PhaseReceiptDetails, {
+    phase: 'readiness', applicable: true, receipt: null,
+  }));
+  assert.match(unavailable, /readiness/);
+  assert.match(unavailable, /unavailable/);
+  assert.equal(renderToStaticMarkup(createElement(PhaseReceiptDetails, {
+    phase: 'readiness', applicable: false, receipt: null,
+  })), '', 'non-repo and detached-review phases remain not applicable');
 });
