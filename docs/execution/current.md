@@ -140,6 +140,10 @@ verification, and clean hostile re-review.
 - SEC-003 base: `781e8f5cd8d3666c668b6e3b2c773d4e32ec3141`
 - SEC-003 branch: `codex/sec-003-child-environment`
 - SEC-003 contract commit: `e33c5c2f3b26dcf6746e8c01a1bde6ce531a1fef`
+- SEC-003 sealed implementation:
+  `0b9354714c6e04826a24772c9a29b03c8663b235`
+- SEC-003 sealed implementation tree:
+  `a3d671fcadefdf1eed559d8e0b3c9109bd2cfb04`
 - SEC-003 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-sec-003`
 - SEC-003 receipt: `docs/execution/receipts/SEC-003.md`
