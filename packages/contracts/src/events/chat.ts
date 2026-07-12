@@ -287,6 +287,10 @@ function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 function nullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
@@ -475,8 +479,8 @@ export function isChatEvent(value: unknown): value is ChatEvent {
       return (
         hasOnlyKeys(value, ['kind', 'trigger', 'preTokens', 'postTokens']) &&
         (value.trigger === 'manual' || value.trigger === 'auto' || value.trigger === 'unknown') &&
-        (value.preTokens === null || finiteNonNegativeNumber(value.preTokens)) &&
-        (value.postTokens === null || finiteNonNegativeNumber(value.postTokens))
+        (value.preTokens === null || nonNegativeSafeInteger(value.preTokens)) &&
+        (value.postTokens === null || nonNegativeSafeInteger(value.postTokens))
       );
     case 'sidechain':
       return (

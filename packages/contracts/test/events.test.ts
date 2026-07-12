@@ -221,10 +221,19 @@ test('compaction preserves known edges without inventing token counts', () => {
     kind: 'compaction', trigger: 'unknown', preTokens: null, postTokens: null,
   }), true);
   assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'manual', preTokens: Number.MAX_SAFE_INTEGER, postTokens: 0,
+  }), true);
+  assert.equal(isChatEvent({
     kind: 'compaction', trigger: 'native', preTokens: null, postTokens: null,
   }), false);
   assert.equal(isChatEvent({
     kind: 'compaction', trigger: 'auto', preTokens: undefined, postTokens: 0,
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'auto', preTokens: 0.5, postTokens: 0,
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'auto', preTokens: Number.MAX_VALUE, postTokens: 0,
   }), false);
 });
 
@@ -797,6 +806,13 @@ test('session replay validates every canonical event identity', () => {
   }), false);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 0, events: [event],
+  }), false);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 2,
+    events: [
+      event,
+      { ...event, eventId: 'other-conversation', conversationId: 'other', sequence: 2 },
+    ],
   }), false);
 
   // Migration 0009 cannot safely infer turn ownership for legacy terminals.

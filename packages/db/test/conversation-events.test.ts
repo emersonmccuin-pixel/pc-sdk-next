@@ -14,6 +14,7 @@ const {
   commitConversationEvent,
   countConversationEvents,
   getConversationHighWaterSequence,
+  hasConversationContextObservation,
   getRawDb,
   hasConversationEvents,
   listConversationEvents,
@@ -269,8 +270,16 @@ test('context observation rejects nonexistent and open turns without consuming s
 });
 
 test('context observation accepts one post-terminal event and rejects a duplicate', () => {
+  assert.equal(hasConversationContextObservation({
+    projectId: 'p1', conversationId: 'context-settled-turn',
+    sessionId: 'context-settled-turn', turnId: 'turn-settled',
+  }), false);
   terminal('context-settled-turn', 'turn-settled');
   const observation = contextObservation('context-settled-turn', 'turn-settled');
+  assert.equal(hasConversationContextObservation({
+    projectId: 'p1', conversationId: 'context-settled-turn',
+    sessionId: 'context-settled-turn', turnId: 'turn-settled',
+  }), true);
   assert.equal(observation.event.sequence, 2);
   assert.deepEqual(
     listConversationEvents('context-settled-turn').map((row) => row.eventType),

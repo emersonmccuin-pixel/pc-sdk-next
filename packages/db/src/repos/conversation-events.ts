@@ -426,6 +426,26 @@ export function hasConversationEvents(conversationId: string): boolean {
   return countConversationEvents(conversationId) > 0;
 }
 
+export function hasConversationContextObservation(input: {
+  projectId: ULID;
+  conversationId: string;
+  sessionId: string;
+  turnId: string;
+}): boolean {
+  return getDb()
+    .select({ eventId: conversationEvents.eventId })
+    .from(conversationEvents)
+    .where(and(
+      eq(conversationEvents.projectId, input.projectId),
+      eq(conversationEvents.conversationId, input.conversationId),
+      eq(conversationEvents.sessionId, input.sessionId),
+      eq(conversationEvents.turnId, input.turnId),
+      eq(conversationEvents.eventType, 'context-observation'),
+    ))
+    .limit(1)
+    .get() !== undefined;
+}
+
 export function listUnrelayedConversationEvents(limit = 500): ConversationOutboxEntry[] {
   const db = getDb();
   const pending = db
