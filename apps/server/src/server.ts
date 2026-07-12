@@ -138,9 +138,19 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   }
 
   const port = opts.port ?? Number(process.env.PC_PORT ?? 5124);
+  let accepting = true;
+  const guardedFetch: typeof app.fetch = (...args) => {
+    if (!accepting) {
+      return new Response(
+        JSON.stringify({ ok: false, error: 'server-shutting-down' }),
+        { status: 503, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return app.fetch(...args);
+  };
 
   const server = await new Promise<Server>((resolveServer) => {
-    const s = serve({ fetch: app.fetch, port }, () => resolveServer(s as unknown as Server));
+    const s = serve({ fetch: guardedFetch, port }, () => resolveServer(s as unknown as Server));
   });
   const actualPort = addressPort(server) ?? port;
 
@@ -151,6 +161,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   // WS on the same listener.
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
+    if (!accepting) {
+      socket.destroy();
+      return;
+    }
     let url: URL;
     try {
       url = new URL(req.url ?? '/', 'http://localhost');
@@ -182,6 +196,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     }
   }, drainIntervalMs);
   if (typeof drainTimer.unref === 'function') drainTimer.unref();
+  let closePromise: Promise<void> | null = null;
 
   return {
     port: actualPort,
@@ -190,14 +205,37 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     registry,
     relay,
     conversationRelay,
-    async close() {
+    close() {
+      if (closePromise) return closePromise;
+      // Close the admission door synchronously before taking any disposal
+      // snapshot. New HTTP calls get 503, upgrades are rejected, and the Node
+      // listener stops accepting before active runtime/session drain begins.
+      accepting = false;
+      registry.beginShutdown();
       clearInterval(drainTimer);
-      for (const ws of wss.clients) ws.terminate();
-      wss.close();
-      await registry.disposeAll();
+      const listenerClosed = new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error?: Error) => {
+          if (error) rejectClose(error);
+          else resolveClose();
+        });
+      });
       // Idle keep-alive sockets would otherwise hold close() open ~5s.
       (server as Server & { closeIdleConnections?: () => void }).closeIdleConnections?.();
-      await new Promise<void>((r) => server.close(() => r()));
+      for (const ws of wss.clients) ws.terminate();
+      wss.close();
+      closePromise = (async () => {
+        const settled = await Promise.allSettled([
+          registry.disposeAll(),
+          listenerClosed,
+        ]);
+        const failures = settled
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason);
+        if (failures.length > 0) {
+          throw new AggregateError(failures, 'server shutdown was not positively acknowledged');
+        }
+      })();
+      return closePromise;
     },
   };
 }

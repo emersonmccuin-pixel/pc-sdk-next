@@ -55,13 +55,13 @@ if (-not (Test-Health)) {
     }
 
     try {
-        Start-Process -FilePath $exe `
+        $ServerProcess = Start-Process -FilePath $exe `
             -ArgumentList $serverArgs `
             -WorkingDirectory $RepoRoot `
             -WindowStyle Hidden `
             -RedirectStandardOutput $LogFile `
             -RedirectStandardError $ErrFile `
-            | Out-Null
+            -PassThru
     } catch {
         Show-FatalError "PC-SDK Next server failed to start.`n`n$($_.Exception.Message)"
     }
@@ -72,6 +72,15 @@ if (-not (Test-Health)) {
     $healthy = $false
     while ($elapsed -lt $timeoutSec) {
         if (Test-Health) { $healthy = $true; break }
+        if ($ServerProcess.HasExited) {
+            if ($ServerProcess.ExitCode -eq 73) {
+                Show-FatalError "Another process currently prevents exclusive ownership of this data directory:`n$env:PC_DATA_DIR`n`nNo app database was opened by this launch.`n`nError log:`n$ErrFile"
+            }
+            if ($ServerProcess.ExitCode -eq 74) {
+                Show-FatalError "PC-SDK Next could not prove exclusive ownership of this data directory:`n$env:PC_DATA_DIR`n`nStartup stopped before opening the app database.`n`nError log:`n$ErrFile"
+            }
+            Show-FatalError "PC-SDK Next server exited before becoming healthy (exit $($ServerProcess.ExitCode)).`n`nError log:`n$ErrFile"
+        }
         Start-Sleep -Seconds 1
         $elapsed += 1
     }

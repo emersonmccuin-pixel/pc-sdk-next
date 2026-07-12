@@ -774,7 +774,7 @@ export class SessionService {
     this.runtime = null;
     this.runtimeSessionId = null;
     this.runtimeReady = null;
-    if (runtime) await runtime.dispose().catch(() => {});
+    if (runtime) await runtime.dispose();
     await this.runtimeQuarantine;
     await drainDone;
   }

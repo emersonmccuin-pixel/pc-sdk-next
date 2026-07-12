@@ -24,11 +24,13 @@
     "@pc/domain": "workspace:*",
     "@pc/mcp": "workspace:*",
     "@pc/utils": "workspace:*",
+    "better-sqlite3": "^11.7.0",
     "hono": "^4.6.14",
     "ws": "^8.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",

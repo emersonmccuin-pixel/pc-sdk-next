@@ -27,6 +27,16 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | OPS-005 | accepted | A data-directory single-instance lock and cross-process repository lease prevent two engines from mutating the same app state or target repository concurrently. |
 | OPS-006 | accepted | The local HTTP/WS listener binds only to loopback unless a separately approved remote-access design replaces it. |
 
+SF-001 verification receipt (2026-07-12): the data-directory half of `OPS-005`
+is implemented and sealed. Before migrations or listener activity, production
+must hold both a non-replaceable kernel IPC witness and a dedicated zero-wait
+SQLite write transaction for the canonical data directory. Cross-process same-
+directory exclusion, distinct-directory coexistence, graceful handoff, hard-
+kill recovery, simultaneous reclaim, path replacement, filesystem aliases,
+permission/corruption failure, startup ordering, shutdown admission gating, and
+launcher-visible typed failure are guarded. `OPS-005` remains `accepted`, not
+`verified`, until SF-002 supplies the separate cross-process repository lease.
+
 ## Runtime sessions and selection
 
 | ID | Status | Requirement |
