@@ -216,7 +216,9 @@ Claude SDK final spawn, explicit MCP stdio attachment semantics, and the sole
 trusted same-engine restart exception have deterministic guards. Full
 feature-tree `pnpm ci:check` passes with 387/387 server tests and independent
 hostile re-review has no remaining P0/P1/P2 finding. Detailed evidence is in
-`docs/execution/receipts/SEC-003.md`.
+`docs/execution/receipts/SEC-003.md`. Feature record `33bb9009` guarded-landed
+as `4521d236` with exact feature/merge tree `171cf09d`; post-merge 387/387,
+exact push/re-fetch, and feature-worktree cleanup passed.
 
 PM-001 discovery receipt (2026-07-12): the joint source/domain/persistence/
 UI/REST/MCP/PC-SDK inspection began at AInativePM `5033d5e` and was delta-

@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after SEC-003 implementation, full feature-tree
-verification, and clean hostile re-review.
+Updated: 2026-07-12 after SEC-003 guarded landing, post-merge verification,
+exact push, and feature-worktree cleanup.
 
 ## Repository
 
@@ -144,8 +144,15 @@ verification, and clean hostile re-review.
   `0b9354714c6e04826a24772c9a29b03c8663b235`
 - SEC-003 sealed implementation tree:
   `a3d671fcadefdf1eed559d8e0b3c9109bd2cfb04`
-- SEC-003 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-sec-003`
+- SEC-003 feature record:
+  `33bb9009389ad5ba089a11b5317cf4dbe2d5fefe`
+- SEC-003 landing merge:
+  `4521d23651a757953ff155f0cf6583995d5acf54`
+- SEC-003 exact feature/merge tree:
+  `171cf09da680ee09a924ac8d94ea414ed87333c2`
+- SEC-003 feature branch: preserved
+- SEC-003 feature worktree: removed after positive landing/push proof; exact
+  dependency/build residue removed after parent/name/process guards
 - SEC-003 receipt: `docs/execution/receipts/SEC-003.md`
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
@@ -298,14 +305,17 @@ call. Shell selection is pinned independently of ambient `ComSpec`; Git hooks/
 filters and real shell grandchildren cannot observe the host PM/OpenAI/app
 canaries. Explicit MCP consumer env and same-engine restart retain their
 documented separate semantics. Full feature-tree `pnpm ci:check` passes with
-387/387 server tests; three hostile re-reviews report no P0/P1/P2.
+387/387 server tests; three hostile re-reviews report no P0/P1/P2. Feature
+record `33bb9009` guarded-landed as `4521d236`; exact feature/merge tree
+`171cf09d`, post-merge 387/387 gate, exact push/re-fetch, and feature-worktree
+teardown all passed.
 
 ## Active action
 
-Seal the SEC-003 feature record, guarded-land it onto exact unchanged `main`,
-prove ancestry/tree equality, run post-merge `pnpm ci:check`, push exact
-`origin/main`, and tear down the feature worktree. Do not bundle `OPS-006`,
-launcher/browser policy, or other N7 work.
+Define the bounded N4 delivery-receipt slice for explicit positive no-op
+preparation/readiness and approved abandonment under `WT-002`, `WT-005`, and
+`WT-006`. Start from the actual lifecycle/recovery/UI seams. Do not bundle the
+broader process-failure gate, recovery UI implementation, `OPS-006`, or N7.
 
 ## Startup checks
 
@@ -316,8 +326,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001, BC-002, SF-001, and SF-002 feature worktrees are removed. Keep the
-PC-SDK Next main checkout read-only.
+The PM-001, BC-002, SF-001, SF-002, and SEC-003 feature worktrees are removed.
+Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
 

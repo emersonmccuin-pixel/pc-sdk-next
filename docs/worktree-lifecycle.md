@@ -137,8 +137,13 @@ The feature worktree/residue and two handoff-recorded stale temp roots were
 removed only after the documented guards; the feature branch was preserved.
 These receipts do not broaden the cooperative boundary.
 
-SEC-003 is implemented on its isolated feature branch and awaits its closing
-verification/landing receipt. `OPS-006` loopback binding remains in N7.
+SEC-003 feature record `33bb9009389ad5ba089a11b5317cf4dbe2d5fefe`
+guarded-landed as `4521d23651a757953ff155f0cf6583995d5acf54`
+with exact feature/merge tree
+`171cf09da680ee09a924ac8d94ea414ed87333c2`. Post-merge `pnpm ci:check`, exact
+push/re-fetch, and guarded feature-worktree cleanup passed. The next N4 gap is
+positive no-op readiness and approved-abandonment receipts; `OPS-006` loopback
+binding remains in N7.
 
 ## Lifecycle states
 
