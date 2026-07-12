@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-002 sealed implementation and full verification,
-pending guarded landing.
+Updated: 2026-07-12 after RS-002 guarded landing, push, and feature worktree
+teardown.
 
 ## Repository
 
@@ -56,31 +56,34 @@ pending guarded landing.
 - RS-001 closeout landing:
   `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`
 - RS-002 base: `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`
-- Active slice: `docs/execution/slices/RS-002.md`
+- Completed slice: `docs/execution/slices/RS-002.md`
 - RS-002 feature branch: `codex/rs-002-context-observation`
-- RS-002 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-002`
+- RS-002 feature worktree: removed after positive landing/tree proof; exact
+  deregistered dependency residue was verified and removed
 - RS-002 sealed implementation:
   `84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`
 - RS-002 sealed tree: `1322938d45c6ca75557da896d68179ddf5c55325`
+- RS-002 feature record: `bc3d90630519b6780a0f300b062c0fd3f9b18963`
+- RS-002 landing merge: `3a274034499f9454e059ded091b79276394780af`
+- RS-002 landed tree: `ca01b1badca3d93ad979b9cf8c261cbb7e671955`
 
 ## Status
 
-RS-001 is complete, pushed, and torn down. RS-002 implementation and
-verification are complete in its clean run-owned worktree. The sealed feature
-tip adds honest per-session context observation and composer/history projection
+RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-002
+adds honest per-session context observation and composer/history projection
 through Claude's positive control receipt and the existing canonical
 conversation/outbox path. Contract, DB, server, web, hostile review, production
-build, isolated browser, and full workspace gates passed. Quota normalization,
-Codex, specialist widening, and handoff compilation remain out of scope. There
-is no user-direction blocker.
+build, isolated browser, and full workspace gates passed. The landing tree
+exactly matches the feature record, and no feature worktree residue remains.
+Quota normalization, Codex, specialist widening, and handoff compilation remain
+out of scope. There is no user-direction blocker.
 
 ## Next safe action
 
-Commit this RS-002 completion receipt, then perform the guarded merge into the
-unchanged pushed `main` base. Prove sealed-tip ancestry and exact tree equality,
-push the landing/closeout record, remove the worktree only after positive proof,
-and verify no residue remains. Do not widen into quota, Codex, or specialists.
+Re-read the master plan, current state, requirements, and relevant boundaries;
+then define the next smallest coherent N3 slice in a new recorded run-owned
+worktree. Do not widen RS-002's Claude-backed context receipt into quota, Codex,
+or specialist claims without the next slice's explicit scope.
 
 ## Startup checks
 
@@ -91,8 +94,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Continue only in the recorded RS-002 worktree. The main checkout remains
-read-only.
+The RS-002 feature worktree is removed. Create and record a new run-owned
+worktree before the next tracked mutation; the main checkout remains read-only.
 
 ## Known blockers
 
