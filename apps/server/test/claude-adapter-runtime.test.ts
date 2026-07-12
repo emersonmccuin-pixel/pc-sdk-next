@@ -734,6 +734,7 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
       currentUse: { status: 'unavailable', code: 'account-unavailable' },
       compaction: { status: 'unavailable', code: 'account-unavailable' },
     },
+    subscriptionQuota: { status: 'unavailable', code: 'account-unavailable' },
   });
   assert.deepEqual(await adapter.listModels('missing'), {
     status: 'unavailable', code: 'account-unavailable',
@@ -749,6 +750,9 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
     context: {
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
+    },
+    subscriptionQuota: {
+      status: 'supported', sourceSemantics: ['used'], confidences: ['exact'],
     },
   });
 

@@ -22,6 +22,7 @@ export type AccountId = string;
 export interface AccountInfo {
   id: AccountId;
   label: string;
+  runtimeId: string | null;
   /** Display-only; the server holds the real path + selects it in the query env. */
   configDir: string;
 }
@@ -29,8 +30,8 @@ export interface AccountInfo {
 /** Offline fallback for first paint before GET /api/accounts lands. Matches the
  *  registry default in AGENTS.md; replaced by the server list on load. */
 export const DEFAULT_ACCOUNTS: AccountInfo[] = [
-  { id: 'personal', label: 'Personal', configDir: 'C:\\Users\\emers\\.claude' },
-  { id: 'work', label: 'Work', configDir: 'C:\\Users\\emers\\.claude-work' },
+  { id: 'personal', label: 'Personal', runtimeId: null, configDir: 'C:\\Users\\emers\\.claude' },
+  { id: 'work', label: 'Work', runtimeId: null, configDir: 'C:\\Users\\emers\\.claude-work' },
 ];
 
 /** Title-case the account id — the server registry carries no display label. */
@@ -39,7 +40,7 @@ function labelFor(id: string): string {
 }
 
 interface AccountsListResponse {
-  accounts: Array<{ id: string; configDir: string }>;
+  accounts: Array<{ id: string; runtimeId: string; configDir: string }>;
   defaultAccountId: string;
 }
 
@@ -69,6 +70,8 @@ interface AccountsState {
   /** The account shown as active in the header + used for usage display. Seeded
    *  from the active session stamp when present, otherwise the project default. */
   selectedId: AccountId;
+  /** False while the bound project's stamped/default selection is unresolved. */
+  selectionResolved: boolean;
   /** Browser-safe active stamp/provenance. Native identity is presence-only. */
   activeSession: SessionSummary | null;
   /** Invalidates a slower project-default read after authoritative session state. */
@@ -99,6 +102,7 @@ export const useAccounts = create<AccountsState>((set, get) => ({
   accounts: DEFAULT_ACCOUNTS,
   projectId: null,
   selectedId: DEFAULT_ACCOUNTS[0]!.id,
+  selectionResolved: true,
   activeSession: null,
   sessionStampVersion: 0,
   status: 'idle',
@@ -112,6 +116,7 @@ export const useAccounts = create<AccountsState>((set, get) => ({
     set((state) => state.projectId === projectId ? state : ({
       projectId,
       activeSession: null,
+      selectionResolved: projectId === null,
       sessionStampVersion: state.sessionStampVersion + 1,
       status: 'idle',
       pendingId: null,
@@ -125,6 +130,10 @@ export const useAccounts = create<AccountsState>((set, get) => ({
       return {
         activeSession: frame.session,
         selectedId: stampedAccountId ?? state.selectedId,
+        selectionResolved: stampedAccountId ? true : state.selectionResolved,
+        status: stampedAccountId ? 'idle' : state.status,
+        pendingId: stampedAccountId ? null : state.pendingId,
+        error: stampedAccountId ? null : state.error,
         // A null snapshot confirms only that no app session is active; it does
         // not supersede the independent project-default account read.
         sessionStampVersion: state.sessionStampVersion + (stampedAccountId ? 1 : 0),
@@ -140,6 +149,10 @@ export const useAccounts = create<AccountsState>((set, get) => ({
       return {
         activeSession: frame.session,
         selectedId: frame.session.selection?.accountId ?? state.selectedId,
+        selectionResolved: frame.session.selection ? true : state.selectionResolved,
+        status: frame.session.selection ? 'idle' : state.status,
+        pendingId: frame.session.selection ? null : state.pendingId,
+        error: frame.session.selection ? null : state.error,
         sessionStampVersion: state.sessionStampVersion + 1,
       };
     }),
@@ -150,6 +163,7 @@ export const useAccounts = create<AccountsState>((set, get) => ({
       const accounts = res.accounts.map((a) => ({
         id: a.id,
         label: labelFor(a.id),
+        runtimeId: a.runtimeId,
         configDir: a.configDir,
       }));
       if (accounts.length > 0) set({ accounts });
@@ -160,6 +174,9 @@ export const useAccounts = create<AccountsState>((set, get) => ({
 
   loadForProject: async (projectId) => {
     get().bindProject(projectId);
+    if (!get().selectionResolved) {
+      set({ status: 'pending', pendingId: null, error: null });
+    }
     const versionAtRead = get().sessionStampVersion;
     try {
       const { accountId } = await accountsApi.getForProject(projectId);
@@ -169,9 +186,26 @@ export const useAccounts = create<AccountsState>((set, get) => ({
         current.sessionStampVersion !== versionAtRead ||
         current.activeSession?.selection
       ) return;
-      set({ selectedId: accountId, status: 'idle', pendingId: null, error: null });
+      set({
+        selectedId: accountId,
+        selectionResolved: true,
+        status: 'idle',
+        pendingId: null,
+        error: null,
+      });
     } catch {
-      /* a failed read isn't a switch failure — leave the current selection */
+      const current = get();
+      if (
+        current.projectId === projectId &&
+        current.sessionStampVersion === versionAtRead &&
+        !current.selectionResolved
+      ) {
+        set({
+          status: 'error',
+          pendingId: null,
+          error: 'Account selection unavailable. Retry or reconnect.',
+        });
+      }
     }
   },
 
@@ -189,6 +223,7 @@ export const useAccounts = create<AccountsState>((set, get) => ({
       // when supplied. The guarded WS frame remains the reconnect authority.
       set((state) => ({
         selectedId: session?.selection?.accountId ?? res.accountId,
+        selectionResolved: true,
         activeSession: session ?? (res.switched ? null : state.activeSession),
         sessionStampVersion: state.sessionStampVersion + (res.switched || session ? 1 : 0),
         status: 'idle',

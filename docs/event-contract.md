@@ -1,6 +1,6 @@
 # Event contract — PC-SDK Next
 
-As built in the active `RS-002` feature worktree, 2026-07-12. This document
+As built in the active `RS-004` feature worktree, 2026-07-12. This document
 records the implemented browser wire and its
 persistence/publication semantics. The executable source is
 `packages/contracts/src/events/`; the target behavior beyond this slice is
@@ -470,7 +470,7 @@ reset, clear, or replay the chat timeline. Both frames use the same strict
 ## Channel 2 — resource events
 
 The resource channel remains a separate global-cursor outbox. Its executable
-contract is `packages/contracts/src/events/resource.ts`.
+contract is `packages/contracts/src/events/resources.ts`.
 
 ```ts
 type ResourceFrame = {
@@ -482,7 +482,7 @@ type ResourceFrame = {
     projectId: ULID | null
     entity:
       | 'agent-run' | 'contract' | 'specialist' | 'mailbox-message'
-      | 'session-title' | 'mcp-server' | 'project' | 'usage'
+      | 'session-title' | 'mcp-server' | 'project' | 'subscription-quota'
     entityId: ULID
     eventType: `${ResourceEntity}.changed`
     version: number | null
@@ -495,6 +495,48 @@ type ResourceFrame = {
 Consumers replay `(lastVersion, head]`; a cursor below the pruning floor gets a
 typed `live-reset`. Full-snapshot versus signal-only payload policy remains
 fixed per entity.
+
+Subscription quota is a full-snapshot global resource. Its prunable outbox row
+is transport only; `subscription_quota` is the durable current-state table.
+The exact resource envelope requires `scope: 'global'`, `projectId: null`,
+`entityId === payload.id`, and `version === payload.revision` before a browser
+cursor can advance. Cold load and every websocket epoch read the same truth at
+`GET /api/subscription-quota`:
+
+```ts
+interface SubscriptionQuotaSnapshot {
+  id: ULID
+  runtimeId: string
+  accountId: string
+  revision: number
+  availability: 'available' | 'unavailable'
+  unavailableReason:
+    | 'unsupported' | 'not-applicable' | 'account-unavailable'
+    | 'runtime-unavailable' | 'invalid-observation'
+    | 'observation-timeout' | null
+  observedAt: number
+  observations: Array<{
+    window: { id: string; label: string; durationMs: number | null }
+    scope: { kind: 'account' } | { kind: 'model'; model: string }
+    source: { semantics: 'used' | 'remaining'; fraction: number }
+    usedFraction: number
+    confidence: 'exact' | 'derived' | 'approximate'
+    limitState: 'allowed' | 'warning' | 'rejected' | 'unknown'
+    resetsAt: number | null
+    observedAt: number
+    staleAt: number
+  }>
+}
+
+{ ok: true; snapshots: SubscriptionQuotaSnapshot[] }
+```
+
+Fractions are finite `0..1`. PC-SDK, not an adapter, derives used semantics:
+`used => source.fraction`; `remaining => 1 - source.fraction`. Window IDs are
+unique per runtime/account snapshot. Each window carries its own observation
+and stale time; refreshing one partial bucket cannot make an omitted bucket
+fresh. An unavailable attempt retains last-good windows without refreshing
+them and never authorizes a numeric current presentation.
 
 ## Channel 3 — HTTP-healed live projections
 
@@ -538,6 +580,8 @@ native-to-canonical ID map and emits canonical runtime events:
 | result | usage/duration plus exactly one turn terminal |
 | requesting/retry/compaction | closed app-authored activity; numeric retry facts only |
 | `getContextUsage()` after a settled turn | exact/derived bounded context counts or typed unavailability; native category/path/tool/percentage details dropped |
+| strict account quota pull | complete provider-neutral source-observation batch or fixed typed unavailability; credentials, URL/header, token, native wrapper, and exception prose remain adapter-local |
+| native subscription rate-limit event | exact runtime/account-attributed partial quota batch; malformed or ambiguous scale/time evidence is dropped |
 | arbitrary provider status/error prose | dropped or replaced with fixed app-authored notice |
 | supersession | `retract` with canonical stream IDs |
 | unknown native variant | dropped/logged by the adapter; loop continues |
@@ -627,11 +671,24 @@ specialist revision, native-ID presence, and typed continuation provenance.
 28. Agent-run resource ingress is exact and project-scoped. HTTP terminal rows
     remain revision tombstones during reconnect, and malformed localhost 2xx
     responses fail closed before MCP output.
+29. Subscription quota current state and its full-snapshot outbox resource
+    commit together. Pruning every outbox row cannot erase quota truth; DB or
+    outbox failure cannot leave an in-memory/HTTP projection ahead of SQLite.
+30. Quota identity is exact `(runtimeId, accountId)`. Partial batches preserve
+    omitted windows, complete batches positively remove them, and unavailable
+    attempts retain last-good windows without refreshing their per-window
+    freshness. Older observation time cannot overwrite current truth.
+31. Adapters retain native `used`/`remaining` meaning and report a normalized
+    source fraction. The app service alone derives authoritative used fraction,
+    freshness, durable identity, revision, and publication. Pull and passive
+    evidence must match the exact registered/stamped runtime account.
+32. Malformed quota HTTP/resources fail before cursor or store mutation. HTTP
+    seeds merge by durable revision, so a slow reconnect read cannot regress a
+    newer live snapshot. Context and per-turn token `usage` remain separate.
 
 ## Deliberately unfinished boundaries
 
 - attributed cross-runtime handoff compilation;
-- provider-neutral subscription-quota observations and source semantics;
 - Codex adapter and conformance.
 
 Those are subsequent slices; none has a compatibility wire in this contract.

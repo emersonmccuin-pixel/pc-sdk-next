@@ -54,6 +54,17 @@ export type {
   PruneLiveOutboxResult,
 } from './repos/live-outbox.ts';
 
+export {
+  getSubscriptionQuotaSnapshot,
+  getSubscriptionQuotaSnapshotInDb,
+  insertSubscriptionQuotaSnapshotInDb,
+  listSubscriptionQuotaSnapshots,
+  listSubscriptionQuotaSnapshotsInDb,
+  updateSubscriptionQuotaSnapshotInDb,
+  SubscriptionQuotaRevisionConflictError,
+} from './repos/subscription-quota.ts';
+export type { SubscriptionQuotaRow } from './repos/subscription-quota.ts';
+
 // agent_contracts repo (persistence-only; app-services announces).
 export {
   createContract,

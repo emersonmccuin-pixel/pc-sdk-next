@@ -55,6 +55,7 @@ import {
   testCapabilities,
   testModelDiscovery,
   testSessionSelectionDeps,
+  testSubscriptionQuotaUnavailable,
   withRuntimeReceipt,
 } from './runtime-fixtures.ts';
 
@@ -88,6 +89,9 @@ class GatedAdapter implements AgentRuntimeAdapter {
     this.turnGate.resolve();
   }
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   private async mint(
     input: CreateRuntimeSession,

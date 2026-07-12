@@ -1,5 +1,5 @@
 // Projects list rail. Vendored look from PC-PTY-Chat (wax-stamp rows, filter,
-// drag-reorder, right-click menu). Adapted: statusline store → usage store
+// drag-reorder, right-click menu). Adapted: statusline store → quota store
 // (selected account); runtimeApi.startNewSession → sessionsApi.newSession.
 
 import { useEffect, useMemo, useState } from 'react';
@@ -9,11 +9,11 @@ import { COMMAND_PROJECT_SLUG } from '@pc/contracts';
 import { projectsApi, type Project } from '@/features/projects/client';
 import { sessionsApi } from '@/state/sessions';
 import { useAccounts } from '@/state/accounts';
-import { useUsageSnapshot } from '@/state/usage-store';
+import { useSubscriptionQuotaSnapshot } from '@/state/subscription-quota-store';
 import { useActiveCenterTab } from '@/store/active-center-tab';
 import { useActiveProject } from '@/store/active-project';
 import { DeleteProjectFilesModal, SoftDeleteProjectModal } from './ProjectDangerModals';
-import { UsageCapsPanel } from './UsageCapsPanel';
+import { SubscriptionQuotaPanel } from './SubscriptionQuotaPanel';
 
 interface ProjectRailProps {
   projects: Project[];
@@ -55,7 +55,17 @@ export function ProjectRail({
   const setActiveSlug = useActiveProject((s) => s.setActiveSlug);
   const setTab = useActiveCenterTab((s) => s.setTab);
   const selectedAccountId = useAccounts((s) => s.selectedId);
-  const usageSnapshot = useUsageSnapshot(selectedAccountId);
+  const selectionResolved = useAccounts((s) => s.selectionResolved);
+  const selectedRuntimeId = useAccounts((s) =>
+    !s.selectionResolved
+      ? null
+      : s.activeSession?.selection?.runtimeId ??
+        s.accounts.find((account) => account.id === s.selectedId)?.runtimeId ??
+        null);
+  const quotaSnapshot = useSubscriptionQuotaSnapshot(
+    selectedRuntimeId,
+    selectionResolved ? selectedAccountId : null,
+  );
   // Show the Command entry only when a backing command project actually exists —
   // no row is seeded (integrator won't guess a folderPath), so `?? null` hides it
   // rather than rendering a dead link off the showCommandSpace default.
@@ -343,7 +353,12 @@ export function ProjectRail({
           })
         )}
       </div>
-      <UsageCapsPanel snapshot={usageSnapshot} />
+      <SubscriptionQuotaPanel
+        snapshot={quotaSnapshot}
+        runtimeId={selectedRuntimeId}
+        accountId={selectionResolved ? selectedAccountId : null}
+        selectionResolved={selectionResolved}
+      />
       {filesNote && (
         <div className="border-t border-border bg-success/10 px-3 py-1.5 text-xs text-success">
           {filesNote}

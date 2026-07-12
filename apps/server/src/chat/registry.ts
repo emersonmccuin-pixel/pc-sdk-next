@@ -1,6 +1,6 @@
 // One SessionService per project, lazily created and wired to the WS hub room.
 
-import type { ServerFrame, UsageSnapshot } from '@pc/contracts';
+import type { ServerFrame, SubscriptionQuotaObservationBatch } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { listProjectsWithQueuedConversationSends } from '@pc/db';
 import type {
@@ -27,7 +27,7 @@ export interface SessionRegistryDeps {
   cwd?: string;
   askTimeoutMs?: number;
   interruptTimeoutMs?: number;
-  onRateLimit?: (snapshot: UsageSnapshot) => void;
+  onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   orchestratorRev?: () => number | null;
 }
 
@@ -67,7 +67,7 @@ export class SessionRegistry {
         askTimeoutMs: this.deps.askTimeoutMs,
         interruptTimeoutMs: this.deps.interruptTimeoutMs,
         queueDrainEnabled: this.queueDrainReady,
-        onRateLimit: this.deps.onRateLimit,
+        onSubscriptionQuota: this.deps.onSubscriptionQuota,
         orchestratorRev: this.deps.orchestratorRev,
       });
       this.services.set(projectId, svc);

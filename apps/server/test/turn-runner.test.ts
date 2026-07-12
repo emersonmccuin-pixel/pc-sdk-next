@@ -7,6 +7,7 @@ import {
   type ChatEvent,
   type ChatDeltaEvent,
   type RuntimeSessionReceipt,
+  type SubscriptionQuotaObservationBatch,
   type ToolStateEvent,
 } from '@pc/contracts';
 import type { RuntimeEvent } from '../src/runner/runtime.ts';
@@ -26,16 +27,19 @@ function collector() {
   const deltas: Array<{ itemId: string; deltaIndex: number; event: ChatDeltaEvent }> = [];
   const dropped: string[] = [];
   const receipts: RuntimeSessionReceipt[] = [];
+  const quotas: SubscriptionQuotaObservationBatch[] = [];
   return {
     chat,
     deltas,
     dropped,
     receipts,
+    quotas,
     deps: {
       emitChat: (event: ChatEvent) => chat.push(event),
       emitDelta: (itemId: string, deltaIndex: number, event: ChatDeltaEvent) =>
         deltas.push({ itemId, deltaIndex, event }),
       onRuntimeSessionReceipt: (receipt: RuntimeSessionReceipt) => receipts.push(receipt),
+      onSubscriptionQuota: (batch: SubscriptionQuotaObservationBatch) => quotas.push(batch),
       onDropped: (reason: string) => dropped.push(reason),
     },
   };
@@ -71,6 +75,37 @@ function tool(
     ...over,
   };
 }
+
+test('subscription-quota invokes its passive callback without creating a chat event', async () => {
+  const c = collector();
+  const batch: SubscriptionQuotaObservationBatch = {
+    runtimeId: TEST_SELECTION.runtimeId,
+    accountId: TEST_SELECTION.accountId,
+    availability: 'available',
+    coverage: 'complete',
+    observedAt: 1_000,
+    observations: [{
+      window: { id: 'five-hour', label: '5h', durationMs: null },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: 0.25 },
+      confidence: 'exact',
+      limitState: 'allowed',
+      resetsAt: null,
+    }],
+  };
+  const term = await runTurn(stream([
+    { type: 'subscription-quota', batch },
+    {
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    },
+  ]), c.deps);
+
+  assert.deepEqual(term, { terminal: 'turn-end', outcome: 'ok', numTurns: null });
+  assert.deepEqual(c.quotas, [batch]);
+  assert.equal(c.chat.some((event) => JSON.stringify(event).includes('five-hour')), false);
+  assert.deepEqual(c.chat.map((event) => event.kind), ['turn-duration', 'turn-end']);
+});
 
 test('success turn maps blocks and ends in exactly one turn-end', async () => {
   const c = collector();

@@ -6,6 +6,7 @@ export * from './pending-asks.ts';
 export * from './agent-runs.ts';
 export * from './conversations.ts';
 export * from './context.ts';
+export * from './quota.ts';
 export * from './runtime.ts';
 export * from './mailbox.ts';
 export * from './pods.ts';

@@ -16,6 +16,7 @@ import {
   isRuntimeCapabilities,
   isRuntimeModelDiscovery,
   isRuntimeSelection,
+  isSubscriptionQuotaIdentity,
   type ActivityPhase,
   type ContextObservation,
   type RuntimeCapabilities,
@@ -25,9 +26,9 @@ import {
   type RuntimeSelectionErrorCode,
   type RuntimeSelectionValidation,
   type RuntimeSessionReceipt,
+  type SubscriptionQuotaObservationBatch,
   type ToolStateEvent,
   type TurnStopReason,
-  type UsageSnapshot,
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 
@@ -40,10 +41,11 @@ export type {
   RuntimeSelectionErrorCode,
   RuntimeSelectionValidation,
   RuntimeSessionReceipt,
+  SubscriptionQuotaObservationBatch,
 } from '@pc/contracts';
 
 /** Per-turn token telemetry (native result usage). Maps to the chat `usage`
- *  event; distinct from the durable per-account `UsageSnapshot`. */
+ * event; distinct from account-scoped subscription-quota observations. */
 export interface RuntimeUsage {
   inputTokens: number;
   outputTokens: number;
@@ -119,8 +121,9 @@ export type RuntimeEvent =
     }
   // Provider retry normalized to numeric facts; native error prose is absent.
   | { type: 'api-retry'; attempt: number | null; maxRetries: number | null }
-  // Durable per-account usage snapshot.
-  | { type: 'rate-limit'; snapshot: UsageSnapshot }
+  // Provider-neutral subscription-quota observation. Per-turn token usage and
+  // per-session context remain separate event families.
+  | { type: 'subscription-quota'; batch: SubscriptionQuotaObservationBatch }
   // Generic runtime notice surfaced as a system chat event.
   | {
       type: 'system';
@@ -206,6 +209,13 @@ export interface AgentRuntimeAdapter {
   readonly id: string;
   capabilities(accountId: string): Promise<RuntimeCapabilities>;
   listModels(accountId: string): Promise<RuntimeModelDiscovery>;
+  /** Observe account-scoped subscription quota without creating an app
+   * session. Provider auth, transport, and native response parsing stay inside
+   * the adapter; callers may bound the attempt with an AbortSignal. */
+  observeSubscriptionQuota(
+    accountId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<SubscriptionQuotaObservationBatch>;
   createSession(input: CreateRuntimeSession): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession>;
 }
@@ -308,6 +318,16 @@ function cloneRuntimeCapabilities(capabilities: RuntimeCapabilities): RuntimeCap
             code: capabilities.context.compaction.code,
           },
     },
+    subscriptionQuota: capabilities.subscriptionQuota.status === 'supported'
+      ? {
+          status: 'supported',
+          sourceSemantics: [...capabilities.subscriptionQuota.sourceSemantics],
+          confidences: [...capabilities.subscriptionQuota.confidences],
+        }
+      : {
+          status: capabilities.subscriptionQuota.status,
+          code: capabilities.subscriptionQuota.code,
+        },
   };
 }
 
@@ -544,10 +564,7 @@ export class RuntimeRegistry {
       throw new RuntimeRegistrationError('invalid-runtime-id');
     }
     if (
-      typeof runtimeId !== 'string' ||
-      !runtimeId.trim() ||
-      runtimeId !== runtimeId.trim() ||
-      runtimeId.includes('\u0000')
+      !isSubscriptionQuotaIdentity(runtimeId)
     ) {
       throw new RuntimeRegistrationError('invalid-runtime-id');
     }

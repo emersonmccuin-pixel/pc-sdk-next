@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { useAccounts } from '@/state/accounts';
+import { useConnectionStore } from '@/state/connection';
 import {
   sessionContinuationLabel,
   sessionResumeLabel,
@@ -18,6 +19,7 @@ import {
 export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   const accounts = useAccounts((s) => s.accounts);
   const selectedId = useAccounts((s) => s.selectedId);
+  const selectionResolved = useAccounts((s) => s.selectionResolved);
   const status = useAccounts((s) => s.status);
   const pendingId = useAccounts((s) => s.pendingId);
   const error = useAccounts((s) => s.error);
@@ -26,6 +28,7 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   const loadForProject = useAccounts((s) => s.loadForProject);
   const bindProject = useAccounts((s) => s.bindProject);
   const switchAccount = useAccounts((s) => s.switchAccount);
+  const connectionEpoch = useConnectionStore((s) => s.epoch);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -36,12 +39,14 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   useEffect(() => {
     bindProject(projectId);
     if (projectId) void loadForProject(projectId);
-  }, [projectId, bindProject, loadForProject]);
+  }, [projectId, connectionEpoch, bindProject, loadForProject]);
 
-  const selected = accounts.find((a) => a.id === selectedId) ?? (
-    selectedId ? { id: selectedId, label: labelFromId(selectedId), configDir: '' } : accounts[0] ?? null
-  );
   const pending = status === 'pending';
+  const selected = selectionResolved
+    ? accounts.find((a) => a.id === selectedId) ?? (
+        selectedId ? { id: selectedId, label: labelFromId(selectedId), configDir: '' } : null
+      )
+    : null;
   const selectionLabel = activeSession ? sessionSelectionLabel(activeSession) : null;
   const continuationLabel = activeSession ? sessionContinuationLabel(activeSession) : null;
 
@@ -62,7 +67,27 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
     };
   }, [open]);
 
-  if (!selected) return null;
+  if (!selected) {
+    return (
+      <div className="relative" role="status" aria-live="polite">
+        <button
+          type="button"
+          disabled={!projectId || pending}
+          onClick={() => { if (projectId) void loadForProject(projectId); }}
+          title={error ?? 'Resolving the project account'}
+          className="flex items-center gap-1.5 px-2 py-1 text-[11px] uppercase tracking-[0.06em] text-foreground disabled:opacity-70"
+        >
+          <span
+            className={`inline-block h-1.5 w-1.5 rounded-full ${
+              status === 'error' ? 'bg-destructive' : 'animate-pulse bg-amber-500'
+            }`}
+            aria-hidden
+          />
+          <span>{status === 'error' ? 'Retry account' : 'Resolving account…'}</span>
+        </button>
+      </div>
+    );
+  }
 
   async function choose(id: string) {
     if (!projectId || pending || id === selectedId) {

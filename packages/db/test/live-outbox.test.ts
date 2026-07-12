@@ -73,30 +73,30 @@ test('live outbox inserts global events and replays by exclusive cursor', () => 
 });
 
 test('getLatestLiveEventForEntity returns the most-recent row, or null when none', () => {
-  // Cold-load seed source for last-write-wins global entities (usage). No rows
+  // Cold-load seed source for last-write-wins global entities. No rows
   // yet → null.
-  assert.equal(getLatestLiveEventForEntity('usage'), null);
+  assert.equal(getLatestLiveEventForEntity('mcp-server'), null);
 
   insertLiveEvent(getDb(), {
     scope: 'global',
     projectId: null,
-    type: 'usage.changed',
-    entity: 'usage',
-    entityId: 'personal',
+    type: 'mcp-server.changed',
+    entity: 'mcp-server',
+    entityId: 'server-1',
     version: null,
     payload: { status: 'allowed', updatedAt: 1 },
   });
   const latest = insertLiveEvent(getDb(), {
     scope: 'global',
     projectId: null,
-    type: 'usage.changed',
-    entity: 'usage',
-    entityId: 'personal',
+    type: 'mcp-server.changed',
+    entity: 'mcp-server',
+    entityId: 'server-1',
     version: null,
     payload: { status: 'allowed_warning', updatedAt: 2 },
   });
 
-  const got = getLatestLiveEventForEntity('usage');
+  const got = getLatestLiveEventForEntity('mcp-server');
   assert.equal(got?.cursor, latest.cursor);
   assert.equal((got?.payload as { status: string }).status, 'allowed_warning');
 });

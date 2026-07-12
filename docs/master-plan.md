@@ -62,7 +62,7 @@ Plus everything locked in AGENTS.md: subscription-first auth (Claude Max and Cha
 - *Agent inspection:* `AgentsList` → `AgentTranscriptModal`/`RichAgentTranscript`/`TranscriptRow` — the click-into-an-agent's-work flow, intact.
 - *Specialists:* `PodDetailModal` + tabs (Context/Settings/Secrets/History) and `CreatePodModal` become the specialist detail + builder.
 - *Settings:* `AppSettingsModal`, `ProjectSettingsPanel`, project modals.
-- *Content:* `Markdown`, `MermaidBlock`, chat bubbles, diff views, attachments + lightbox, `UsageCapsPanel` (seeds the usage dashboard).
+- *Content:* `Markdown`, `MermaidBlock`, chat bubbles, diff views, attachments + lightbox, `SubscriptionQuotaPanel` (seeds the usage dashboard).
 - *Chrome:* design system, `ErrorBoundary`, onboarding, dev controls.
 
 **Redefine (same job, new shape)**

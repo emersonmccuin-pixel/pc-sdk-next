@@ -5,6 +5,10 @@ import {
   isRuntimeContextCapabilities,
   type RuntimeContextCapabilities,
 } from './context.ts';
+import {
+  isSubscriptionQuotaCapability,
+  type SubscriptionQuotaCapability,
+} from './quota.ts';
 
 export const RUNTIME_EFFORT_SELECTION_KINDS = [
   'selected',
@@ -37,6 +41,7 @@ export interface RuntimeCapabilities {
   modelDiscovery: RuntimeCapabilityState;
   effortControl: RuntimeCapabilityState;
   context: RuntimeContextCapabilities;
+  subscriptionQuota: SubscriptionQuotaCapability;
 }
 
 export type RuntimeModelEffortCapability =
@@ -165,13 +170,15 @@ export function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilit
       'modelDiscovery',
       'effortControl',
       'context',
+      'subscriptionQuota',
     ]) &&
     exactNonEmptyString(value.runtimeId) &&
     exactNonEmptyString(value.accountId) &&
     isRuntimeCapabilityState(value.nativeContinuation) &&
     isRuntimeCapabilityState(value.modelDiscovery) &&
     isRuntimeCapabilityState(value.effortControl) &&
-    isRuntimeContextCapabilities(value.context)
+    isRuntimeContextCapabilities(value.context) &&
+    isSubscriptionQuotaCapability(value.subscriptionQuota)
   );
 }
 

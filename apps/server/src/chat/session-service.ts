@@ -57,7 +57,7 @@ import {
   type SessionReplayFrame,
   type SessionSummary,
   type SessionUpdatedFrame,
-  type UsageSnapshot,
+  type SubscriptionQuotaObservationBatch,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import {
@@ -106,7 +106,7 @@ export interface SessionServiceDeps {
   contextObservationTimeoutMs?: number;
   /** Registry-owned boot gate. Direct service users default to ready. */
   queueDrainEnabled?: boolean;
-  onRateLimit?: (snapshot: UsageSnapshot) => void;
+  onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   orchestratorRev?: () => number | null;
 }
 
@@ -187,7 +187,7 @@ export class SessionService {
   private readonly drainConversationOutbox: () => void;
   private readonly onConversationRelayError: (error: unknown) => void;
   private readonly cwd?: string;
-  private readonly onRateLimit?: (snapshot: UsageSnapshot) => void;
+  private readonly onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   private readonly orchestratorRev?: () => number | null;
   private readonly interruptTimeoutMs: number;
   private readonly contextObservationTimeoutMs: number;
@@ -225,7 +225,7 @@ export class SessionService {
       console.warn('[pc-sdk][conversation-relay] post-commit drain failed:', error);
     });
     this.cwd = deps.cwd;
-    this.onRateLimit = deps.onRateLimit;
+    this.onSubscriptionQuota = deps.onSubscriptionQuota;
     this.orchestratorRev = deps.orchestratorRev;
     this.interruptTimeoutMs = deps.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
     this.contextObservationTimeoutMs = deps.contextObservationTimeoutMs
@@ -1335,7 +1335,30 @@ export class SessionService {
         if (this.session?.id === session.id) this.session = confirmation.session;
         if (!confirmation.duplicate) this.broadcastSessionUpdated();
       },
-      onRateLimit: (snapshot) => this.onRateLimit?.(snapshot),
+      onSubscriptionQuota: (batch) => {
+        // Quota telemetry is non-critical, but it must still be attributed to
+        // this exact positively attached runtime attempt before admission.
+        const selection = runtimeSelectionForSession(session);
+        if (
+          this.disposed ||
+          this.runtime !== acquisition.runtime ||
+          this.runtimeSessionId !== session.id ||
+          !acquisition.receiptConfirmed ||
+          !selection ||
+          batch.runtimeId !== selection.runtimeId ||
+          batch.accountId !== selection.accountId
+        ) {
+          console.warn('[pc-sdk][subscription-quota] dropped unattributed orchestrator observation');
+          return;
+        }
+        try {
+          this.onSubscriptionQuota?.(batch);
+        } catch {
+          // Quota projection failure cannot turn a provider exchange into a
+          // failed conversation turn. The DB/service layer logs its own gate.
+          console.warn('[pc-sdk][subscription-quota] orchestrator observation was not recorded');
+        }
+      },
       onDropped: (reason, message) => {
         console.warn(`[pc-sdk][turn] dropped: ${reason}`, summarize(message));
       },

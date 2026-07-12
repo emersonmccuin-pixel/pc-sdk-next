@@ -154,11 +154,11 @@ silent fallback or invented context/usage precision.
   maps the pinned SDK's `getContextUsage()` control receipt into strict
   provider-neutral exact/derived context observations. Native category, path,
   tool, percentage, and error detail stays inside the adapter.
-  Orchestrator app sessions persist the complete immutable selection and route
-  every remint/resume through it. Specialist-wide immutable effort/attempt
-  persistence remains a later N3 slice. Specialist dispatch also still imports
-  and selects `CLAUDE_RUNTIME_ID` directly rather than receiving its choice only
-  through the composition/registry boundary.
+  It also owns Claude OAuth subscription-quota acquisition and strict native
+  response/event mapping behind `observeSubscriptionQuota`; credential JSON,
+  URL/header, token, percent scale, reset parsing, and native status never cross
+  the adapter. Orchestrator app sessions and specialist runs persist the complete
+  immutable selection and route every remint/resume through it.
 
 ### OpenAI Codex
 
@@ -273,6 +273,17 @@ evidence supersedes a turn identity, a late frame cannot roll the context epoch
 back or re-authorize that turn. Subscription quota remains a separate resource
 family.
 
+`RS-004` implements that separate family. A generic bounded scheduler resolves
+each runtime/account through `RuntimeRegistry`; it never reads a credential home
+or provider payload. Adapters return strict partial/complete source-observation
+batches. The quota service derives used fraction and reset-capped freshness,
+merges by stable window identity, and atomically commits one revisioned current-
+state snapshot plus its global resource event. Equal account IDs under peer
+runtimes remain distinct. Pull failure records typed availability while retaining
+last-good windows without refreshing them; stale is derived from `staleAt`.
+Passive events from orchestrator or specialist turns must match the exact
+positively attached selection and remain outside transcripts.
+
 ## Migration and gates
 
 The inherited Phase 3 began with a behavior-preserving boundary extraction.
@@ -283,11 +294,10 @@ Claude-backed orchestrator context observation and projection. RS-003 completed
 specialist revision/run selection, native attempt receipts, and safe public
 provenance. Remaining gates are:
 
-1. add provider-neutral subscription-quota observations and source semantics;
-2. implement a Codex subscription spike against the same contract;
-3. add `CodexRuntimeAdapter` and run the same conformance suite;
-4. expose deliberate runtime/account/model/effort selection controls;
-5. compile attributed cross-runtime handoffs and their UI provenance.
+1. implement a Codex subscription spike against the same contract;
+2. add `CodexRuntimeAdapter` and run the same conformance suite;
+3. expose deliberate runtime/account/model/effort selection controls;
+4. compile attributed cross-runtime handoffs and their UI provenance.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers

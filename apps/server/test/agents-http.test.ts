@@ -4,9 +4,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { SubscriptionQuotaService } from '@pc/app-services';
 import { getLiveEventHighWater, listLiveOutboxRowsAfter } from '@pc/db';
 import { AccountRegistry } from '../src/runner/account-env.ts';
-import { UsageCache } from '../src/usage/cache.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { seedStockAgents } from '../src/agents/seed.ts';
@@ -28,7 +28,7 @@ async function boot(): Promise<{ server: RunningServer; base: string }> {
     runRecovery: false,
     accounts: new AccountRegistry(),
     orchestratorRuntimeId: TEST_RUNTIME_ID,
-    usage: new UsageCache(),
+    subscriptionQuota: new SubscriptionQuotaService(),
   });
   return { server, base: `http://localhost:${server.port}` };
 }

@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  subscriptionQuotaKey,
+  type SubscriptionQuotaSnapshot,
+} from '@pc/contracts';
 
 import { ProjectSocket } from '../src/lib/ws-client.ts';
 import { useAccounts } from '../src/state/accounts.ts';
@@ -8,12 +12,61 @@ import { useConnectionStore } from '../src/state/connection.ts';
 import { useAgentEventStore } from '../src/state/agent-event-store.ts';
 import { useSessionNav } from '../src/state/sessions.ts';
 import { useResourceStore } from '../src/state/resource-store.ts';
+import { useSubscriptionQuotaStore } from '../src/state/subscription-quota-store.ts';
 
 const PROJECT_ID = 'project-1';
 const SESSION_ID = 'session-1';
 
 function route(socket: ProjectSocket, frame: unknown): void {
   (socket as unknown as { route: (candidate: unknown) => void }).route(frame);
+}
+
+function quotaSnapshot(
+  over: Partial<SubscriptionQuotaSnapshot> = {},
+): SubscriptionQuotaSnapshot {
+  return {
+    id: '01KXAV30000000000000000001',
+    runtimeId: 'runtime-a',
+    accountId: 'personal',
+    revision: 1,
+    availability: 'available',
+    unavailableReason: null,
+    observedAt: 1_000,
+    observations: [{
+      window: { id: 'five-hour', label: '5 hours', durationMs: 18_000_000 },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: 0.4 },
+      usedFraction: 0.4,
+      confidence: 'exact',
+      limitState: 'allowed',
+      resetsAt: 2_000,
+      observedAt: 1_000,
+      staleAt: 2_000,
+    }],
+    ...over,
+  };
+}
+
+function quotaFrame(snapshot: SubscriptionQuotaSnapshot, cursor: string) {
+  return {
+    type: 'resource',
+    event: {
+      id: `01KXAV3${cursor.padStart(19, '0')}`,
+      cursor,
+      scope: 'global',
+      projectId: null,
+      entity: 'subscription-quota',
+      entityId: snapshot.id,
+      eventType: 'subscription-quota.changed',
+      version: snapshot.revision,
+      createdAt: snapshot.observedAt,
+      payload: snapshot,
+    },
+  };
+}
+
+function resourceCursor(socket: ProjectSocket): string | undefined {
+  return (socket as unknown as { cursor: string | undefined }).cursor;
 }
 
 function queueItem() {
@@ -319,7 +372,7 @@ test('socket admits only exact browser-safe agent-run resources', () => {
   const frame = {
     type: 'resource',
     event: {
-      id: 'resource-1',
+      id: '01KXAV30000000000000000003',
       cursor: '1',
       scope: 'project',
       projectId: PROJECT_ID,
@@ -382,6 +435,67 @@ test('socket admits only exact browser-safe agent-run resources', () => {
   assert.equal(useResourceStore.getState().byKey.get(key)?.version, 1);
 });
 
+test('malformed subscription-quota resources are rejected before cursor advancement', () => {
+  useResourceStore.getState().clearAll();
+  useSubscriptionQuotaStore.getState().clear();
+  const socket = new ProjectSocket(PROJECT_ID);
+  const accepted = quotaSnapshot();
+  route(socket, quotaFrame(accepted, '21'));
+
+  const key = subscriptionQuotaKey(accepted.runtimeId, accepted.accountId);
+  assert.equal(resourceCursor(socket), '21');
+  assert.equal(useSubscriptionQuotaStore.getState().byRuntimeAccount[key]?.revision, 1);
+  assert.equal(
+    useResourceStore.getState().byKey.get(`subscription-quota::${accepted.id}`)?.version,
+    1,
+  );
+
+  const newer = quotaSnapshot({ revision: 2 });
+  const malformed = quotaFrame(newer, '22');
+  route(socket, {
+    ...malformed,
+    event: {
+      ...malformed.event,
+      payload: { ...newer, rawRateLimitInfo: { five_hour: 'secret' } },
+    },
+  });
+  route(socket, {
+    ...quotaFrame(newer, '23'),
+    event: { ...quotaFrame(newer, '23').event, version: 99 },
+  });
+  route(socket, {
+    ...quotaFrame(newer, '24'),
+    event: {
+      ...quotaFrame(newer, '24').event,
+      entityId: '01KXAV30000000000000000099',
+    },
+  });
+
+  assert.equal(resourceCursor(socket), '21', 'rejected frames cannot move the replay cursor');
+  assert.equal(useSubscriptionQuotaStore.getState().byRuntimeAccount[key]?.revision, 1);
+  assert.equal(
+    useResourceStore.getState().byKey.get(`subscription-quota::${accepted.id}`)?.version,
+    1,
+  );
+});
+
+test('live-reset clears quota projection and advances epoch for HTTP healing', () => {
+  useResourceStore.getState().clearAll();
+  useSubscriptionQuotaStore.getState().clear();
+  const socket = new ProjectSocket(PROJECT_ID);
+  const accepted = quotaSnapshot();
+  route(socket, quotaFrame(accepted, '31'));
+  assert.equal(Object.keys(useSubscriptionQuotaStore.getState().byRuntimeAccount).length, 1);
+  assert.equal(useResourceStore.getState().byKey.size, 1);
+
+  const epochBefore = useConnectionStore.getState().epoch;
+  route(socket, { type: 'live-reset', projectId: PROJECT_ID, cursor: '31' });
+  assert.deepEqual(useSubscriptionQuotaStore.getState().byRuntimeAccount, {});
+  assert.equal(useResourceStore.getState().byKey.size, 0);
+  assert.equal(resourceCursor(socket), undefined);
+  assert.equal(useConnectionStore.getState().epoch, epochBefore + 1);
+});
+
 test('socket generation guards suppress connecting duplicates and superseded handlers', () => {
   const listeners = new Map<string, () => void>();
   const storage = new Map<string, string>();
@@ -422,7 +536,9 @@ test('socket generation guards suppress connecting duplicates and superseded han
     },
   });
 
+  storage.set(`pc:resource-cursor:${PROJECT_ID}`, '09');
   const socket = new ProjectSocket(PROJECT_ID);
+  assert.equal(storage.has(`pc:resource-cursor:${PROJECT_ID}`), false, 'invalid stored cursor is cleared');
   socket.start();
   assert.equal(FakeWebSocket.instances.length, 1);
   const forceReconnect = (socket as unknown as { forceReconnect: () => void }).forceReconnect;
@@ -443,6 +559,7 @@ test('socket generation guards suppress connecting duplicates and superseded han
   second.readyState = FakeWebSocket.OPEN;
   second.onopen?.();
   assert.equal(useConnectionStore.getState().epoch, epochBefore + 1);
+  assert.deepEqual(JSON.parse(second.sent[0]!), { type: 'subscribe' });
   useChatStore.getState().reset(SESSION_ID);
   socket.stop();
   staleMessage({

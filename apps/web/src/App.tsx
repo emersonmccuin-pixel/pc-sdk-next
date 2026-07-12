@@ -13,7 +13,7 @@ import { AccountSwitcher } from '@/components/AccountSwitcher';
 import { Shell } from '@/components/Shell';
 import { COMMAND_PROJECT_SLUG } from '@pc/contracts';
 import { useSessionNav } from '@/state/sessions';
-import { useUsageResourceSync } from '@/state/usage-bridge';
+import { useSubscriptionQuotaResourceSync } from '@/state/subscription-quota-bridge';
 import { useActiveProject } from '@/store/active-project';
 import { useAppSettingsModal } from '@/store/app-settings-modal';
 
@@ -37,7 +37,7 @@ export default function App() {
   const applyTransition = useSessionNav((s) => s.applyTransition);
   const sessionChangedNonce = useSessionNav((s) => s.nonce);
 
-  useUsageResourceSync();
+  useSubscriptionQuotaResourceSync();
 
   const onboardingParam = useMemo(
     () => new URLSearchParams(window.location.search).get('onboarding'),

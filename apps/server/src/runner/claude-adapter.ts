@@ -16,6 +16,8 @@
 // variants are dropped here (never surfaced as an unknown RuntimeEvent).
 
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   createSdkMcpServer,
   query,
@@ -32,12 +34,16 @@ import {
   isCanonicalToolName,
   isRuntimeSelection,
   safeToolSummary,
+  SUBSCRIPTION_QUOTA_MAX_OBSERVATIONS,
   type ToolApprovalSnapshot,
   type ToolCallState,
   type ToolStateEvent,
   type ToolTerminalReason,
   type ContextObservation,
-  type UsageSnapshot,
+  type SubscriptionQuotaLimitState,
+  type SubscriptionQuotaObservationBatch,
+  type SubscriptionQuotaSourceObservation,
+  type SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 import type { AccountRegistry } from './account-env.ts';
@@ -62,12 +68,29 @@ import {
 
 export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
 
+const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const CLAUDE_OAUTH_BETA_HEADER = 'oauth-2025-04-20';
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1_000;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
+const STRICT_ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
 /** Native tools auto-allowed for the orchestrator (read-only surface).
  *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
 const CLAUDE_EFFORT_LEVELS = new Set<EffortLevel>(['low', 'medium', 'high', 'xhigh', 'max']);
 
 export type ClaudeQueryFactory = (params: Parameters<typeof query>[0]) => Query;
+export type ClaudeQuotaFetch = typeof fetch;
+
+export interface ClaudeRuntimeAdapterDeps {
+  accounts: AccountRegistry;
+  queryFactory?: ClaudeQueryFactory;
+  /** Adapter-local seams for deterministic quota tests. */
+  quotaFetch?: ClaudeQuotaFetch;
+  readCredentials?: (configDir: string) => Promise<string>;
+  now?: () => number;
+}
 
 const DEFAULT_SYSTEM_PROMPT = `You are the orchestrator of a local-first project workspace (PC-SDK).
 You help the user explore and reason about the project in the working directory, using your tools.
@@ -82,6 +105,8 @@ export interface ClaudeSessionConfig {
   selection: RuntimeSelection;
   /** Adapter-local seam for deterministic discovery/session conformance tests. */
   queryFactory?: ClaudeQueryFactory;
+  /** Receipt clock used by adapter-authored observations. */
+  now?: () => number;
   systemPrompt?: string;
   /** Working directory for the loop. `start`'s cwd wins; then this; then
    *  `process.cwd()`. */
@@ -789,7 +814,12 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         this.latestPrimaryContextEvidence = { status: 'invalid' };
       }
     }
-    const mapped = mapSdkMessage(msg, this.config.selection.accountId, this.keys);
+    const mapped = mapSdkMessage(
+      msg,
+      this.config.selection.accountId,
+      this.keys,
+      this.config.now ?? Date.now,
+    );
     if (mapped.length === 0) return;
     for (const rm of mapped) {
       turn.push(rm);
@@ -944,10 +974,18 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   private readonly accounts: AccountRegistry;
   private readonly queryFactory: ClaudeQueryFactory;
+  private readonly quotaFetch: ClaudeQuotaFetch;
+  private readonly readCredentials: (configDir: string) => Promise<string>;
+  private readonly now: () => number;
 
-  constructor(deps: { accounts: AccountRegistry; queryFactory?: ClaudeQueryFactory }) {
+  constructor(deps: ClaudeRuntimeAdapterDeps) {
     this.accounts = deps.accounts;
     this.queryFactory = deps.queryFactory ?? query;
+    this.quotaFetch = deps.quotaFetch ?? fetch;
+    this.readCredentials = deps.readCredentials ?? (
+      (configDir) => readFile(join(configDir, '.credentials.json'), 'utf8')
+    );
+    this.now = deps.now ?? Date.now;
   }
 
   async capabilities(accountId: string): Promise<RuntimeCapabilities> {
@@ -963,6 +1001,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
           currentUse: unavailable,
           compaction: unavailable,
         },
+        subscriptionQuota: unavailable,
       };
     }
     return {
@@ -975,7 +1014,66 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
         currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
         compaction: { status: 'supported' },
       },
+      subscriptionQuota: {
+        status: 'supported',
+        sourceSemantics: ['used'],
+        confidences: ['exact'],
+      },
     };
+  }
+
+  async observeSubscriptionQuota(
+    accountId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<SubscriptionQuotaObservationBatch> {
+    if (!canonicalQuotaString(accountId)) {
+      throw new Error('subscription quota account identity is invalid');
+    }
+    const account = this.accounts.get(this.id, accountId);
+    if (!account) {
+      return unavailableQuotaBatch(accountId, 'account-unavailable', this.observationTime());
+    }
+    if (options.signal?.aborted) {
+      return unavailableQuotaBatch(accountId, 'observation-timeout', this.observationTime());
+    }
+
+    try {
+      const credentialText = await this.readCredentials(account.configDir);
+      const accessToken = readClaudeOauthToken(credentialText, this.observationTime());
+      if (!accessToken) {
+        return unavailableQuotaBatch(accountId, 'runtime-unavailable', this.observationTime());
+      }
+
+      const response = await this.quotaFetch(CLAUDE_USAGE_URL, {
+        signal: options.signal,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'anthropic-beta': CLAUDE_OAUTH_BETA_HEADER,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (!response.ok) {
+        return unavailableQuotaBatch(accountId, 'runtime-unavailable', this.observationTime());
+      }
+
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch (error) {
+        const reason = options.signal?.aborted || isAbortError(error)
+          ? 'observation-timeout'
+          : 'invalid-observation';
+        return unavailableQuotaBatch(accountId, reason, this.observationTime());
+      }
+      const observedAt = this.observationTime();
+      return mapClaudeOauthQuotaResponse(body, accountId, observedAt) ??
+        unavailableQuotaBatch(accountId, 'invalid-observation', observedAt);
+    } catch (error) {
+      const reason = options.signal?.aborted || isAbortError(error)
+        ? 'observation-timeout'
+        : 'runtime-unavailable';
+      return unavailableQuotaBatch(accountId, reason, this.observationTime());
+    }
   }
 
   async listModels(accountId: string): Promise<RuntimeModelDiscovery> {
@@ -1076,6 +1174,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       continuationAttemptId: input.continuationAttemptId,
       selection,
       queryFactory: this.queryFactory,
+      now: this.now,
       systemPrompt: input.instructions,
       cwd: input.cwd,
       bridge: input.tools,
@@ -1090,6 +1189,14 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       ask: input.ask,
     });
     return session;
+  }
+
+  private observationTime(): number {
+    const observedAt = this.now();
+    if (!Number.isSafeInteger(observedAt) || observedAt < 0) {
+      throw new Error('quota observation clock is invalid');
+    }
+    return observedAt;
   }
 }
 
@@ -1191,7 +1298,12 @@ function toRuntimeModel(model: ModelInfo): RuntimeModel | null {
 
 /** Exported for the mapping guard test — production callers go through
  *  ClaudeRuntimeSession. */
-export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyContext): RuntimeEvent[] {
+export function mapSdkMessage(
+  msg: SDKMessage,
+  accountId: string,
+  keys: SdkKeyContext,
+  now: () => number = Date.now,
+): RuntimeEvent[] {
   const m = msg as Record<string, unknown> & { type: string };
   switch (m.type) {
     case 'assistant':
@@ -1210,8 +1322,8 @@ export function mapSdkMessage(msg: SDKMessage, accountId: string, keys: SdkKeyCo
         state: 'running',
       });
     case 'rate_limit_event': {
-      const snap = toUsageSnapshot(m.rate_limit_info as Record<string, unknown> | undefined, accountId);
-      return snap ? [{ type: 'rate-limit', snapshot: snap }] : [];
+      const batch = mapClaudeRateLimitInfo(m.rate_limit_info, accountId, now());
+      return batch ? [{ type: 'subscription-quota', batch }] : [];
     }
     case 'system':
       return mapSystem(m, keys);
@@ -1632,33 +1744,349 @@ function exactNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value === value.trim();
 }
 
-/** Build a partial UsageSnapshot from one `rate_limit_event`. Only the window the
- *  event carries is set; the usage cache merges windows per account over time. */
-function toUsageSnapshot(info: Record<string, unknown> | undefined, accountId: string): UsageSnapshot | null {
-  if (!info) return null;
-  const status = info.status === 'allowed_warning' || info.status === 'rejected' ? info.status : 'allowed';
-  // Contract scale is 0–1. The SDK's rate_limit_info scale is unpinned; a value
-  // past 1.5 can only be a 0–100 percentage (150% quota is unreachable), so
-  // normalize rather than clamp the meter to full.
-  const raw = numberOr(info.utilization, 0);
-  const utilization = raw > 1.5 ? raw / 100 : raw;
-  // SDK sends epoch SECONDS (observed live 2026-07-10); contract is epoch ms.
-  const rawReset = typeof info.resetsAt === 'number' ? info.resetsAt : null;
-  const resetsAt = rawReset !== null && rawReset < 1e12 ? rawReset * 1000 : rawReset;
-  const windowType = String(info.rateLimitType ?? '');
-  const win = { utilization, resetsAt };
-  const isFiveHour = windowType === 'five_hour';
+type NativeMapping<T> =
+  | { ok: true; value: T }
+  | { ok: false };
+
+interface QuotaDescriptor {
+  window: SubscriptionQuotaSourceObservation['window'];
+  scope: SubscriptionQuotaSourceObservation['scope'];
+}
+
+/** Map the direct Claude OAuth usage response. Native wrapper keys, status
+ * prose, credential details, and percent scale never cross this adapter. */
+export function mapClaudeOauthQuotaResponse(
+  body: unknown,
+  accountId: string,
+  observedAt: number,
+): SubscriptionQuotaObservationBatch | null {
+  const value = recordOrUndefined(body);
+  if (!value || !canonicalQuotaString(accountId) || !safeQuotaTimestamp(observedAt)) return null;
+
+  const observations: SubscriptionQuotaSourceObservation[] = [];
+  const baseWindows: Array<[string, QuotaDescriptor]> = [
+    ['five_hour', {
+      window: { id: 'five-hour', label: '5h', durationMs: FIVE_HOURS_MS },
+      scope: { kind: 'account' },
+    }],
+    ['seven_day', {
+      window: { id: 'seven-day', label: '7d', durationMs: SEVEN_DAYS_MS },
+      scope: { kind: 'account' },
+    }],
+    ['seven_day_opus', {
+      window: { id: 'seven-day-opus', label: 'Opus 7d', durationMs: SEVEN_DAYS_MS },
+      scope: { kind: 'model', model: 'opus' },
+    }],
+    ['seven_day_sonnet', {
+      window: { id: 'seven-day-sonnet', label: 'Sonnet 7d', durationMs: SEVEN_DAYS_MS },
+      scope: { kind: 'model', model: 'sonnet' },
+    }],
+    ['seven_day_oauth_apps', {
+      window: { id: 'seven-day-oauth-apps', label: 'OAuth apps 7d', durationMs: SEVEN_DAYS_MS },
+      scope: { kind: 'account' },
+    }],
+  ];
+  const hasRecognizedBase = baseWindows.some(([key]) =>
+    Object.prototype.hasOwnProperty.call(value, key));
+  if (!hasRecognizedBase && !Object.prototype.hasOwnProperty.call(value, 'limits')) return null;
+  for (const [key, descriptor] of baseWindows) {
+    const mapped = mapOauthWindow(value[key], descriptor, 'unknown');
+    if (!mapped.ok) return null;
+    if (mapped.value) observations.push(mapped.value);
+  }
+
+  const limits = value.limits;
+  if (limits !== undefined && limits !== null) {
+    if (!Array.isArray(limits)) return null;
+    for (const limitValue of limits) {
+      const mapped = mapOauthModelLimit(limitValue);
+      if (!mapped.ok) return null;
+      if (mapped.value) observations.push(mapped.value);
+    }
+  }
+  if (new Set(observations.map((observation) => observation.window.id)).size !== observations.length) {
+    return null;
+  }
+  if (observations.length > SUBSCRIPTION_QUOTA_MAX_OBSERVATIONS) return null;
+  if (!hasRecognizedBase && observations.length === 0) return null;
+
   return {
+    runtimeId: CLAUDE_RUNTIME_ID,
     accountId,
-    fiveHour: isFiveHour ? win : null,
-    sevenDay: windowType.startsWith('seven_day') ? win : null,
-    fable: null,
-    status,
-    model: null,
-    updatedAt: Date.now(),
+    availability: 'available',
+    coverage: 'complete',
+    observedAt,
+    observations,
   };
 }
 
-function numberOr(v: unknown, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+/** Strict mapping for one SDK `rate_limit_event`. Pinned runtime evidence
+ * establishes a used fraction (`0..1`) and epoch seconds. Ambiguous native
+ * values are dropped rather than guessed, clamped, or converted to zero. */
+export function mapClaudeRateLimitInfo(
+  nativeInfo: unknown,
+  accountId: string,
+  observedAt: number,
+): SubscriptionQuotaObservationBatch | null {
+  const info = recordOrUndefined(nativeInfo);
+  if (!info || !canonicalQuotaString(accountId) || !safeQuotaTimestamp(observedAt)) return null;
+  const descriptor = rateLimitDescriptor(info.rateLimitType);
+  const fraction = usedQuotaFraction(info.utilization);
+  const resetsAt = epochSecondsToMs(info.resetsAt);
+  const limitState = sdkLimitState(info.status);
+  if (!descriptor || fraction === null || !resetsAt.ok || limitState === null) return null;
+
+  return {
+    runtimeId: CLAUDE_RUNTIME_ID,
+    accountId,
+    availability: 'available',
+    coverage: 'partial',
+    observedAt,
+    observations: [{
+      ...descriptor,
+      source: { semantics: 'used', fraction },
+      confidence: 'exact',
+      limitState,
+      resetsAt: resetsAt.value,
+    }],
+  };
+}
+
+function mapOauthWindow(
+  nativeWindow: unknown,
+  descriptor: QuotaDescriptor,
+  limitState: SubscriptionQuotaLimitState,
+): NativeMapping<SubscriptionQuotaSourceObservation | null> {
+  if (nativeWindow === undefined || nativeWindow === null) return { ok: true, value: null };
+  const window = recordOrUndefined(nativeWindow);
+  if (!window) return { ok: false };
+  if (window.utilization === undefined) return { ok: false };
+  if (window.utilization === null) {
+    return { ok: true, value: null };
+  }
+  const fraction = usedPercentFraction(window.utilization);
+  const resetsAt = isoTimestampToMs(window.resets_at);
+  if (fraction === null || !resetsAt.ok) return { ok: false };
+  return {
+    ok: true,
+    value: {
+      ...descriptor,
+      source: { semantics: 'used', fraction },
+      confidence: 'exact',
+      limitState,
+      resetsAt: resetsAt.value,
+    },
+  };
+}
+
+function mapOauthModelLimit(
+  nativeLimit: unknown,
+): NativeMapping<SubscriptionQuotaSourceObservation | null> {
+  const limit = recordOrUndefined(nativeLimit);
+  if (!limit) return { ok: true, value: null };
+  // `limits` is additive native surface area. Only the positively understood
+  // weekly model bucket belongs to subscription quota; billing/credit shapes
+  // are ignored rather than mislabeled as quota.
+  if (limit.kind !== 'weekly_scoped' || limit.group !== 'weekly') {
+    return { ok: true, value: null };
+  }
+  const scope = recordOrUndefined(limit.scope);
+  if (!scope || scope.model === undefined || scope.model === null) {
+    return { ok: true, value: null };
+  }
+  const nativeModel = recordOrUndefined(scope.model);
+  if (!nativeModel) return { ok: false };
+  const modelId = optionalCanonicalQuotaString(nativeModel.id, 100);
+  const displayName = optionalCanonicalQuotaString(nativeModel.display_name, 100);
+  if (!modelId.ok || !displayName.ok) return { ok: false };
+  if (displayName.value?.toLowerCase() !== 'fable') return { ok: true, value: null };
+  const model = 'Fable';
+  const label = 'Fable';
+
+  if (limit.percent === undefined) return { ok: false };
+  if (limit.percent === null) return { ok: true, value: null };
+  const fraction = usedPercentFraction(limit.percent);
+  const resetsAt = isoTimestampToMs(limit.resets_at);
+  if (fraction === null || !resetsAt.ok) return { ok: false };
+  const id = 'model:fable';
+  if (!canonicalQuotaString(id)) return { ok: false };
+  const descriptor: QuotaDescriptor = {
+    window: { id, label, durationMs: SEVEN_DAYS_MS },
+    scope: { kind: 'model', model },
+  };
+  return {
+    ok: true,
+    value: {
+      ...descriptor,
+      source: { semantics: 'used', fraction },
+      confidence: 'exact',
+      limitState: oauthLimitState(limit.is_active, limit.severity),
+      resetsAt: resetsAt.value,
+    },
+  };
+}
+
+function rateLimitDescriptor(value: unknown): QuotaDescriptor | null {
+  switch (value) {
+    case 'five_hour':
+      return {
+        window: { id: 'five-hour', label: '5h', durationMs: FIVE_HOURS_MS },
+        scope: { kind: 'account' },
+      };
+    case 'seven_day':
+      return {
+        window: { id: 'seven-day', label: '7d', durationMs: SEVEN_DAYS_MS },
+        scope: { kind: 'account' },
+      };
+    case 'seven_day_opus':
+      return {
+        window: { id: 'seven-day-opus', label: 'Opus 7d', durationMs: SEVEN_DAYS_MS },
+        scope: { kind: 'model', model: 'opus' },
+      };
+    case 'seven_day_sonnet':
+      return {
+        window: { id: 'seven-day-sonnet', label: 'Sonnet 7d', durationMs: SEVEN_DAYS_MS },
+        scope: { kind: 'model', model: 'sonnet' },
+      };
+    case 'seven_day_overage_included':
+      return {
+        window: { id: 'model:fable', label: 'Fable', durationMs: SEVEN_DAYS_MS },
+        scope: { kind: 'model', model: 'Fable' },
+      };
+    // Paid extra-usage credit is a separate billing surface and is explicitly
+    // outside this subscription-quota slice.
+    case 'overage':
+      return null;
+    default:
+      return null;
+  }
+}
+
+function usedPercentFraction(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+    ? value / 100
+    : null;
+}
+
+function usedQuotaFraction(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : null;
+}
+
+function isoTimestampToMs(value: unknown): NativeMapping<number | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== 'string') return { ok: false };
+  const match = STRICT_ISO_TIMESTAMP.exec(value);
+  if (!match) return { ok: false };
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  const daysInMonth = month >= 1 && month <= 12
+    ? new Date(Date.UTC(year, month, 0)).getUTCDate()
+    : 0;
+  if (
+    day < 1 || day > daysInMonth ||
+    hour > 23 || minute > 59 || second > 59 ||
+    offsetHour > 23 || offsetMinute > 59
+  ) return { ok: false };
+  const timestamp = Date.parse(value);
+  return safeQuotaTimestamp(timestamp)
+    ? { ok: true, value: timestamp }
+    : { ok: false };
+}
+
+function epochSecondsToMs(value: unknown): NativeMapping<number | null> {
+  if (value === undefined) return { ok: true, value: null };
+  // A 12/13-digit value is an epoch-millisecond payload and must not be
+  // silently reinterpreted as seconds. The bound remains centuries beyond any
+  // plausible subscription window while keeping the unit unambiguous.
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 0 ||
+    (value as number) >= 100_000_000_000
+  ) return { ok: false };
+  const timestamp = (value as number) * 1_000;
+  return safeQuotaTimestamp(timestamp)
+    ? { ok: true, value: timestamp }
+    : { ok: false };
+}
+
+function sdkLimitState(value: unknown): SubscriptionQuotaLimitState | null {
+  if (value === 'allowed') return 'allowed';
+  if (value === 'allowed_warning') return 'warning';
+  if (value === 'rejected') return 'rejected';
+  return null;
+}
+
+function oauthLimitState(
+  isActive: unknown,
+  severity: unknown,
+): SubscriptionQuotaLimitState {
+  if (isActive !== true) return 'unknown';
+  if (severity === 'normal' || severity === 'allowed') return 'allowed';
+  if (severity === 'warning' || severity === 'allowed_warning') return 'warning';
+  if (severity === 'critical' || severity === 'rejected') return 'rejected';
+  return 'unknown';
+}
+
+function readClaudeOauthToken(raw: string, now: number): string | null {
+  if (!safeQuotaTimestamp(now)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const root = recordOrUndefined(parsed);
+  const oauth = root ? recordOrUndefined(root.claudeAiOauth) : undefined;
+  if (!oauth || !canonicalQuotaString(oauth.accessToken, 16_384)) return null;
+  if (oauth.expiresAt !== undefined) {
+    if (!safeQuotaTimestamp(oauth.expiresAt) || (oauth.expiresAt as number) <= now) return null;
+  }
+  return oauth.accessToken as string;
+}
+
+function unavailableQuotaBatch(
+  accountId: string,
+  reason: SubscriptionQuotaUnavailableReason,
+  observedAt: number,
+): SubscriptionQuotaObservationBatch {
+  return {
+    runtimeId: CLAUDE_RUNTIME_ID,
+    accountId,
+    availability: 'unavailable',
+    reason,
+    observedAt,
+  };
+}
+
+function canonicalQuotaString(value: unknown, max = 200): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= max &&
+    /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/.test(value);
+}
+
+function optionalCanonicalQuotaString(
+  value: unknown,
+  max: number,
+): NativeMapping<string | null> {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  return canonicalQuotaString(value, max)
+    ? { ok: true, value }
+    : { ok: false };
+}
+
+function safeQuotaTimestamp(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isAbortError(error: unknown): boolean {
+  return recordOrUndefined(error)?.name === 'AbortError';
 }

@@ -5,7 +5,7 @@
 // This is the COMPOSITION ROOT — the only place (with the runtime registry)
 // that selects a concrete agent-runtime adapter. The account switcher resolves
 // each project's login, the MCP manager bridges healthy remote tools, and the
-// usage cache turns rate-limit events into durable quota snapshots. All of it
+// subscription-quota service turns runtime observations into durable snapshots. All of it
 // hangs off the canonical `RuntimeSession` seam — `claude-adapter.ts` is the
 // only SDK importer.
 
@@ -13,6 +13,11 @@ import { spawn, type StdioOptions } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
+import {
+  OlderSubscriptionQuotaObservationError,
+  SubscriptionQuotaService,
+} from '@pc/app-services';
+import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import {
   RuntimeRegistry,
@@ -25,8 +30,7 @@ import { seedStockAgents } from './agents/seed.ts';
 import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
 import { McpManager } from './mcp/manager.ts';
-import { UsageCache } from './usage/cache.ts';
-import { UsagePoller } from './usage/poller.ts';
+import { SubscriptionQuotaPoller } from './subscription-quota/poller.ts';
 import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
 import { startServer } from './server.ts';
 
@@ -43,9 +47,8 @@ async function main(): Promise<void> {
   );
 
   const accounts = new AccountRegistry();
-  const usage = new UsageCache();
-  const hydrated = usage.hydrateFromDb();
-  if (hydrated > 0) console.log(`[pc-sdk][usage] hydrated ${hydrated} account snapshot(s) from db`);
+  const subscriptionQuota = new SubscriptionQuotaService();
+  let subscriptionQuotaPoller: SubscriptionQuotaPoller | null = null;
   const mcp = new McpManager();
 
   // The chat runs under the orchestrator agent row (seeded above, editable in
@@ -55,6 +58,15 @@ async function main(): Promise<void> {
 
   const runtimes = new RuntimeRegistry();
   runtimes.register(new ClaudeRuntimeAdapter({ accounts }));
+  const recordSubscriptionQuota = (batch: SubscriptionQuotaObservationBatch): void => {
+    try {
+      subscriptionQuota.record(batch);
+    } catch (error) {
+      if (error instanceof OlderSubscriptionQuotaObservationError) return;
+      const code = error instanceof Error ? error.name : 'record-failed';
+      console.warn(`[pc-sdk][subscription-quota] observation was not recorded: ${code}`);
+    }
+  };
 
   const resolveNewSessionSelection = async (
     input: { projectId: ULID; accountId?: string },
@@ -105,6 +117,7 @@ async function main(): Promise<void> {
         ? adapter.resumeSession({ ...sessionInput, nativeSessionId: continuation.nativeSessionId })
         : adapter.createSession(sessionInput);
     },
+    onSubscriptionQuota: recordSubscriptionQuota,
   });
   // The server's live port — set after listen and before any recovered chat
   // work is explicitly released by the composition root.
@@ -157,9 +170,9 @@ async function main(): Promise<void> {
       runtimes.preflight(selection, continuation),
     accounts,
     orchestratorRuntimeId: CLAUDE_RUNTIME_ID,
-    usage,
+    subscriptionQuota,
     dispatch,
-    onRateLimit: (snapshot) => usage.record(snapshot),
+    onSubscriptionQuota: recordSubscriptionQuota,
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
@@ -173,7 +186,7 @@ async function main(): Promise<void> {
     onRestartRequest: () => {
       console.warn('[pc-sdk] restart requested — closing, respawning, exiting.');
       void (async () => {
-        usagePoller.stop();
+        subscriptionQuotaPoller?.stop();
         await dispatch.disposeAll().catch(() => {});
         await server.close().catch(() => {});
         spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
@@ -257,12 +270,16 @@ async function main(): Promise<void> {
 
   console.log(`[pc-sdk] server listening on ${server.url} (ws: ${server.url}/ws?projectId=…)`);
 
-  // Active quota supply — boot poll + interval per account (degrade-never-block).
-  const usagePoller = new UsagePoller({ accounts: accounts.list(), cache: usage });
-  usagePoller.start();
+  // Active quota supply — boot poll + bounded interval per runtime account.
+  subscriptionQuotaPoller = new SubscriptionQuotaPoller({
+    accounts: accounts.list(),
+    runtimes,
+    service: subscriptionQuota,
+  });
+  subscriptionQuotaPoller.start();
 
   const shutdown = (): void => {
-    usagePoller.stop();
+    subscriptionQuotaPoller?.stop();
     void server.close().then(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);

@@ -1,6 +1,6 @@
 // HTTP surface — health, the @pc/contracts project + settings APIs (mounted
 // from their own modules), sessions (new/resume/list + replay events),
-// pasted-images upload, accounts + usage. Replay events return the SAME
+// pasted-images upload, accounts + subscription quota. Replay events return the SAME
 // canonical conversation-event shape the WS live channel emits.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -25,7 +25,7 @@ import { mountSettings } from './settings.ts';
 import { mountAccounts } from './accounts.ts';
 import type { AccountRegistry } from '../runner/account-env.ts';
 import type { DispatchService } from '../dispatch/service.ts';
-import type { UsageCache } from '../usage/cache.ts';
+import type { SubscriptionQuotaService } from '@pc/app-services';
 import {
   RuntimeSelectionRejectedError,
   type RuntimeSelectionValidation,
@@ -35,10 +35,10 @@ export interface HttpDeps {
   registry: SessionRegistry;
   version?: string;
   instanceId?: string;
-  /** Account switcher registry (accounts + usage endpoints mount when set). */
+  /** Account switcher registry (accounts + quota endpoints mount when set). */
   accounts?: AccountRegistry;
   orchestratorRuntimeId?: string;
-  usage?: UsageCache;
+  subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
   dispatch?: DispatchService;
   /** In-app engine restart (Settings → Restart engine). The composition root
@@ -157,7 +157,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
     });
   });
 
-  // ── Accounts + usage ────────────────────────────────────────────────────────
+  // ── Accounts + subscription quota ──────────────────────────────────────────
   if (deps.accounts) {
     if (!deps.orchestratorRuntimeId) {
       throw new Error('orchestratorRuntimeId is required when account routes are mounted');
@@ -166,7 +166,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
       accounts: deps.accounts,
       registry: deps.registry,
       runtimeId: deps.orchestratorRuntimeId,
-      usage: deps.usage,
+      subscriptionQuota: deps.subscriptionQuota,
     });
   }
 

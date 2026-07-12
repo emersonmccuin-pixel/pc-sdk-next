@@ -65,6 +65,7 @@ import {
   testCapabilities,
   testModelDiscovery,
   testSessionSelectionDeps,
+  testSubscriptionQuotaUnavailable,
   withRuntimeReceipt,
 } from './runtime-fixtures.ts';
 
@@ -104,6 +105,9 @@ class FakeAdapter implements AgentRuntimeAdapter {
   created: CreateRuntimeSession[] = [];
   constructor(private readonly turns: ScriptedTurn[]) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     this.created.push(input);
@@ -183,6 +187,9 @@ class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
   constructor(private readonly runtime: RuntimeSession) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
     return withRuntimeReceipt(() => this.runtime)({
@@ -225,6 +232,9 @@ class DeferredCreateAdapter implements AgentRuntimeAdapter {
   private resolveMint!: (session: RuntimeSession) => void;
   private readonly mint = new Promise<RuntimeSession>((resolve) => { this.resolveMint = resolve; });
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
   async listModels() { return testModelDiscovery(); }
 
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {

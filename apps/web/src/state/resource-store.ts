@@ -9,11 +9,9 @@
 // overlays like the `stalled` badge must still apply), null version =
 // last-write-wins by cursor.
 //
-// SEAM: nothing wires the WS 'resource' / 'live-reset' frames into this store
-// yet (ws-client is a sibling). Call `applyResourceFrame` / `applyLiveReset`
-// from the socket handler when it lands; call `seed` with an HTTP list result
-// before the socket is live. Consumers (ActivityPanel, AgentsList, usage
-// bridge, …) read through the selector hooks below regardless of source.
+// The websocket client admits guarded `resource` / `live-reset` frames here;
+// HTTP-backed consumers may also call `seed` before the socket is live.
+// Consumers read through selector hooks regardless of source.
 
 import { useMemo } from 'react';
 import { create } from 'zustand';

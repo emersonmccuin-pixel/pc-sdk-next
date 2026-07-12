@@ -99,6 +99,13 @@
       "when": 1783839600000,
       "tag": "0013_specialist_execution_stamps",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1783926000000,
+      "tag": "0014_subscription_quota",
+      "breakpoints": true
     }
   ]
 }

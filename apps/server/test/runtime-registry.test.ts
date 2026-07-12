@@ -11,6 +11,7 @@ import {
   type RuntimeModelDiscovery,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
+import { testSubscriptionQuotaUnavailable } from './runtime-fixtures.ts';
 
 const session: RuntimeSession = {
   sendTurn: async function* () {},
@@ -31,6 +32,9 @@ class FakeAdapter implements AgentRuntimeAdapter {
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
     },
+    subscriptionQuota: {
+      status: 'unsupported', code: 'test-runtime-quota-unsupported',
+    },
   };
   discoveryValue: RuntimeModelDiscovery = {
     status: 'available',
@@ -49,6 +53,10 @@ class FakeAdapter implements AgentRuntimeAdapter {
 
   async listModels(): Promise<RuntimeModelDiscovery> {
     return this.discoveryValue;
+  }
+
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
   }
 
   async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
@@ -92,6 +100,15 @@ test('runtime registry rejects duplicate ids and resolves absence without fallba
     (error: unknown) =>
       error instanceof RuntimeRegistrationError && error.code === 'invalid-runtime-id',
   );
+  for (const id of ['r'.repeat(201), 'runtime-😀', '\truntime']) {
+    const candidate = new FakeAdapter();
+    Object.defineProperty(candidate, 'id', { value: id });
+    assert.throws(
+      () => new RuntimeRegistry().register(candidate),
+      (error: unknown) =>
+        error instanceof RuntimeRegistrationError && error.code === 'invalid-runtime-id',
+    );
+  }
 });
 
 test('selection request normalizes null effort only from positive model facts', async () => {
@@ -261,6 +278,9 @@ test('registry fails closed on malformed boundary values and adapter facts', asy
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
     },
+    subscriptionQuota: {
+      status: 'unsupported', code: 'test-runtime-quota-unsupported',
+    },
   };
   adapter.discoveryValue = {
     status: 'available',
@@ -314,6 +334,9 @@ test('validation snapshots mutable selections and capability facts before awaits
     context: {
       currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
       compaction: { status: 'supported' },
+    },
+    subscriptionQuota: {
+      status: 'unsupported', code: 'test-runtime-quota-unsupported',
     },
   };
   const discoveryStarted = gate();
