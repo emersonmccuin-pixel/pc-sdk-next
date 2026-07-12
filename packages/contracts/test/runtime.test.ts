@@ -42,6 +42,10 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
     nativeContinuation: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
   }), true);
   assert.equal(isRuntimeCapabilities({
     runtimeId: selection.runtimeId,
@@ -49,7 +53,18 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
     nativeContinuation: { status: 'unsupported', code: '' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact'] },
+      compaction: { status: 'supported' },
+    },
   }), false);
+  assert.equal(isRuntimeCapabilities({
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    nativeContinuation: { status: 'supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+  }), false, 'context capability truth is required');
   assert.equal(isRuntimeModelDiscovery({
     status: 'available',
     models: [{

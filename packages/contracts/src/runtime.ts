@@ -1,6 +1,11 @@
 // Provider-neutral runtime selection and capability contracts.
 // Browser-safe, exact-shape guarded, and intentionally free of runtime deps.
 
+import {
+  isRuntimeContextCapabilities,
+  type RuntimeContextCapabilities,
+} from './context.ts';
+
 export const RUNTIME_EFFORT_SELECTION_KINDS = [
   'selected',
   'none',
@@ -31,6 +36,7 @@ export interface RuntimeCapabilities {
   nativeContinuation: RuntimeCapabilityState;
   modelDiscovery: RuntimeCapabilityState;
   effortControl: RuntimeCapabilityState;
+  context: RuntimeContextCapabilities;
 }
 
 export type RuntimeModelEffortCapability =
@@ -158,12 +164,14 @@ export function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilit
       'nativeContinuation',
       'modelDiscovery',
       'effortControl',
+      'context',
     ]) &&
     exactNonEmptyString(value.runtimeId) &&
     exactNonEmptyString(value.accountId) &&
     isRuntimeCapabilityState(value.nativeContinuation) &&
     isRuntimeCapabilityState(value.modelDiscovery) &&
-    isRuntimeCapabilityState(value.effortControl)
+    isRuntimeCapabilityState(value.effortControl) &&
+    isRuntimeContextCapabilities(value.context)
   );
 }
 
