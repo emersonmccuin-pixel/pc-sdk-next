@@ -12,7 +12,13 @@
 import { spawn, type StdioOptions } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
-import { closeDb, getAgentByName, getProjectById, runMigrations } from '@pc/db';
+import {
+  bindProjectRepositoryIdentity,
+  closeDb,
+  getAgentByName,
+  getProjectById,
+  runMigrations,
+} from '@pc/db';
 import {
   OlderSubscriptionQuotaObservationError,
   SubscriptionQuotaService,
@@ -30,6 +36,10 @@ import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter
 import { seedStockAgents } from './agents/seed.ts';
 import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
+import {
+  RepositoryLeaseError,
+  repositoryLeaseManager,
+} from './dispatch/repository-lease.ts';
 import { McpManager } from './mcp/manager.ts';
 import { SubscriptionQuotaPoller } from './subscription-quota/poller.ts';
 import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
@@ -158,6 +168,40 @@ async function main(): Promise<void> {
     const project = getProjectById(ctx.projectId as ULID);
     const orchestrator = orchestratorRow();
     const adapter = runtimes.get(ctx.selection.runtimeId);
+    let cwd = ctx.cwd ?? project?.folderPath ?? undefined;
+    // The current native runtime is not a read-only sandbox: bypass mode can
+    // invoke repository-writing built-ins even though the orchestrator charter
+    // is read-only. Treat any Git-backed cwd as write-capable and acquire the
+    // same engine-lifetime authority before native create/resume.
+    if (ctx.continuation.mode === 'resume' && !project?.repositoryIdentity) {
+      throw new RepositoryLeaseError(
+        'repository-unavailable',
+        cwd ?? '<missing-project-cwd>',
+        null,
+        null,
+        'MISSING_PROJECT_REPOSITORY_IDENTITY',
+      );
+    }
+    if (cwd) {
+      const repositoryLease = await repositoryLeaseManager.acquireForRuntimeCwd(
+        cwd,
+        project?.repositoryIdentity ?? null,
+      );
+      if (project && !bindProjectRepositoryIdentity(project.id, repositoryLease.identity)) {
+        throw new RepositoryLeaseError(
+          'repository-unavailable',
+          cwd,
+          repositoryLease.identity,
+          repositoryLease.lockPath,
+          'PROJECT_UNAVAILABLE_DURING_REPOSITORY_BIND',
+        );
+      }
+      cwd = await repositoryLeaseManager.resolveHeldRuntimeCwd(
+        repositoryLease,
+        cwd,
+        repositoryLease.identity,
+      );
+    }
     const tools =
       portRef.port > 0
         ? mergePcTools(
@@ -175,7 +219,7 @@ async function main(): Promise<void> {
       continuationAttemptId: ctx.continuationAttemptId,
       selection: ctx.selection,
       instructions: orchestrator?.prompt || undefined,
-      cwd: ctx.cwd ?? (project?.folderPath || undefined),
+      cwd,
       tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,
       ask: ctx.ask,

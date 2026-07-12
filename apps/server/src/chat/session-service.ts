@@ -17,6 +17,7 @@ import {
   getConversationQueueSnapshot,
   hasConversationContextObservation,
   getOrchestratorSession,
+  getProjectById,
   getTurnInterruptRequest,
   newId,
   prepareRuntimeSessionCreate,
@@ -726,6 +727,8 @@ export class SessionService {
     selection: RuntimeSelection | null,
   ): RuntimeSelectionErrorCode | null {
     if (session.status === 'active') return 'session-active';
+    const repositoryIdentityError = this.repositoryIdentityResumeError();
+    if (repositoryIdentityError) return repositoryIdentityError;
     if (!selection) return 'selection-unavailable';
     if (
       session.nativeIdentityState !== 'bound' ||
@@ -734,6 +737,13 @@ export class SessionService {
     ) return 'native-session-missing';
     if (session.continuationState === 'resume-failed') return 'resume-failed';
     return null;
+  }
+
+  private repositoryIdentityResumeError(): RuntimeSelectionErrorCode | null {
+    const project = getProjectById(this.projectId);
+    return project?.folderPath && !project.repositoryIdentity
+      ? 'repository-identity-unavailable'
+      : null;
   }
 
   private teardownRunner(reason: string): void {
@@ -814,6 +824,20 @@ export class SessionService {
     }
     if (this.disposed || generation !== this.lifecycleGeneration) {
       throw new Error('session service was disposed during runtime replacement');
+    }
+    if (
+      session.nativeIdentityState === 'bound' &&
+      typeof session.nativeSessionId === 'string' &&
+      session.nativeSessionId.trim().length > 0
+    ) {
+      const repositoryIdentityError = this.repositoryIdentityResumeError();
+      if (repositoryIdentityError) {
+        // A migrated session without a durable repository binding has no
+        // authority to attempt native resume. Refuse before preflight or the
+        // `resume-pending` transition so unavailability is not misreported as
+        // a provider resume failure.
+        throw new RuntimeSelectionRejectedError(repositoryIdentityError);
+      }
     }
     this.setHealth('starting');
     this.broadcast(this.orchestratorStateFrame());

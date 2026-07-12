@@ -13,7 +13,7 @@
 // a successful land. The worktree directory is always reclaimed on teardown.
 
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentRunRow,
@@ -28,7 +28,19 @@ import {
   updateAgentRunStatus,
   upsertWorktree,
 } from '@pc/db';
-import { canTransition, type ULID, type WorktreeCommandStep, type WorktreeStrandedReason } from '@pc/domain';
+import {
+  canTransition,
+  type RepositoryIdentityReceipt,
+  type ULID,
+  type WorktreeCommandStep,
+  type WorktreeStrandedReason,
+} from '@pc/domain';
+import {
+  requireRepositoryWorktreeRoot,
+  RepositoryLeaseError,
+  repositoryLeaseManager,
+} from './repository-lease.ts';
+import { withoutAmbientGitRepositorySelectors } from '../operations/git-environment.ts';
 
 const GIT_TIMEOUT_MS = 60_000;
 /** Per-command bound for profile setup/readiness steps (matches the
@@ -54,7 +66,13 @@ export function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Pr
     execFile(
       'git',
       args,
-      { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      {
+        cwd,
+        env: withoutAmbientGitRepositorySelectors(),
+        timeout: timeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
+      },
       (err, stdout, stderr) => {
         const code = err ? ((err as NodeJS.ErrnoException & { code?: unknown }).code as number | undefined) ?? 1 : 0;
         resolve({
@@ -99,6 +117,8 @@ export interface ProvisionedWorktree {
   /** Positive clean-initial-status check — always true on ok (a dirty fresh
    *  worktree refuses). Recorded on the Git receipt. */
   cleanStatus: boolean;
+  /** Immutable canonical repository authority frozen into the Git receipt. */
+  repositoryIdentity: RepositoryIdentityReceipt;
 }
 
 export type ProvisionOutcome =
@@ -114,7 +134,11 @@ export type ProvisionOutcome =
 export async function provisionWorktree(
   projectDir: string,
   runId: string,
-  opts: { baseBranch?: string | null; projectId?: ULID | null } = {},
+  opts: {
+    baseBranch?: string | null;
+    projectId?: ULID | null;
+    expectedIdentity?: RepositoryIdentityReceipt | null;
+  } = {},
 ): Promise<ProvisionOutcome> {
   if (!projectDir || !existsSync(projectDir)) {
     return { ok: false, error: `project folder missing: ${projectDir || '(unset)'}` };
@@ -141,7 +165,7 @@ export async function provisionWorktree(
   if (!base) {
     return { ok: false, error: `no base branch: neither 'main' nor 'master' exists in ${projectDir}` };
   }
-  const current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], projectDir);
+  let current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], projectDir);
   if (!current.ok) {
     return { ok: false, error: `cannot resolve HEAD: ${current.stderr}` };
   }
@@ -154,15 +178,53 @@ export async function provisionWorktree(
       error: `project is checked out on '${current.stdout}', not the base branch '${base}' — switch the main copy back to '${base}' first (provisioning never auto-checkouts)`,
     };
   }
-  const baseSha = await git(['rev-parse', `refs/heads/${base}`], projectDir);
+  let baseSha = await git(['rev-parse', `refs/heads/${base}`], projectDir);
   if (!baseSha.ok) {
     return { ok: false, error: `cannot resolve base branch tip: ${baseSha.stderr}` };
   }
+  let repositoryIdentity: RepositoryIdentityReceipt;
+  let authorizedProjectDir: string;
+  try {
+    const repositoryLease = await repositoryLeaseManager.acquire(
+      projectDir,
+      opts.expectedIdentity ?? null,
+    );
+    repositoryIdentity = repositoryLease.identity;
+    authorizedProjectDir = await repositoryLeaseManager.resolveHeldRuntimeCwd(
+      repositoryLease,
+      projectDir,
+      repositoryIdentity,
+    );
+    authorizedProjectDir = await requireRepositoryWorktreeRoot(authorizedProjectDir);
+  } catch (error) {
+    return { ok: false, error: repositoryLeaseMessage(error) };
+  }
+  // Every preliminary check above is repeated after positive authority. Only
+  // this under-lease evidence can authorize the worktree mutation.
+  current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], authorizedProjectDir);
+  if (!current.ok || current.stdout !== base) {
+    return {
+      ok: false,
+      error: !current.ok
+        ? `cannot resolve HEAD under repository authority: ${current.stderr}`
+        : `project moved to '${current.stdout}' after repository admission (expected '${base}')`,
+    };
+  }
+  baseSha = await git(['rev-parse', `refs/heads/${base}`], authorizedProjectDir);
+  if (!baseSha.ok) {
+    return { ok: false, error: `cannot resolve base branch tip under repository authority: ${baseSha.stderr}` };
+  }
   const branch = `agent-${runId.slice(-8).toLowerCase()}`;
-  const root = `${projectDir.replace(/[\\/]+$/, '')}-worktrees`;
+  const root = worktreesRoot(authorizedProjectDir);
+  if (!isSafeWorktreeRoot(authorizedProjectDir)) {
+    return { ok: false, error: `worktree root is not a real owned directory: ${root}` };
+  }
   mkdirSync(root, { recursive: true });
+  if (!isSafeWorktreeRoot(authorizedProjectDir)) {
+    return { ok: false, error: `worktree root became unsafe during provisioning: ${root}` };
+  }
   const dir = join(root, branch);
-  const add = await git(['worktree', 'add', '-b', branch, dir, baseSha.stdout], projectDir);
+  const add = await git(['worktree', 'add', '-b', branch, dir, baseSha.stdout], authorizedProjectDir);
   if (!add.ok) {
     return { ok: false, error: `git worktree add failed: ${add.stderr || add.stdout}` };
   }
@@ -190,7 +252,15 @@ export async function provisionWorktree(
       error: `worktree not clean immediately after checkout (filters/eol/case config?) — refusing to start an agent on a dirty base:\n${receiptTail(status.stdout)}`,
     };
   }
-  return { ok: true, dir, branch, baseBranch: base, baseSha: baseSha.stdout, cleanStatus: true };
+  return {
+    ok: true,
+    dir,
+    branch,
+    baseBranch: base,
+    baseSha: baseSha.stdout,
+    cleanStatus: true,
+    repositoryIdentity,
+  };
 }
 
 // ── Review checkouts (full independent review) ───────────────────────────────
@@ -214,12 +284,24 @@ export async function provisionReviewCheckout(
   projectDir: string,
   reviewRunId: string,
   commit: string,
+  expectedIdentity: RepositoryIdentityReceipt,
 ): Promise<{ ok: true; dir: string } | { ok: false; error: string }> {
   if (!projectDir || !existsSync(projectDir)) {
     return { ok: false, error: `project folder missing: ${projectDir || '(unset)'}` };
   }
+  try {
+    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+  } catch (error) {
+    return { ok: false, error: repositoryLeaseMessage(error) };
+  }
   const root = worktreesRoot(projectDir);
+  if (!isSafeWorktreeRoot(projectDir)) {
+    return { ok: false, error: `worktree root is not a real owned directory: ${root}` };
+  }
   mkdirSync(root, { recursive: true });
+  if (!isSafeWorktreeRoot(projectDir)) {
+    return { ok: false, error: `worktree root became unsafe during review provisioning: ${root}` };
+  }
   const dir = join(root, reviewCheckoutName(reviewRunId));
   const add = await git(['worktree', 'add', '--detach', dir, commit], projectDir);
   if (!add.ok) {
@@ -231,7 +313,21 @@ export async function provisionReviewCheckout(
 /** Reclaim a review checkout. Best-effort (a leftover is inert — detached
  *  HEAD, no branch); converges to success when the dir is already gone and
  *  unregistered (same idempotency as teardownWorktree). Never throws. */
-export async function removeReviewCheckout(projectDir: string, dir: string): Promise<boolean> {
+export async function removeReviewCheckout(
+  projectDir: string,
+  dir: string,
+  expectedIdentity: RepositoryIdentityReceipt,
+): Promise<boolean> {
+  if (!isOwnedWorktreePath(projectDir, dir)) {
+    console.warn(`[pc-sdk][worktree] review checkout path is outside the owned worktree root: ${dir}`);
+    return false;
+  }
+  try {
+    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+  } catch (error) {
+    console.warn(`[pc-sdk][worktree] review checkout authority unavailable for ${dir}: ${repositoryLeaseMessage(error)}`);
+    return false;
+  }
   const removed = await git(['worktree', 'remove', '--force', dir], projectDir);
   if (removed.ok) return true;
   if (!existsSync(dir) && !(await isRegisteredWorktree(projectDir, dir))) return true;
@@ -253,8 +349,26 @@ export function runProfileCommands(
   dir: string,
   commands: readonly string[],
   timeoutMs = PROFILE_CMD_TIMEOUT_MS,
+  expectedIdentity: RepositoryIdentityReceipt | null = null,
 ): Promise<ProfileCommandsResult> {
   return (async () => {
+    try {
+      await repositoryLeaseManager.acquire(dir, expectedIdentity);
+    } catch (error) {
+      return {
+        ok: false,
+        steps: commands.length === 0
+          ? []
+          : [{
+              command: commands[0]!,
+              exitCode: 1,
+              durationMs: 0,
+              stdoutTail: '',
+              stderrTail: repositoryLeaseMessage(error),
+              timedOut: false,
+            }],
+      };
+    }
     const steps: WorktreeCommandStep[] = [];
     for (const command of commands) {
       const step = await runProfileCommand(dir, command, timeoutMs);
@@ -296,7 +410,7 @@ export interface ShellCommandResult {
  *  an env-echoing command must never see them (docs/worktree-lifecycle.md:
  *  secrets are injected through explicit policy only). */
 export function sanitizedShellEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base };
+  const env = withoutAmbientGitRepositorySelectors(base);
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   return env;
@@ -318,7 +432,7 @@ export function runShellCommand(
       cwd: opts.cwd,
       shell: true,
       windowsHide: true,
-      env: opts.env ?? sanitizedShellEnv(),
+      env: sanitizedShellEnv(opts.env),
       detached: process.platform !== 'win32',
     });
     let stdout = '';
@@ -383,8 +497,14 @@ export async function landBranch(input: {
   baseBranch: string;
   podName: string;
   expectedHeadSha: string;
+  repositoryIdentity?: RepositoryIdentityReceipt | null;
 }): Promise<LandOutcome> {
   const { projectDir, branch, baseBranch } = input;
+  try {
+    await repositoryLeaseManager.acquire(projectDir, input.repositoryIdentity ?? null);
+  } catch (error) {
+    return { outcome: 'failed', error: repositoryLeaseMessage(error) };
+  }
   const status = await git(['status', '--porcelain'], projectDir);
   if (!status.ok) return { outcome: 'failed', error: `git status failed: ${status.stderr}` };
   if (status.stdout.length > 0) {
@@ -506,9 +626,28 @@ export async function teardownWorktree(
   projectDir: string,
   dir: string,
   cleanupCommands: readonly string[] = [],
+  expectedIdentity: RepositoryIdentityReceipt | null = null,
 ): Promise<boolean> {
+  if (!isOwnedWorktreePath(projectDir, dir)) {
+    console.warn(`[pc-sdk][worktree] teardown path is outside the owned worktree root: ${dir}`);
+    return false;
+  }
+  try {
+    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+    if (existsSync(dir)) {
+      await repositoryLeaseManager.acquire(dir, expectedIdentity);
+    }
+  } catch (error) {
+    console.warn(`[pc-sdk][worktree] teardown authority unavailable for ${dir}: ${repositoryLeaseMessage(error)}`);
+    return false;
+  }
   if (cleanupCommands.length > 0 && existsSync(dir)) {
-    const cleanup = await runProfileCommands(dir, cleanupCommands, CLEANUP_CMD_TIMEOUT_MS);
+    const cleanup = await runProfileCommands(
+      dir,
+      cleanupCommands,
+      CLEANUP_CMD_TIMEOUT_MS,
+      expectedIdentity,
+    );
     if (!cleanup.ok) {
       const failed = cleanup.steps[cleanup.steps.length - 1];
       console.warn(
@@ -556,7 +695,17 @@ export async function teardownWorktree(
  *  merge already carried its history into the base branch, so the agent
  *  branch ref itself is disposable; unlanded/abandoned work never reaches
  *  this call (teardownWorktree keeps preserving those branches). */
-export async function deleteMergedBranch(projectDir: string, branch: string): Promise<void> {
+export async function deleteMergedBranch(
+  projectDir: string,
+  branch: string,
+  expectedIdentity: RepositoryIdentityReceipt | null = null,
+): Promise<void> {
+  try {
+    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+  } catch (error) {
+    console.warn(`[pc-sdk][worktree] branch-delete authority unavailable for ${branch}: ${repositoryLeaseMessage(error)}`);
+    return;
+  }
   const del = await git(['branch', '-D', branch], projectDir);
   if (!del.ok) {
     console.warn(`[pc-sdk][worktree] branch delete failed for ${branch} (best-effort, land receipt already durable): ${del.stderr}`);
@@ -576,11 +725,18 @@ async function isRegisteredWorktree(projectDir: string, dir: string): Promise<bo
     .some((line) => normalizePathKey(line.slice('worktree '.length)) === target);
 }
 
-/** Canonical path key for comparison: resolved, forward slashes, case-folded
- *  on win32 (mirrors the landing-lock key idiom). */
+/** Canonical path key for comparison. Native realpath converges ordinary
+ * Windows aliases while preserving distinct names inside a case-sensitive
+ * directory; app-level lowercasing would conflate distinct worktrees. */
 function normalizePathKey(p: string): string {
-  const resolved = resolve(p.trim()).replace(/[\\/]+/g, '/');
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const resolved = resolve(p.trim());
+  let canonical = resolved;
+  try {
+    canonical = realpathSync.native(resolved);
+  } catch {
+    // Missing-path recovery must compare against the exact recorded spelling.
+  }
+  return canonical.replace(/[\\/]+/g, '/');
 }
 
 export interface StrandedWorktreeFinding {
@@ -613,7 +769,9 @@ export interface StrandedReconcileResult {
  *  whose contract already landed/abandoned resolves to terminal 'destroyed'
  *  — the contract record proves the work is done, so it never lingers as a
  *  scary-but-harmless stranded row forever. Never throws. */
-export function reconcileStrandedWorktrees(): StrandedReconcileResult {
+export function reconcileStrandedWorktrees(
+  authorizedProjectIds?: ReadonlySet<string>,
+): StrandedReconcileResult {
   const live = new Set<string>();
   for (const run of listNonTerminalAgentRuns()) {
     if (run.worktreeDir) live.add(run.worktreeDir);
@@ -630,6 +788,10 @@ export function reconcileStrandedWorktrees(): StrandedReconcileResult {
   const now = Date.now();
   const stranded: StrandedWorktreeFinding[] = [];
   for (const row of listActiveWorktrees()) {
+    if (
+      authorizedProjectIds &&
+      (!row.projectId || !authorizedProjectIds.has(row.projectId))
+    ) continue;
     // Abandoned work is preserved on purpose — its record lives on the contract.
     if (row.projectId && abandoned(row.projectId).has(row.branch ?? row.name)) continue;
     // Review-parked work is NOT stranded: the producing run is terminal BY
@@ -650,6 +812,10 @@ export function reconcileStrandedWorktrees(): StrandedReconcileResult {
   const revived: string[] = [];
   const resolved: string[] = [];
   for (const row of listStrandedWorktrees()) {
+    if (
+      authorizedProjectIds &&
+      (!row.projectId || !authorizedProjectIds.has(row.projectId))
+    ) continue;
     // Self-heal: dir back + live run, OR the contract is (still) awaiting
     // review/landing — heals rows stranded by earlier scans of parked work.
     const healed =
@@ -728,8 +894,16 @@ function awaitingReviewOrLanding(contractId: ULID | null): boolean {
  *  Force-deletes survivors with the same filesystem fallback as teardown,
  *  then prunes git's registration. Never throws; returns the removed
  *  directory names (each logged as it goes). */
-export async function sweepOrphanedWorktreeDirs(projectDir: string): Promise<string[]> {
+export async function sweepOrphanedWorktreeDirs(
+  projectDir: string,
+  expectedIdentity: RepositoryIdentityReceipt | null = null,
+): Promise<string[]> {
+  await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
   const root = worktreesRoot(projectDir);
+  if (!isSafeWorktreeRoot(projectDir)) {
+    console.warn(`[pc-sdk][worktree] orphan sweep skipped: worktree root is an alias or not a directory: ${root}`);
+    return [];
+  }
   let names: string[];
   try {
     names = readdirSync(root, { withFileTypes: true })
@@ -742,13 +916,17 @@ export async function sweepOrphanedWorktreeDirs(projectDir: string): Promise<str
   const registered = new Set<string>();
   try {
     const list = await git(['worktree', 'list', '--porcelain'], projectDir);
-    if (list.ok) {
-      for (const line of list.stdout.split('\n')) {
-        if (line.startsWith('worktree ')) registered.add(normalizePathKey(line.slice('worktree '.length)));
-      }
+    if (!list.ok) {
+      console.warn(`[pc-sdk][worktree] orphan sweep skipped: git worktree list failed for ${projectDir}: ${list.stderr}`);
+      return [];
+    }
+    for (const line of list.stdout.split('\n')) {
+      if (line.startsWith('worktree ')) registered.add(normalizePathKey(line.slice('worktree '.length)));
     }
   } catch {
-    /* best-effort — an unreadable list just means nothing is confirmed registered */
+    // Registered absence is not proven. Fail closed rather than deleting a
+    // different engine's or user's checkout.
+    return [];
   }
 
   const keep = new Set<string>();
@@ -762,6 +940,10 @@ export async function sweepOrphanedWorktreeDirs(projectDir: string): Promise<str
 
   const removed: string[] = [];
   for (const name of names) {
+    if (!isSafeWorktreeRoot(projectDir)) {
+      console.warn(`[pc-sdk][worktree] orphan sweep stopped: worktree root changed during scan: ${root}`);
+      return removed;
+    }
     const dir = join(root, name);
     const key = normalizePathKey(dir);
     if (registered.has(key) || keep.has(key)) continue;
@@ -793,11 +975,53 @@ function strandRunLifecycle(runId: ULID | null): void {
   }
 }
 
+function repositoryLeaseMessage(error: unknown): string {
+  if (error instanceof RepositoryLeaseError) {
+    return `${error.code}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** The worktrees root for a project (`<projectDir>-worktrees`). */
 export function worktreesRoot(projectDir: string): string {
-  return `${projectDir.replace(/[\\/]+$/, '')}-worktrees`;
+  let root = projectDir.replace(/[\\/]+$/, '');
+  try {
+    root = realpathSync.native(resolve(root));
+  } catch {
+    // Missing-path recovery retains the durable spelling for fail-closed checks.
+  }
+  return `${root}-worktrees`;
 }
 
 export function worktreeParent(dir: string): string {
   return dirname(dir);
+}
+
+function isOwnedWorktreePath(projectDir: string, dir: string): boolean {
+  if (!projectDir || !dir || basename(dir) === '.' || basename(dir) === '..') return false;
+  if (!isSafeWorktreeRoot(projectDir)) return false;
+  try {
+    if (lstatSync(dir).isSymbolicLink()) return false;
+  } catch (error) {
+    if (nodeErrorCode(error) !== 'ENOENT') return false;
+  }
+  return normalizePathKey(dirname(dir)) === normalizePathKey(worktreesRoot(projectDir));
+}
+
+/** The app-owned sibling root must be a real directory, never a symlink or
+ * Windows junction that can redirect recursive cleanup outside the project. */
+function isSafeWorktreeRoot(projectDir: string): boolean {
+  const root = worktreesRoot(projectDir);
+  try {
+    const stat = lstatSync(root);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch (error) {
+    return nodeErrorCode(error) === 'ENOENT';
+  }
+}
+
+function nodeErrorCode(error: unknown): string {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return 'UNKNOWN';
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : 'UNKNOWN';
 }

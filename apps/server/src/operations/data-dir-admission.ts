@@ -1,8 +1,12 @@
-import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
-import { createServer, type Server as NetServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import Database from 'better-sqlite3';
+import {
+  acquireKernelWitness as bindKernelWitness,
+  closeKernelWitness,
+  type KernelWitness,
+  type KernelWitnessKind,
+} from './kernel-witness.ts';
 
 export const DATA_DIRECTORY_ADMISSION_FILE = '.pc-sdk-next-admission.sqlite';
 export const DATA_DIRECTORY_OCCUPIED_EXIT_CODE = 73;
@@ -25,7 +29,7 @@ export interface DataDirectoryAdmission {
   readonly status: 'acquired';
   readonly dataDir: string;
   readonly lockPath: string;
-  readonly witnessKind: 'windows-named-pipe' | 'linux-abstract-socket';
+  readonly witnessKind: KernelWitnessKind;
   readonly acquiredAt: number;
   release(): Promise<DataDirectoryReleaseReceipt>;
 }
@@ -201,66 +205,25 @@ async function acquireOnce(
   };
 }
 
-interface KernelWitness {
-  server: NetServer;
-  kind: DataDirectoryAdmission['witnessKind'];
-}
-
 async function acquireKernelWitness(canonicalDataDir: string): Promise<KernelWitness> {
-  const address = kernelWitnessAddress(canonicalDataDir);
-  const server = createServer((socket) => socket.destroy());
-  await new Promise<void>((resolveListen, rejectListen) => {
-    const onError = (error: Error): void => {
-      server.off('listening', onListening);
-      rejectListen(error);
-    };
-    const onListening = (): void => {
-      server.off('error', onError);
-      resolveListen();
-    };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(address.path);
-  });
-  // Ownership must not keep an otherwise-dead process alive. Unexpected
-  // post-listen server errors retain Node's default fatal behavior.
-  server.unref();
-  return { server, kind: address.kind };
-}
-
-function kernelWitnessAddress(canonicalDataDir: string): {
-  path: string;
-  kind: DataDirectoryAdmission['witnessKind'];
-} {
   // Native realpath supplies the filesystem's canonical spelling for ordinary
   // Windows aliases while preserving distinct names inside a case-sensitive
   // directory. App-level lowercasing would incorrectly conflate the latter.
-  const digest = createHash('sha256').update(canonicalDataDir, 'utf8').digest('hex');
-  if (process.platform === 'win32') {
-    return {
-      path: `\\\\.\\pipe\\pc-sdk-next-data-${digest}`,
-      kind: 'windows-named-pipe',
-    };
+  try {
+    return await bindKernelWitness('pc-sdk-next-data', canonicalDataDir);
+  } catch (error) {
+    // Preserve SF-001's public typed diagnostic at this seam even though the
+    // shared primitive uses provider-neutral witness vocabulary internally.
+    if (errorCode(error) === 'UNSUPPORTED_WITNESS_PLATFORM') {
+      throw Object.assign(
+        new Error(`data-directory admission is not implemented for ${process.platform}`, {
+          cause: error,
+        }),
+        { code: 'UNSUPPORTED_ADMISSION_PLATFORM' },
+      );
+    }
+    throw error;
   }
-  if (process.platform === 'linux') {
-    return {
-      path: `\0pc-sdk-next-data-${digest}`,
-      kind: 'linux-abstract-socket',
-    };
-  }
-  throw Object.assign(
-    new Error(`data-directory admission is not implemented for ${process.platform}`),
-    { code: 'UNSUPPORTED_ADMISSION_PLATFORM' },
-  );
-}
-
-function closeKernelWitness(server: NetServer): Promise<void> {
-  return new Promise((resolveClose, rejectClose) => {
-    server.close((error?: Error) => {
-      if (error) rejectClose(error);
-      else resolveClose();
-    });
-  });
 }
 
 function defaultOpenDatabase(path: string): AdmissionDatabase {

@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 at SF-001 guarded landing and teardown.
+Last updated: 2026-07-12 with SF-002 verified and ready to seal/land.
 
 ## Preserved baseline
 
@@ -114,6 +114,14 @@ only in PC-SDK Next.
 - SF-001 feature worktree: removed after positive ancestry/tree/post-merge-CI
   proof; dependency/build residue was path/process-guarded and removed; feature
   branch preserved
+- SF-002 base: `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`
+- SF-002 feature branch: `codex/sf-002-repository-lease`
+- SF-002 contract commit: `0be8912`
+- SF-002 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002`
+- SF-002 implementation: both independent hostile re-reviews and full
+  feature-tree `pnpm ci:check` green; seal, guarded landing, push, and teardown
+  pending
 
 Isolation defaults in the planning slice:
 
@@ -141,6 +149,11 @@ Isolation defaults in the planning slice:
 - Pre-migration canonical data-directory admission through a kernel IPC witness
   plus a dedicated SQLite ownership transaction, with typed launcher failure,
   crash release, and replacement handoff gated on positive acquisition
+- On the verified SF-002 feature branch, cooperative engine-lifetime repository
+  admission keyed by canonical Git common-directory identity, with immutable
+  run receipts and guards across every Git-backed runtime, mutation, landing,
+  cleanup, and recovery door; it is ready to seal/land, while guarded landing
+  to `main` is still pending
 - Canonical pre-listener boot quarantine of queued/failed sends owned by
   `legacy-unavailable` orchestrator sessions, with queue revision plus
   `send-state`/outbox evidence committed together
@@ -356,14 +369,61 @@ blocker. The detailed receipt is `docs/execution/receipts/SF-001.md`.
 
 This slice excludes only a second PC-SDK engine from one app data directory. It
 does not claim positive provider/setup/repository subprocess-tree exit; the
-cross-process repository lease, child-environment scrub, and remaining process
-hardening retain their separate owning slices.
+repository lease remained SF-002 at that checkpoint, while child-environment
+scrub and remaining process hardening retain their separate owning slices.
 
 Feature tip `8b6a08d` guarded-landed as merge `a8b52c6` with exact tree
 `e7d6dc7`; sealed and feature ancestry, post-merge `pnpm ci:check` (342/342
 server tests), and push to exact `origin/main` passed. The feature worktree was
 deregistered after that proof. Git left only clean-worktree dependency/build
 residue; its exact parent/name/process guard passed before recursive removal.
+
+## Verified N4 repository-admission feature (ready to seal/land)
+
+`SF-002` implements the cooperative repository half of `OPS-005` from clean
+pushed base `94dee1a7ec56ca3e2470769c9d136ed11754e6e6`. For every configured
+Git-backed cwd, the engine resolves the native real Git common directory and
+holds a protocol-stable kernel witness plus a zero-wait repository-local SQLite
+transaction for the engine lifetime. The same engine remains re-entrant so
+isolated builders can run concurrently; the existing canonical-keyed local
+FIFO continues to serialize landing.
+
+Fresh repository runs freeze a complete `git-common-dir-v1` receipt. DB guards
+enforce its shape, immutability, and exact continuation inheritance. Runtime,
+delivery, verification/review, landing, teardown, orphan cleanup, and recovery
+revalidate that receipt. Git-backed orchestrator and payload/review runtimes
+also acquire authority because the pinned permission mode is not a read-only
+sandbox. Legacy receipts remain readable but cannot authorize mutation, and a
+symlink/junction app-owned worktree root cannot redirect recursive cleanup.
+
+Creation admission preserves the user's authoritative mode. `init-empty` and
+`init-in-place` must still match the current non-Git folder state; initialization
+claims the future `.git` identity, retains a crash marker, and creates one clean
+`Initial scaffold` or `Initial import` commit. `attach-to-git` requires the
+selected canonical worktree root and refuses a repository subdirectory rather
+than rewriting it. Successful project rows and worktree receipts durably bind
+the same identity. Boot recovery and landing acquire against that expected
+identity before classification or mutation.
+
+Direct Git, setup/readiness/verification shell, and provider runtime child
+environments all remove ambient `GIT_DIR`, `GIT_WORK_TREE`, and
+`GIT_COMMON_DIR`. Historical resume and active restart remint for a migrated
+project with no durable repository identity return typed
+`repository-identity-unavailable` before preflight or durable session change.
+
+Repository-lease tests pass 19/19, runtime session selection 17/17, HTTP
+contract 12/12, and the landing + independent-review + kill-recovery matrix
+47/47 (27 + 12 + 8). The full server suite passes 370/370. Awaited fixture
+cleanup, migration diagnostics, actual-path/mutation-door audits,
+`git diff --check`, and full feature-tree `pnpm ci:check` pass. Both independent
+hostile re-reviews are clean after fixes with no remaining P0/P1/P2 blocker.
+The evidence is `docs/execution/receipts/SF-002.md`.
+
+This is not universal repository exclusion. The preserved working PC-SDK,
+manual Git/IDE processes, and unrelated tools do not participate, and a child
+that survives a hard-killed server is not contained. The manual
+working-PC-SDK/Next concurrent-write prohibition remains. `OPS-005` stays
+accepted, and no sealed/landing/push/teardown receipt is claimed yet.
 
 ## Known architectural gaps
 
@@ -377,13 +437,16 @@ residue; its exact parent/name/process guard passed before recursive removal.
   stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
   attachment, and receipt-safe commands remain unimplemented; automatic PM
   writes are blocked.
-- Process identity is positive at `/health` and SF-001 now enforces canonical
-  data-directory single-engine admission. The separate cross-process
-  repository lease does not yet exist, and the listener is not yet explicitly
-  loopback-bound.
-- Runtime/setup subprocesses inherit a broad server environment. A least-
-  privilege allowlist/scrub must prevent unrelated app secrets (including PM
-  tokens) from reaching providers or repository commands.
+- Process identity is positive at `/health`; SF-001 enforces canonical
+  data-directory single-engine admission; and SF-002's cooperative repository
+  lease is verified and ready to seal/land. Nonparticipating stable/manual
+  tools and escaped repository children remain outside that proof. The listener
+  is not yet explicitly loopback-bound.
+- Runtime/setup subprocesses still inherit a broad server environment after
+  SF-002's narrow removal of `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR`
+  from Git, shell, and provider child seams. `SEC-003` must still provide the
+  least-privilege allowlist/scrub that prevents unrelated app secrets,
+  including PM tokens, from reaching children.
 - At the inherited `480px` stress width the composer narrows to about `101px`,
   and Escape does not dismiss App Settings in either preserved or current
   subject. Close remains usable and no document overflow occurs. These are N7

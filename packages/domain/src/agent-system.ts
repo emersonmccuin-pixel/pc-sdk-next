@@ -149,6 +149,12 @@ export type AgentRunFailureCause =
   /** Isolation invariant: the dispatch declared `isolation: "worktree"` but
    *  the worktree provisioning step failed. Never fall back to the main repo. */
   | 'worktree-provision-failed'
+  /** Another cooperating engine positively owns the canonical Git repository.
+   *  No repository-writing phase may start or continue in this process. */
+  | 'repository-occupied'
+  /** Canonical repository identity or its lease authority could not be proven.
+   *  Missing, drifted, corrupt, unsupported, or inconclusive state fails closed. */
+  | 'repository-unavailable'
   /** The runtime hit its turn budget (SDK `error_max_turns` / a sibling
    *  `error_max_budget_usd`) — a real terminal result, NOT a crash. Distinct
    *  from `unexpected-exit` so the run is resumable, not misreported. */
@@ -175,6 +181,8 @@ export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'no-deliverable',
   'contract-required',
   'worktree-provision-failed',
+  'repository-occupied',
+  'repository-unavailable',
   'turn-budget-exhausted',
 ];
 

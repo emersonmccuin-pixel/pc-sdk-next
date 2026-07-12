@@ -1,10 +1,10 @@
 # Git worktree lifecycle
 
 Status: **locked architecture with implemented v1 lifecycle** (updated
-2026-07-11). Isolation, readiness, sealed delivery, verification/review,
-guarded landing, teardown, and recovery have live evidence. Cross-process
-exclusion for two PC-SDK instances managing the same external repository remains
-a PC-SDK Next hardening requirement.
+2026-07-12). Isolation, readiness, sealed delivery, verification/review,
+guarded landing, teardown, and recovery have live evidence. SF-002 implements
+cooperative same-host repository exclusion on its verified feature branch and
+is ready to seal/land; seal, guarded landing, push, and teardown are pending.
 
 ## Decision
 
@@ -50,13 +50,79 @@ Each run durably records at least:
 - runtime/account/model selection for each agent phase;
 - contract id, declared file scope, and verification policy;
 - current lifecycle state and transition timestamps;
-- lease/heartbeat and active phase owner;
+- canonical repository identity/lease receipt and active phase owner;
 - sealed deliverable commit SHA;
 - verification and review receipts;
 - landing policy, landing receipt, and cleanup state.
 
 The DB is authoritative for intended lifecycle state. Git and filesystem state
 are positively reconciled against it on boot.
+
+## Engine-wide repository authority
+
+Before any configured Git-backed cwd is used by a write-capable runtime or
+repository service, PC-SDK resolves the native real path of
+`git rev-parse --path-format=absolute --git-common-dir`. The first action for
+that identity acquires one process-wide, engine-lifetime, re-entrant lease made
+of a protocol-stable kernel IPC witness and a zero-wait SQLite write
+transaction in the Git common directory.
+
+Main checkouts, subdirectories, filesystem aliases, and linked worktrees of one
+repository converge on that identity. Distinct local repositories do not block
+one another. The engine retains the lease until actual process exit; it is not
+released when an individual run ends. Re-entry inside one engine permits
+parallel isolated builders.
+
+Project creation preserves the selected admission claim through the mutation
+door. `init-empty` accepts only a currently empty non-Git directory;
+`init-in-place` accepts only a currently nonempty non-Git directory; neither
+may silently attach a repository that appeared after an earlier probe.
+Initialization atomically claims the anticipated `.git` identity, retains a
+bootstrap-pending crash marker, and creates one clean `Initial scaffold` or
+`Initial import` commit before removing that marker. An incomplete marker is
+uncertain state and never grants repair/takeover authority.
+
+`attach-to-git` requires the selected path itself to be a repository or linked-
+worktree root. A normal subdirectory is refused even though canonical discovery
+could find its ancestor repository. Canonical convergence determines lease
+collision; it does not authorize silently changing the user's selected root.
+
+Every fresh repository run freezes a complete `git-common-dir-v1` receipt in
+durable storage. Continuations inherit the exact parent receipt. The current
+project path and run worktree path are re-resolved against it before every
+later authority door, so path retargeting cannot redirect delivery,
+verification, review, landing, or teardown. Retained legacy receipts remain
+readable but carry no mutation authority.
+
+The project row binds the same durable identity used by its worktree receipts.
+Boot recovery and landing provide that receipt as the expected identity when
+acquiring authority, then revalidate it under the guard before classification
+or mutation. A migrated project with a nonempty folder and no bound identity
+refuses historical native resume and active restart remint with typed
+`repository-identity-unavailable` before runtime preflight or durable session
+transition.
+
+The current native permission mode is not a read-only sandbox. Repository
+admission therefore also precedes orchestrator, payload, and independent-review
+runtime create/resume whenever their configured cwd is Git-backed. This does
+not authorize those runtimes to mutate the main checkout; the existing
+orchestrator and worktree boundaries still apply.
+
+Ambient `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` are removed from
+direct Git subprocesses, setup/readiness/verification shell subprocesses, and
+provider runtime subprocesses. This keeps repository resolution cwd-derived;
+the broader secret/environment allowlist remains owned by `SEC-003`.
+
+The app-owned `<project>-worktrees` sibling must be a real directory. A symlink
+or Windows junction fails closed before provision, review checkout, teardown,
+or recursive orphan removal.
+
+This is a cooperative protocol, not a universal Git lock. The preserved
+working PC-SDK, manual Git/IDE processes, and unrelated tools do not
+participate. A repository child that outlives a hard-killed server is not
+contained. Until those separate boundaries are completed, simultaneous
+write-capable working-PC-SDK/Next use against one external repository remains
+manually prohibited.
 
 ## Lifecycle states
 
@@ -244,10 +310,12 @@ Each run is isolated by branch/path/lease. Declared file-scope overlap is
 detected early. Disjoint work may proceed freely; overlapping work is visibly
 warned and may be serialized by policy, but is not globally prohibited.
 
-Landing is serialized by a per-repository lock. Before each merge, PC-SDK
-compares the run's validated base with the current target base. If earlier work
-advanced the target, the pending run must be integrated/revalidated against the
-new base. Conflict or invalidated checks route to Fix/orchestrator; stale
+Landing is serialized by a process-local FIFO keyed by the canonical repository
+lease identity. The engine-wide lease excludes a second cooperating process;
+the FIFO orders same-engine landing turns. Before each merge, PC-SDK compares
+the run's validated base with the current target base. If earlier work advanced
+the target, the pending run must be integrated/revalidated against the new
+base. Conflict or invalidated checks route to Fix/orchestrator; stale
 verification never silently lands.
 
 The initial landing implementation may use the guarded, clean main working copy
@@ -296,6 +364,11 @@ On boot, reconcile every nonterminal run against DB, Git, and filesystem state:
 - merge positively complete but teardown incomplete → resume teardown;
 - pending landing → return to the per-repo landing queue after revalidation.
 
+Recovery acquires the same canonical repository lease before Git/filesystem
+classification or cleanup. An occupied or unavailable repository is preserved
+and deferred without preventing recovery of distinct repositories. Missing or
+legacy repository identity never authorizes mutation.
+
 Recovery never reruns a non-idempotent Git mutation based only on a stale DB
 status.
 
@@ -312,6 +385,18 @@ status.
 9. Teardown refuses unmerged, conflicted, failed, or uncertain runs.
 10. Kill recovery preserves work and produces the same durable outcome as an
     uninterrupted lifecycle.
+11. Common-directory aliases and linked worktrees collide across cooperating
+    processes while distinct repositories remain independent.
+12. Every Git-backed runtime and late mutation/recovery door proves the frozen
+    repository receipt; occupied or drifted authority performs no side effect.
+13. Symlink/junction worktree roots cannot redirect recursive cleanup, and
+    lifecycle `completed` is emitted only after branch deletion and orphan
+    sweep settlement.
+14. Project creation mode/state drift and attach root mismatch refuse before a
+    project row, import, commit, or dirty-tree side effect; successful in-place
+    import records the canonical identity and a clean initial commit.
+15. Repository test fixtures await lease release before removing repository or
+    sibling-worktree paths; cleanup is a barrier, not fire-and-forget evidence.
 
 ## Anti-patterns
 

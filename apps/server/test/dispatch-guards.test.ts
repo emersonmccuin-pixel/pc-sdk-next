@@ -431,7 +431,7 @@ test('a dispatch loop past the max dispatch loop is refused (loop-cap) — no ro
   assert.equal(listContractsForProject(project.id).length, 0);
 });
 
-test('repo kind with no provisionable folder ⇒ durable worktree-provision-failed terminal, never a fallback', async () => {
+test('repo kind with no repository folder ⇒ typed repository-unavailable terminal, never a fallback', async () => {
   freshDb();
   seedStockAgents();
   const project = newProject(); // folderPath '' — nothing to provision
@@ -443,10 +443,24 @@ test('repo kind with no provisionable folder ⇒ durable worktree-provision-fail
     dispatcherSessionId: 'S1',
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.equal(result.cause, 'worktree-provision-failed');
-  // The refusal is durable + typed on the row.
-  const rows = listNonTerminalAgentRuns();
-  assert.equal(rows.length, 0);
+  if (!result.ok) {
+    assert.equal(result.cause, 'repository-unavailable');
+    assert.equal(result.httpStatus, 503);
+  }
+  // The authority refusal is durable + typed on the terminal row even though
+  // no contract, worktree, command, or runtime was allowed to start.
+  const rows = listAgentRunsForSession(project.id, 'S1', {
+    podName: 'code-writer',
+    limit: 10,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.status, 'failed');
+  assert.equal(rows[0]!.failureCause, 'repository-unavailable');
+  assert.equal(rows[0]!.lifecycleState, 'provisioning-failed');
+  assert.equal(rows[0]!.worktreeDir, null);
+  assert.equal(rows[0]!.gitReceipt, null);
+  assert.equal(listNonTerminalAgentRuns().length, 0);
+  assert.equal(listContractsForProject(project.id).length, 0);
 });
 
 test('provider session-create exceptions settle with fixed app-authored failure evidence', async () => {
@@ -811,7 +825,7 @@ test('submitDeliverable rejects a late repo seal when kill wins during async Git
   } finally {
     releaseStatus();
     await dispatch.disposeAll();
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 

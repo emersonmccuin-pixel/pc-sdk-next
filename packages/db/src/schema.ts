@@ -23,6 +23,7 @@ import type {
   PodAuditActor,
   PodAuditField,
   PodScope,
+  RepositoryIdentityReceipt,
   SessionEndedReason,
   SessionStatus,
   ULID,
@@ -51,6 +52,8 @@ export const projects = sqliteTable(
       .default(sql`'{}'`)
       .$type<Record<string, unknown>>(),
     folderPath: text('folder_path').notNull().default(''),
+    repositoryIdentity: text('repository_identity', { mode: 'json' })
+      .$type<RepositoryIdentityReceipt | null>(),
     gitRemote: text('git_remote'),
     /** Sort key for the LeftRail Projects list. New projects append at
      *  `max(position) + 1`; drag-reorder rewrites every row in one transaction. */

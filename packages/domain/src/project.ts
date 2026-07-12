@@ -1,7 +1,7 @@
 // Project domain type + per-project settings.
 
 import type { ULID } from './ulid.ts';
-import type { WorktreeProfile } from './worktree.ts';
+import type { RepositoryIdentityReceipt, WorktreeProfile } from './worktree.ts';
 
 /** Section 27 — per-project setting overlay. Stored in the `projects.settings`
  *  JSON column; defaults fill in missing keys via `withProjectSettingsDefaults`. */
@@ -98,6 +98,10 @@ export interface Project {
   name: string;
   /** Absolute path to the user's project folder. Git-backed. */
   folderPath: string;
+  /** Immutable canonical repository identity bound by the first guarded fresh
+   * runtime. Null is retained only for pre-SF-002 projects that have not yet
+   * started a new session; native resume never infers a missing receipt. */
+  repositoryIdentity: RepositoryIdentityReceipt | null;
   /** Optional origin URL; null = local-only repo. Editable in project settings. */
   gitRemote: string | null;
   /** Section 27 — typed per-project overlay. Persisted in the

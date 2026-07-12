@@ -14,15 +14,19 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import {
   createContract,
+  createProject,
   getAgentRunRow,
   getContract,
   insertAgentRunRow,
   markAgentRunDelivered,
   newId,
+  setWorktreeContractId,
 } from '@pc/db';
 import type { RunLifecycleState, ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
@@ -42,11 +46,14 @@ import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
 import {
+  releaseAllRepositoryLeasesForTesting,
+} from '../src/dispatch/repository-lease.ts';
+import { provisionWorktree } from '../src/dispatch/worktrees.ts';
+import {
   advanceTestAgentRunStatus,
   commitFile,
   freshDb,
   newGitProject,
-  newProject,
   testAgentRunExecution,
   testDispatchRuntimeDeps,
   until,
@@ -223,7 +230,7 @@ test('happy-path auto-land stamps provisioning → building → verifying → �
       assert.ok(o.seen.includes(landmark), `landmark '${landmark}' missing — observed: ${o.seen.join(' → ')}`);
     }
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
@@ -272,52 +279,102 @@ test('default-review park stamps merge-ready; reject → review-rejected; accept
     assert.equal(getContract(contractId)!.landingAuthorizer, 'orchestrator');
     assertSubsequence(o.seen, ['provisioning', 'building', 'verifying', 'merge-ready', 'review-rejected', 'merging', 'merged', 'tearing-down', 'completed']);
   } finally {
-    gp.cleanup();
+    await gp.cleanup();
   }
 });
 
-test('non-repo runs never acquire lifecycle vocabulary (lifecycleState stays null)', async () => {
+test('non-repo runs in an adopted non-Git folder remain supported without lifecycle vocabulary', async () => {
   freshDb();
   seedStockAgents();
   const adapter = new GatedAdapter();
   const dispatch = rig(adapter);
-  const project = newProject();
-  const result = await dispatch.dispatchFresh({
-    projectId: project.id,
-    agentName: 'researcher',
-    input: 'answer me',
-    dispatcherSessionId: 'S1',
-    expectedOutput: { kind: 'answer', trust_end_turn: true },
+  const projectDir = mkdtempSync(join(tmpdir(), 'pc-sdk-nongit-'));
+  const project = createProject({
+    name: 'Adopted non-Git',
+    slug: `t-${newId().toLowerCase()}`,
+    folderPath: projectDir,
   });
-  assert.equal(result.ok, true);
-  const runId = (result as { run: { runId: string } }).run.runId as ULID;
-  adapter.releaseSession();
-  const submitted = await until(() => getAgentRunRow(runId)?.status === 'running' || getAgentRunRow(runId)?.status === 'spawning').then(() =>
-    dispatch.submitDeliverable({ projectId: project.id, agentRunId: runId, deliverable: { kind: 'answer', text: '42' } }),
-  );
-  assert.equal(submitted.ok, true);
-  adapter.releaseTurn();
-  await until(() => getAgentRunRow(runId)?.status === 'completed', 10000);
-  assert.equal(getAgentRunRow(runId)!.lifecycleState, null);
+  try {
+    const result = await dispatch.dispatchFresh({
+      projectId: project.id,
+      agentName: 'researcher',
+      input: 'answer me',
+      dispatcherSessionId: 'S1',
+      expectedOutput: { kind: 'answer', trust_end_turn: true },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(
+      existsSync(join(projectDir, '.git', 'HEAD')),
+      true,
+      'deferred project Git initialization completes before native runtime admission',
+    );
+    const runId = (result as { run: { runId: string } }).run.runId as ULID;
+    adapter.releaseSession();
+    const submitted = await until(() => getAgentRunRow(runId)?.status === 'running' || getAgentRunRow(runId)?.status === 'spawning').then(() =>
+      dispatch.submitDeliverable({ projectId: project.id, agentRunId: runId, deliverable: { kind: 'answer', text: '42' } }),
+    );
+    assert.equal(submitted.ok, true);
+    adapter.releaseTurn();
+    await until(() => getAgentRunRow(runId)?.status === 'completed', 10000);
+    assert.equal(getAgentRunRow(runId)!.lifecycleState, null);
+  } finally {
+    await dispatch.disposeAll();
+    await releaseAllRepositoryLeasesForTesting();
+    rmSync(projectDir, { recursive: true, force: true });
+  }
 });
 
-test('boot recovery: unsealed runs fail; sealed-deliverable runs settle completed + re-verify', async () => {
+test('boot recovery: unsealed runs fail; sealed-deliverable runs settle completed + re-verify', async (t) => {
   freshDb();
-  const project = newProject();
+  const gitProject = await newGitProject('boot-sealed-recovery');
+  const project = gitProject.project;
+  t.after(async () => {
+    try {
+      await releaseAllRepositoryLeasesForTesting();
+    } finally {
+      await gitProject.cleanup();
+      assert.equal(existsSync(`${gitProject.dir}-worktrees`), false);
+      assert.equal(existsSync(gitProject.dir), false);
+    }
+  });
   const contracts = new ContractService();
 
-  const mkRun = (lifecycleState: RunLifecycleState, sealed: boolean): ULID => {
+  const mkRun = async (lifecycleState: RunLifecycleState, sealed: boolean): Promise<ULID> => {
+    const id = newId() as ULID;
+    const provisioned = await provisionWorktree(gitProject.dir, id, {
+      projectId: project.id,
+    });
+    if (!provisioned.ok) throw new Error(provisioned.error);
+
     const contract = createContract({
       projectId: project.id,
       podName: 'code-writer',
       expectedOutput: { kind: 'repo' },
       acceptanceCriteria: [],
       verificationTier: 'auto',
+      worktreePath: provisioned.dir,
+      worktreeBaseBranch: provisioned.baseBranch,
+      worktreeBaseSha: provisioned.baseSha,
     });
+    setWorktreeContractId(provisioned.branch, contract.id);
     if (sealed) {
-      assert.ok(contracts.setDeliverable({ id: contract.id, deliverable: { kind: 'repo', commit: 'a'.repeat(40) } }));
+      const commit = await commitFile(
+        provisioned.dir,
+        'sealed.txt',
+        `sealed evidence for ${id}\n`,
+        `seal ${id.slice(-8)}`,
+      );
+      assert.ok(contracts.setDeliverable({
+        id: contract.id,
+        deliverable: {
+          kind: 'repo',
+          branch: provisioned.branch,
+          commit,
+          baseBranch: provisioned.baseBranch,
+          baseCommit: provisioned.baseSha,
+        },
+      }));
     }
-    const id = newId() as ULID;
     insertAgentRunRow({
       id,
       projectId: project.id,
@@ -326,6 +383,17 @@ test('boot recovery: unsealed runs fail; sealed-deliverable runs settle complete
       status: 'queued',
       input: 'go',
       contractId: contract.id,
+      worktreeDir: provisioned.dir,
+      worktreeBaseBranch: provisioned.baseBranch,
+      worktreeBaseSha: provisioned.baseSha,
+      gitReceipt: {
+        worktreePath: provisioned.dir,
+        branch: provisioned.branch,
+        baseBranch: provisioned.baseBranch,
+        baseSha: provisioned.baseSha,
+        cleanStatus: true,
+        repositoryIdentity: provisioned.repositoryIdentity,
+      },
       lifecycleState,
       queuedAt: Date.now(),
     });
@@ -337,10 +405,10 @@ test('boot recovery: unsealed runs fail; sealed-deliverable runs settle complete
     return id;
   };
 
-  const unsealed = mkRun('building', false);
-  const sealedBuilding = mkRun('building', true); // sealed evidence ⇒ verifying
-  const sealedVerifying = mkRun('verifying', true);
-  const sealedParked = mkRun('merge-ready', true);
+  const unsealed = await mkRun('building', false);
+  const sealedBuilding = await mkRun('building', true); // sealed evidence ⇒ verifying
+  const sealedVerifying = await mkRun('verifying', true);
+  const sealedParked = await mkRun('merge-ready', true);
 
   runBootRecovery();
 

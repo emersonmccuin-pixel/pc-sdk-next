@@ -29,6 +29,7 @@ import {
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
+import { releaseAllRepositoryLeasesForTesting } from '../src/dispatch/repository-lease.ts';
 import { git, provisionWorktree, worktreesRoot } from '../src/dispatch/worktrees.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
@@ -54,6 +55,13 @@ const OK_RESULT: RuntimeEvent = {
 
 const NODE_OK = (tag: string) => `node -e "console.log('${tag}')"`;
 const NODE_FAIL = (code: number) => `node -e "process.exit(${code})"`;
+
+async function cleanupGitProject(gp: { dir: string; cleanup(): Promise<void> }): Promise<void> {
+  await releaseAllRepositoryLeasesForTesting();
+  await gp.cleanup();
+  assert.equal(existsSync(gp.dir), false, 'temporary Git repository was removed');
+  assert.equal(existsSync(worktreesRoot(gp.dir)), false, 'temporary worktree root was removed');
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -187,7 +195,10 @@ test('passing setup+readiness lands receipts, reaches completed; cleanup runs be
       baseBranch: 'main',
       baseSha: row.worktreeBaseSha,
       cleanStatus: true,
+      repositoryIdentity: row.gitReceipt?.repositoryIdentity,
     });
+    assert.equal(row.gitReceipt?.repositoryIdentity.protocol, 'git-common-dir-v1');
+    assert.match(row.gitReceipt?.repositoryIdentity.leaseKey ?? '', /^sha256:[0-9a-f]{64}$/);
     // Preparation + readiness receipts: per-step exit/duration/output tails.
     assert.equal(row.preparationReceipt?.ok, true);
     assert.equal(row.preparationReceipt?.steps.length, 1);
@@ -221,7 +232,7 @@ test('passing setup+readiness lands receipts, reaches completed; cleanup runs be
       `landmarks — saw: ${o.seen.join(' → ')}`,
     );
   } finally {
-    gp.cleanup();
+    await cleanupGitProject(gp);
   }
 });
 
@@ -264,7 +275,7 @@ test('failing setup → worktree-provision-failed with receipt, provisioning-fai
     assert.ok(row.worktreeDir && existsSync(row.worktreeDir), 'worktree preserved');
     assert.equal(getContract(row.contractId!)!.verificationStatus, 'failed');
   } finally {
-    gp.cleanup();
+    await cleanupGitProject(gp);
   }
 });
 
@@ -295,7 +306,7 @@ test('dirty initial status refuses provisioning (clean-initial-status receipt ch
       assert.match(result.message, /not clean immediately after checkout/);
     }
   } finally {
-    gp.cleanup();
+    await cleanupGitProject(gp);
   }
 });
 
@@ -333,9 +344,11 @@ test('profile baseBranch overrides the main/master probe', async () => {
     // Settle the run so nothing lingers (no deliverable ⇒ typed failure).
     adapter.releaseSession();
     adapter.releaseTurn();
-    await until(() => getAgentRunRow(runId)?.status !== 'queued' && getAgentRunRow(runId)?.status !== 'spawning' && getAgentRunRow(runId)?.status !== 'running', 20000);
+    await until(() => getAgentRunRow(runId)?.status === 'failed', 20000);
+    assert.equal(getAgentRunRow(runId)?.failureCause, 'no-deliverable');
+    await until(() => getContract(getAgentRunRow(runId)!.contractId!)?.verificationStatus === 'failed', 20000);
   } finally {
-    gp.cleanup();
+    await cleanupGitProject(gp);
   }
 });
 
@@ -393,11 +406,10 @@ test('continuation re-runs readiness — receipt lands on the NEW row (readiness
     // Settle the continuation (no deliverable ⇒ typed failure) — no leaks.
     adapter.releaseSession();
     adapter.releaseTurn();
-    await until(() => {
-      const s = getAgentRunRow(contId)?.status;
-      return s === 'completed' || s === 'failed' || s === 'cancelled';
-    }, 20000);
+    await until(() => getAgentRunRow(contId)?.status === 'failed', 20000);
+    assert.equal(getAgentRunRow(contId)?.failureCause, 'no-deliverable');
+    await until(() => getContract(getAgentRunRow(contId)!.contractId!)?.verificationStatus === 'failed', 20000);
   } finally {
-    gp.cleanup();
+    await cleanupGitProject(gp);
   }
 });

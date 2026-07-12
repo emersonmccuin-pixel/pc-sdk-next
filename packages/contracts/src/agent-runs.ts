@@ -68,12 +68,20 @@ export function isPreservedLifecycleState(value: RunLifecycleState | null): bool
 
 // ── Provisioning receipts (browser-safe mirrors of @pc/domain worktree.ts) ──
 
+export interface RepositoryIdentityReceiptDto {
+  protocol: 'git-common-dir-v1';
+  gitCommonDir: string;
+  leaseKey: string;
+}
+
 export interface WorktreeGitReceiptDto {
   worktreePath: string;
   branch: string;
   baseBranch: string;
   baseSha: string;
   cleanStatus: boolean;
+  /** Absent only on retained legacy receipts, which carry no mutation authority. */
+  repositoryIdentity?: RepositoryIdentityReceiptDto | null;
 }
 
 export interface WorktreeCommandStepDto {
@@ -231,13 +239,36 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
 function isOptionalGitReceipt(value: unknown): boolean {
   return value === undefined || value === null || (
     isRecord(value) &&
-    hasOnlyKeys(value, ['worktreePath', 'branch', 'baseBranch', 'baseSha', 'cleanStatus']) &&
+    hasOnlyKeys(value, [
+      'worktreePath',
+      'branch',
+      'baseBranch',
+      'baseSha',
+      'cleanStatus',
+      'repositoryIdentity',
+    ]) &&
     typeof value.worktreePath === 'string' &&
     typeof value.branch === 'string' &&
     typeof value.baseBranch === 'string' &&
     typeof value.baseSha === 'string' &&
-    typeof value.cleanStatus === 'boolean'
+    typeof value.cleanStatus === 'boolean' &&
+    (
+      value.repositoryIdentity === undefined ||
+      value.repositoryIdentity === null ||
+      isRepositoryIdentityReceipt(value.repositoryIdentity)
+    )
   );
+}
+
+function isRepositoryIdentityReceipt(
+  value: unknown,
+): value is RepositoryIdentityReceiptDto {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ['protocol', 'gitCommonDir', 'leaseKey']) &&
+    value.protocol === 'git-common-dir-v1' &&
+    exactNonEmptyString(value.gitCommonDir) &&
+    typeof value.leaseKey === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(value.leaseKey);
 }
 
 function isCommandStep(value: unknown): value is WorktreeCommandStepDto {

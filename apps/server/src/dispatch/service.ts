@@ -14,8 +14,9 @@
 //   a phantom run works off the row, not the handle).
 
 import { createHash } from 'node:crypto';
-import { basename, resolve as resolvePath } from 'node:path';
+import { basename } from 'node:path';
 import {
+  bindProjectRepositoryIdentity,
   closeOpenConversationToolCalls,
   commitConversationEvent,
   confirmAgentRunRuntimeSessionReceipt,
@@ -78,6 +79,7 @@ import {
   type ExpectedOutput,
   type PendingAskOption,
   type Project,
+  type RepositoryIdentityReceipt,
   type RunLifecycleState,
   type SpecialistExecutionSnapshot,
   type PodSpawnBundle,
@@ -101,6 +103,12 @@ import { runTurn } from '../chat/turn-runner.ts';
 import { AGENT_PC_TOOLS, buildPcToolDefs, mergePcTools } from './pc-bridge.ts';
 import { buildAskEnvelope, buildReviewBrief, buildSpecialistInstructions, buildTerminalEnvelope } from './prompt.ts';
 import { autoLandBlockers, verifyContract, type VerificationOutcome } from './verification.ts';
+import {
+  requireRepositoryWorktreeRoot,
+  RepositoryLeaseError,
+  repositoryLeaseManager,
+  type RepositoryLeaseGuard,
+} from './repository-lease.ts';
 import {
   deleteMergedBranch,
   deriveDiffStat,
@@ -182,6 +190,8 @@ export type DispatchFailureCause =
   | 'unknown-agent'
   | 'contract-required'
   | 'worktree-provision-failed'
+  | 'repository-occupied'
+  | 'repository-unavailable'
   | 'project-missing'
   | 'invalid-spec'
   | 'runtime-selection-unavailable'
@@ -270,6 +280,7 @@ interface StartRunInput {
   worktree: { dir: string; branch: string; baseBranch: string; baseSha: string } | null;
   firstMessage: string;
   resumeNativeSessionId: string | null;
+  repositoryLease: RepositoryLeaseGuard | null;
 }
 
 /** Collapse canonical lifecycle evidence to one executed call per callId.
@@ -305,6 +316,7 @@ export class DispatchService {
   private readonly deps: DispatchServiceDeps;
   private readonly gateway = new AgentRunMutationGateway();
   private readonly contracts = new ContractService();
+  private readonly repositoryLeases = repositoryLeaseManager;
   private ctx: AttachContext | null = null;
   private readonly live = new Map<string, LiveRun>();
   /** One provider resume per paused run. Boot recovery and an incoming answer
@@ -312,9 +324,9 @@ export class DispatchService {
    * runtime and leaving its wall-clock armed. */
   private readonly liveRevivals = new Map<string, Promise<LiveRun | null>>();
   private shuttingDown = false;
-  /** Per-repository landing serialization (worktree-lifecycle guard 6): one
-   *  active landing mutation per repository at a time. Keyed by canonical
-   *  resolved folderPath — two project rows over one folder share the lock. */
+  /** Same-engine landing serialization (worktree-lifecycle guard 6). The key
+   * is the immutable canonical Git common-directory lease digest; the separate
+   * engine-lifetime witness excludes other cooperating processes. */
   private readonly landingLocks = new Map<string, Promise<unknown>>();
   /** Review reservations are durable before their reviewer row exists. A
    * process-local admission in this set is still provisioning/validating, not
@@ -426,10 +438,16 @@ export class DispatchService {
     const runId = newId() as ULID;
     const now = Date.now();
 
-    // Repo isolation invariant: provision BEFORE the agent starts; a provision
-    // failure is a loud terminal, never a fallback to the live checkout.
+    // Repository authority and repo isolation are both admitted BEFORE a
+    // runtime starts. Even payload/prose runtimes are natively write-capable
+    // today, so a positively Git-backed cwd shares the same cooperative
+    // exclusion door without gaining a worktree. Existing non-Git project
+    // modes remain valid and do not fabricate repository authority.
     // Insert-the-row-first on failure so the refusal is durable + visible.
-    const refuseProvision = (error: string): DispatchResult => {
+    const refuseProvision = (
+      error: string,
+      cause: Extract<DispatchFailureCause, 'worktree-provision-failed' | 'repository-occupied' | 'repository-unavailable'> = 'worktree-provision-failed',
+    ): DispatchResult => {
       this.gateway.commitRunChange({
         reason: 'queued',
         mutate: () =>
@@ -444,7 +462,7 @@ export class DispatchService {
             input: input.input,
             pmRef: input.pmRef ?? null,
             parentInvokeDepth: input.parentInvokeDepth ?? 0,
-            lifecycleState: 'provisioning',
+            lifecycleState: spec.kind === 'repo' ? 'provisioning' : null,
             queuedAt: now,
           }),
       });
@@ -452,16 +470,23 @@ export class DispatchService {
         runId,
         status: 'failed',
         result: null,
-        failureCause: 'worktree-provision-failed',
+        failureCause: cause,
         failureReason: error,
         completedAt: Date.now(),
-        lifecycleState: 'provisioning-failed',
+        ...(spec.kind === 'repo' ? { lifecycleState: 'provisioning-failed' as const } : {}),
       });
-      return refuse('worktree-provision-failed', error, 422);
+      return refuse(cause, error, cause === 'repository-occupied' ? 409 : cause === 'repository-unavailable' ? 503 : 422);
     };
-    let worktree: { dir: string; branch: string; baseBranch: string; baseSha: string } | null = null;
+    let worktree: {
+      dir: string;
+      branch: string;
+      baseBranch: string;
+      baseSha: string;
+      repositoryIdentity: RepositoryIdentityReceipt;
+    } | null = null;
     let gitReceipt: WorktreeGitReceipt | null = null;
     let profile: WorktreeProfile | null = null;
+    let repositoryLease: RepositoryLeaseGuard | null = null;
     if (spec.kind === 'repo') {
       // Profile is fail-closed: an unreadable profile never half-provisions.
       const parsed = parseWorktreeProfile(project.worktreeProfile);
@@ -469,9 +494,33 @@ export class DispatchService {
         return refuseProvision(`invalid worktree profile: ${parsed.errors.join('; ')}`);
       }
       profile = parsed.profile;
+    }
+    if (spec.kind === 'repo' && !project.folderPath) {
+      return refuseProvision(
+        'PC-SDK could not prove repository authority because the project folder is missing.',
+        'repository-unavailable',
+      );
+    } else if (project.folderPath) {
+      try {
+        repositoryLease = await this.repositoryLeases.acquireForRuntimeCwd(
+          project.folderPath,
+          project.repositoryIdentity,
+        );
+        requireProjectRepositoryIdentityBinding(
+          input.projectId,
+          project.folderPath,
+          repositoryLease,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return refuseProvision(failure.message, failure.cause);
+      }
+    }
+    if (spec.kind === 'repo') {
       const provisioned = await provisionWorktree(project.folderPath, runId, {
         baseBranch: profile?.baseBranch ?? null,
         projectId: input.projectId,
+        expectedIdentity: repositoryLease!.identity,
       });
       if (!provisioned.ok) return refuseProvision(provisioned.error);
       worktree = provisioned;
@@ -481,6 +530,7 @@ export class DispatchService {
         baseBranch: provisioned.baseBranch,
         baseSha: provisioned.baseSha,
         cleanStatus: provisioned.cleanStatus,
+        repositoryIdentity: provisioned.repositoryIdentity,
       };
     }
 
@@ -543,6 +593,7 @@ export class DispatchService {
       worktree,
       firstMessage: input.input,
       resumeNativeSessionId: null,
+      repositoryLease,
       profile,
       freshProvision: true,
     }).catch(() => {
@@ -669,12 +720,54 @@ export class DispatchService {
     // continuation re-checks prerequisites in the existing workspace. Fail
     // closed on an unreadable profile, before any row exists.
     let profile: WorktreeProfile | null = null;
+    let repositoryLease: RepositoryLeaseGuard | null = null;
     if (spec.kind === 'repo') {
       const parsed = parseWorktreeProfile(project.worktreeProfile);
       if (!parsed.ok) {
         return refuse('worktree-provision-failed', `invalid worktree profile: ${parsed.errors.join('; ')}`, 422);
       }
       profile = parsed.profile;
+    }
+    if (parent.worktreeDir) {
+      const repositoryIdentity = parent.gitReceipt?.repositoryIdentity ?? null;
+      if (!repositoryIdentity) {
+        return refuse(
+          'repository-unavailable',
+          'the existing run has no immutable repository identity receipt',
+          503,
+        );
+      }
+      try {
+        repositoryLease = await this.repositoryLeases.acquire(
+          parent.worktreeDir,
+          repositoryIdentity,
+        );
+        requireProjectRepositoryIdentityBinding(
+          input.projectId,
+          parent.worktreeDir,
+          repositoryLease,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return refuse(failure.cause, failure.message, failure.httpStatus);
+      }
+    } else if (project.folderPath) {
+      if (!project.repositoryIdentity) {
+        return refuse(
+          'repository-unavailable',
+          'the project has no immutable repository identity for native continuation',
+          503,
+        );
+      }
+      try {
+        repositoryLease = await this.repositoryLeases.acquireForRuntimeCwd(
+          project.folderPath,
+          project.repositoryIdentity,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return refuse(failure.cause, failure.message, failure.httpStatus);
+      }
     }
     const recheckReadiness =
       spec.kind === 'repo' && parent.worktreeDir !== null && (profile?.readinessCommands.length ?? 0) > 0;
@@ -703,6 +796,7 @@ export class DispatchService {
             worktreeDir: parent.worktreeDir,
             worktreeBaseBranch: parent.worktreeBaseBranch,
             worktreeBaseSha: parent.worktreeBaseSha,
+            gitReceipt: parent.gitReceipt,
             // Repo continuation: the workspace already exists — born 'ready'
             // ('preparing' when the profile re-checks readiness first); the
             // turn start stamps 'building'.
@@ -732,6 +826,7 @@ export class DispatchService {
         : null,
       firstMessage: input.input,
       resumeNativeSessionId: parent.nativeSessionId,
+      repositoryLease,
       profile,
       freshProvision: false,
     }).catch(() => {
@@ -760,12 +855,36 @@ export class DispatchService {
     input: StartRunInput & { profile: WorktreeProfile | null; freshProvision: boolean },
   ): Promise<void> {
     const dir = input.worktree?.dir ?? null;
+    const authorityPath = dir ?? getProjectById(input.projectId)?.folderPath ?? null;
+    if (input.repositoryLease && authorityPath) {
+      try {
+        await this.repositoryLeases.assertHeld(
+          input.repositoryLease,
+          authorityPath,
+          input.repositoryLease.identity,
+        );
+      } catch (error) {
+        this.failRepositoryAuthority(input.runId, error);
+        return;
+      }
+    } else if (input.worktree) {
+      this.failRepositoryAuthority(
+        input.runId,
+        new Error('worktree-backed run has no live repository guard'),
+      );
+      return;
+    }
     const setup = input.freshProvision ? input.profile?.setupCommands ?? [] : [];
     const readiness = input.profile?.readinessCommands ?? [];
     if (dir && (setup.length > 0 || readiness.length > 0)) {
       this.stampLifecycle(input.runId, 'preparing');
       if (setup.length > 0) {
-        const prep = await runProfileCommands(dir, setup);
+        const prep = await runProfileCommands(
+          dir,
+          setup,
+          undefined,
+          input.repositoryLease?.identity ?? null,
+        );
         setAgentRunPhaseReceipt(input.runId, { phase: 'preparation', ok: prep.ok, steps: prep.steps, finishedAt: Date.now() });
         if (!prep.ok) {
           this.failPreparation(input.runId, 'preparation', prep.steps);
@@ -777,7 +896,12 @@ export class DispatchService {
         if (this.runIsTerminal(input.runId)) return;
       }
       if (readiness.length > 0) {
-        const ready = await runProfileCommands(dir, readiness);
+        const ready = await runProfileCommands(
+          dir,
+          readiness,
+          undefined,
+          input.repositoryLease?.identity ?? null,
+        );
         setAgentRunPhaseReceipt(input.runId, { phase: 'readiness', ok: ready.ok, steps: ready.steps, finishedAt: Date.now() });
         if (!ready.ok) {
           this.failPreparation(input.runId, 'readiness', ready.steps);
@@ -802,6 +926,11 @@ export class DispatchService {
    *  (retention rules — never torn down on a prep failure). */
   private failPreparation(runId: ULID, phase: 'preparation' | 'readiness', steps: WorktreeCommandStep[]): void {
     const failed = steps[steps.length - 1];
+    const repositoryCause = failed?.stderrTail.startsWith('repository-occupied:')
+      ? 'repository-occupied'
+      : failed?.stderrTail.startsWith('repository-unavailable:')
+        ? 'repository-unavailable'
+        : null;
     const reason =
       `${phase} command failed (exit ${failed?.exitCode ?? '?'}${failed?.timedOut ? ', timed out' : ''}): ` +
       `${failed?.command ?? '(none)'} — receipt persisted; worktree preserved for debugging`;
@@ -809,13 +938,31 @@ export class DispatchService {
       runId,
       status: 'failed',
       result: null,
-      failureCause: 'worktree-provision-failed',
+      failureCause: repositoryCause ?? 'worktree-provision-failed',
       failureReason: reason,
       completedAt: Date.now(),
       lifecycleState: 'provisioning-failed',
     });
     void this.verifyAndLand(runId, 'failed').catch((err) => {
       console.error(`[pc-sdk][dispatch] post-prep-failure settle crashed for ${runId}:`, err);
+    });
+  }
+
+  /** Repository authority disappeared or drifted after a run row was minted.
+   * Preserve the worktree and settle loudly; no runtime or command may start. */
+  private failRepositoryAuthority(runId: ULID, error: unknown): void {
+    const failure = repositoryLeaseFailure(error);
+    this.gateway.commitTerminal({
+      runId,
+      status: 'failed',
+      result: null,
+      failureCause: failure.cause,
+      failureReason: failure.message,
+      completedAt: Date.now(),
+      lifecycleState: 'failed',
+    });
+    void this.verifyAndLand(runId, 'failed').catch((settleError) => {
+      console.error(`[pc-sdk][dispatch] repository-authority settlement failed for ${runId}:`, settleError);
     });
   }
 
@@ -850,7 +997,26 @@ export class DispatchService {
     const ctx = this.ctx;
     if (!ctx || this.shuttingDown) return;
     const project = getProjectById(input.projectId);
-    const cwd = input.worktree?.dir ?? project?.folderPath ?? process.cwd();
+    let cwd = input.worktree?.dir ?? project?.folderPath ?? process.cwd();
+    const authorityPath = input.worktree?.dir ?? project?.folderPath ?? null;
+    if (input.repositoryLease && authorityPath) {
+      try {
+        cwd = await this.repositoryLeases.resolveHeldRuntimeCwd(
+          input.repositoryLease,
+          authorityPath,
+          input.repositoryLease.identity,
+        );
+      } catch (error) {
+        this.failRepositoryAuthority(input.runId, error);
+        return;
+      }
+    } else if (input.worktree) {
+      this.failRepositoryAuthority(
+        input.runId,
+        new Error('worktree-backed run has no live repository guard'),
+      );
+      return;
+    }
 
     const continuation: RuntimeContinuationRequest = input.resumeNativeSessionId
       ? { mode: 'resume', nativeSessionId: input.resumeNativeSessionId }
@@ -1019,6 +1185,32 @@ export class DispatchService {
       const contract = run.contractId ? this.contracts.get(run.contractId) : null;
       const spec = (contract?.expectedOutput ?? null) as ExpectedOutput | null;
       if (!contract || !spec) return null;
+      let repositoryLease: RepositoryLeaseGuard | null = null;
+      let authorityPath: string | null = null;
+      if (run.worktreeDir) {
+        const identity = run.gitReceipt?.repositoryIdentity ?? null;
+        if (!identity) {
+          console.warn(`[pc-sdk][dispatch] live-session revival refused for ${run.id}: repository identity unavailable`);
+          return null;
+        }
+        authorityPath = run.worktreeDir;
+        repositoryLease = await this.repositoryLeases.acquire(run.worktreeDir, identity);
+        requireProjectRepositoryIdentityBinding(
+          run.projectId,
+          run.worktreeDir,
+          repositoryLease,
+        );
+      } else if (project.folderPath) {
+        if (!project.repositoryIdentity) {
+          console.warn(`[pc-sdk][dispatch] live-session revival refused for ${run.id}: project repository identity unavailable`);
+          return null;
+        }
+        authorityPath = project.folderPath;
+        repositoryLease = await this.repositoryLeases.acquireForRuntimeCwd(
+          project.folderPath,
+          project.repositoryIdentity,
+        );
+      }
 
       const continuation = { mode: 'resume' as const, nativeSessionId: run.nativeSessionId };
       const validation = await this.deps.preflightRuntimeSession(selection, continuation);
@@ -1037,7 +1229,13 @@ export class DispatchService {
       if (!prepared?.continuationAttemptId || !prepared.nativeSessionId) return null;
       const continuationAttemptId = prepared.continuationAttemptId;
 
-      const cwd = run.worktreeDir ?? project.folderPath ?? process.cwd();
+      const cwd = repositoryLease && authorityPath
+        ? await this.repositoryLeases.resolveHeldRuntimeCwd(
+            repositoryLease,
+            authorityPath,
+            repositoryLease.identity,
+          )
+        : run.worktreeDir ?? project.folderPath ?? process.cwd();
       let instructions = buildSpecialistInstructions({
         charter: snapshot.charter,
         podName: snapshot.name,
@@ -1489,6 +1687,33 @@ export class DispatchService {
     if (!liveRun) {
       return { ok: false, message: 'run is no longer live (server restarted) — re-dispatch or continue it', httpStatus: 410 };
     }
+    const resumedRow = getAgentRunRow(ask.agentRunId);
+    const resumedProject = resumedRow ? getProjectById(resumedRow.projectId) : null;
+    if (resumedRow?.worktreeDir) {
+      const identity = resumedRow?.gitReceipt?.repositoryIdentity ?? null;
+      if (!identity) {
+        return { ok: false, message: 'run has no immutable repository identity receipt', httpStatus: 503 };
+      }
+      try {
+        await this.repositoryLeases.acquire(resumedRow.worktreeDir, identity);
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
+    } else if (resumedProject?.folderPath) {
+      if (!resumedProject.repositoryIdentity) {
+        return { ok: false, message: 'project has no immutable repository identity receipt', httpStatus: 503 };
+      }
+      try {
+        await this.repositoryLeases.acquireForRuntimeCwd(
+          resumedProject.folderPath,
+          resumedProject.repositoryIdentity,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
+    }
     const flipped = this.gateway.answerAndResume({
       pendingAskId: input.pendingAskId,
       agentRunId: ask.agentRunId,
@@ -1649,6 +1874,23 @@ export class DispatchService {
 
     let deliverable = input.deliverable as unknown as Deliverable;
     if (expectedKind === 'repo' && row.worktreeDir) {
+      const repositoryIdentity = row.gitReceipt?.repositoryIdentity ?? null;
+      if (!repositoryIdentity) {
+        return {
+          ok: false,
+          message: 'run has no immutable repository identity receipt',
+          httpStatus: 503,
+        };
+      }
+      try {
+        await this.repositoryLeases.acquire(
+          row.worktreeDir,
+          repositoryIdentity,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
       const runGit = this.deps.gitCommand ?? git;
       const status = await runGit(['status', '--porcelain'], row.worktreeDir);
       if (!status.ok) {
@@ -1752,15 +1994,38 @@ export class DispatchService {
     // The producing run must be terminal first: reviewing a LIVE run stamps
     // lifecycle states its own settlement/boot recovery cannot legally leave,
     // and accept would merge + tear down the worktree under a running agent.
+    const producingRun = contract.agentRunId
+      ? getAgentRunRow(contract.agentRunId as ULID)
+      : null;
     if (contract.agentRunId) {
-      const producing = getAgentRunRow(contract.agentRunId as ULID);
-      if (producing && !['completed', 'failed', 'cancelled'].includes(producing.status)) {
+      if (producingRun && !['completed', 'failed', 'cancelled'].includes(producingRun.status)) {
         return {
           ok: false,
-          message: `producing run ${contract.agentRunId} is still '${producing.status}' — review after the run settles`,
+          message: `producing run ${contract.agentRunId} is still '${producingRun.status}' — review after the run settles`,
           httpStatus: 409,
         };
       }
+    }
+    let reviewRepositoryIdentity: RepositoryIdentityReceipt | null = null;
+    if ((contract.expectedOutput as ExpectedOutput | null)?.kind === 'repo') {
+      const identity = producingRun?.gitReceipt?.repositoryIdentity ?? null;
+      const path = producingRun?.worktreeDir ?? null;
+      const project = getProjectById(contract.projectId as ULID);
+      if (!identity || !path || !project?.folderPath) {
+        return {
+          ok: false,
+          message: 'producing run has no immutable repository identity receipt or project folder',
+          httpStatus: 503,
+        };
+      }
+      try {
+        await this.repositoryLeases.acquire(path, identity);
+        await this.repositoryLeases.acquire(project.folderPath, identity);
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
+      reviewRepositoryIdentity = identity;
     }
     // Orchestrator override supersedes an in-flight independent review: clear
     // the marker FIRST (the reviewer's eventual terminal then finds no marker,
@@ -1818,10 +2083,37 @@ export class DispatchService {
     let verifiedBaseSha: string | undefined;
     if ((decision.expectedOutput as ExpectedOutput | null)?.kind === 'repo') {
       const project = getProjectById(decision.projectId as ULID);
-      if (project?.folderPath && decision.worktreeBaseBranch) {
-        const tip = await git(['rev-parse', `refs/heads/${decision.worktreeBaseBranch}`], project.folderPath);
-        if (tip.ok) verifiedBaseSha = tip.stdout;
+      if (!project?.folderPath || !decision.worktreeBaseBranch || !reviewRepositoryIdentity) {
+        return {
+          ok: false,
+          message: 'repository accept-time revalidation inputs are unavailable',
+          httpStatus: 503,
+        };
       }
+      try {
+        // Reviewer cancellation above awaited runtime disposal and checkout
+        // reclaim. Revalidate the mutable project path again immediately
+        // before reading the base evidence that will be persisted as passed.
+        await this.repositoryLeases.acquire(
+          project.folderPath,
+          reviewRepositoryIdentity,
+        );
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
+      const tip = await git(
+        ['rev-parse', `refs/heads/${decision.worktreeBaseBranch}`],
+        project.folderPath,
+      );
+      if (!tip.ok) {
+        return {
+          ok: false,
+          message: `cannot resolve repository base for accept-time revalidation: ${tip.stderr || 'no output'}`,
+          httpStatus: 503,
+        };
+      }
+      verifiedBaseSha = tip.stdout;
     }
     const afterBaseRead = this.contracts.get(decision.id);
     if (
@@ -1851,7 +2143,12 @@ export class DispatchService {
       // source. Other park states (review-rejected/conflict/failed) already
       // have their own edge into 'merging'.
       this.stampLifecycleWhenLegal((updated.agentRunId ?? null) as ULID | null, 'merge-ready');
-      updated = (await this.landAcceptedContract(updated, 'orchestrator')) ?? updated;
+      try {
+        updated = (await this.landAcceptedContract(updated, 'orchestrator')) ?? updated;
+      } catch (error) {
+        const failure = repositoryLeaseFailure(error);
+        return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+      }
     }
     return { ok: true, contract: updated };
   }
@@ -1891,7 +2188,7 @@ export class DispatchService {
     let failureCause = input.failureCause;
     let failureReason = input.failureReason;
     const contract = row.contractId ? this.contracts.get(row.contractId) : null;
-    if (status === 'completed' && contract && !contract.deliverable && row.deliveredAt === null) {
+    if (status === 'completed' && row.deliveredAt === null) {
       status = 'failed';
       failureCause = 'no-deliverable';
       failureReason = 'run ended without pc_submit_deliverable — delivery is the done-signal';
@@ -2027,6 +2324,28 @@ export class DispatchService {
     if (!row) return;
     let contract = row.contractId ? this.contracts.get(row.contractId) : null;
     const project = getProjectById(row.projectId);
+
+    if (
+      contract &&
+      terminalStatus === 'completed' &&
+      (contract.expectedOutput as ExpectedOutput | null)?.kind === 'repo'
+    ) {
+      const identity = row.gitReceipt?.repositoryIdentity ?? null;
+      if (!row.worktreeDir || !identity) {
+        console.warn(
+          `[pc-sdk][dispatch] verification deferred for ${runId}: immutable repository identity unavailable`,
+        );
+        return;
+      }
+      try {
+        await this.repositoryLeases.acquire(row.worktreeDir, identity);
+      } catch (error) {
+        console.warn(
+          `[pc-sdk][dispatch] verification deferred for ${runId}: ${repositoryLeaseFailure(error).message}`,
+        );
+        return;
+      }
+    }
 
     // Fresh outcome from THIS settlement — the auto-land gate refuses to read
     // a stale row status (guard 5: missing evidence never means pass).
@@ -2405,6 +2724,19 @@ export class DispatchService {
     const project = getProjectById(projectId);
     if (!project?.folderPath) return parkUnreserved('project folder missing');
     const producing = target.agentRunId ? getAgentRunRow(target.agentRunId as ULID) : null;
+    const repositoryIdentity = producing?.gitReceipt?.repositoryIdentity ?? null;
+    if (!producing?.worktreeDir || !repositoryIdentity) {
+      return parkUnreserved('producing run has no immutable repository identity receipt');
+    }
+    let repositoryLease: RepositoryLeaseGuard;
+    try {
+      repositoryLease = await this.repositoryLeases.acquire(
+        producing.worktreeDir,
+        repositoryIdentity,
+      );
+    } catch (error) {
+      return parkUnreserved(repositoryLeaseFailure(error).message);
+    }
     const snapshot = specialistSnapshot(bundle);
 
     const runId = newId() as ULID;
@@ -2444,7 +2776,12 @@ export class DispatchService {
     // commit would move the agent branch tip (hard-failing the landing
     // tip==seal guard) and untracked check artifacts would dirty the tree the
     // Fix door resubmits from. Reclaimed at the reviewer's terminal.
-    const checkout = await provisionReviewCheckout(project.folderPath, runId, sealedCommit);
+    const checkout = await provisionReviewCheckout(
+      project.folderPath,
+      runId,
+      sealedCommit,
+      repositoryIdentity,
+    );
     if (!checkout.ok) {
       return parkOwnedReservation(`review checkout provisioning failed: ${checkout.error}`);
     }
@@ -2456,7 +2793,11 @@ export class DispatchService {
       admitted.agentRunId !== target.agentRunId ||
       (admitted.deliverable as { commit?: string } | null)?.commit !== sealedCommit
     ) {
-      await removeReviewCheckout(project.folderPath, checkout.dir).catch(() => false);
+      await removeReviewCheckout(
+        project.folderPath,
+        checkout.dir,
+        repositoryIdentity,
+      ).catch(() => false);
       // A producer/seal/override moved while checkout provisioning awaited.
       // Clear only our still-owned reservation; never clear the newer marker.
       if (admitted?.reviewRunId === runId) {
@@ -2505,6 +2846,7 @@ export class DispatchService {
           // commit — never the builder's live worktree. Payload-kind
           // contract ⇒ no lifecycle vocabulary.
           worktreeDir: checkout.dir,
+          gitReceipt: producing.gitReceipt,
           queuedAt: now,
         }),
     });
@@ -2533,6 +2875,7 @@ export class DispatchService {
       },
       firstMessage: brief,
       resumeNativeSessionId: null,
+      repositoryLease,
       profile: null,
       freshProvision: false,
     }).catch(() => {
@@ -2614,12 +2957,35 @@ export class DispatchService {
     contract: Contract,
     authorizer: ContractLandingAuthorizer = 'orchestrator',
   ): Promise<Contract | null> {
+    const latest = this.contracts.get(contract.id);
+    if (!latest) return null;
+    if (latest.landingStatus === 'landed' || latest.landingStatus === 'abandoned') {
+      return latest;
+    }
     const project = getProjectById(contract.projectId as ULID);
-    const key = project?.folderPath ? landingLockKey(project.folderPath) : `project:${contract.projectId}`;
+    const producer = contract.agentRunId
+      ? getAgentRunRow(contract.agentRunId as ULID)
+      : null;
+    const repositoryIdentity = producer?.gitReceipt?.repositoryIdentity ?? null;
+    const authorityPath = project?.folderPath ?? producer?.worktreeDir ?? null;
+    if (!repositoryIdentity || !authorityPath) {
+      throw new RepositoryLeaseError(
+        'repository-unavailable',
+        authorityPath ?? '<missing-repository>',
+        repositoryIdentity,
+        null,
+        'MISSING_REPOSITORY_IDENTITY_RECEIPT',
+      );
+    }
+    const repositoryLease = await this.repositoryLeases.acquire(
+      authorityPath,
+      repositoryIdentity,
+    );
+    const key = repositoryLease.identity.leaseKey;
     const prior = this.landingLocks.get(key) ?? Promise.resolve();
     const turn = prior.then(
-      () => this.landAcceptedContractLocked(contract, authorizer),
-      () => this.landAcceptedContractLocked(contract, authorizer),
+      () => this.landAcceptedContractLocked(contract, authorizer, repositoryIdentity),
+      () => this.landAcceptedContractLocked(contract, authorizer, repositoryIdentity),
     );
     this.landingLocks.set(key, turn.catch(() => {}));
     return turn;
@@ -2628,7 +2994,32 @@ export class DispatchService {
   private async landAcceptedContractLocked(
     authorized: Contract,
     authorizer: ContractLandingAuthorizer,
+    repositoryIdentity: RepositoryIdentityReceipt,
   ): Promise<Contract | null> {
+    const authorityProject = getProjectById(authorized.projectId as ULID);
+    if (!authorityProject?.folderPath) {
+      throw new RepositoryLeaseError(
+        'repository-unavailable',
+        '<missing-repository>',
+        repositoryIdentity,
+        null,
+        'MISSING_PROJECT_FOLDER',
+      );
+    }
+    // The local FIFO may have waited behind another landing. Re-resolve the
+    // mutable project path under the engine-lifetime guard before any status
+    // reservation or Git evidence is read.
+    const projectLease = await this.repositoryLeases.acquire(
+      authorityProject.folderPath,
+      repositoryIdentity,
+    );
+    const authorizedProjectDir = await requireRepositoryWorktreeRoot(
+      await this.repositoryLeases.resolveHeldRuntimeCwd(
+        projectLease,
+        authorityProject.folderPath,
+        repositoryIdentity,
+      ),
+    );
     // Re-read under the lock: the pre-lock snapshot may be stale (auto-land
     // racing review-accept, boot re-drive racing accept). A landed receipt is
     // final — a second drive must never overwrite its authorizer/landedAt.
@@ -2708,7 +3099,7 @@ export class DispatchService {
     // converge the probe below on — unverified work, so a mismatch refuses.
     const sealedCommit = (contract.deliverable as { commit?: string } | null)?.commit;
     if (sealedCommit) {
-      const tip = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], project.folderPath);
+      const tip = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], authorizedProjectDir);
       if (tip.ok && tip.stdout !== sealedCommit) {
         stamp('failed');
         return this.contracts.setLanding({
@@ -2724,7 +3115,7 @@ export class DispatchService {
     // Recovery — idempotency probe BEFORE any mutation: ancestry proof means a
     // prior drive already merged (crash before the receipt). Converge to the
     // landed receipt; never re-run `git merge`.
-    const probe = await probeAlreadyLanded(project.folderPath, branch, contract.worktreeBaseBranch, validatedBase);
+    const probe = await probeAlreadyLanded(authorizedProjectDir, branch, contract.worktreeBaseBranch, validatedBase);
     if (probe.landed) {
       const updated = this.contracts.setLanding({
         id: contract.id,
@@ -2744,21 +3135,28 @@ export class DispatchService {
       stamp('merged');
       stamp('tearing-down');
       // Failed reclaim = stranded isolation, never a false 'completed' receipt.
-      const toreDown = await teardownWorktree(project.folderPath, contract.worktreePath, this.cleanupCommandsFor(project));
+      const toreDown = await teardownWorktree(
+        authorizedProjectDir,
+        contract.worktreePath,
+        this.cleanupCommandsFor(project),
+        repositoryIdentity,
+      );
+      // Confirmed land ⇒ the branch is merged history now; delete it (branch
+      // survives for unlanded/abandoned work only — best-effort, never blocks).
+      await deleteMergedBranch(authorizedProjectDir, branch, repositoryIdentity);
+      await this.sweepOrphansFor(project, repositoryIdentity);
+      // `completed` is the terminal-pipeline barrier: no branch delete or
+      // orphan-prune work remains in flight once observers see it.
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
       if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
-      // Confirmed land ⇒ the branch is merged history now; delete it (branch
-      // survives for unlanded/abandoned work only — best-effort, never blocks).
-      await deleteMergedBranch(project.folderPath, branch);
-      this.sweepOrphansFor(project);
       return updated;
     }
     // Guard 7 — stale verification never silently lands: the target must still
     // sit at the base the verification covered. No auto-rebase; the recovery
     // door is pc_review_contract accept, which revalidates against the
     // current tip (stamps verifiedBaseSha) and re-lands.
-    const targetHead = await git(['rev-parse', `refs/heads/${contract.worktreeBaseBranch}`], project.folderPath);
+    const targetHead = await git(['rev-parse', `refs/heads/${contract.worktreeBaseBranch}`], authorizedProjectDir);
     if (!targetHead.ok) {
       stamp('failed');
       return this.contracts.setLanding({
@@ -2781,11 +3179,12 @@ export class DispatchService {
     }
     stamp('merging');
     const landed = await landBranch({
-      projectDir: project.folderPath,
+      projectDir: authorizedProjectDir,
       branch,
       baseBranch: contract.worktreeBaseBranch,
       podName: contract.podName ?? 'agent',
       expectedHeadSha: targetHead.stdout,
+      repositoryIdentity,
     });
     if (landed.outcome === 'landed') {
       // Durable full merge receipt BEFORE teardown. landedSha stays the
@@ -2806,14 +3205,19 @@ export class DispatchService {
       stamp('merged');
       stamp('tearing-down');
       // Failed reclaim = stranded isolation, never a false 'completed' receipt.
-      const toreDown = await teardownWorktree(project.folderPath, contract.worktreePath, this.cleanupCommandsFor(project));
+      const toreDown = await teardownWorktree(
+        authorizedProjectDir,
+        contract.worktreePath,
+        this.cleanupCommandsFor(project),
+        repositoryIdentity,
+      );
+      // Confirmed land ⇒ the branch is merged history now; delete it (branch
+      // survives for unlanded/abandoned work only — best-effort, never blocks).
+      await deleteMergedBranch(authorizedProjectDir, branch, repositoryIdentity);
+      await this.sweepOrphansFor(project, repositoryIdentity);
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
       if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
-      // Confirmed land ⇒ the branch is merged history now; delete it (branch
-      // survives for unlanded/abandoned work only — best-effort, never blocks).
-      await deleteMergedBranch(project.folderPath, branch);
-      this.sweepOrphansFor(project);
       return updated;
     }
     // conflict + stale-base both land on the lifecycle 'conflict' gate;
@@ -2837,13 +3241,19 @@ export class DispatchService {
 
   /** Best-effort orphan GC after a land completes teardown — a locked
    *  directory from THIS teardown, or an earlier one, gets a second chance
-   *  right away instead of waiting for the next boot sweep. Never blocks the
-   *  landing receipt on its result. */
-  private sweepOrphansFor(project: Project | null): void {
+   *  right away instead of waiting for the next boot sweep. The merge receipt
+   *  is already durable; this bounded settle completes before lifecycle
+   *  `completed` becomes observable. */
+  private async sweepOrphansFor(
+    project: Project | null,
+    repositoryIdentity: RepositoryIdentityReceipt,
+  ): Promise<void> {
     if (!project?.folderPath) return;
-    sweepOrphanedWorktreeDirs(project.folderPath).catch((err) =>
-      console.error(`[pc-sdk][worktree] orphan sweep failed for project ${project.id}:`, err),
-    );
+    try {
+      await sweepOrphanedWorktreeDirs(project.folderPath, repositoryIdentity);
+    } catch (err) {
+      console.error(`[pc-sdk][worktree] orphan sweep failed for project ${project.id}:`, err);
+    }
   }
 
   /** Executed-tool evidence for `tool_called` predicates — read from the durable
@@ -3043,6 +3453,17 @@ export class DispatchService {
       try {
         const project = getProjectById(contract.projectId);
         if (!project?.folderPath || !contract.worktreePath) continue;
+        const producing = contract.agentRunId
+          ? getAgentRunRow(contract.agentRunId as ULID)
+          : null;
+        const repositoryIdentity = producing?.gitReceipt?.repositoryIdentity ?? null;
+        if (!repositoryIdentity) {
+          console.warn(
+            `[pc-sdk][boot-recovery] teardown for contract ${contract.id} deferred: repository identity unavailable.`,
+          );
+          continue;
+        }
+        await this.repositoryLeases.acquire(project.folderPath, repositoryIdentity);
         console.warn(
           `[pc-sdk][boot-recovery] contract ${contract.id} landed but its worktree survived — resuming teardown of ${contract.worktreePath}.`,
         );
@@ -3050,16 +3471,27 @@ export class DispatchService {
         // Crash mid-'merging': the durable receipt proves the merge happened.
         this.stampLifecycleWhenLegal(runId, 'merged');
         this.stampLifecycleWhenLegal(runId, 'tearing-down');
-        const ok = await teardownWorktree(project.folderPath, contract.worktreePath, this.cleanupCommandsFor(project));
+        const ok = await teardownWorktree(
+          project.folderPath,
+          contract.worktreePath,
+          this.cleanupCommandsFor(project),
+          repositoryIdentity,
+        );
+        // Confirmed land (this contract only re-enters here already landed)
+        // ⇒ delete the now-merged branch — best-effort, never blocks.
+        const branch = contract.landedBranch ?? contract.worktreePath.split(/[\\/]/).pop() ?? '';
+        if (branch) {
+          await deleteMergedBranch(
+            project.folderPath,
+            branch,
+            repositoryIdentity,
+          );
+        }
+        await this.sweepOrphansFor(project, repositoryIdentity);
         this.stampLifecycleWhenLegal(runId, ok ? 'completed' : 'stranded');
         // A reclaim that finally succeeded resolves earlier preserved parks
         // (a previously 'stranded' run exits the feed here).
         if (ok) this.resolvePreservedRuns(contract.id as ULID);
-        // Confirmed land (this contract only re-enters here already landed)
-        // ⇒ delete the now-merged branch — best-effort, never blocks.
-        const branch = contract.landedBranch ?? contract.worktreePath.split(/[\\/]/).pop() ?? '';
-        if (branch) await deleteMergedBranch(project.folderPath, branch);
-        this.sweepOrphansFor(project);
       } catch (err) {
         console.error(`[pc-sdk][boot-recovery] teardown resume failed for contract ${contract.id} — continuing with the rest:`, err);
       }
@@ -3101,7 +3533,18 @@ export class DispatchService {
     if (!dir || basename(dir) !== reviewCheckoutName(row.id)) return;
     const project = getProjectById(row.projectId);
     if (!project?.folderPath) return;
-    void removeReviewCheckout(project.folderPath, dir).catch(() => {});
+    const repositoryIdentity = row.gitReceipt?.repositoryIdentity ?? null;
+    if (!repositoryIdentity) {
+      console.warn(
+        `[pc-sdk][worktree] review checkout ${dir} preserved: immutable repository identity unavailable`,
+      );
+      return;
+    }
+    void removeReviewCheckout(
+      project.folderPath,
+      dir,
+      repositoryIdentity,
+    ).catch(() => {});
   }
 
   async disposeAll(): Promise<void> {
@@ -3122,14 +3565,38 @@ export class DispatchService {
   }
 }
 
-function refuse(cause: DispatchFailureCause, message: string, httpStatus: number): DispatchResult {
-  return { ok: false, cause, message, httpStatus };
+function requireProjectRepositoryIdentityBinding(
+  projectId: ULID,
+  projectDir: string,
+  guard: RepositoryLeaseGuard,
+): void {
+  if (bindProjectRepositoryIdentity(projectId, guard.identity)) return;
+  throw new RepositoryLeaseError(
+    'repository-unavailable',
+    projectDir,
+    guard.identity,
+    guard.lockPath,
+    'PROJECT_UNAVAILABLE_DURING_REPOSITORY_BIND',
+  );
 }
 
-/** Landing-lock key: canonical resolved repo path, case-folded on win32. */
-function landingLockKey(folderPath: string): string {
-  const resolved = resolvePath(folderPath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+function repositoryLeaseFailure(error: unknown): {
+  cause: Extract<DispatchFailureCause, 'repository-occupied' | 'repository-unavailable'>;
+  message: string;
+  httpStatus: 409 | 503;
+} {
+  if (error instanceof RepositoryLeaseError && error.code === 'repository-occupied') {
+    return { cause: 'repository-occupied', message: error.message, httpStatus: 409 };
+  }
+  return {
+    cause: 'repository-unavailable',
+    message: error instanceof Error ? error.message : 'repository authority is unavailable',
+    httpStatus: 503,
+  };
+}
+
+function refuse(cause: DispatchFailureCause, message: string, httpStatus: number): DispatchResult {
+  return { ok: false, cause, message, httpStatus };
 }
 
 function summarizeDeliverable(d: Deliverable | null): string | null {

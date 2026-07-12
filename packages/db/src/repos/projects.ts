@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import type { Project, ProjectSettings, ULID, WorktreeProfile } from '@pc/domain';
-import { withProjectSettingsDefaults } from '@pc/domain';
+import type { Project, ProjectSettings, RepositoryIdentityReceipt, ULID, WorktreeProfile } from '@pc/domain';
+import { isRepositoryIdentityReceipt, withProjectSettingsDefaults } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import type { DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
@@ -14,6 +14,7 @@ export interface CreateProjectInput {
   slug: string;
   name: string;
   folderPath: string;
+  repositoryIdentity?: RepositoryIdentityReceipt | null;
   gitRemote?: string | null;
   settings?: Record<string, unknown>;
   /** Explicit sort position. Omit for the normal "append at max+1" behaviour;
@@ -28,6 +29,7 @@ interface ProjectRow {
   name: string;
   settings: Record<string, unknown>;
   folderPath: string;
+  repositoryIdentity: unknown;
   gitRemote: string | null;
   callsignSeq: number;
   notes: string | null;
@@ -39,11 +41,15 @@ interface ProjectRow {
 }
 
 function toDomain(row: ProjectRow): Project {
+  if (row.repositoryIdentity !== null && !isRepositoryIdentityReceipt(row.repositoryIdentity)) {
+    throw new Error(`project ${row.id} has an invalid repository identity receipt`);
+  }
   return {
     id: row.id,
     slug: row.slug,
     name: row.name,
     folderPath: row.folderPath,
+    repositoryIdentity: row.repositoryIdentity,
     gitRemote: row.gitRemote,
     settings: withProjectSettingsDefaults(row.settings as Partial<ProjectSettings>),
     callsignSeq: row.callsignSeq ?? 0,
@@ -114,6 +120,10 @@ export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Pr
   const now = Date.now();
   const id = input.id ?? newId();
   const gitRemote = input.gitRemote ?? null;
+  const repositoryIdentity = input.repositoryIdentity ?? null;
+  if (repositoryIdentity !== null && !isRepositoryIdentityReceipt(repositoryIdentity)) {
+    throw new Error('project repository identity must be exact and complete');
+  }
   // 5+.4 (D87) — new projects land at the bottom of the rail. Soft-deleted
   // rows still count toward `max(position)` so the position space stays gap-
   // free across the lifetime of a project (cheaper than re-compacting on
@@ -133,6 +143,7 @@ export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Pr
       slug: input.slug,
       name: input.name,
       folderPath: input.folderPath,
+      repositoryIdentity,
       gitRemote,
       settings: input.settings ?? {},
       position,
@@ -145,6 +156,7 @@ export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Pr
     slug: input.slug,
     name: input.name,
     folderPath: input.folderPath,
+    repositoryIdentity,
     gitRemote,
     settings: withProjectSettingsDefaults(input.settings as Partial<ProjectSettings> | undefined),
     callsignSeq: 0,
@@ -152,6 +164,47 @@ export function createProjectInDb(db: DbExecutor, input: CreateProjectInput): Pr
     focusedAt: null,
     worktreeProfile: null,
   };
+}
+
+/** Bind the first guarded fresh runtime identity exactly once. A later caller
+ * may only confirm the exact same value; project-path retargeting can never
+ * rewrite the receipt used by native resume. */
+export function bindProjectRepositoryIdentity(
+  id: ULID,
+  identity: RepositoryIdentityReceipt,
+): Project | null {
+  if (!isRepositoryIdentityReceipt(identity)) {
+    throw new Error('project repository identity must be exact and complete');
+  }
+  return getDb().transaction((tx) => {
+    const existing = getProjectByIdInDb(tx, id);
+    if (!existing) return null;
+    if (existing.repositoryIdentity === null) {
+      tx.update(projects)
+        .set({ repositoryIdentity: identity, updatedAt: Date.now() })
+        .where(and(
+          eq(projects.id, id),
+          isNull(projects.deletedAt),
+          isNull(projects.repositoryIdentity),
+        ))
+        .run();
+    }
+    const bound = getProjectByIdInDb(tx, id);
+    if (!bound || !sameRepositoryIdentity(bound.repositoryIdentity, identity)) {
+      throw new Error('project repository identity is already bound to a different repository');
+    }
+    return bound;
+  });
+}
+
+function sameRepositoryIdentity(
+  left: RepositoryIdentityReceipt | null,
+  right: RepositoryIdentityReceipt,
+): boolean {
+  return left !== null &&
+    left.protocol === right.protocol &&
+    left.gitCommonDir === right.gitCommonDir &&
+    left.leaseKey === right.leaseKey;
 }
 
 /** Save/clear a project's worktree provisioning profile. Callers validate via
