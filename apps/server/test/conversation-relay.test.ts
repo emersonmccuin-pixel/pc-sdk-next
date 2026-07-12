@@ -44,7 +44,7 @@ test('relay fans the committed row shape then marks its outbox entry', () => {
   assert.equal(listUnrelayedConversationEvents().length, 0);
 });
 
-test('fan failure leaves the row pending for retry', () => {
+test('one throwing socket is isolated; reconnect replay remains the healing path', () => {
   freshDb();
   const project = newProject();
   committed(project.id);
@@ -54,8 +54,9 @@ test('fan failure leaves the row pending for retry', () => {
     readyState: 1,
     send: () => { throw new Error('socket failed'); },
   });
-  assert.throws(() => new ConversationRelay({ hub }).drain(), /socket failed/);
-  assert.equal(listUnrelayedConversationEvents().length, 1);
+  assert.doesNotThrow(() => new ConversationRelay({ hub }).drain());
+  assert.equal(hub.count(project.id), 0);
+  assert.equal(listUnrelayedConversationEvents().length, 0);
 });
 
 test('post-fan mark failure redelivers the exact immutable event', () => {

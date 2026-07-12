@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listConversationEvents, listUnrelayedConversationEvents } from '@pc/db';
+import { getActiveConversationTurn, listConversationEvents, listUnrelayedConversationEvents } from '@pc/db';
 import type { ChatEvent, ConversationEventFrame, ServerFrame } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { ConversationRelay } from '../src/chat/conversation-relay.ts';
@@ -48,7 +48,9 @@ test('event, sequence, and outbox commit before the one relay path broadcasts', 
   });
   const { service, frames } = rig(project.id, runtime);
   const session = service.ensureActiveSession();
-  assert.equal(service.handleSend('hello', 'cm1'), 'received');
+  assert.equal(service.handleSend({
+    type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'hello', clientMessageId: 'cm1',
+  }).status, 'applied');
   await until(() => terminals(session.id).length === 1);
 
   const rows = listConversationEvents(session.id);
@@ -83,13 +85,10 @@ test('post-commit relay failure leaves the outbox pending without failing the de
     onConversationRelayError: (error) => relayErrors.push(error),
   });
   const session = service.ensureActiveSession();
-  assert.equal(service.handleSend('go', 'cm-relay-failure'), 'received');
+  assert.equal(service.handleSend({
+    type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'go', clientMessageId: 'cm-relay-failure',
+  }).status, 'applied');
   await until(() => terminals(session.id).length === 1);
-  await until(() => frames.some((frame) =>
-    frame.type === 'send-queue-snapshot' &&
-    frame.items.some((item) => item.clientMessageId === 'cm-relay-failure' && item.status === 'delivered')),
-  );
-
   assert.deepEqual(runtime.sentTexts, ['go']);
   assert.equal(terminals(session.id)[0]?.kind, 'turn-end');
   assert.ok(listUnrelayedConversationEvents().length > 0);
@@ -108,10 +107,16 @@ test('success, API error, and interrupt each persist exactly one terminal', asyn
     const runtime = new FakeRuntime({ turns: [turn] });
     const { service } = rig(project.id, runtime);
     const session = service.ensureActiveSession();
-    service.handleSend('go', 'cm1');
+    service.handleSend({
+      type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'go', clientMessageId: 'cm1',
+    });
     if (scenario === 'interrupt') {
       await until(() => listConversationEvents(session.id).some((row) => row.eventType === 'assistant-text'));
-      await service.handleInterrupt();
+      const active = getActiveConversationTurn(session.id);
+      assert.ok(active);
+      await service.handleConversationCommand({
+        type: 'interrupt', requestId: 'interrupt-1', sessionId: session.id, targetTurnId: active.id,
+      });
     }
     await until(() => terminals(session.id).length === 1);
     const terminal = terminals(session.id)[0]!;
@@ -133,8 +138,12 @@ test('queued sends drain FIFO and typed agent envelopes remain typed', async () 
   });
   const { service } = rig(project.id, runtime);
   const session = service.ensureActiveSession();
-  assert.equal(service.handleSend('first', 'cm1'), 'received');
-  assert.equal(service.handleSend('second', 'cm2'), 'queued');
+  assert.equal(service.handleSend({
+    type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'first', clientMessageId: 'cm1',
+  }).status, 'applied');
+  assert.equal(service.handleSend({
+    type: 'send', commandId: 'cmd2', sessionId: session.id, text: 'second', clientMessageId: 'cm2',
+  }).status, 'applied');
   service.injectAgentEnvelope({
     runId: 'run-1',
     agentName: 'researcher',

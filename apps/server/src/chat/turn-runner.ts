@@ -4,7 +4,7 @@
 // Invariants this owns:
 //  - Rule 3: every turn terminates in EXACTLY ONE `turn-end` or `turn-failed`.
 //    A result maps to one; a stream that ends without a result, or throws,
-//    still emits a terminal (internal/abort). Post-terminal messages are dropped.
+//    still emits an internal terminal. Post-terminal messages are dropped.
 //  - Rule 5: an unknown message variant is dropped + logged; the loop continues.
 //  - Runtime events marked as sidechain are not forwarded to chat.
 //  - `supersedes` → `retract` (model-refusal fallback).
@@ -190,15 +190,16 @@ export async function runTurn(
   } catch (err) {
     if (!terminated) {
       const message = err instanceof Error ? err.message : String(err);
-      const abort = /abort/i.test(message);
       deps.emitChat({
         kind: 'turn-failed',
         error: message,
-        source: abort ? 'abort' : 'internal',
+        // Exception text is not typed interruption evidence. Only a runtime
+        // `result { outcome: 'aborted' }` may produce an abort terminal.
+        source: 'internal',
       });
       // A genuine stream break is a real failure, never turn-budget exhaustion
       // (that classification only ever comes from a native `result` message).
-      return { terminal: 'turn-failed', outcome: abort ? 'aborted' : 'error', numTurns: null };
+      return { terminal: 'turn-failed', outcome: 'error', numTurns: null };
     }
     // Post-terminal throw (backend teardown noise) — the turn already ended;
     // return the terminal it actually ended with.

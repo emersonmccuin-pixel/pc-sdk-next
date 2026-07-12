@@ -71,6 +71,13 @@
       "when": 1783750800000,
       "tag": "0009_conversation_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783752000000,
+      "tag": "0010_durable_send_control",
+      "breakpoints": true
     }
   ]
 }

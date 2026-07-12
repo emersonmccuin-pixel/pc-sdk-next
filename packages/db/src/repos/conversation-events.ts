@@ -10,7 +10,7 @@ import {
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 
-import { getDb } from '../connection.ts';
+import { getDb, type DbTransaction } from '../connection.ts';
 import { newId } from '../id.ts';
 import { conversationEvents, conversationOutbox, conversationSequences } from '../schema.ts';
 
@@ -49,6 +49,76 @@ export interface ConversationOutboxEntry {
 export function commitConversationEvent(
   input: CommitConversationEventInput,
 ): CommitConversationEventResult {
+  validateConversationEventInput(input);
+  return getDb().transaction((tx) => commitConversationEventInDb(input, tx));
+}
+
+/** Executor-aware atomic seam for a Conversation-owned unit of work that must
+ * commit its state transition and canonical event/outbox rows together. */
+export function commitConversationEventInDb(
+  input: CommitConversationEventInput,
+  tx: DbTransaction,
+): CommitConversationEventResult {
+  validateConversationEventInput(input);
+  const cursor = tx
+    .insert(conversationSequences)
+    .values({
+      conversationId: input.conversationId,
+      projectId: input.projectId,
+      nextSequence: 2,
+      updatedAt: input.occurredAt,
+    })
+    .onConflictDoUpdate({
+      target: conversationSequences.conversationId,
+      set: {
+        nextSequence: sql`${conversationSequences.nextSequence} + 1`,
+        updatedAt: input.occurredAt,
+      },
+    })
+    .returning({
+      projectId: conversationSequences.projectId,
+      nextSequence: conversationSequences.nextSequence,
+    })
+    .get();
+  if (!cursor) throw new Error(`conversation sequence allocation failed: ${input.conversationId}`);
+  if (cursor.projectId !== input.projectId) {
+    throw new Error(`conversation project mismatch: ${input.conversationId}`);
+  }
+  const sequence = cursor.nextSequence - 1;
+  const eventId = input.eventId ?? newId();
+  const row: ConversationEventRow = {
+    eventId,
+    projectId: input.projectId,
+    conversationId: input.conversationId,
+    sessionId: input.sessionId,
+    sequence,
+    family: input.family,
+    eventType: input.event.kind,
+    turnId: input.turnId ?? null,
+    itemId: input.itemId,
+    streamId: input.streamId ?? null,
+    deltaIndex: input.deltaIndex ?? null,
+    payload: input.event,
+    clientMessageId: input.clientMessageId ?? null,
+    occurredAt: input.occurredAt,
+    projectionState: 'visible',
+  };
+  tx.insert(conversationEvents).values(row).run();
+  const outbox = tx
+    .insert(conversationOutbox)
+    .values({
+      eventId,
+      deliveryKind: input.deliveryKind,
+      createdAt: input.occurredAt,
+      relayedAt: null,
+    })
+    .returning({ outboxSequence: conversationOutbox.outboxSequence })
+    .get();
+  if (!outbox) throw new Error(`conversation outbox insert disappeared: ${eventId}`);
+  return { event: row, outboxSequence: outbox.outboxSequence };
+}
+
+function validateConversationEventInput(input: CommitConversationEventInput): void {
   if (!input.projectId || !input.conversationId || !input.sessionId || !input.itemId) {
     throw new Error('projectId, conversationId, sessionId, and itemId are required');
   }
@@ -75,65 +145,6 @@ export function commitConversationEvent(
   } else if (hasDeltaIndex) {
     throw new Error('stable conversation events cannot carry deltaIndex');
   }
-  const db = getDb();
-  return db.transaction((tx) => {
-    const cursor = tx
-      .insert(conversationSequences)
-      .values({
-        conversationId: input.conversationId,
-        projectId: input.projectId,
-        nextSequence: 2,
-        updatedAt: input.occurredAt,
-      })
-      .onConflictDoUpdate({
-        target: conversationSequences.conversationId,
-        set: {
-          nextSequence: sql`${conversationSequences.nextSequence} + 1`,
-          updatedAt: input.occurredAt,
-        },
-      })
-      .returning({
-        projectId: conversationSequences.projectId,
-        nextSequence: conversationSequences.nextSequence,
-      })
-      .get();
-    if (!cursor) throw new Error(`conversation sequence allocation failed: ${input.conversationId}`);
-    if (cursor.projectId !== input.projectId) {
-      throw new Error(`conversation project mismatch: ${input.conversationId}`);
-    }
-    const sequence = cursor.nextSequence - 1;
-    const eventId = input.eventId ?? newId();
-    const row: ConversationEventRow = {
-      eventId,
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      sessionId: input.sessionId,
-      sequence,
-      family: input.family,
-      eventType: input.event.kind,
-      turnId: input.turnId ?? null,
-      itemId: input.itemId,
-      streamId: input.streamId ?? null,
-      deltaIndex: input.deltaIndex ?? null,
-      payload: input.event,
-      clientMessageId: input.clientMessageId ?? null,
-      occurredAt: input.occurredAt,
-      projectionState: 'visible',
-    };
-    tx.insert(conversationEvents).values(row).run();
-    const outbox = tx
-      .insert(conversationOutbox)
-      .values({
-        eventId,
-        deliveryKind: input.deliveryKind,
-        createdAt: input.occurredAt,
-        relayedAt: null,
-      })
-      .returning({ outboxSequence: conversationOutbox.outboxSequence })
-      .get();
-    if (!outbox) throw new Error(`conversation outbox insert disappeared: ${eventId}`);
-    return { event: row, outboxSequence: outbox.outboxSequence };
-  });
 }
 
 export function listConversationEvents(

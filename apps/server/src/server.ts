@@ -32,6 +32,9 @@ export interface StartServerOptions {
   webDist?: string | null;
   cwd?: string;
   askTimeoutMs?: number;
+  interruptTimeoutMs?: number;
+  /** Composition root defers chat execution until dispatch/MCP boot is ready. */
+  deferConversationQueueDrain?: boolean;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
   /** Rev of the orchestrator agent row — SessionService re-mints the backend
    *  between turns when it changes (prompt/model edits apply next message). */
@@ -88,6 +91,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     mintSession: opts.mintSession,
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
+    interruptTimeoutMs: opts.interruptTimeoutMs,
     onRateLimit: opts.onRateLimit,
     orchestratorRev: opts.orchestratorRev,
   });
@@ -120,6 +124,10 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     const s = serve({ fetch: app.fetch, port }, () => resolveServer(s as unknown as Server));
   });
   const actualPort = addressPort(server) ?? port;
+
+  // Standalone/test servers are fully composed at listen. Production defers
+  // this one-way gate until index.ts finishes dispatch and MCP bootstrap.
+  if (!opts.deferConversationQueueDrain) registry.kickRecoveredQueues();
 
   // WS on the same listener.
   const wss = new WebSocketServer({ noServer: true });

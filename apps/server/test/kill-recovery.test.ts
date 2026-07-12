@@ -72,7 +72,7 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
-  svc.handleSend('do the thing', 'cm1');
+  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'do the thing', clientMessageId: 'cm1' });
 
   // Wait until the turn is genuinely in flight (running persisted, no terminal).
   await until(() =>
@@ -102,7 +102,11 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
   assert.equal((lastState?.payload as { state: string }).state, 'idle');
 
   // Replay is coherent: the crashed turn is closed out, in order.
-  assert.deepEqual(kinds(session.id).slice(-2), ['turn-failed', 'session-state']);
+  assert.deepEqual(
+    kinds(session.id).slice(-3),
+    ['turn-failed', 'send-state', 'session-state'],
+    'terminal, failed delivery receipt, and idle are one ordered recovery commit',
+  );
 
   // Idempotent: a second boot changes nothing.
   const again = runBootRecovery();
@@ -118,7 +122,7 @@ test('a cleanly-idle session is not touched by boot recovery', async () => {
   });
   const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
   const session = svc.ensureActiveSession();
-  svc.handleSend('hi', 'cm1');
+  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'hi', clientMessageId: 'cm1' });
   await until(() => terminals(session.id).length === 1);
 
   const before = listConversationEvents(session.id).length;
@@ -446,6 +450,7 @@ test('F3: a terminal envelope minted before attach is queued, not dropped — re
     const hub = new ProjectWebSocketHub<ULID>();
     const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
     dispatch.attach({ registry, hub, serverPort: 1 });
+    registry.kickRecoveredQueues();
 
     await until(() => getActiveOrchestratorSession(gp.project.id) !== null);
     const session = getActiveOrchestratorSession(gp.project.id)!;

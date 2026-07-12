@@ -33,6 +33,7 @@ export function toSessionSummary(row: OrchestratorSessionRow): SessionSummary {
     model: row.model,
     title: row.title,
     status: row.status === 'ended' ? 'ended' : 'active',
+    resumable: row.status === 'ended' && row.endedReason !== 'account_switched',
     startedAt: row.startedAt,
   };
 }

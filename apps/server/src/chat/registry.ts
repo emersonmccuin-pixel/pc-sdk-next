@@ -2,6 +2,7 @@
 
 import type { ServerFrame, UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
+import { listProjectsWithQueuedConversationSends } from '@pc/db';
 import type { RuntimeSessionFactory } from '../runner/runtime.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { SessionService } from './session-service.ts';
@@ -13,6 +14,7 @@ export interface SessionRegistryDeps {
   mintSession: RuntimeSessionFactory;
   cwd?: string;
   askTimeoutMs?: number;
+  interruptTimeoutMs?: number;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
   orchestratorRev?: () => number | null;
 }
@@ -20,9 +22,23 @@ export interface SessionRegistryDeps {
 export class SessionRegistry {
   private readonly services = new Map<ULID, SessionService>();
   private readonly deps: SessionRegistryDeps;
+  private queueDrainReady = false;
 
   constructor(deps: SessionRegistryDeps) {
     this.deps = deps;
+  }
+
+  /** Start surviving FIFO work only after the composition root has finished
+   * the required boot sequence (live port, dispatch attach, and MCP probe).
+   * Constructing the registry must never mint a partially configured runtime. */
+  kickRecoveredQueues(): void {
+    this.queueDrainReady = true;
+    for (const service of this.services.values()) service.enableQueueDrain();
+    for (const projectId of listProjectsWithQueuedConversationSends()) {
+      const service = this.get(projectId);
+      service.enableQueueDrain();
+      service.kick();
+    }
   }
 
   get(projectId: ULID): SessionService {
@@ -35,6 +51,8 @@ export class SessionRegistry {
         drainConversationOutbox: () => this.deps.conversationRelay?.drain(),
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,
+        interruptTimeoutMs: this.deps.interruptTimeoutMs,
+        queueDrainEnabled: this.queueDrainReady,
         onRateLimit: this.deps.onRateLimit,
         orchestratorRev: this.deps.orchestratorRev,
       });
@@ -46,5 +64,12 @@ export class SessionRegistry {
   async disposeAll(): Promise<void> {
     await Promise.all([...this.services.values()].map((s) => s.dispose()));
     this.services.clear();
+  }
+
+  async disposeProject(projectId: ULID): Promise<void> {
+    const service = this.services.get(projectId);
+    if (!service) return;
+    this.services.delete(projectId);
+    await service.dispose();
   }
 }

@@ -76,7 +76,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
   });
 
   // ── Projects + settings (the @pc/contracts APIs the web chrome speaks) ───────
-  mountProjects(app);
+  mountProjects(app, { registry: deps.registry });
   mountSettings(app);
   mountAgents(app);
   if (deps.dispatch) mountAgentRuns(app, { dispatch: deps.dispatch });
@@ -94,14 +94,22 @@ export function createHttpApp(deps: HttpDeps): Hono {
   app.post('/api/projects/:id/sessions/new', (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
-    const session = deps.registry.get(projectId).startNewSession();
+    const service = deps.registry.get(projectId);
+    if (!service.canSwitchSession()) {
+      return c.json({ ok: false, error: 'interrupt the active turn and wait for confirmation before switching sessions' }, 409);
+    }
+    const session = service.startNewSession();
     return c.json({ ok: true, transition: 'new-session', session: toSessionSummary(session) }, 201);
   });
 
   app.post('/api/projects/:id/sessions/:sid/resume', (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
-    const session = deps.registry.get(projectId).resumeSession(c.req.param('sid') as ULID);
+    const service = deps.registry.get(projectId);
+    if (!service.canSwitchSession()) {
+      return c.json({ ok: false, error: 'interrupt the active turn and wait for confirmation before switching sessions' }, 409);
+    }
+    const session = service.resumeSession(c.req.param('sid') as ULID);
     if (!session) return c.json({ ok: false, error: 'session not found' }, 404);
     return c.json({ ok: true, transition: 'resume-session', session: toSessionSummary(session) });
   });

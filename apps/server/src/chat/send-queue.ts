@@ -1,158 +1,95 @@
-// Send-queue — serializes user turns while the orchestrator is busy.
+// Durable send-queue drain coordinator.
 //
-// Every send lands here. One turn is delivered at a time (FIFO); sends arriving
-// mid-turn queue and drain in order. Statuses follow the contract
-// (docs/event-contract.md §Send path): queued → delivering → delivered, or
-// failed / cancelled. Snapshot replaces snapshot (no per-item deltas); a
-// `delivered` item rides exactly one snapshot then is pruned.
+// Queue state, FIFO allocation, and the active-turn lease live in SQLite. This
+// class owns only the process-local single-flight loop that claims one durable
+// row at a time and hands its immutable revision to SessionService.
 
-import { newId } from '@pc/db';
-import type { SendQueueItem, SendQueueItemStatus, ULID } from '@pc/contracts';
+import {
+  claimNextConversationTurn,
+  type ClaimedConversationTurn,
+} from '@pc/db';
 
-/** Carried alongside an enqueued turn whose text is an agent envelope (ask or
- *  terminal), not a plain user message — lets `deliver()` persist the typed
- *  `agent-envelope` chat event instead of a bare `user` bubble, without
- *  changing what text is sent to the runtime as the turn. */
-export interface AgentEnvelopeMeta {
-  runId: string;
-  agentName: string;
-  pendingAskId?: string;
-  status: 'waiting' | 'done' | 'failed';
-  summary: string;
-  detail: string;
-}
-
-interface QueueItem {
-  id: ULID;
-  clientMessageId: string;
-  text: string;
-  agentEnvelope?: AgentEnvelopeMeta;
-  status: SendQueueItemStatus;
-  failureReason: string | null;
-  createdAt: number;
-  updatedAt: number;
-}
-
-// Dependencies injected into the queue: delivery, broadcast, clock.
 export interface SendQueueDeps {
-  /** Deliver one turn. Resolves when the turn reached the model + ran to its
-   *  terminal; rejects only on a delivery-infrastructure failure (backend won't
-   *  start) — a model-side turn error is still a successful delivery. */
-  deliver: (item: { id: ULID; clientMessageId: string; text: string; agentEnvelope?: AgentEnvelopeMeta }) => Promise<void>;
-  /** Broadcast the current snapshot to the room. */
-  onSnapshot: (items: SendQueueItem[]) => void;
-  // Clock override for tests; defaults to Date.now.
-  now?: () => number;
+  /** Current durable app session for this project. */
+  sessionId: () => string | null;
+  /** Run one already-claimed, immutable turn through its runtime. */
+  deliver: (turn: ClaimedConversationTurn) => Promise<void>;
+  /** Publish committed conversation outbox rows. */
+  afterCommit: () => void;
+  /** Refresh latest-wins process state after claim/settlement. */
+  onState: () => void;
+  /** Diagnostic sink. A failed turn is settled by deliver; loop errors are
+   * retried only after a later kick so a tight failure loop cannot form. */
+  onError?: (error: unknown) => void;
 }
 
-// FIFO queue that delivers one turn at a time.
 export class SendQueue {
-  private readonly items: QueueItem[] = [];
-  private readonly deliver: SendQueueDeps['deliver'];
-  private readonly onSnapshot: SendQueueDeps['onSnapshot'];
-  private readonly now: () => number;
-  private busy = false;
+  private readonly deps: SendQueueDeps;
+  private draining = false;
+  private redrain = false;
+  private scheduled = false;
+  private disposed = false;
+  private drainTask: Promise<void> | null = null;
 
-  // Wires in delivery, snapshot, and clock dependencies.
   constructor(deps: SendQueueDeps) {
-    this.deliver = deps.deliver;
-    this.onSnapshot = deps.onSnapshot;
-    this.now = deps.now ?? Date.now;
+    this.deps = deps;
   }
 
-  /** Enqueue a send. Returns whether it will run immediately (queue was idle) —
-   *  the caller maps that to the `received` vs `queued` send-ack status. */
-  enqueue(text: string, clientMessageId: string, agentEnvelope?: AgentEnvelopeMeta): { id: ULID; ranImmediately: boolean } {
-    const ranImmediately = !this.busy && this.pendingCount === 0;
-    const t = this.now();
-    const item: QueueItem = {
-      id: newId(),
-      clientMessageId,
-      text,
-      agentEnvelope,
-      status: 'queued',
-      failureReason: null,
-      createdAt: t,
-      updatedAt: t,
-    };
-    this.items.push(item);
-    this.emit();
-    void this.drainSoon();
-    return { id: item.id, ranImmediately };
-  }
-
-  // Count of items still waiting to be delivered.
-  get queueDepth(): number {
-    return this.items.filter((i) => i.status === 'queued').length;
-  }
-
-  // Whether a turn is currently being delivered.
-  get isBusy(): boolean {
-    return this.busy;
-  }
-
-  // Count of items not yet resolved (queued or delivering).
-  private get pendingCount(): number {
-    return this.items.filter((i) => i.status === 'queued' || i.status === 'delivering').length;
-  }
-
-  /** Cancel every not-yet-delivered item (session reset / new-session). */
-  cancelAll(reason = 'session reset'): void {
-    let changed = false;
-    for (const i of this.items) {
-      if (i.status === 'queued' || i.status === 'delivering') {
-        i.status = 'cancelled';
-        i.failureReason = reason;
-        i.updatedAt = this.now();
-        changed = true;
-      }
+  /** Schedule a drain after the caller's transaction has returned. Multiple
+   * kicks collapse into one loop; a kick during delivery requests one recheck. */
+  kick(): void {
+    if (this.disposed) return;
+    if (this.draining) {
+      this.redrain = true;
+      return;
     }
-    if (changed) this.emit();
+    if (this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      if (this.disposed) return;
+      const task = this.drain();
+      this.drainTask = task;
+      void task.finally(() => {
+        if (this.drainTask === task) this.drainTask = null;
+      });
+    });
   }
 
-  // Returns a plain-object copy of the current queue.
-  snapshot(): SendQueueItem[] {
-    return this.items.map((i) => ({
-      id: i.id,
-      clientMessageId: i.clientMessageId,
-      text: i.text,
-      status: i.status,
-      failureReason: i.failureReason,
-      createdAt: i.createdAt,
-      updatedAt: i.updatedAt,
-    }));
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const task = this.drainTask;
+    if (task) await task;
   }
 
-  // Broadcasts the snapshot, then prunes finished items.
-  private emit(): void {
-    this.onSnapshot(this.snapshot());
-    // Terminal items ride exactly one snapshot, then drop out.
-    for (let n = this.items.length - 1; n >= 0; n--) {
-      const s = this.items[n].status;
-      if (s === 'delivered' || s === 'cancelled') this.items.splice(n, 1);
-    }
-  }
-
-  // Delivers the next queued item, then loops until empty.
-  private async drainSoon(): Promise<void> {
-    if (this.busy) return;
-    const next = this.items.find((i) => i.status === 'queued');
-    if (!next) return;
-    this.busy = true;
-    next.status = 'delivering';
-    next.updatedAt = this.now();
-    this.emit();
+  private async drain(): Promise<void> {
+    if (this.disposed || this.draining) return;
+    this.draining = true;
     try {
-      await this.deliver({ id: next.id, clientMessageId: next.clientMessageId, text: next.text, agentEnvelope: next.agentEnvelope });
-      next.status = 'delivered';
-      next.failureReason = null;
-    } catch (err) {
-      next.status = 'failed';
-      next.failureReason = err instanceof Error ? err.message : String(err);
+      do {
+        this.redrain = false;
+        for (;;) {
+          if (this.disposed) return;
+          const sessionId = this.deps.sessionId();
+          if (!sessionId) return;
+          const turn = claimNextConversationTurn(sessionId);
+          if (!turn) break;
+          // Claim committed send-state + user/agent-envelope + running as one
+          // unit. Publish it before starting provider work.
+          this.deps.afterCommit();
+          this.deps.onState();
+          await this.deps.deliver(turn);
+          this.deps.afterCommit();
+          this.deps.onState();
+        }
+      } while (this.redrain);
+    } catch (error) {
+      this.deps.onError?.(error);
+    } finally {
+      this.draining = false;
+      // A commit may have arrived between the final loop check and clearing
+      // `draining`; preserve that wake-up.
+      if (this.redrain && !this.disposed) this.kick();
     }
-    next.updatedAt = this.now();
-    this.emit();
-    this.busy = false;
-    void this.drainSoon();
   }
 }

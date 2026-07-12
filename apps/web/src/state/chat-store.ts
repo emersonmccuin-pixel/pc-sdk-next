@@ -6,8 +6,8 @@
 import { create } from 'zustand';
 import type {
   AskFrame,
+  ConversationCommandReceiptFrame,
   ConversationEventFrame,
-  SendAckFrame,
   SendQueueSnapshotFrame,
   SessionChangedFrame,
   SessionReplayFrame,
@@ -17,9 +17,9 @@ import {
   addOptimistic,
   answerAsk,
   applyAsk,
+  applyConversationCommandReceipt,
   applyConversationEvent,
   applyReplay,
-  applySendAck,
   applySendQueueSnapshot,
   applySessionChanged,
   initialChatState,
@@ -32,14 +32,14 @@ export type ChatChannelFrame =
   | ConversationEventFrame
   | SessionChangedFrame
   | SessionReplayFrame
-  | SendAckFrame
+  | ConversationCommandReceiptFrame
   | SendQueueSnapshotFrame
   | AskFrame;
 
 interface ChatStore {
   state: ChatState;
   ingest: (frame: ChatChannelFrame) => void;
-  addOptimistic: (clientMessageId: string, text: string) => void;
+  addOptimistic: (commandId: string, clientMessageId: string, text: string) => void;
   answerAsk: (askId: string, answer: string) => void;
   reset: (sessionId?: string | null) => void;
 }
@@ -55,8 +55,8 @@ export const useChatStore = create<ChatStore>((set) => ({
           return { state: applyReplay(s.state, frame) };
         case 'session-changed':
           return { state: applySessionChanged(s.state, frame) };
-        case 'send-ack':
-          return { state: applySendAck(s.state, frame) };
+        case 'conversation-command-receipt':
+          return { state: applyConversationCommandReceipt(s.state, frame) };
         case 'send-queue-snapshot':
           return { state: applySendQueueSnapshot(s.state, frame) };
         case 'ask':
@@ -65,8 +65,8 @@ export const useChatStore = create<ChatStore>((set) => ({
           return s;
       }
     }),
-  addOptimistic: (clientMessageId, text) =>
-    set((s) => ({ state: addOptimistic(s.state, clientMessageId, text) })),
+  addOptimistic: (commandId, clientMessageId, text) =>
+    set((s) => ({ state: addOptimistic(s.state, commandId, clientMessageId, text) })),
   answerAsk: (askId, answer) => set((s) => ({ state: answerAsk(s.state, askId, answer) })),
   reset: (sessionId = null) => set({ state: initialChatState(sessionId) }),
 }));

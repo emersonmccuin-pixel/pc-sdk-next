@@ -6,17 +6,27 @@
 // route to the chat store (channel 1) and the resource stores (channel 2/3);
 // unknown types drop silently.
 
-import { useEffect, useRef, useState } from 'react';
-import { isConversationEventFrame, isSessionReplayFrame } from '@pc/contracts';
+import { useLayoutEffect, useRef, useState } from 'react';
+import {
+  isAskFrame,
+  isConversationCommandReceiptFrame,
+  isConversationEventFrame,
+  isLiveResetFrame,
+  isOrchestratorStateFrame,
+  isResourceFrame,
+  isSendQueueSnapshotFrame,
+  isSessionChangedFrame,
+  isSessionReplayFrame,
+} from '@pc/contracts';
 import type {
   ClientMessage,
-  OrchestratorHealth,
+  InterruptReplacement,
   ResourceFrame,
   ServerFrame,
 } from '@pc/contracts';
 
 import { useAgentEventStore } from '@/state/agent-event-store';
-import { useChatStore, type ChatChannelFrame } from '@/state/chat-store';
+import { useChatStore } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
 import { useResourceStore } from '@/state/resource-store';
 import { useUsageStore } from '@/state/usage-store';
@@ -46,19 +56,34 @@ function writeCursor(projectId: string, cursor: string | null): void {
 }
 
 export interface SocketApi {
-  sendText: (text: string, clientMessageId: string) => boolean;
-  interrupt: () => boolean;
+  sendText: (input: {
+    commandId: string;
+    sessionId: string | null;
+    text: string;
+    clientMessageId: string;
+  }) => boolean;
+  editQueued: (input: {
+    commandId: string;
+    sessionId: string;
+    queueItemId: string;
+    expectedRevision: number;
+    text: string;
+  }) => boolean;
+  removeQueued: (input: {
+    commandId: string;
+    sessionId: string;
+    queueItemId: string;
+    expectedRevision: number;
+  }) => boolean;
+  interrupt: (input: { requestId: string; sessionId: string; targetTurnId: string }) => boolean;
+  interruptAndSend: (input: {
+    requestId: string;
+    sessionId: string;
+    targetTurnId: string;
+    replacement: InterruptReplacement;
+  }) => boolean;
   askReply: (askId: string, answer: string) => boolean;
 }
-
-const CHAT_CHANNEL_TYPES = new Set<ChatChannelFrame['type']>([
-  'conversation-event',
-  'session-changed',
-  'session-replay',
-  'send-ack',
-  'send-queue-snapshot',
-  'ask',
-]);
 
 /** Owns one project socket for its lifetime. Not a singleton — the React hook
  *  creates/tears one down as the shown project changes. */
@@ -92,8 +117,15 @@ export class ProjectSocket {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.clearTimers();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.ws?.close();
+    const ws = this.ws;
     this.ws = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.close();
+    }
     useConnectionStore.getState().setStatus('idle');
   }
 
@@ -103,7 +135,10 @@ export class ProjectSocket {
 
   private forceReconnect = () => {
     if (this.closedByUser) return;
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) return;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -113,6 +148,11 @@ export class ProjectSocket {
   };
 
   private connect(): void {
+    if (this.closedByUser) return;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)
+    ) return;
     this.clearTimers();
     useConnectionStore.getState().setStatus('connecting');
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -127,6 +167,7 @@ export class ProjectSocket {
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.closedByUser || this.ws !== ws) return;
       this.attempt = 0;
       useConnectionStore.getState().setStatus('open');
       useConnectionStore.getState().bumpEpoch();
@@ -135,6 +176,7 @@ export class ProjectSocket {
       this.send({ type: 'subscribe', lastVersion: this.cursor });
     };
     ws.onmessage = (ev) => {
+      if (this.closedByUser || this.ws !== ws) return;
       this.armSilence();
       let frame: unknown;
       try {
@@ -145,29 +187,46 @@ export class ProjectSocket {
       this.route(frame);
     };
     ws.onclose = () => {
+      if (this.closedByUser || this.ws !== ws) return;
+      this.ws = null;
       this.clearTimers();
-      if (this.closedByUser) return;
       useConnectionStore.getState().setStatus('closed');
       this.scheduleReconnect();
     };
     ws.onerror = () => {
+      if (this.closedByUser || this.ws !== ws) return;
       // close handler drives the reconnect; nothing to do here.
     };
   }
 
   private route(frame: unknown): void {
+    if (this.closedByUser) return;
     if (!frame || typeof (frame as { type?: unknown }).type !== 'string') return;
+    const frameProjectId = (frame as { projectId?: unknown }).projectId;
+    if (typeof frameProjectId === 'string' && frameProjectId !== this.projectId) return;
     const type = (frame as { type: string }).type;
-    if (type === 'conversation-event') {
-      if (isConversationEventFrame(frame)) useChatStore.getState().ingest(frame);
+    if (type === 'conversation-event' && isConversationEventFrame(frame)) {
+      useChatStore.getState().ingest(frame);
       return;
     }
-    if (type === 'session-replay') {
-      if (isSessionReplayFrame(frame)) useChatStore.getState().ingest(frame);
+    if (type === 'session-replay' && isSessionReplayFrame(frame)) {
+      useChatStore.getState().ingest(frame);
       return;
     }
-    if (CHAT_CHANNEL_TYPES.has(type as ChatChannelFrame['type'])) {
-      useChatStore.getState().ingest(frame as ChatChannelFrame);
+    if (type === 'session-changed' && isSessionChangedFrame(frame)) {
+      useChatStore.getState().ingest(frame);
+      return;
+    }
+    if (type === 'conversation-command-receipt' && isConversationCommandReceiptFrame(frame)) {
+      useChatStore.getState().ingest(frame);
+      return;
+    }
+    if (type === 'send-queue-snapshot' && isSendQueueSnapshotFrame(frame)) {
+      useChatStore.getState().ingest(frame);
+      return;
+    }
+    if (type === 'ask' && isAskFrame(frame)) {
+      useChatStore.getState().ingest(frame);
       return;
     }
     const serverFrame = frame as ServerFrame;
@@ -175,15 +234,18 @@ export class ProjectSocket {
       case 'server-pong':
         break; // liveness already registered
       case 'orchestrator-state':
-        this.setHealth(serverFrame.health);
+        if (isOrchestratorStateFrame(frame)) {
+          useConnectionStore.getState().setOrchestratorState(frame);
+        }
         break;
       case 'resource':
-        this.onResource(serverFrame);
+        if (isResourceFrame(frame)) this.onResource(frame);
         break;
       case 'live-reset':
+        if (!isLiveResetFrame(frame)) break;
         this.cursor = undefined;
         writeCursor(this.projectId, null);
-        useResourceStore.getState().applyLiveReset(serverFrame);
+        useResourceStore.getState().applyLiveReset(frame);
         useConnectionStore.getState().bumpEpoch();
         break;
       case 'agent-event':
@@ -213,10 +275,6 @@ export class ProjectSocket {
         { id: server.id, name: server.name, status: server.status, toolCount: server.toolCount },
       ]);
     }
-  }
-
-  private setHealth(health: OrchestratorHealth): void {
-    useConnectionStore.getState().setOrchestratorHealth(health);
   }
 
   private armSilence(): void {
@@ -249,14 +307,17 @@ export class ProjectSocket {
   }
 
   private send(msg: ClientMessage): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (this.closedByUser || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify(msg));
     return true;
   }
 
   readonly api: SocketApi = {
-    sendText: (text, clientMessageId) => this.send({ type: 'send', text, clientMessageId }),
-    interrupt: () => this.send({ type: 'interrupt' }),
+    sendText: (input) => this.send({ type: 'send', ...input }),
+    editQueued: (input) => this.send({ type: 'edit-queued-message', ...input }),
+    removeQueued: (input) => this.send({ type: 'remove-queued-message', ...input }),
+    interrupt: (input) => this.send({ type: 'interrupt', ...input }),
+    interruptAndSend: (input) => this.send({ type: 'interrupt-and-send', ...input }),
     askReply: (askId, answer) => this.send({ type: 'ask-reply', askId, answer }),
   };
 }
@@ -268,25 +329,27 @@ export function randomId(): string {
 /** Mounts a project socket for the component's lifetime; returns the send API.
  *  Liveness + orchestrator health flow through the connection store. */
 export function useProjectSocket(projectId: string | null): SocketApi | null {
-  const [api, setApi] = useState<SocketApi | null>(null);
+  const [boundApi, setBoundApi] = useState<{ projectId: string; api: SocketApi } | null>(null);
   const socketRef = useRef<ProjectSocket | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Project-owned singleton projections must be blanked before the first
+    // paint of a successor project. The API is also project-bound below.
+    useChatStore.getState().reset();
+    useConnectionStore.getState().resetProjectState();
     if (!projectId) {
-      setApi(null);
+      setBoundApi(null);
       return;
     }
-    // Fresh session context on project switch — the socket's connect-snapshot reseeds.
-    useChatStore.getState().reset();
     const socket = new ProjectSocket(projectId);
     socketRef.current = socket;
     socket.start();
-    setApi(socket.api);
+    setBoundApi({ projectId, api: socket.api });
     return () => {
       socket.stop();
       socketRef.current = null;
     };
   }, [projectId]);
 
-  return api;
+  return boundApi?.projectId === projectId ? boundApi.api : null;
 }

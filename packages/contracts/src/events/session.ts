@@ -12,6 +12,8 @@ export interface SessionSummary {
   model: string | null;
   title: string | null;
   status: 'active' | 'ended';
+  /** Native continuation is positively safe under the current account. */
+  resumable: boolean;
   startedAt: number;
 }
 
@@ -40,12 +42,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function isSessionSummary(value: unknown): value is SessionSummary {
   return (
     isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.projectId === 'string' &&
+    typeof value.id === 'string' && value.id.length > 0 &&
+    typeof value.projectId === 'string' && value.projectId.length > 0 &&
     (value.model === null || typeof value.model === 'string') &&
     (value.title === null || typeof value.title === 'string') &&
     (value.status === 'active' || value.status === 'ended') &&
-    typeof value.startedAt === 'number'
+    typeof value.resumable === 'boolean' &&
+    (value.status === 'ended' || value.resumable === false) &&
+    typeof value.startedAt === 'number' && Number.isFinite(value.startedAt)
   );
 }
 
@@ -53,8 +57,12 @@ export function isSessionChangedFrame(value: unknown): value is SessionChangedFr
   return (
     isRecord(value) &&
     value.type === 'session-changed' &&
+    typeof value.projectId === 'string' && value.projectId.length > 0 &&
     (value.transition === 'new-session' || value.transition === 'resume-session') &&
-    (value.session === null || isSessionSummary(value.session))
+    (
+      value.session === null ||
+      (isSessionSummary(value.session) && value.session.projectId === value.projectId)
+    )
   );
 }
 
@@ -62,8 +70,8 @@ export function isSessionReplayFrame(value: unknown): value is SessionReplayFram
   if (
     !isRecord(value) ||
     value.type !== 'session-replay' ||
-    typeof value.projectId !== 'string' ||
-    typeof value.sessionId !== 'string' ||
+    typeof value.projectId !== 'string' || value.projectId.length === 0 ||
+    typeof value.sessionId !== 'string' || value.sessionId.length === 0 ||
     !Number.isSafeInteger(value.highWaterSequence) ||
     (value.highWaterSequence as number) < 0 ||
     !Array.isArray(value.events)

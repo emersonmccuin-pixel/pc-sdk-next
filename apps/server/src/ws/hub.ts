@@ -39,8 +39,12 @@ export class ProjectWebSocketHub<ProjectId extends string = string> {
         set.delete(socket);
         continue;
       }
-      socket.send(data);
-      sent++;
+      try {
+        socket.send(data);
+        sent++;
+      } catch {
+        set.delete(socket);
+      }
     }
     if (set.size === 0) this.rooms.delete(projectId);
     return sent;
@@ -58,8 +62,12 @@ export class ProjectWebSocketHub<ProjectId extends string = string> {
           set.delete(socket);
           continue;
         }
-        socket.send(data);
-        sent++;
+        try {
+          socket.send(data);
+          sent++;
+        } catch {
+          set.delete(socket);
+        }
       }
       if (set.size === 0) this.rooms.delete(projectId);
     }

@@ -3,7 +3,7 @@
 // list that must refetch when the socket re-opens (epoch bump).
 
 import { create } from 'zustand';
-import type { OrchestratorHealth } from '@pc/contracts';
+import type { OrchestratorHealth, OrchestratorStateFrame } from '@pc/contracts';
 
 export type WsStatus = 'idle' | 'connecting' | 'open' | 'closed';
 
@@ -11,6 +11,9 @@ export interface ProjectConnection {
   status: WsStatus;
   /** From the latest `orchestrator-state` frame; null before the first. */
   orchestratorHealth: OrchestratorHealth | null;
+  activeTurnId: string | null;
+  orchestratorSessionId: string | null;
+  queueDepth: number;
 }
 
 interface ConnectionStore extends ProjectConnection {
@@ -19,15 +22,33 @@ interface ConnectionStore extends ProjectConnection {
   epoch: number;
   setStatus: (status: WsStatus) => void;
   setOrchestratorHealth: (health: OrchestratorHealth | null) => void;
+  setOrchestratorState: (frame: OrchestratorStateFrame) => void;
+  resetProjectState: () => void;
   bumpEpoch: () => void;
 }
 
 export const useConnectionStore = create<ConnectionStore>((set) => ({
   status: 'idle',
   orchestratorHealth: null,
+  activeTurnId: null,
+  orchestratorSessionId: null,
+  queueDepth: 0,
   epoch: 0,
   setStatus: (status) => set({ status }),
   setOrchestratorHealth: (orchestratorHealth) => set({ orchestratorHealth }),
+  setOrchestratorState: (frame) => set({
+    orchestratorHealth: frame.health,
+    activeTurnId: frame.activeTurnId,
+    orchestratorSessionId: frame.sessionId,
+    queueDepth: frame.queueDepth,
+  }),
+  resetProjectState: () => set({
+    status: 'idle',
+    orchestratorHealth: null,
+    activeTurnId: null,
+    orchestratorSessionId: null,
+    queueDepth: 0,
+  }),
   bumpEpoch: () => set((s) => ({ epoch: s.epoch + 1 })),
 }));
 
@@ -36,5 +57,8 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
 export function useProjectConnection(): ProjectConnection {
   const status = useConnectionStore((s) => s.status);
   const orchestratorHealth = useConnectionStore((s) => s.orchestratorHealth);
-  return { status, orchestratorHealth };
+  const activeTurnId = useConnectionStore((s) => s.activeTurnId);
+  const orchestratorSessionId = useConnectionStore((s) => s.orchestratorSessionId);
+  const queueDepth = useConnectionStore((s) => s.queueDepth);
+  return { status, orchestratorHealth, activeTurnId, orchestratorSessionId, queueDepth };
 }

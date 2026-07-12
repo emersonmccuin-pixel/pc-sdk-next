@@ -42,18 +42,18 @@ test('rev change between turns re-mints the runtime with resume; stable rev reus
   const session = svc.ensureActiveSession();
 
   // Turn 1 mints runtime #1.
-  svc.handleSend('one', 'cm1');
+  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'one', clientMessageId: 'cm1' });
   await until(() => terminalCount(session.id) === 1);
   assert.equal(minted.length, 1);
 
   // Turn 2, same rev — no re-mint.
-  svc.handleSend('two', 'cm2');
+  svc.handleSend({ type: 'send', commandId: 'cmd2', sessionId: session.id, text: 'two', clientMessageId: 'cm2' });
   await until(() => terminalCount(session.id) === 2);
   assert.equal(minted.length, 1, 'stable rev must reuse the live runtime session');
 
   // Rev bump (prompt edit) — turn 3 re-mints, resuming the native session.
   rev = 2;
-  svc.handleSend('three', 'cm3');
+  svc.handleSend({ type: 'send', commandId: 'cmd3', sessionId: session.id, text: 'three', clientMessageId: 'cm3' });
   await until(() => terminalCount(session.id) === 3);
   assert.equal(minted.length, 2, 'rev change must re-mint the runtime session');
   assert.equal(
@@ -77,9 +77,9 @@ test('no orchestratorRev dep → never re-mints (test/back-compat path)', async 
     },
   });
   const session = svc.ensureActiveSession();
-  svc.handleSend('one', 'cm1');
+  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'one', clientMessageId: 'cm1' });
   await until(() => terminalCount(session.id) === 1);
-  svc.handleSend('two', 'cm2');
+  svc.handleSend({ type: 'send', commandId: 'cmd2', sessionId: session.id, text: 'two', clientMessageId: 'cm2' });
   await until(() => terminalCount(session.id) === 2);
   assert.equal(mints, 1);
 });

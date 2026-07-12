@@ -64,14 +64,16 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
     const url = `ws://localhost:${server.port}/ws?projectId=${project.id}`;
 
     const c1 = connect(url);
-    // Connect snapshot lands in contract order, ending with send-queue-snapshot.
-    await c1.waitFor((f) => f.type === 'send-queue-snapshot');
+    // No app session exists yet; the initial state is an honest null baseline.
+    await c1.waitFor((f) => f.type === 'orchestrator-state');
 
-    c1.ws.send(JSON.stringify({ type: 'send', text: 'hi', clientMessageId: 'cm1' }));
+    c1.ws.send(JSON.stringify({
+      type: 'send', commandId: 'cmd1', sessionId: null, text: 'hi', clientMessageId: 'cm1',
+    }));
 
-    // Positive send-ack to the sender.
-    const ack = await c1.waitFor((f) => f.type === 'send-ack');
-    assert.equal(ack.status, 'received');
+    // Sender-only receipt acknowledges the durable command, not delivery.
+    const ack = await c1.waitFor((f) => f.type === 'conversation-command-receipt');
+    assert.equal(ack.status, 'applied');
 
     // Turn runs to its idle bracket (last chat frame of the turn).
     await c1.waitFor((f) => f.type === 'conversation-event' && f.event?.kind === 'session-state' && f.event?.state === 'idle');
@@ -95,6 +97,36 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
     // Replay events are byte-identical to the live outbox frames, deltas included.
     assert.deepEqual(replay.events, liveChat);
     c2.close();
+  } finally {
+    await server?.close();
+  }
+});
+
+test('malformed known conversation command receives a correlated invalid receipt', async () => {
+  freshDb();
+  const project = newProject('Malformed command');
+  let server: RunningServer | null = null;
+  try {
+    server = await startServer({ mintSession: () => new FakeRuntime(), port: 0, runRecovery: false });
+    const client = connect(`ws://localhost:${server.port}/ws?projectId=${project.id}`);
+    await client.waitFor((frame) => frame.type === 'orchestrator-state');
+    client.ws.send(JSON.stringify({
+      type: 'edit-queued-message',
+      commandId: 'malformed-edit-1',
+      sessionId: 'session-1',
+      queueItemId: 'item-1',
+      expectedRevision: 0,
+      text: 'invalid revision',
+    }));
+    const receipt = await client.waitFor(
+      (frame) => frame.type === 'conversation-command-receipt' && frame.commandId === 'malformed-edit-1',
+    );
+    assert.equal(receipt.status, 'rejected');
+    assert.deepEqual(receipt.error, {
+      code: 'invalid',
+      message: 'conversation command failed strict validation',
+    });
+    client.close();
   } finally {
     await server?.close();
   }

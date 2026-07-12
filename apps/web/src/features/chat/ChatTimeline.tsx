@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef } from 'react';
 
 import type { ConversationEventFrame } from '@pc/contracts';
 import { buildRenderItems } from './chat-render';
-import { RenderItemView, AssistantBubble, UserBubble } from './Bubbles';
+import { RenderItemView, AssistantBubble } from './Bubbles';
 import { AskCard } from './AskCard';
 import { applyReplay, initialChatState, type ChatState } from './chat-reducer';
 import { sequenceToArray } from './persistent-sequence';
@@ -34,9 +34,9 @@ export function ChatTimeline({
   const liveTextLength = liveBuffers.reduce((length, buffer) => length + buffer.text.length, 0);
   useEffect(() => {
     if (pinnedRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [state.highWaterSequence, state.projectedThroughSequence, liveTextLength, state.optimistic.length]);
+  }, [state.highWaterSequence, state.projectedThroughSequence, liveTextLength]);
 
-  const empty = items.length === 0 && liveBuffers.length === 0 && state.optimistic.length === 0 && state.asks.length === 0;
+  const empty = items.length === 0 && liveBuffers.length === 0 && state.asks.length === 0;
 
   return (
     <div
@@ -63,15 +63,6 @@ export function ChatTimeline({
             <div key={`live-${b.streamId}`} className="flex flex-col gap-2">
               {b.text && <AssistantBubble text={b.text} live />}
             </div>
-          ))}
-
-        {!readOnly &&
-          state.optimistic.map((o) => (
-            <UserBubble
-              key={`opt-${o.clientMessageId}`}
-              text={o.text}
-              pending={o.status === 'failed' ? 'failed' : o.status === 'queued' ? 'queued' : 'sending'}
-            />
           ))}
 
         {!readOnly &&

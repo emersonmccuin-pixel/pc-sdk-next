@@ -23,6 +23,7 @@ export interface OrchestratorStateFrame {
   type: 'orchestrator-state';
   projectId: ULID;
   sessionId: string | null;
+  activeTurnId: string | null;
   health: OrchestratorHealth;
   queueDepth: number;
   failureReason: string | null;
@@ -42,9 +43,13 @@ export function isOrchestratorStateFrame(value: unknown): value is OrchestratorS
   return (
     isRecord(value) &&
     value.type === 'orchestrator-state' &&
-    (value.sessionId === null || typeof value.sessionId === 'string') &&
+    typeof value.projectId === 'string' &&
+    value.projectId.length > 0 &&
+    (value.sessionId === null || (typeof value.sessionId === 'string' && value.sessionId.length > 0)) &&
+    (value.activeTurnId === null || (typeof value.activeTurnId === 'string' && value.activeTurnId.length > 0)) &&
     isOrchestratorHealth(value.health) &&
-    typeof value.queueDepth === 'number' &&
+    Number.isSafeInteger(value.queueDepth) &&
+    (value.queueDepth as number) >= 0 &&
     (value.failureReason === null || typeof value.failureReason === 'string')
   );
 }

@@ -1,6 +1,6 @@
 # Event contract — PC-SDK Next
 
-As built after `CF-002`, 2026-07-11. This document records the implemented
+As built after `CF-003`, 2026-07-11. This document records the implemented
 browser wire and its persistence/publication semantics. The executable source
 is `packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.
@@ -15,7 +15,9 @@ owned by `docs/architecture/chat-communications.md`.
   insertion are one SQLite transaction.
 - The dedicated conversation relay is the only live-publication path. It fans
   an immutable committed event before marking its outbox row relayed; a crash
-  between those steps intentionally causes an exact redelivery.
+  between those steps intentionally causes an exact redelivery. One throwing
+  socket is removed without poisoning durable work or other tabs; reconnect
+  replay heals that client from database truth.
 - Live delivery, active-session replay, and past-session HTTP reads all use the
   same row-to-frame mapper and the same browser projector.
 - Sequence is authoritative. Timestamps are display metadata and socket arrival
@@ -34,12 +36,20 @@ order:
 
 1. `session-changed`
 2. `orchestrator-state`
-3. `session-replay`
-4. `send-queue-snapshot`
+3. `session-replay` when an active session exists
+4. `send-queue-snapshot` when an active session exists
 
 The client then subscribes to the independent resource cursor. Heartbeat and
 reconnect behavior are unchanged: `client-ping`/`server-pong`, bounded backoff,
 and reconnect on visibility, focus, or network recovery.
+
+The production composition root keeps all conversation queue drains behind a
+one-way readiness gate while the listener is observable but dispatch routes and
+the MCP initialization attempt are still starting. Sends received in that
+window commit durably and receive their sender receipt, but no runtime is
+minted until readiness releases both existing services and recovered live-
+project queues. Deleted projects and deleted/inactive sessions are never boot
+feeders.
 
 ## Channel 1 — canonical conversation events
 
@@ -109,16 +119,26 @@ type ChatEvent =
   | { kind: 'agent-envelope'; runId: ULID; agentName: string
       pendingAskId?: ULID; status: 'waiting' | 'done' | 'failed'
       summary: string; detail: string; envelope: string }
+  | { kind: 'send-state'; queueRevision: number; item: SendQueueItem }
+  | { kind: 'interrupt-state'; requestId: string; targetTurnId: string
+      replacementQueueItemId: string | null
+      state: 'requested' | 'confirmed' | 'failed'
+      terminalEventId: string | null
+      result: 'aborted' | 'completed' | 'turn-failed' | 'recovered' | null
+      failure: { code: string; message: string } | null }
   | { kind: 'retract'; streamIds: string[] }
 ```
 
 The canonical `activity` family is reserved for the next safe-activity slice;
 there is no private-reasoning payload in the public union. Tool and activity
-lifecycle enrichment remains explicitly outside CF-001.
+lifecycle enrichment remains explicitly outside CF-003.
 
 Every turn ends in exactly one `turn-end` or `turn-failed`. A runtime error,
 abort, thrown stream, or stream that closes without a terminal result receives
-a typed `turn-failed` event rather than silence.
+a typed `turn-failed` event rather than silence. Exception text is never abort
+evidence: thrown/query-loop errors are `internal`/`error`. The Claude adapter
+maps only the installed SDK's exact `terminal_reason` values
+`aborted_streaming` and `aborted_tools` to the provider-neutral aborted outcome.
 
 ### Visible streaming payloads
 
@@ -139,7 +159,7 @@ The server assigns a monotonic `deltaIndex` per canonical stream. There is no
 
 ### Persistence and relay
 
-The conversation component owns three tables:
+The canonical event path owns three tables:
 
 - `conversation_sequences`: one next-sequence cursor per conversation;
 - `conversation_events`: immutable canonical rows and projection state;
@@ -156,6 +176,13 @@ conversation cursors and already-relayed historical outbox entries, rewrites
 legacy retraction references to opaque canonical legacy stream IDs, drops the
 old provider-named identifier column, and retains prior `thinking` rows only as
 `legacy-hidden` data.
+
+Migration `0010_durable_send_control.sql` adds conversation-owned queue heads,
+items, immutable content revisions, active-turn rows, interrupt requests, and
+idempotent command receipts. A queue or interrupt transition calls the same
+event/outbox insert inside its SQLite transaction, so its DB truth and
+canonical notification cannot diverge. A partial unique terminal index keeps
+one `turn-end` or `turn-failed` row per modern turn.
 
 ### Browser projection
 
@@ -212,31 +239,84 @@ Past-session HTTP uses
 
 ### Send, queue, ask, and session control
 
-Client commands and control frames remain:
+Conversation commands carry an explicit idempotency identity and expected app
+session. Edit/remove use compare-and-swap revisions. Interrupts target one exact
+active turn; the request ID is also the command ID.
 
 ```ts
-{ type: 'send'; text: string; clientMessageId: string }
-{ type: 'interrupt' }
+{ type: 'send'; commandId: string; sessionId: string | null
+  text: string; clientMessageId: string }
+{ type: 'edit-queued-message'; commandId: string; sessionId: string
+  queueItemId: string; expectedRevision: number; text: string }
+{ type: 'remove-queued-message'; commandId: string; sessionId: string
+  queueItemId: string; expectedRevision: number }
+{ type: 'interrupt'; requestId: string; sessionId: string; targetTurnId: string }
+{ type: 'interrupt-and-send'; requestId: string; sessionId: string
+  targetTurnId: string
+  replacement:
+    | { kind: 'new'; clientMessageId: string; text: string }
+    | { kind: 'queued'; queueItemId: string; expectedRevision: number } }
 { type: 'ask-reply'; askId: string; answer: string }
 { type: 'subscribe'; lastVersion?: string }
 { type: 'client-ping'; nonce: string; sentAt: number }
 
-{ type: 'send-ack'; projectId: ULID; clientMessageId: string; ok: boolean
-  status: 'received' | 'queued' | 'invalid' | 'error'; error?: string }
+{ type: 'conversation-command-receipt'; projectId: ULID
+  sessionId: string | null; commandId: string
+  command: 'send' | 'edit-queued-message' | 'remove-queued-message'
+    | 'interrupt' | 'interrupt-and-send'
+  status: 'applied' | 'duplicate' | 'rejected'
+  queueItemId?: string; revision?: number; interruptRequestId?: string
+  error: { code: string; message: string; currentRevision?: number } | null }
 
 { type: 'send-queue-snapshot'; projectId: ULID; sessionId: string
-  items: Array<{ id: ULID; clientMessageId: string; text: string
-    status: 'queued' | 'delivering' | 'delivered' | 'failed' | 'cancelled'
-    failureReason: string | null; createdAt: number; updatedAt: number }> }
+  queueRevision: number
+  items: Array<{ id: ULID; clientMessageId: string
+    origin: 'user' | 'agent-envelope'; enqueuePosition: number
+    revision: number; deliveryRevision: number | null; text: string
+    status: 'queued' | 'delivering' | 'failed'
+    interruptRequestId: string | null; failureReason: string | null
+    createdAt: number; updatedAt: number }> }
 
 { type: 'ask'; projectId: ULID; askId: ULID; sessionId: string | null
   toolName: string; toolUseId: string; toolInput: unknown }
 ```
 
-The `clientMessageId` on the canonical user event is the primary optimistic-send
-reconciliation key. Queue snapshots are still process-memory projections in
-this as-built version; durable queue revisions and positive interrupt receipts
-belong to the next conversation slice and are not claimed here.
+The command receipt is sender-only transport feedback. Non-rejected receipts
+must carry their command-specific durable identities; canonical `send-state`
+and `interrupt-state` events plus a DB-derived reconnect snapshot remain the
+projection authority. Snapshot identities, client IDs, and FIFO positions are
+unique, and lower queue revisions never overwrite a newer browser projection.
+
+FIFO position never changes on edit. Claiming the head atomically freezes its
+delivery revision, creates the one active turn, and appends `send-state`, the
+canonical user or typed agent-envelope event, and `session-state: running`
+before provider work begins. Terminal settlement atomically appends the one
+turn terminal, queue outcome, correlated interrupt outcome, and idle state.
+Restart marks an uncertain delivering row failed and never re-sends it; queued
+rows survive and drain without a connected browser. A failed interrupt-linked
+replacement retains its request identity and failure evidence but is explicitly
+removable; it can never be claimed.
+
+`runtime.interrupt()` resolving means only that the native command was
+accepted. Only a correlated `turn-failed { source: 'abort' }` terminal confirms
+the durable interrupt request. A normal/error/recovered terminal fails the
+request, and a linked replacement remains unclaimable unless confirmation is
+positive. Exact duplicate commands return the existing receipt without
+repeating the native side effect. The committed sender receipt returns before
+the native call. A 15-second watchdog turns missing acceptance/terminal evidence
+into durable `runtime-interrupt-inconclusive` failure, blocks another native
+attempt for that target turn, and quarantines/disposes the runtime before a
+successor can start. Service shutdown fails a pending request before runtime
+disposal, so teardown cannot manufacture a positive abort receipt.
+
+Starting, resuming, or account-switching an app session atomically cancels the
+old undelivered FIFO, ends the old active row, and creates/reactivates the target
+row; account settings join that same transaction. Project deletion refuses an
+active turn, otherwise cancels the FIFO, ends the session, and soft-deletes the
+project atomically. Until immutable runtime/account stamps land, an account
+switch marks all prior sessions non-resumable: their transcripts remain
+viewable, while native continuation under the wrong credential home is blocked
+and visibly labelled.
 
 Session lifecycle remains app-owned:
 
@@ -244,7 +324,8 @@ Session lifecycle remains app-owned:
 { type: 'session-changed'; projectId: ULID
   transition: 'new-session' | 'resume-session'
   session: { id: string; projectId: ULID; model: string | null
-    title: string | null; status: 'active' | 'ended'; startedAt: number } | null }
+    title: string | null; status: 'active' | 'ended'
+    resumable: boolean; startedAt: number } | null }
 ```
 
 ## Channel 2 — resource events
@@ -293,6 +374,7 @@ Orchestrator health remains latest-wins process state:
 
 ```ts
 { type: 'orchestrator-state'; projectId: ULID; sessionId: string | null
+  activeTurnId: string | null
   health: 'idle' | 'starting' | 'busy' | 'failed'
   queueDepth: number; failureReason: string | null }
 ```
@@ -333,11 +415,23 @@ a conversation message identifier.
    terminal reasons, and private-reasoning render paths are rejected from
    canonical contract/browser source by guard tests.
 9. Unknown resource entities fail the closed-union contract.
+10. Queue admission, edit/remove, claim, terminal settlement, cancellation, and
+    interrupt transitions commit with their canonical event/outbox rows.
+11. A delivery revision is immutable after claim; a stale edit/remove CAS
+    writes nothing.
+12. Native interrupt command completion is not confirmation. Only the exact
+    target turn's abort terminal releases an interrupt-linked replacement.
+13. Reconnect snapshots and canonical queue events converge by monotonic queue
+    revision; duplicate item/client/FIFO identities fail the inbound guard.
+14. Boot admission may persist work before composition readiness, but it cannot
+    mint a runtime or begin provider work before the one-way readiness receipt.
+15. Timeout, shutdown, socket failure, exception text, and an unrelated terminal
+    never confirm interruption or permit a second uncertain native attempt.
+16. Session/account/project lifecycle transitions either commit their queue and
+    session effects together or preserve the complete prior state.
 
 ## Deliberately unfinished boundaries
 
-- durable send queue, edit/remove revisions, and restart recovery;
-- positive interrupt receipts and interrupt-and-send sequencing;
 - safe operational activity and complete tool lifecycle families;
 - immutable runtime/account/model/effort app-session stamps;
 - provider-neutral context and usage observations;

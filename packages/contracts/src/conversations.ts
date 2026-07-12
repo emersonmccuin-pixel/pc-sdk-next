@@ -25,6 +25,7 @@ export const CONVERSATION_SESSION_ENDED_REASONS = [
   'user_ended',
   'provider_error',
   'provider_session_lost',
+  'account_switched',
   'pty_exit',
   'archived',
 ] as const;

@@ -1,6 +1,14 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { ConversationFamily, ResourceEntity } from '@pc/contracts';
+import type {
+  ConversationCommandKind,
+  ConversationCommandStatus,
+  ConversationFamily,
+  QueuedAgentEnvelope,
+  ResourceEntity,
+  SendQueueItemOrigin,
+  SendQueueItemStatus,
+} from '@pc/contracts';
 import type {
   AgentEffort,
   AgentModel,
@@ -431,6 +439,145 @@ export const conversationOutbox = sqliteTable(
     uniqueIndex('conversation_outbox_event_idx').on(t.eventId),
     index('conversation_outbox_relay_idx').on(t.relayedAt, t.outboxSequence),
   ],
+);
+
+/** Monotonic FIFO position and snapshot revision for one app session queue. */
+export const conversationQueueHeads = sqliteTable('conversation_queue_heads', {
+  sessionId: text('session_id')
+    .primaryKey()
+    .references(() => orchestratorSessions.id),
+  projectId: text('project_id').notNull().$type<ULID>(),
+  conversationId: text('conversation_id').notNull(),
+  nextPosition: integer('next_position').notNull().default(1),
+  queueRevision: integer('queue_revision').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/** Durable queue head row. Content lives in append-only revisions below. */
+export const conversationQueueItems = sqliteTable(
+  'conversation_queue_items',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    turnId: text('turn_id').notNull().unique(),
+    projectId: text('project_id').notNull().$type<ULID>(),
+    conversationId: text('conversation_id').notNull(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => orchestratorSessions.id),
+    clientMessageId: text('client_message_id').notNull(),
+    origin: text('origin').notNull().$type<SendQueueItemOrigin>(),
+    status: text('status').notNull().$type<SendQueueItemStatus>(),
+    enqueuePosition: integer('enqueue_position').notNull(),
+    currentRevision: integer('current_revision').notNull(),
+    deliveryRevision: integer('delivery_revision'),
+    interruptRequestId: text('interrupt_request_id'),
+    failureReason: text('failure_reason'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('conversation_queue_items_session_client_idx').on(t.sessionId, t.clientMessageId),
+    uniqueIndex('conversation_queue_items_session_position_idx').on(t.sessionId, t.enqueuePosition),
+    uniqueIndex('conversation_queue_items_session_delivering_idx')
+      .on(t.sessionId)
+      .where(sql`status = 'delivering'`),
+    index('conversation_queue_items_fifo_idx').on(t.sessionId, t.status, t.enqueuePosition),
+    index('conversation_queue_items_interrupt_idx').on(t.interruptRequestId),
+  ],
+);
+
+/** Immutable content revisions. Agent metadata keeps raw envelope text out of
+ * public queue DTOs while retaining enough typed data for restart delivery. */
+export const conversationQueueRevisions = sqliteTable(
+  'conversation_queue_revisions',
+  {
+    queueItemId: text('queue_item_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => conversationQueueItems.id),
+    revision: integer('revision').notNull(),
+    text: text('text').notNull(),
+    agentEnvelope: text('agent_envelope', { mode: 'json' }).$type<QueuedAgentEnvelope | null>(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.queueItemId, t.revision] })],
+);
+
+/** Durable one-active-turn guard. Terminal event identity is positive proof. */
+export const conversationTurns = sqliteTable(
+  'conversation_turns',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id').notNull().$type<ULID>(),
+    conversationId: text('conversation_id').notNull(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => orchestratorSessions.id),
+    queueItemId: text('queue_item_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => conversationQueueItems.id),
+    status: text('status').notNull().$type<'active' | 'ended'>(),
+    terminalEventId: text('terminal_event_id'),
+    terminalOutcome: text('terminal_outcome').$type<'completed' | 'turn-failed' | 'aborted' | 'recovered' | null>(),
+    startedAt: integer('started_at').notNull(),
+    endedAt: integer('ended_at'),
+  },
+  (t) => [
+    uniqueIndex('conversation_turns_active_session_idx')
+      .on(t.sessionId)
+      .where(sql`status = 'active'`),
+    index('conversation_turns_queue_item_idx').on(t.queueItemId),
+  ],
+);
+
+/** App-owned interruption lifecycle. Runtime command completion alone never
+ * confirms this row; the correlated aborted terminal does. */
+export const turnInterruptRequests = sqliteTable(
+  'turn_interrupt_requests',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id').notNull().$type<ULID>(),
+    conversationId: text('conversation_id').notNull(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => orchestratorSessions.id),
+    targetTurnId: text('target_turn_id').notNull(),
+    replacementQueueItemId: text('replacement_queue_item_id').$type<ULID | null>(),
+    status: text('status').notNull().$type<'requested' | 'confirmed' | 'failed'>(),
+    terminalEventId: text('terminal_event_id'),
+    result: text('result').$type<'aborted' | 'completed' | 'turn-failed' | 'recovered' | null>(),
+    failureCode: text('failure_code'),
+    failureReason: text('failure_reason'),
+    requestedAt: integer('requested_at').notNull(),
+    settledAt: integer('settled_at'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    index('turn_interrupt_requests_target_idx').on(t.sessionId, t.targetTurnId, t.status),
+    index('turn_interrupt_requests_replacement_idx').on(t.replacementQueueItemId),
+  ],
+);
+
+/** Durable idempotency receipt for every user conversation command. */
+export const conversationCommands = sqliteTable(
+  'conversation_commands',
+  {
+    commandId: text('command_id').primaryKey(),
+    projectId: text('project_id').notNull().$type<ULID>(),
+    sessionId: text('session_id'),
+    commandKind: text('command_kind').notNull().$type<ConversationCommandKind>(),
+    fingerprint: text('fingerprint').notNull(),
+    status: text('status').notNull().$type<Exclude<ConversationCommandStatus, 'duplicate'>>(),
+    queueItemId: text('queue_item_id').$type<ULID | null>(),
+    revision: integer('revision'),
+    interruptRequestId: text('interrupt_request_id'),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    currentRevision: integer('current_revision'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [index('conversation_commands_session_idx').on(t.sessionId, t.createdAt)],
 );
 
 /** A durable mailbox message. `idempotency_key` dedupes replayed sources. */

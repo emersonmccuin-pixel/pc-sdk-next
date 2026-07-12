@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import type { Project } from '@/features/projects/client';
 import type { ConversationEventFrame } from '@pc/contracts';
 import { useChatStore } from '@/state/chat-store';
+import { useConnectionStore } from '@/state/connection';
 import { sessionsApi } from '@/state/sessions';
 import { useViewingSession } from '@/store/viewing-session';
 import { randomId, type SocketApi } from '@/lib/ws-client';
@@ -19,6 +20,7 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
   const state = useChatStore((s) => s.state);
   const addOptimistic = useChatStore((s) => s.addOptimistic);
   const answerAsk = useChatStore((s) => s.answerAsk);
+  const activeTurnId = useConnectionStore((s) => s.activeTurnId);
   const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
   const setViewing = useViewingSession((s) => s.setViewing);
 
@@ -34,12 +36,87 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
 
   const busy = state.aggregates.sessionState === 'running';
 
-  function handleSend(text: string): boolean {
-    if (!api) return false;
-    const clientMessageId = randomId();
-    const ok = api.sendText(text, clientMessageId);
-    if (ok) addOptimistic(clientMessageId, text);
-    return ok;
+  function handleSend(
+    text: string,
+    retry?: { commandId: string; clientMessageId: string; sessionId: string | null },
+  ): { commandId: string; clientMessageId: string; submitted: boolean } {
+    const commandId = retry?.commandId ?? randomId();
+    const clientMessageId = retry?.clientMessageId ?? randomId();
+    const targetSessionId = retry ? retry.sessionId : state.sessionId;
+    if (retry && targetSessionId !== state.sessionId) {
+      return { commandId, clientMessageId, submitted: false };
+    }
+    if (!api) return { commandId, clientMessageId, submitted: false };
+    const ok = api.sendText({ commandId, sessionId: targetSessionId, text, clientMessageId });
+    if (ok) addOptimistic(commandId, clientMessageId, text);
+    return { commandId, clientMessageId, submitted: ok };
+  }
+
+  function handleEdit(queueItemId: string, expectedRevision: number, text: string): string | null {
+    if (!api || !state.sessionId) return null;
+    const commandId = randomId();
+    return api.editQueued({
+      commandId,
+      sessionId: state.sessionId,
+      queueItemId,
+      expectedRevision,
+      text,
+    }) ? commandId : null;
+  }
+
+  function handleRemove(queueItemId: string, expectedRevision: number): string | null {
+    if (!api || !state.sessionId) return null;
+    const commandId = randomId();
+    return api.removeQueued({
+      commandId,
+      sessionId: state.sessionId,
+      queueItemId,
+      expectedRevision,
+    }) ? commandId : null;
+  }
+
+  function handleInterrupt(input: {
+    requestId: string;
+    sessionId: string;
+    targetTurnId: string;
+  }): boolean {
+    if (!api || input.sessionId !== state.sessionId) return false;
+    return api.interrupt(input);
+  }
+
+  function handleInterruptAndSend(
+    replacement:
+      | { kind: 'new'; text: string }
+      | { kind: 'queued'; queueItemId: string; expectedRevision: number },
+    identity?: {
+      requestId: string;
+      clientMessageId?: string;
+      sessionId: string;
+      targetTurnId: string;
+    },
+  ): { requestId: string; clientMessageId?: string } | null {
+    const targetSessionId = identity?.sessionId ?? state.sessionId;
+    const targetTurnId = identity?.targetTurnId ?? activeTurnId;
+    if (!api || !targetSessionId || !targetTurnId || targetSessionId !== state.sessionId) return null;
+    const requestId = identity?.requestId ?? randomId();
+    if (replacement.kind === 'new') {
+      const clientMessageId = identity?.clientMessageId ?? randomId();
+      const ok = api.interruptAndSend({
+        requestId,
+        sessionId: targetSessionId,
+        targetTurnId,
+        replacement: { kind: 'new', clientMessageId, text: replacement.text },
+      });
+      if (!ok) return null;
+      addOptimistic(requestId, clientMessageId, replacement.text);
+      return { requestId, clientMessageId };
+    }
+    return api.interruptAndSend({
+      requestId,
+      sessionId: targetSessionId,
+      targetTurnId,
+      replacement,
+    }) ? { requestId } : null;
   }
 
   function handleAskReply(askId: string, answer: string) {
@@ -51,12 +128,26 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
     <>
       <ChatTimeline state={state} onAskReply={handleAskReply} />
       <ChatComposer
+        key={project.id}
         projectId={project.id}
         historyKey={project.slug}
         onSend={handleSend}
-        onInterrupt={() => api?.interrupt() ?? false}
+        onEdit={handleEdit}
+        onRemove={handleRemove}
+        onInterrupt={handleInterrupt}
+        onInterruptAndSend={handleInterruptAndSend}
         sessionState={state.aggregates.sessionState}
         busy={busy}
+        sessionId={state.sessionId}
+        sessionContextReady={state.sessionContextReady}
+        activeTurnId={activeTurnId}
+        sendQueue={state.sendQueue}
+        optimistic={state.optimistic}
+        acceptedClientMessageIds={state.acceptedClientMessageIds}
+        cancelledClientMessages={state.cancelledClientMessages}
+        interrupts={state.interrupts}
+        latestInterruptRequestId={state.latestInterruptRequestId}
+        commandReceipts={state.commandReceipts}
       />
     </>
   );
