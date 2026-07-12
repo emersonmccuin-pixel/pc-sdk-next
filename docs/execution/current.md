@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-003 guarded landing and teardown.
+Updated: 2026-07-12 after RS-004 definition and startup preparation.
 
 ## Repository
 
@@ -76,26 +76,38 @@ Updated: 2026-07-12 after RS-003 guarded landing and teardown.
 - RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
 - RS-003 feature worktree: removed after positive landing/tree proof; verified
   dependency residue was removed
+- RS-003 closeout landing:
+  `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- Active slice: `docs/execution/slices/RS-004.md`
+- RS-004 base: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 feature branch: `codex/rs-004-quota-observations`
+- RS-004 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
 
 ## Status
 
 RS-001 through RS-003 are complete, guarded-landed, pushed, and torn down.
-RS-003 landed as `9fde98518aca92742040ed8e0e82a4825f258f5a`.
+RS-003 closeout landed as `6a0beb90a7b730dbee94181f012c0918f464af8b`.
 Exact specialist snapshots, selection/attempt/native identity, continuation/
 revival/reviewer behavior, legacy quarantine, safe browser/MCP projection,
 landing/reviewer races, and recovery CAS are covered. Full pre- and post-merge
 `pnpm ci:check`, production web build, isolated browser QA, hostile review, and
-the 50-path/provider-boundary audit passed. Quota normalization is next and
-there is no user-direction blocker.
+the 50-path/provider-boundary audit passed.
+
+RS-004 is active from that clean pushed base. Its read-only startup audits found
+that the inherited Claude-shaped quota cache uses the prunable live outbox as
+truth, collides equal account IDs across runtimes, parses Anthropic credentials
+and payloads outside the adapter boundary, conflates partial and complete
+observations, and admits malformed HTTP/websocket state. The bounded slice now
+defines a durable provider-neutral replacement; no product-direction blocker
+or live provider call is required.
 
 ## Next safe action
 
-Define RS-004 as the bounded provider-neutral subscription-quota slice from
-clean pushed base `9fde98518aca92742040ed8e0e82a4825f258f5a`.
-Replace Claude-shaped quota DTO/source assumptions with explicit runtime/account
-attribution, source semantics (`used`/`remaining`), normalized used fraction,
-window, observation time, confidence, and staleness. Preserve context as a
-separate resource and do not add Codex or selector UI in the same slice.
+Implement RS-004's canonical quota contracts and durable state/outbox component,
+then move Claude acquisition behind the adapter seam and wire the generic
+scheduler and strict browser projection. Preserve context and per-turn token
+usage as separate families; do not add Codex, selector UI, routing, or billing.
 
 ## Startup checks
 
@@ -106,9 +118,10 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-No implementation worktree is active after RS-003 teardown. Create a fresh
-`codex/rs-004-*` sibling worktree from the pushed landing merge before any
-tracked mutation; keep the main checkout read-only.
+The isolated RS-004 worktree is active and prepared. Locked offline install
+reused 471/471 packages with zero downloads and baseline `pnpm typecheck`
+passed. Keep the main checkout read-only; all tracked work stays in the RS-004
+worktree until the sealed/guarded landing procedure.
 
 ## Known blockers
 

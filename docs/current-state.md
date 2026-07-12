@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-003 guarded landing and teardown.
+Last updated: 2026-07-12 after RS-004 definition and startup preparation.
 
 ## Preserved baseline
 
@@ -67,6 +67,11 @@ only in PC-SDK Next.
 - RS-003 landed tree: `86340e89f86827d2296b2fdb8428ac06d1888555`
 - RS-003 feature worktree: removed after positive sealed/feature ancestry and
   exact tree-equality proof; verified dependency residue was removed
+- RS-003 closeout landing: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 base: `6a0beb90a7b730dbee94181f012c0918f464af8b`
+- RS-004 feature branch: `codex/rs-004-quota-observations`
+- RS-004 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
 
 Isolation defaults in the planning slice:
 
@@ -181,6 +186,21 @@ and pushed to `origin/main`. Sealed and feature ancestry plus exact tree equalit
 were proven, the post-merge workspace gate passed, and the feature worktree and
 verified residue were removed. Quota normalization is the next safe slice and
 needs no product direction.
+
+## Active N3 subscription-quota slice
+
+`RS-004` is defined and prepared from clean pushed base
+`6a0beb90a7b730dbee94181f012c0918f464af8b`. Locked offline preparation reused
+all 471 packages with zero downloads and baseline workspace typecheck passed.
+Three independent read-only audits established that the inherited quota path
+uses the prunable live outbox as product truth, keys by account without runtime,
+parses Anthropic credentials/native payloads outside the adapter, conflates
+partial/full and fresh/stale observations, and trusts malformed HTTP/websocket
+payloads. The active slice replaces that path with durable atomic DB/outbox
+truth, strict adapter observations, app-owned used/remaining normalization,
+runtime/account attribution, per-window freshness, revisioned transport, and an
+honest dynamic browser projection. Context and per-turn token usage stay
+separate. No product direction or live provider action is currently required.
 
 ## Known architectural gaps
 
