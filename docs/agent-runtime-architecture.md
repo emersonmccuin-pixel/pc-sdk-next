@@ -113,6 +113,7 @@ interface AgentRuntimeAdapter {
 
 interface RuntimeSession {
   sendTurn(text: string): AsyncIterable<RuntimeEvent>;
+  observeContext(): Promise<ContextObservation>;
   interrupt(): Promise<void>; // command acceptance, not abort confirmation
   dispose(): Promise<void>;
 }
@@ -144,7 +145,10 @@ silent fallback or invented context/usage precision.
 - Current state: `ClaudeRuntimeAdapter` is the only Claude SDK importer. It
   provides account-scoped capabilities/model discovery, revalidates exact
   model/effort selection before create/resume, emits correlated positive native
-  session receipts, and fails closed on missing or mismatched resume identity.
+  session receipts, fails closed on missing or mismatched resume identity, and
+  maps the pinned SDK's `getContextUsage()` control receipt into strict
+  provider-neutral exact/derived context observations. Native category, path,
+  tool, percentage, and error detail stays inside the adapter.
   Orchestrator app sessions persist the complete immutable selection and route
   every remint/resume through it. Specialist-wide immutable effort/attempt
   persistence remains a later N3 slice. Specialist dispatch also still imports
@@ -239,19 +243,42 @@ runtime/account attribution. The UI always presents consumed/used; unavailable
 or stale data stays explicit. Billing remains subscription-first; any API-billed
 adapter requires an explicit product decision and visibly separate semantics.
 
-Session context is a separate observation family. An adapter reports exact,
-approximate, compacted, or unavailable context state. Per-turn token usage is
-not sufficient evidence to manufacture cumulative context fullness.
+Session context is a separate observation family. `RuntimeSession` exposes one
+required observation command and capabilities separately state supported
+current-use confidences and compaction evidence. The Claude adapter validates
+the complete control receipt; a correlated latest primary model iteration (or
+strict direct usage fallback) supplies the exact input-plus-cache numerator,
+while an absent correlation uses the validated control total as derived.
+Malformed non-null evidence or malformed assistant ownership fails closed. A
+native compaction boundary clears pre-boundary exact evidence before any
+out-of-turn routing return; a later valid primary assistant may establish exact
+evidence again. Per-turn result usage is never summed to manufacture cumulative
+context fullness.
+
+The orchestrator persists one observation after each normally settled eligible
+turn on the canonical conversation sequence/outbox. Terminal and idle state are
+authoritative first; the same session's FIFO successor waits only for the
+bounded observation and commit. Timeout is explicit, and disposal, remint,
+quarantine, or session replacement fences late writes. Browser replay derives
+fresh/stale/compacted presentation and computes percentages only from accepted
+used/usable counts. Any positively attributed frame from a different turn, or
+compaction/context-projection evidence still buffered above a sequence gap,
+stales the prior observation through bounded immutable indexes. Once later-turn
+evidence supersedes a turn identity, a late frame cannot roll the context epoch
+back or re-authorize that turn. Subscription quota remains a separate resource
+family.
 
 ## Migration and gates
 
 The inherited Phase 3 began with a behavior-preserving boundary extraction.
 PC-SDK Next continues the remaining migration under master-plan phases N3/N5.
 RS-001 completed the canonical selection/capability types, Claude discovery,
-and immutable orchestrator create/remint/resume path. Remaining gates are:
+and immutable orchestrator create/remint/resume path. RS-002 added honest
+Claude-backed orchestrator context observation and projection. Remaining gates
+are:
 
 1. finish specialist revision/run selection and durable attempt stamps;
-2. add provider-neutral context and quota observations;
+2. add provider-neutral subscription-quota observations and source semantics;
 3. implement a Codex subscription spike against the same contract;
 4. add `CodexRuntimeAdapter` and run the same conformance suite;
 5. expose deliberate runtime/account/model/effort selection controls;

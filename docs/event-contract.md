@@ -1,7 +1,7 @@
 # Event contract — PC-SDK Next
 
-As built in the active `RS-001` feature worktree after its full gate and pending
-landing, 2026-07-12. This document records the implemented browser wire and its
+As built in the active `RS-002` feature worktree, 2026-07-12. This document
+records the implemented browser wire and its
 persistence/publication semantics. The executable source is
 `packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.
@@ -141,14 +141,20 @@ type ChatEvent =
       outcome: { reason: 'tool-error' | 'turn-ended' | 'runtime-lost' } | null }
   | { kind: 'usage'; inputTokens: number; outputTokens: number
       cacheCreationTokens: number; cacheReadTokens: number; model: string | null }
+  | { kind: 'context-observation'
+      confidence: 'exact' | 'derived' | 'approximate'
+      usedTokens: number; usableTokens: number; contextWindowTokens: number }
+  | { kind: 'context-observation'; confidence: 'unavailable'
+      reason: 'unsupported' | 'runtime-unavailable'
+        | 'invalid-observation' | 'observation-timeout' }
   | { kind: 'turn-duration'; durationMs: number | null }
   | { kind: 'session-state'; state: 'idle' | 'running' | 'requires_action'
       permissionMode: string | null }
   | { kind: 'system'; subtype: string
       level: 'info' | 'notice' | 'warning' | 'error'
       message: string }
-  | { kind: 'compaction'; trigger: 'manual' | 'auto'
-      preTokens: number; postTokens: number | null }
+  | { kind: 'compaction'; trigger: 'manual' | 'auto' | 'unknown'
+      preTokens: number | null; postTokens: number | null }
   | { kind: 'sidechain'; role: 'user' | 'assistant' | 'tool'; text: string }
   | { kind: 'agent-dispatch'; runId: ULID; agentName: string }
   | { kind: 'agent-envelope'; runId: ULID; agentName: string
@@ -186,6 +192,18 @@ a typed `turn-failed` event rather than silence. Exception text is never abort
 evidence: thrown/query-loop errors are `internal`/`error`. The Claude adapter
 maps only the installed SDK's exact `terminal_reason` values
 `aborted_streaming` and `aborted_tools` to the provider-neutral aborted outcome.
+
+One post-terminal `context-observation` may follow a normally settled eligible
+orchestrator turn. Available observations are closed safe-integer snapshots with
+`0 <= usedTokens <= usableTokens <= contextWindowTokens`; unavailable events
+carry no counts. Persistence requires the exact project/conversation/session/
+turn to have a visible terminal and rejects a second observation before sequence
+allocation. The service publishes terminal and idle state first, then holds only
+that session's FIFO successor for the bounded observation and durable commit.
+Timeout or runtime failure becomes typed unavailability. A DB failure retries
+without rewriting the terminal or changing the captured observation receipt
+time; disposal, runtime invalidation, or session replacement releases the
+obsolete wait and permits no late write.
 
 ### Visible streaming payloads
 
@@ -278,6 +296,19 @@ the full prior history inside the projector.
 - Approval cards become actionable only when session/call/name/request identity
   matches a live canonical `approval-needed` state. Out-of-order cards wait
   ephemerally for that evidence; terminal/idle/replay resets clear stale cards.
+- Context readiness is independent of queue/session readiness. A new/no-session
+  boundary is authoritative empty truth; a resumed session waits for valid
+  replay, and queue snapshots cannot authorize context. Any later frame with a
+  different non-empty turn identity, plus compaction or context-projection
+  evidence buffered above a sequence gap, makes prior evidence stale. The
+  projector tracks this with immutable pending summaries rather than rescanning
+  history. Pending/folded event-ID collisions invalidate context at receipt
+  time, and folded non-observation turn evidence prevents an older observation
+  from becoming current later. Superseded turn identities remain sticky, so a
+  late old-turn frame cannot roll the context epoch backward. Only a settled
+  latest-turn observation can become current; older, pre-terminal, or
+  second-per-turn observations fail closed. Only fresh available counts render
+  a browser-computed percentage.
 
 ### Session replay
 
@@ -506,6 +537,7 @@ native-to-canonical ID map and emits canonical runtime events:
 | sidechain block/delta/result | dropped from orchestrator chat |
 | result | usage/duration plus exactly one turn terminal |
 | requesting/retry/compaction | closed app-authored activity; numeric retry facts only |
+| `getContextUsage()` after a settled turn | exact/derived bounded context counts or typed unavailability; native category/path/tool/percentage details dropped |
 | arbitrary provider status/error prose | dropped or replaced with fixed app-authored notice |
 | supersession | `retract` with canonical stream IDs |
 | unknown native variant | dropped/logged by the adapter; loop continues |
@@ -578,6 +610,17 @@ later N3 boundary work.
     malformed, wrong-mode, wrong-selection, or conflicting evidence cannot bind
     or confirm native identity and never falls back to a clean start; invalid
     evidence for the current resume attempt may record `resume-failed`.
+24. A context observation requires a settled exact turn and is unique per turn.
+    The settled result cannot be rewritten by observation or persistence failure;
+    the same-session successor cannot start before observation persistence, while
+    disposal/session/runtime replacement fences and releases obsolete work.
+25. Context current-use and compaction capability truth is independent of
+    selection validity. Unsupported/unavailable context never selects another
+    runtime, model, account, behavior, or billing path.
+26. Compaction token edges are nullable non-negative safe integers. A compact
+    boundary clears any pre-boundary exact numerator even when it arrives after
+    the turn terminal; malformed assistant ownership cannot preserve earlier
+    exact evidence.
 
 ## Deliberately unfinished boundaries
 
@@ -586,7 +629,7 @@ later N3 boundary work.
   browser DTOs and of direct `CLAUDE_RUNTIME_ID` selection from specialist
   dispatch;
 - attributed cross-runtime handoff compilation;
-- provider-neutral context and usage observations;
+- provider-neutral subscription-quota observations and source semantics;
 - Codex adapter and conformance.
 
 Those are subsequent slices; none has a compatibility wire in this contract.

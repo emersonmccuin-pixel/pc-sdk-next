@@ -57,6 +57,16 @@ conformance, and the remaining cross-runtime behavior satisfy their full text.
 | USE-002 | accepted | Native observation semantics, window, timestamp, runtime/account attribution, staleness, and confidence remain available behind normalized presentation. |
 | USE-003 | accepted | Session context consumption and provider subscription quota are separate concepts and separate UI surfaces. |
 
+RS-002 verification receipt (2026-07-12): the Claude-backed orchestrator path
+implements `CTX-001` through `CTX-003` and the context subset of `RUN-007` with
+strict context/capability contracts, a positive post-terminal adapter
+observation, exact/derived/unavailable confidence, canonical event/outbox
+persistence, deterministic stale/compaction replay, and one shared live/history
+bar that renders no percentage without fresh available evidence. These rows
+remain `accepted`, not globally `verified`, until context conformance covers the
+remaining runtimes and specialist execution paths. Subscription quota remains a
+separate later slice.
+
 ## Conversation and chat
 
 | ID | Status | Requirement |
