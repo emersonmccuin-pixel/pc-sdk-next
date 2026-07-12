@@ -67,12 +67,71 @@ function queryObject(
   iterator: AsyncGenerator<SDKMessage, void>,
   models: ModelInfo[],
   close: () => void,
+  getContextUsage: () => Promise<unknown> = async () => ({
+    totalTokens: 0,
+    maxTokens: 100,
+    rawMaxTokens: 100,
+  }),
 ): Query {
   return Object.assign(iterator, {
     supportedModels: async () => models,
+    getContextUsage,
     interrupt: async () => { close(); return undefined; },
     close,
   }) as unknown as Query;
+}
+
+function completedSessionQuery(input: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  context: () => Promise<unknown>;
+  iterations?: unknown;
+  messageUsage?: unknown;
+  sidechainIterations?: unknown;
+  additionalMessages?: SDKMessage[];
+}): Query {
+  const stopped = gate();
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    if (typeof input.prompt !== 'string') await input.prompt[Symbol.asyncIterator]().next();
+    yield {
+      type: 'system', subtype: 'init', uuid: 'init-context', session_id: 'native-context',
+    } as unknown as SDKMessage;
+    yield {
+      type: 'assistant', uuid: 'assistant-primary', session_id: 'native-context',
+      parent_tool_use_id: null,
+      message: {
+        id: 'message-primary', content: [],
+        usage: input.messageUsage ?? { iterations: input.iterations ?? null },
+      },
+    } as unknown as SDKMessage;
+    if (input.sidechainIterations !== undefined) {
+      yield {
+        type: 'assistant', uuid: 'assistant-sidechain', session_id: 'native-context',
+        parent_tool_use_id: 'parent-tool',
+        message: {
+          id: 'message-sidechain', content: [],
+          usage: { iterations: input.sidechainIterations },
+        },
+      } as unknown as SDKMessage;
+    }
+    for (const message of input.additionalMessages ?? []) yield message;
+    yield {
+      type: 'result', subtype: 'success', is_error: false,
+      uuid: 'result-context', session_id: 'native-context',
+      usage: {
+        input_tokens: 1, output_tokens: 2,
+        cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      },
+      modelUsage: { opus: {} },
+    } as unknown as SDKMessage;
+    await stopped.promise;
+  }
+  return queryObject(messages(), MODELS, stopped.resolve, input.context);
+}
+
+async function runCompletedTurn(session: ClaudeRuntimeSession): Promise<RuntimeEvent[]> {
+  const events: RuntimeEvent[] = [];
+  for await (const event of session.sendTurn('context please')) events.push(event);
+  return events;
 }
 
 function discoveryQuery(models: ModelInfo[]): Query {
@@ -179,6 +238,482 @@ test('Claude session config requires an exact durable continuation attempt ident
   );
 });
 
+test('Claude context observation uses the latest primary iteration as the exact numerator', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'message', input_tokens: 40,
+        cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+      }],
+      sidechainIterations: [{
+        type: 'message', input_tokens: 90,
+        cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+      }],
+      context: async () => ({
+        totalTokens: 41, maxTokens: 100, rawMaxTokens: 200,
+        percentage: 99,
+        categories: [{ path: 'SECRET', tool: 'SECRET' }],
+      }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-context' });
+  assert.equal((await runCompletedTurn(session)).at(-1)?.type, 'result');
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'exact', usedTokens: 50, usableTokens: 100, contextWindowTokens: 200,
+  });
+  assert.equal(JSON.stringify(await session.observeContext()).includes('SECRET'), false);
+  await session.dispose();
+});
+
+test('Claude compaction invalidates prior exact evidence but preserves its runtime event', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'message', input_tokens: 40,
+        cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+      }],
+      additionalMessages: [{
+        type: 'system', subtype: 'compact_boundary', uuid: 'compact-context',
+        session_id: 'native-context',
+        compact_metadata: { trigger: 'auto', pre_tokens: 50, post_tokens: 20 },
+      } as unknown as SDKMessage],
+      context: async () => ({ totalTokens: 20, maxTokens: 100, rawMaxTokens: 200 }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-compacted' });
+  const events = await runCompletedTurn(session);
+  assert.equal(events.some((event) => event.type === 'compaction'), true);
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'derived', usedTokens: 20, usableTokens: 100, contextWindowTokens: 200,
+  });
+  await session.dispose();
+});
+
+test('Claude accepts valid primary evidence emitted after compaction as exact', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'message', input_tokens: 40,
+        cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+      }],
+      additionalMessages: [
+        {
+          type: 'system', subtype: 'compact_boundary', uuid: 'compact-before-primary',
+          session_id: 'native-context',
+          compact_metadata: { trigger: 'manual', pre_tokens: 50, post_tokens: 20 },
+        } as unknown as SDKMessage,
+        {
+          type: 'assistant', uuid: 'assistant-after-compact', session_id: 'native-context',
+          parent_tool_use_id: null,
+          message: {
+            id: 'message-after-compact', content: [],
+            usage: {
+              iterations: [{
+                type: 'message', input_tokens: 30,
+                cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+              }],
+            },
+          },
+        } as unknown as SDKMessage,
+      ],
+      context: async () => ({ totalTokens: 20, maxTokens: 100, rawMaxTokens: 200 }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-post-compact-primary' });
+  await runCompletedTurn(session);
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'exact', usedTokens: 30, usableTokens: 100, contextWindowTokens: 200,
+  });
+  await session.dispose();
+});
+
+test('Claude fails closed when malformed assistant ownership follows exact evidence', async () => {
+  for (const parentToolUseId of [undefined, '', 42]) {
+    const malformedAssistant = {
+      type: 'assistant', uuid: `assistant-malformed-parent-${String(parentToolUseId)}`,
+      session_id: 'native-context',
+      ...(parentToolUseId === undefined ? {} : { parent_tool_use_id: parentToolUseId }),
+      message: {
+        id: `message-malformed-parent-${String(parentToolUseId)}`, content: [],
+        usage: {
+          iterations: [{
+            type: 'message', input_tokens: 90,
+            cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+          }],
+        },
+      },
+    } as unknown as SDKMessage;
+    const session = new ClaudeRuntimeSession({
+      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      queryFactory: ({ prompt }) => completedSessionQuery({
+        prompt,
+        iterations: [{
+          type: 'message', input_tokens: 40,
+          cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+        }],
+        additionalMessages: [malformedAssistant],
+        context: async () => ({ totalTokens: 20, maxTokens: 100, rawMaxTokens: 200 }),
+      }),
+    });
+    await session.start({ appSessionId: `app-context-malformed-parent-${String(parentToolUseId)}` });
+    await runCompletedTurn(session);
+    assert.deepEqual(await session.observeContext(), {
+      confidence: 'unavailable', reason: 'invalid-observation',
+    });
+    await session.dispose();
+  }
+});
+
+test('Claude fences a pending context control from a late compact boundary', async () => {
+  const controlStarted = gate();
+  const releaseControl = gate();
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'message', input_tokens: 40,
+        cache_creation_input_tokens: 5, cache_read_input_tokens: 5,
+      }],
+      context: async () => {
+        controlStarted.resolve();
+        await releaseControl.promise;
+        return { totalTokens: 20, maxTokens: 100, rawMaxTokens: 200 };
+      },
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-late-compact' });
+  await runCompletedTurn(session);
+  const pending = session.observeContext();
+  await controlStarted.promise;
+  (session as unknown as { route(message: SDKMessage): void }).route({
+    type: 'system', subtype: 'compact_boundary', uuid: 'late-compact-context',
+    session_id: 'native-context',
+    compact_metadata: { trigger: 'auto', pre_tokens: 50, post_tokens: 20 },
+  } as unknown as SDKMessage);
+  releaseControl.resolve();
+  assert.deepEqual(await pending, {
+    confidence: 'derived', usedTokens: 20, usableTokens: 100, contextWindowTokens: 200,
+  });
+  await session.dispose();
+});
+
+test('Claude context observation uses valid direct message usage as an exact fallback', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      messageUsage: {
+        iterations: null,
+        input_tokens: 30,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 10,
+      },
+      context: async () => ({ totalTokens: 7, maxTokens: 100, rawMaxTokens: 200 }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-fallback' });
+  await runCompletedTurn(session);
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'exact', usedTokens: 50, usableTokens: 100, contextWindowTokens: 200,
+  });
+  await session.dispose();
+});
+
+test('Claude context observation accepts a fallback_message iteration as exact', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'fallback_message',
+        input_tokens: 30,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 10,
+      }],
+      context: async () => ({ totalTokens: 7, maxTokens: 100, rawMaxTokens: 200 }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-fallback-iteration' });
+  await runCompletedTurn(session);
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'exact', usedTokens: 50, usableTokens: 100, contextWindowTokens: 200,
+  });
+  await session.dispose();
+});
+
+test('Claude context observation is derived only when local input/cache evidence is absent', async () => {
+  for (const messageUsage of [
+    { iterations: null },
+    {},
+  ]) {
+    const session = new ClaudeRuntimeSession({
+      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      queryFactory: ({ prompt }) => completedSessionQuery({
+        prompt,
+        messageUsage,
+        context: async () => ({ totalTokens: 50, maxTokens: 100, rawMaxTokens: 200 }),
+      }),
+    });
+    await session.start({ appSessionId: 'app-context-derived' });
+    await runCompletedTurn(session);
+    assert.deepEqual(await session.observeContext(), {
+      confidence: 'derived', usedTokens: 50, usableTokens: 100, contextWindowTokens: 200,
+    });
+    await session.dispose();
+  }
+});
+
+test('Claude context observation fails closed on malformed non-null local evidence', async () => {
+  const throwingUsage = Object.defineProperty({}, 'iterations', {
+    enumerable: true,
+    get: () => { throw new Error('SECRET native usage getter'); },
+  });
+  for (const messageUsage of [
+    'malformed',
+    [],
+    { iterations: [] },
+    { iterations: 'malformed' },
+    { iterations: undefined },
+    {
+      input_tokens: 40,
+      cache_creation_input_tokens: 5,
+      cache_read_input_tokens: 5,
+    },
+    {
+      iterations: [{
+        input_tokens: 40,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 5,
+      }],
+    },
+    {
+      iterations: [{
+        type: 'compaction',
+        input_tokens: 40,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 5,
+      }],
+    },
+    {
+      iterations: [{
+        type: 'advisor_message',
+        input_tokens: 40,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 5,
+      }],
+    },
+    {
+      iterations: [{
+        type: 'message',
+        input_tokens: 40,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: 5,
+      }],
+    },
+    { iterations: null, input_tokens: 40 },
+    {
+      iterations: null,
+      input_tokens: 40,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: 5,
+    },
+    throwingUsage,
+  ]) {
+    const session = new ClaudeRuntimeSession({
+      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      queryFactory: ({ prompt }) => completedSessionQuery({
+        prompt,
+        messageUsage,
+        context: async () => ({ totalTokens: 50, maxTokens: 100, rawMaxTokens: 200 }),
+      }),
+    });
+    await session.start({ appSessionId: 'app-context-invalid-local' });
+    const events = await runCompletedTurn(session);
+    const terminal = events.at(-1);
+    assert.ok(terminal?.type === 'result' && terminal.ok, 'context parsing cannot fail the turn');
+    assert.deepEqual(await session.observeContext(), {
+      confidence: 'unavailable', reason: 'invalid-observation',
+    });
+    await session.dispose();
+  }
+});
+
+test('Claude context observation rejects malformed native counts and scrubs failures', async () => {
+  const observations = [
+    { totalTokens: -1, maxTokens: 100, rawMaxTokens: 200 },
+    { totalTokens: 50.5, maxTokens: 100, rawMaxTokens: 200 },
+    { totalTokens: 50, maxTokens: 0, rawMaxTokens: 200 },
+    { totalTokens: 101, maxTokens: 100, rawMaxTokens: 200 },
+    { totalTokens: 50, maxTokens: 201, rawMaxTokens: 200 },
+    { totalTokens: 50, maxTokens: 100 },
+  ];
+  for (const native of observations) {
+    const session = new ClaudeRuntimeSession({
+      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      queryFactory: ({ prompt }) => completedSessionQuery({
+        prompt,
+        context: async () => native,
+      }),
+    });
+    await session.start({ appSessionId: 'app-context-invalid' });
+    await runCompletedTurn(session);
+    assert.deepEqual(await session.observeContext(), {
+      confidence: 'unavailable', reason: 'invalid-observation',
+    });
+    await session.dispose();
+  }
+
+  const invalidControlWithExactEvidence = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      iterations: [{
+        type: 'fallback_message',
+        input_tokens: 40,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 5,
+      }],
+      context: async () => ({ totalTokens: -1, maxTokens: 100, rawMaxTokens: 200 }),
+    }),
+  });
+  await invalidControlWithExactEvidence.start({ appSessionId: 'app-context-invalid-control' });
+  await runCompletedTurn(invalidControlWithExactEvidence);
+  assert.deepEqual(await invalidControlWithExactEvidence.observeContext(), {
+    confidence: 'unavailable', reason: 'invalid-observation',
+  });
+  await invalidControlWithExactEvidence.dispose();
+
+  const failed = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      context: async () => { throw new Error('SECRET native context failure'); },
+    }),
+  });
+  await failed.start({ appSessionId: 'app-context-failed' });
+  await runCompletedTurn(failed);
+  const unavailable = await failed.observeContext();
+  assert.deepEqual(unavailable, { confidence: 'unavailable', reason: 'runtime-unavailable' });
+  assert.equal(JSON.stringify(unavailable).includes('SECRET'), false);
+  await failed.dispose();
+});
+
+test('Claude never starts a context control request while a turn is active', async () => {
+  const allowResult = gate();
+  let contextCalls = 0;
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => {
+      const stopped = gate();
+      async function* messages(): AsyncGenerator<SDKMessage, void> {
+        if (typeof prompt !== 'string') await prompt[Symbol.asyncIterator]().next();
+        yield {
+          type: 'system', subtype: 'init', uuid: 'init-active-context',
+          session_id: 'native-active-context',
+        } as unknown as SDKMessage;
+        await allowResult.promise;
+        yield {
+          type: 'result', subtype: 'success', is_error: false,
+          uuid: 'result-active-context', session_id: 'native-active-context',
+          usage: {
+            input_tokens: 1, output_tokens: 1,
+            cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+          },
+          modelUsage: { opus: {} },
+        } as unknown as SDKMessage;
+        await stopped.promise;
+      }
+      return queryObject(messages(), MODELS, stopped.resolve, async () => {
+        contextCalls += 1;
+        return { totalTokens: 1, maxTokens: 100, rawMaxTokens: 100 };
+      });
+    },
+  });
+  await session.start({ appSessionId: 'app-context-active' });
+  const iterator = session.sendTurn('hold active')[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value?.type, 'session-started');
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'unavailable', reason: 'runtime-unavailable',
+  });
+  assert.equal(contextCalls, 0);
+  allowResult.resolve();
+  while (!(await iterator.next()).done) { /* drain */ }
+  await session.dispose();
+});
+
+test('Claude bounds a hung context control and fences successor/disposal races', async () => {
+  const controlStarted = gate();
+  const releaseControl = gate();
+  let contextCalls = 0;
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      context: async () => {
+        contextCalls += 1;
+        controlStarted.resolve();
+        await releaseControl.promise;
+        return { totalTokens: 1, maxTokens: 100, rawMaxTokens: 100 };
+      },
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-hung' });
+  await runCompletedTurn(session);
+  const pending = session.observeContext();
+  await controlStarted.promise;
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'unavailable', reason: 'runtime-unavailable',
+  });
+  assert.equal(contextCalls, 1, 'a hung native control is never multiplied');
+
+  session.sendTurn('successor');
+  assert.deepEqual(await session.observeContext(), {
+    confidence: 'unavailable', reason: 'runtime-unavailable',
+  });
+  await session.dispose();
+  releaseControl.resolve();
+  assert.deepEqual(await pending, {
+    confidence: 'unavailable', reason: 'runtime-unavailable',
+  });
+  assert.equal(contextCalls, 1);
+});
+
+test('Claude rejects a pending context receipt after native identity failure', async () => {
+  const controlStarted = gate();
+  const releaseControl = gate();
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      context: async () => {
+        controlStarted.resolve();
+        await releaseControl.promise;
+        return { totalTokens: 1, maxTokens: 100, rawMaxTokens: 100 };
+      },
+    }),
+  });
+  await session.start({ appSessionId: 'app-context-identity-fence' });
+  await runCompletedTurn(session);
+  const pending = session.observeContext();
+  await controlStarted.promise;
+  (session as unknown as { route(message: SDKMessage): void }).route({
+    type: 'system', subtype: 'init', uuid: 'conflicting-init',
+    session_id: 'different-native-session',
+  } as unknown as SDKMessage);
+  releaseControl.resolve();
+  assert.deepEqual(await pending, {
+    confidence: 'unavailable', reason: 'runtime-unavailable',
+  });
+  await session.dispose();
+});
+
 test('Claude discovery is account-scoped and retains per-model effort truth', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({
@@ -195,11 +730,27 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
     nativeContinuation: { status: 'unavailable', code: 'account-unavailable' },
     modelDiscovery: { status: 'unavailable', code: 'account-unavailable' },
     effortControl: { status: 'unavailable', code: 'account-unavailable' },
+    context: {
+      currentUse: { status: 'unavailable', code: 'account-unavailable' },
+      compaction: { status: 'unavailable', code: 'account-unavailable' },
+    },
   });
   assert.deepEqual(await adapter.listModels('missing'), {
     status: 'unavailable', code: 'account-unavailable',
   });
   assert.equal(captures.length, 0);
+
+  assert.deepEqual(await adapter.capabilities('personal'), {
+    runtimeId: CLAUDE_RUNTIME_ID,
+    accountId: 'personal',
+    nativeContinuation: { status: 'supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
+  });
 
   const discovery = await adapter.listModels('personal');
   assert.deepEqual(discovery, {

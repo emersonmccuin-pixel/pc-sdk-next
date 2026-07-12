@@ -161,6 +161,7 @@ test('abort-like stream exception cannot confirm an interrupt or release its rep
         throw new Error('AbortError: transport aborted independently');
       })();
     },
+    observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
     interrupt: () => new Promise<void>(() => {}),
     async dispose() {},
   };
@@ -232,6 +233,7 @@ test('interrupt receipt is immediate and an inconclusive native attempt is quara
             };
       })();
     },
+    observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
     interrupt(): Promise<void> {
       return new Promise((resolve) => {
         setTimeout(() => {

@@ -148,6 +148,7 @@ export {
   commitConversationEventInDb,
   countConversationEvents,
   getConversationHighWaterSequence,
+  hasConversationContextObservation,
   hasConversationEvents,
   listConversationEvents,
   listConversationEventsRaw,

@@ -1,6 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-001 guarded landing and teardown.
+Updated: 2026-07-12 after RS-002 sealed implementation and full verification,
+pending guarded landing.
 
 ## Repository
 
@@ -44,7 +45,7 @@ Updated: 2026-07-12 after RS-001 guarded landing and teardown.
 - CF-004 feature record: `3e80d8fdcae208dabcf46bd01538418e8dc89ad4`
 - CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
 - RS-001 base: `c52713770a7196c5b7cd805e0d2d8dc8700f223f`
-- Active slice: `docs/execution/slices/RS-001.md`
+- Completed slice: `docs/execution/slices/RS-001.md`
 - RS-001 feature branch: `codex/rs-001-session-selection-stamps`
 - RS-001 sealed implementation:
   `cb61f255220dd50e95b53418f28e6bdd05f5077c`
@@ -52,31 +53,34 @@ Updated: 2026-07-12 after RS-001 guarded landing and teardown.
 - RS-001 landing merge: `039af6c56a1235260d9859af1c51a6dca20fb990`
 - RS-001 feature worktree: removed after positive landing/tree proof; exact
   deregistered dependency residue was verified and removed
+- RS-001 closeout landing:
+  `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`
+- RS-002 base: `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`
+- Active slice: `docs/execution/slices/RS-002.md`
+- RS-002 feature branch: `codex/rs-002-context-observation`
+- RS-002 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-002`
+- RS-002 sealed implementation:
+  `84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`
+- RS-002 sealed tree: `1322938d45c6ca75557da896d68179ddf5c55325`
 
 ## Status
 
-RS-001 is complete. The bounded slice
-replaces mutable/default-derived orchestrator runtime selection with a complete
-immutable runtime/account/model/effort app-session stamp, bind-once native
-identity, typed capability/resume availability, exact stamped continuation
-through Claude, and a fresh persisted attempt fence for every provider mint.
-Hostile contract, DB, adapter, service, dispatch, web, migration, isolated
-browser checks, and the full `pnpm ci:check` gate are green. Codex, context,
-quota, specialist widening, and
-handoff compilation remain out of scope. Existing specialist browser DTOs still
-carry native session-shaped fields and specialist dispatch still selects
-`CLAUDE_RUNTIME_ID` directly; both are recorded later N3 gaps rather than
-RS-001 claims. The sealed implementation and feature record are both proven
-ancestors of the guarded merge, the landed tree exactly matches the verified
-feature tip, and the feature worktree is torn down. There is no user-direction
-blocker.
+RS-001 is complete, pushed, and torn down. RS-002 implementation and
+verification are complete in its clean run-owned worktree. The sealed feature
+tip adds honest per-session context observation and composer/history projection
+through Claude's positive control receipt and the existing canonical
+conversation/outbox path. Contract, DB, server, web, hostile review, production
+build, isolated browser, and full workspace gates passed. Quota normalization,
+Codex, specialist widening, and handoff compilation remain out of scope. There
+is no user-direction blocker.
 
 ## Next safe action
 
-Define and provision `RS-002` as the next bounded N3 slice: an honest
-per-session context observation contract and composer-adjacent projection with
-exact/derived/approximate/compacted/unavailable states. Prove the shape through
-Claude without mixing subscription quota normalization or Codex into the slice.
+Commit this RS-002 completion receipt, then perform the guarded merge into the
+unchanged pushed `main` base. Prove sealed-tip ancestry and exact tree equality,
+push the landing/closeout record, remove the worktree only after positive proof,
+and verify no residue remains. Do not widen into quota, Codex, or specialists.
 
 ## Startup checks
 
@@ -87,8 +91,7 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Run startup checks, read the N3 runtime/context boundaries, and provision a new
-run-owned worktree from current `main` before writing. The main checkout remains
+Continue only in the recorded RS-002 worktree. The main checkout remains
 read-only.
 
 ## Known blockers

@@ -384,6 +384,7 @@ for (const firstAttempt of ['missing', 'mismatched'] as const) {
               yield terminal;
             })();
           },
+          observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
           interrupt: async () => {},
           dispose: async () => {},
         };
@@ -452,6 +453,7 @@ test('a stale receipt on the current stream cannot fail the current resume attem
             yield terminal;
           })();
         },
+        observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
         interrupt: async () => {},
         dispose: async () => {},
       };
@@ -643,6 +645,7 @@ test('a receipt emitted after disposal begins cannot bind native identity', asyn
             yield terminal;
           })();
         },
+        observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
         interrupt: async () => {},
         dispose: async () => { release.resolve(); },
       };
@@ -685,6 +688,7 @@ test('a disposed service receipt cannot confirm a replacement service resume att
             yield terminal;
           })();
         },
+        observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
         interrupt: async () => {},
         // Model a provider iterator that outlives its acknowledged teardown.
         dispose: async () => {},
@@ -742,6 +746,7 @@ test('a disposed service receipt cannot confirm a replacement service resume att
             yield terminal;
           })();
         },
+        observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
         interrupt: async () => {},
         dispose: async () => { replacementRelease.resolve(); },
       };

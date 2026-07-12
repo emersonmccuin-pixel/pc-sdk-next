@@ -14,6 +14,7 @@ import {
 
 const session: RuntimeSession = {
   sendTurn: async function* () {},
+  observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
   async interrupt() {},
   async dispose() {},
 };
@@ -26,6 +27,10 @@ class FakeAdapter implements AgentRuntimeAdapter {
     nativeContinuation: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
   };
   discoveryValue: RuntimeModelDiscovery = {
     status: 'available',
@@ -169,6 +174,23 @@ test('validation and resume preflight retain typed negative states', async () =>
     { status: 'invalid', code: 'native-session-missing' },
   );
 
+  for (const context of [
+    {
+      currentUse: { status: 'unsupported' as const, code: 'no-context-observer' },
+      compaction: { status: 'unsupported' as const, code: 'no-compaction-events' },
+    },
+    {
+      currentUse: { status: 'unavailable' as const, code: 'context-temporarily-unavailable' },
+      compaction: { status: 'unavailable' as const, code: 'compaction-temporarily-unavailable' },
+    },
+  ]) {
+    adapter.capabilitiesValue = { ...adapter.capabilitiesValue, context };
+    assert.deepEqual(
+      await registry.preflight(selection, { mode: 'resume', nativeSessionId: 'native-a' }),
+      { status: 'valid', selection },
+    );
+  }
+
   adapter.capabilitiesValue = {
     ...adapter.capabilitiesValue,
     nativeContinuation: { status: 'unsupported', code: 'no-native-resume' },
@@ -235,6 +257,10 @@ test('registry fails closed on malformed boundary values and adapter facts', asy
     nativeContinuation: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
   };
   adapter.discoveryValue = {
     status: 'available',
@@ -285,6 +311,10 @@ test('validation snapshots mutable selections and capability facts before awaits
     nativeContinuation: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
   };
   const discoveryStarted = gate();
   const releaseDiscovery = gate();

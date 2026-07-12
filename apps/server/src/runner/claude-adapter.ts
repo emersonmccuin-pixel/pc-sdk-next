@@ -36,6 +36,7 @@ import {
   type ToolCallState,
   type ToolStateEvent,
   type ToolTerminalReason,
+  type ContextObservation,
   type UsageSnapshot,
 } from '@pc/contracts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
@@ -539,6 +540,10 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   private sdkSessionId: string | null = null;
   private appSessionId = '';
   private requestedNativeSessionId: string | null = null;
+  private contextObservationInFlight = false;
+  /** Exact last-iteration context evidence from the latest primary assistant
+   *  message in the current app turn. It never crosses the adapter boundary. */
+  private latestPrimaryContextEvidence: ContextNumeratorEvidence = { status: 'absent' };
 
   constructor(config: ClaudeSessionConfig) {
     this.continuationAttemptId = assertExactContinuationAttemptId(
@@ -623,6 +628,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     if (this.queryClosed) throw new Error('Claude runtime query loop is closed');
     if (this.currentTurn) throw new Error('ClaudeRuntimeSession already has an active turn');
     this.turnGeneration += 1;
+    this.latestPrimaryContextEvidence = { status: 'absent' };
     resetTurnCorrelation(this.keys);
     const turn = new AsyncQueue<RuntimeEvent>();
     this.currentTurn = turn;
@@ -637,6 +643,45 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     } as unknown as SDKUserMessage;
     this.promptQueue?.push(userMsg);
     return turn;
+  }
+
+  async observeContext(): Promise<ContextObservation> {
+    const activeQuery = this.q;
+    const generation = this.turnGeneration;
+    const nativeSessionId = this.sdkSessionId;
+    if (
+      !activeQuery ||
+      this.disposed ||
+      this.queryClosed ||
+      this.sessionStartFailure !== null ||
+      this.sdkSessionId === null ||
+      this.currentTurn !== null
+    ) {
+      return { confidence: 'unavailable', reason: 'runtime-unavailable' };
+    }
+    if (this.contextObservationInFlight) {
+      return { confidence: 'unavailable', reason: 'runtime-unavailable' };
+    }
+    this.contextObservationInFlight = true;
+    try {
+      const native = await activeQuery.getContextUsage();
+      if (
+        this.disposed ||
+        this.queryClosed ||
+        this.sessionStartFailure !== null ||
+        this.q !== activeQuery ||
+        this.turnGeneration !== generation ||
+        this.sdkSessionId !== nativeSessionId ||
+        this.currentTurn !== null
+      ) {
+        return { confidence: 'unavailable', reason: 'runtime-unavailable' };
+      }
+      return toContextObservation(native, this.latestPrimaryContextEvidence);
+    } catch {
+      return { confidence: 'unavailable', reason: 'runtime-unavailable' };
+    } finally {
+      this.contextObservationInFlight = false;
+    }
   }
 
   async interrupt(): Promise<void> {
@@ -719,11 +764,30 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       return;
     }
 
+    // A compaction boundary invalidates every pre-boundary local numerator,
+    // even if native delivery races just after the turn's terminal event.
+    if (anyMsg.type === 'system' && anyMsg.subtype === 'compact_boundary') {
+      this.latestPrimaryContextEvidence = { status: 'absent' };
+    }
+
     const turn = this.currentTurn;
     if (!turn) return; // out-of-turn telemetry must not mutate successor-turn correlation
     if (this.sdkSessionId === null) {
       this.rejectSessionStart('runtime native session receipt missing');
       return;
+    }
+    if (anyMsg.type === 'assistant') {
+      const assistant = msg as unknown as Record<string, unknown>;
+      try {
+        const parentToolUseId = assistant.parent_tool_use_id;
+        if (parentToolUseId === null) {
+          this.latestPrimaryContextEvidence = contextNumeratorEvidence(assistant);
+        } else if (!exactNonEmptyString(parentToolUseId)) {
+          this.latestPrimaryContextEvidence = { status: 'invalid' };
+        }
+      } catch {
+        this.latestPrimaryContextEvidence = { status: 'invalid' };
+      }
     }
     const mapped = mapSdkMessage(msg, this.config.selection.accountId, this.keys);
     if (mapped.length === 0) return;
@@ -895,6 +959,10 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
         nativeContinuation: unavailable,
         modelDiscovery: unavailable,
         effortControl: unavailable,
+        context: {
+          currentUse: unavailable,
+          compaction: unavailable,
+        },
       };
     }
     return {
@@ -903,6 +971,10 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       nativeContinuation: { status: 'supported' },
       modelDiscovery: { status: 'supported' },
       effortControl: { status: 'supported' },
+      context: {
+        currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+        compaction: { status: 'supported' },
+      },
     };
   }
 
@@ -1284,7 +1356,10 @@ function mapResult(m: Record<string, unknown>): RuntimeEvent {
   // malformed, or newly introduced subtypes fail closed as an error.
   const subtype = typeof m.subtype === 'string' ? m.subtype : '';
   const outcome = classifyResultOutcome(subtype, m.terminal_reason);
-  const usage = toRuntimeUsage(m.usage as Record<string, unknown> | undefined, m.modelUsage as Record<string, unknown> | undefined);
+  const usage = toRuntimeUsage(
+    recordOrUndefined(m.usage),
+    recordOrUndefined(m.modelUsage),
+  );
   const durationMs = typeof m.duration_ms === 'number' ? m.duration_ms : null;
   const stopReason = classifyStopReason(m.stop_reason);
   const numTurns = typeof m.num_turns === 'number' ? m.num_turns : null;
@@ -1331,9 +1406,11 @@ function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEven
         { type: 'activity-state', phase: 'compacting' },
         {
           type: 'compaction',
-          trigger: meta.trigger === 'manual' ? 'manual' : 'auto',
-          preTokens: typeof meta.pre_tokens === 'number' ? meta.pre_tokens : 0,
-          postTokens: typeof meta.post_tokens === 'number' ? meta.post_tokens : null,
+          trigger: meta.trigger === 'manual' || meta.trigger === 'auto'
+            ? meta.trigger
+            : 'unknown',
+          preTokens: nonNegativeSafeIntegerOrNull(meta.pre_tokens),
+          postTokens: nonNegativeSafeIntegerOrNull(meta.post_tokens),
         },
       ];
     }
@@ -1354,6 +1431,14 @@ function mapSystem(m: Record<string, unknown>, keys: SdkKeyContext): RuntimeEven
       ];
     }
     case 'status':
+      if (m.compact_result === 'failed') {
+        return [{
+          type: 'system',
+          subtype: 'runtime-compaction-failed',
+          level: 'warning',
+          message: 'The runtime could not compact the session context.',
+        }];
+      }
       if (m.status === 'requesting') return [{ type: 'activity-state', phase: 'requesting-runtime' }];
       if (m.status === 'compacting') return [{ type: 'activity-state', phase: 'compacting' }];
       return [];
@@ -1395,14 +1480,156 @@ function toRuntimeUsage(
   modelUsage: Record<string, unknown> | undefined,
 ): RuntimeUsage | null {
   if (!usage) return null;
-  const model = modelUsage ? (Object.keys(modelUsage)[0] ?? null) : null;
+  const inputTokens = nonNegativeSafeInteger(usage.input_tokens);
+  const outputTokens = nonNegativeSafeInteger(usage.output_tokens);
+  const cacheCreationTokens = nonNegativeSafeInteger(usage.cache_creation_input_tokens);
+  const cacheReadTokens = nonNegativeSafeInteger(usage.cache_read_input_tokens);
+  if (
+    inputTokens === null ||
+    outputTokens === null ||
+    cacheCreationTokens === null ||
+    cacheReadTokens === null
+  ) return null;
+  const modelKeys = modelUsage && !Array.isArray(modelUsage)
+    ? Object.keys(modelUsage)
+    : [];
+  const model = modelKeys.length === 1 && exactNonEmptyString(modelKeys[0])
+    ? modelKeys[0]!
+    : null;
   return {
-    inputTokens: numberOr(usage.input_tokens, 0),
-    outputTokens: numberOr(usage.output_tokens, 0),
-    cacheCreationTokens: numberOr(usage.cache_creation_input_tokens, 0),
-    cacheReadTokens: numberOr(usage.cache_read_input_tokens, 0),
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
     model,
   };
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+type ContextNumeratorEvidence =
+  | { status: 'available'; usedTokens: number }
+  | { status: 'absent' }
+  | { status: 'invalid' };
+
+function toContextObservation(
+  native: unknown,
+  evidence: ContextNumeratorEvidence,
+): ContextObservation {
+  if (native === null || typeof native !== 'object' || Array.isArray(native)) {
+    return { confidence: 'unavailable', reason: 'invalid-observation' };
+  }
+  const value = native as Record<string, unknown>;
+  const controlUsedTokens = nonNegativeSafeInteger(value.totalTokens);
+  const usableTokens = positiveSafeInteger(value.maxTokens);
+  const contextWindowTokens = positiveSafeInteger(value.rawMaxTokens);
+  if (
+    controlUsedTokens === null ||
+    usableTokens === null ||
+    contextWindowTokens === null ||
+    controlUsedTokens > usableTokens ||
+    usableTokens > contextWindowTokens
+  ) {
+    return { confidence: 'unavailable', reason: 'invalid-observation' };
+  }
+  if (evidence.status === 'invalid') {
+    return { confidence: 'unavailable', reason: 'invalid-observation' };
+  }
+  const usedTokens = evidence.status === 'available'
+    ? evidence.usedTokens
+    : controlUsedTokens;
+  if (usedTokens > usableTokens) {
+    return { confidence: 'unavailable', reason: 'invalid-observation' };
+  }
+  return {
+    confidence: evidence.status === 'available' ? 'exact' : 'derived',
+    usedTokens,
+    usableTokens,
+    contextWindowTokens,
+  };
+}
+
+function contextNumeratorEvidence(
+  assistant: Record<string, unknown>,
+): ContextNumeratorEvidence {
+  try {
+    return contextNumeratorEvidenceUnchecked(assistant);
+  } catch {
+    return { status: 'invalid' };
+  }
+}
+
+function contextNumeratorEvidenceUnchecked(
+  assistant: Record<string, unknown>,
+): ContextNumeratorEvidence {
+  const message = assistant.message;
+  if (message === null || message === undefined) {
+    return { status: 'absent' };
+  }
+  if (typeof message !== 'object' || Array.isArray(message)) return { status: 'invalid' };
+  const usage = (message as Record<string, unknown>).usage;
+  if (usage === null || usage === undefined) {
+    return { status: 'absent' };
+  }
+  if (typeof usage !== 'object' || Array.isArray(usage)) return { status: 'invalid' };
+  const usageRecord = usage as Record<string, unknown>;
+  const iterations = usageRecord.iterations;
+  const hasIterations = Object.prototype.hasOwnProperty.call(usageRecord, 'iterations');
+  if (hasIterations && iterations !== null) {
+    if (!Array.isArray(iterations) || iterations.length === 0) return { status: 'invalid' };
+    const latest = iterations.at(-1);
+    if (latest === null || typeof latest !== 'object' || Array.isArray(latest)) {
+      return { status: 'invalid' };
+    }
+    const latestRecord = latest as Record<string, unknown>;
+    if (latestRecord.type !== 'message' && latestRecord.type !== 'fallback_message') {
+      return { status: 'invalid' };
+    }
+    return tokenSumEvidence(latestRecord);
+  }
+  const countKeys = [
+    'input_tokens',
+    'cache_creation_input_tokens',
+    'cache_read_input_tokens',
+  ] as const;
+  if (!countKeys.some((key) => Object.prototype.hasOwnProperty.call(usageRecord, key))) {
+    return { status: 'absent' };
+  }
+  if (!hasIterations) return { status: 'invalid' };
+  return tokenSumEvidence(usageRecord);
+}
+
+function tokenSumEvidence(record: Record<string, unknown>): ContextNumeratorEvidence {
+  const input = nonNegativeSafeInteger(record.input_tokens);
+  const cacheCreation = nonNegativeSafeInteger(record.cache_creation_input_tokens);
+  const cacheRead = nonNegativeSafeInteger(record.cache_read_input_tokens);
+  if (input === null || cacheCreation === null || cacheRead === null) {
+    return { status: 'invalid' };
+  }
+  const total = input + cacheCreation + cacheRead;
+  return Number.isSafeInteger(total)
+    ? { status: 'available', usedTokens: total }
+    : { status: 'invalid' };
+}
+
+function nonNegativeSafeInteger(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null;
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : null;
+}
+
+function nonNegativeSafeIntegerOrNull(value: unknown): number | null {
+  return nonNegativeSafeInteger(value);
+}
+
+function exactNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim();
 }
 
 /** Build a partial UsageSnapshot from one `rate_limit_event`. Only the window the

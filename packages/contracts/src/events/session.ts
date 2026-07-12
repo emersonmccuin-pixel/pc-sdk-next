@@ -161,11 +161,14 @@ export function isSessionReplayFrame(value: unknown): value is SessionReplayFram
     (value.highWaterSequence as number) < 0 ||
     !Array.isArray(value.events)
   ) return false;
+  let conversationId: string | null = null;
   return value.events.every((event) => {
     if (!isConversationEventFrame(event)) return false;
+    if (conversationId === null) conversationId = event.conversationId;
     return (
       event.projectId === value.projectId &&
       event.sessionId === value.sessionId &&
+      event.conversationId === conversationId &&
       event.sequence <= (value.highWaterSequence as number)
     );
   });

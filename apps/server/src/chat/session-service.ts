@@ -15,6 +15,7 @@ import {
   getActiveOrchestratorSession,
   getConversationHighWaterSequence,
   getConversationQueueSnapshot,
+  hasConversationContextObservation,
   getOrchestratorSession,
   getTurnInterruptRequest,
   newId,
@@ -33,8 +34,10 @@ import {
 } from '@pc/db';
 import {
   conversationFamilyForEvent,
+  isContextObservation,
   type AskFrame,
   type ChatEvent,
+  type ContextObservation,
   type ConversationCommand,
   type ConversationEvent,
   type EditQueuedMessage,
@@ -98,6 +101,9 @@ export interface SessionServiceDeps {
   /** Upper bound for native interrupt acceptance plus its correlated terminal.
    * Timeout is a durable fail-closed/inconclusive outcome, never success. */
   interruptTimeoutMs?: number;
+  /** Upper bound for post-terminal context observation. It delays only the
+   * same session's FIFO successor; timeout becomes explicit unavailable truth. */
+  contextObservationTimeoutMs?: number;
   /** Registry-owned boot gate. Direct service users default to ready. */
   queueDrainEnabled?: boolean;
   onRateLimit?: (snapshot: UsageSnapshot) => void;
@@ -125,7 +131,33 @@ interface InterruptControl {
   stop: () => void;
 }
 
+interface RuntimeObservationFence {
+  epoch: number;
+  signal: AbortSignal;
+  invalidate: () => void;
+}
+
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 15_000;
+const DEFAULT_CONTEXT_OBSERVATION_TIMEOUT_MS = 2_000;
+
+type ContextObservationOutcome =
+  | { kind: 'observed'; value: unknown }
+  | { kind: 'failed' }
+  | { kind: 'timeout' }
+  | { kind: 'invalidated' };
+
+const CONTEXT_PERSISTENCE_RETRY_START_MS = 25;
+const CONTEXT_PERSISTENCE_RETRY_MAX_MS = 500;
+const CONTEXT_PERSISTENCE_FAILURE = 'context observation persistence unavailable';
+
+function createRuntimeObservationFence(epoch: number): RuntimeObservationFence {
+  const controller = new AbortController();
+  return {
+    epoch,
+    signal: controller.signal,
+    invalidate: () => controller.abort(),
+  };
+}
 
 function deriveTitle(text: string): string | null {
   for (const raw of text.split(/\r?\n/)) {
@@ -158,6 +190,7 @@ export class SessionService {
   private readonly onRateLimit?: (snapshot: UsageSnapshot) => void;
   private readonly orchestratorRev?: () => number | null;
   private readonly interruptTimeoutMs: number;
+  private readonly contextObservationTimeoutMs: number;
   private queueDrainEnabled: boolean;
 
   private session: OrchestratorSessionRow | null;
@@ -166,6 +199,7 @@ export class SessionService {
   private runtimeRev: number | null = null;
   private runtimeReady: RuntimeReady | null = null;
   private runtimeQuarantine: Promise<void> = Promise.resolve();
+  private runtimeObservationFence = createRuntimeObservationFence(0);
   private sessionTransitionTail: Promise<void> = Promise.resolve();
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
@@ -194,6 +228,8 @@ export class SessionService {
     this.onRateLimit = deps.onRateLimit;
     this.orchestratorRev = deps.orchestratorRev;
     this.interruptTimeoutMs = deps.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
+    this.contextObservationTimeoutMs = deps.contextObservationTimeoutMs
+      ?? DEFAULT_CONTEXT_OBSERVATION_TIMEOUT_MS;
     this.queueDrainEnabled = deps.queueDrainEnabled ?? true;
     this.session = getActiveOrchestratorSession(this.projectId);
     this.askRegistry = new AskRegistry({
@@ -493,6 +529,7 @@ export class SessionService {
    * disposal so the uncertain side effect cannot cross the turn boundary. */
   private quarantineRuntime(sessionId: string, targetTurnId: string): void {
     if (this.runtimeSessionId !== sessionId) return;
+    this.invalidateRuntimeObservationFence();
     const runtime = this.runtime;
     this.runtime = null;
     this.runtimeSessionId = null;
@@ -701,6 +738,7 @@ export class SessionService {
 
   private teardownRunner(reason: string): void {
     this.askRegistry.clear(reason);
+    this.invalidateRuntimeObservationFence();
     const runtime = this.runtime;
     this.runtime = null;
     this.runtimeSessionId = null;
@@ -720,6 +758,7 @@ export class SessionService {
     this.disposed = true;
     this.lifecycleGeneration += 1;
     this.resolveDisposed();
+    this.invalidateRuntimeObservationFence();
     // Fail pending requests before disposing the runtime. Runtime teardown can
     // itself yield an abort terminal; it must never manufacture a positive
     // receipt for a user interrupt whose native outcome remained uncertain.
@@ -762,11 +801,13 @@ export class SessionService {
         };
       }
       const old = this.runtime;
+      this.invalidateRuntimeObservationFence();
       this.runtime = null;
       this.runtimeSessionId = null;
       await old.dispose().catch(() => {});
     } else if (this.runtime) {
       const old = this.runtime;
+      this.invalidateRuntimeObservationFence();
       this.runtime = null;
       this.runtimeSessionId = null;
       await old.dispose().catch(() => {});
@@ -874,6 +915,7 @@ export class SessionService {
     let runtimeAccepted = false;
     let runtimeAcquired = false;
     let terminalSettled = false;
+    let idlePublished = false;
     let acquisition: RuntimeAcquisition | null = null;
     const ready = this.ensureRuntime(session);
     this.runtimeReady = { sessionId: session.id, turnId: turn.turnId, promise: ready };
@@ -905,6 +947,15 @@ export class SessionService {
       }));
       if (!terminalSettled) {
         this.settleInfrastructureFailure(turn, 'runtime ended without a durable terminal', runtimeAccepted);
+      } else {
+        // Product state settles first. Context is best-effort telemetry and
+        // must never keep the orchestrator looking busy after its terminal is
+        // already durable, though the FIFO successor remains held until the
+        // bounded observation resolves.
+        this.setHealth('idle');
+        this.broadcast(this.orchestratorStateFrame());
+        idlePublished = true;
+        await this.observeContextAfterTurn(turn, session, acquisition);
       }
     } catch (error) {
       if (
@@ -926,11 +977,233 @@ export class SessionService {
       }
     } finally {
       if (this.runtimeReady?.turnId === turn.turnId) this.runtimeReady = null;
-      if (!this.disposed) {
+      if (!this.disposed && !idlePublished) {
         this.setHealth('idle');
         this.broadcast(this.orchestratorStateFrame());
       }
     }
+  }
+
+  private async observeContextAfterTurn(
+    turn: ClaimedConversationTurn,
+    session: OrchestratorSessionRow,
+    acquisition: RuntimeAcquisition,
+  ): Promise<void> {
+    const runtime = acquisition.runtime;
+    const generation = this.lifecycleGeneration;
+    const fence = this.runtimeObservationFence;
+    if (
+      this.disposed
+      || !acquisition.receiptConfirmed
+      || this.session?.id !== session.id
+      || this.runtime !== runtime
+      || this.runtimeSessionId !== session.id
+    ) return;
+
+    // Normalize synchronous throws and attach both handlers immediately so a
+    // timed-out native promise can never become an unhandled late rejection.
+    const pending: Promise<ContextObservationOutcome> = Promise.resolve()
+      .then(() => runtime.observeContext())
+      .then<ContextObservationOutcome, ContextObservationOutcome>(
+        (value) => ({ kind: 'observed', value }),
+        () => ({ kind: 'failed' }),
+      );
+    const outcome = await this.waitForContextObservationOutcome(pending, fence);
+
+    // A session replacement, runtime re-mint/quarantine, or disposal makes a
+    // late observation foreign to this turn. It writes nothing—not even an
+    // unavailable event attributed to the wrong lifecycle.
+    if (
+      outcome.kind === 'invalidated'
+      || this.disposed
+      || generation !== this.lifecycleGeneration
+      || this.runtimeObservationFence !== fence
+      || this.session?.id !== session.id
+      || this.runtime !== runtime
+      || this.runtimeSessionId !== session.id
+    ) return;
+
+    const observedAt = Date.now();
+
+    const captured = outcome.kind === 'observed'
+      ? this.captureContextObservation(outcome.value)
+      : null;
+    let observation: ContextObservation;
+    if (outcome.kind === 'timeout') {
+      observation = { confidence: 'unavailable', reason: 'observation-timeout' };
+    } else if (outcome.kind === 'failed') {
+      observation = { confidence: 'unavailable', reason: 'runtime-unavailable' };
+    } else if (captured) {
+      observation = captured;
+    } else {
+      observation = { confidence: 'unavailable', reason: 'invalid-observation' };
+    }
+
+    await this.persistContextObservation(
+      turn,
+      session,
+      runtime,
+      fence,
+      observation,
+      observedAt,
+    );
+  }
+
+  private captureContextObservation(value: unknown): ContextObservation | null {
+    try {
+      if (!isContextObservation(value)) return null;
+      const snapshot: ContextObservation = value.confidence === 'unavailable'
+        ? { confidence: 'unavailable', reason: value.reason }
+        : {
+            confidence: value.confidence,
+            usedTokens: value.usedTokens,
+            usableTokens: value.usableTokens,
+            contextWindowTokens: value.contextWindowTokens,
+          };
+      return isContextObservation(snapshot) ? snapshot : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private waitForContextObservationOutcome(
+    pending: Promise<ContextObservationOutcome>,
+    fence: RuntimeObservationFence,
+  ): Promise<ContextObservationOutcome> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onInvalidated = () => finish({ kind: 'invalidated' });
+      const finish = (outcome: ContextObservationOutcome) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        fence.signal.removeEventListener('abort', onInvalidated);
+        resolve(outcome);
+      };
+      fence.signal.addEventListener('abort', onInvalidated, { once: true });
+      if (fence.signal.aborted) {
+        finish({ kind: 'invalidated' });
+        return;
+      }
+      timer = setTimeout(
+        () => finish({ kind: 'timeout' }),
+        this.contextObservationTimeoutMs,
+      );
+      if (typeof timer.unref === 'function') timer.unref();
+      void pending.then(finish);
+    });
+  }
+
+  private async persistContextObservation(
+    turn: ClaimedConversationTurn,
+    session: OrchestratorSessionRow,
+    runtime: RuntimeSession,
+    fence: RuntimeObservationFence,
+    observation: ContextObservation,
+    observedAt: number,
+  ): Promise<void> {
+    let retryMs = CONTEXT_PERSISTENCE_RETRY_START_MS;
+    let persistenceFailureReported = false;
+    for (;;) {
+      if (!this.contextObservationFenceIsActive(session, runtime, fence)) return;
+      try {
+        this.persistAndPublish(turn, {
+          kind: 'context-observation',
+          ...observation,
+        }, { itemId: newId(), occurredAt: observedAt });
+        this.clearContextPersistenceFailure(persistenceFailureReported);
+        return;
+      } catch {
+        // A duplicate means another exact writer already satisfied the durable
+        // invariant. All other failures hold this session's queue and retry;
+        // advancing would permanently lose the required post-terminal event.
+        if (this.contextObservationAlreadyPersisted(turn)) {
+          this.clearContextPersistenceFailure(persistenceFailureReported);
+          return;
+        }
+        if (!persistenceFailureReported) {
+          persistenceFailureReported = true;
+          console.warn(`[pc-sdk][context] persistence unavailable for turn ${turn.turnId}; retrying`);
+          if (this.contextObservationFenceIsActive(session, runtime, fence)) {
+            this.health = 'failed';
+            this.failureReason = CONTEXT_PERSISTENCE_FAILURE;
+            this.broadcast(this.orchestratorStateFrame());
+          }
+        }
+      }
+
+      const retry = await this.waitForContextPersistenceRetry(fence, retryMs);
+      if (!retry) return;
+      retryMs = Math.min(retryMs * 2, CONTEXT_PERSISTENCE_RETRY_MAX_MS);
+    }
+  }
+
+  private contextObservationFenceIsActive(
+    session: OrchestratorSessionRow,
+    runtime: RuntimeSession,
+    fence: RuntimeObservationFence,
+  ): boolean {
+    return !this.disposed
+      && this.runtimeObservationFence === fence
+      && this.session?.id === session.id
+      && this.runtime === runtime
+      && this.runtimeSessionId === session.id;
+  }
+
+  private contextObservationAlreadyPersisted(turn: ClaimedConversationTurn): boolean {
+    try {
+      return hasConversationContextObservation({
+        projectId: turn.projectId,
+        conversationId: turn.conversationId,
+        sessionId: turn.sessionId,
+        turnId: turn.turnId,
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private async waitForContextPersistenceRetry(
+    fence: RuntimeObservationFence,
+    delayMs: number,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onInvalidated = () => finish(false);
+      const finish = (retry: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        fence.signal.removeEventListener('abort', onInvalidated);
+        resolve(retry);
+      };
+      fence.signal.addEventListener('abort', onInvalidated, { once: true });
+      if (fence.signal.aborted) {
+        finish(false);
+        return;
+      }
+      timer = setTimeout(() => finish(true), delayMs);
+    });
+  }
+
+  private clearContextPersistenceFailure(reported: boolean): void {
+    if (
+      reported
+      && !this.disposed
+      && this.health === 'failed'
+      && this.failureReason === CONTEXT_PERSISTENCE_FAILURE
+    ) {
+      this.setHealth('idle');
+      this.broadcast(this.orchestratorStateFrame());
+    }
+  }
+
+  private invalidateRuntimeObservationFence(): void {
+    const previous = this.runtimeObservationFence;
+    previous.invalidate();
+    this.runtimeObservationFence = createRuntimeObservationFence(previous.epoch + 1);
   }
 
   private markRuntimeResumeFailed(
@@ -1074,7 +1347,7 @@ export class SessionService {
   private persistAndPublish(
     turn: ClaimedConversationTurn,
     event: ConversationEvent,
-    opts: { itemId: string; streamId?: string; deltaIndex?: number },
+    opts: { itemId: string; streamId?: string; deltaIndex?: number; occurredAt?: number },
   ): void {
     commitConversationEvent({
       projectId: turn.projectId,
@@ -1087,7 +1360,7 @@ export class SessionService {
       streamId: opts.streamId ?? null,
       deltaIndex: opts.deltaIndex ?? null,
       clientMessageId: null,
-      occurredAt: Date.now(),
+      occurredAt: opts.occurredAt ?? Date.now(),
       deliveryKind: 'chat',
     });
     this.publishCommittedEvents();

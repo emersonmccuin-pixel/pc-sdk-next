@@ -3,6 +3,7 @@
 // private reasoning content never cross this contract.
 
 import type { ULID } from '../shared.ts';
+import { isContextObservation, type ContextObservation } from '../context.ts';
 import { isSendQueueItem, type SendQueueItem } from './messages.ts';
 
 export type ConversationFamily =
@@ -178,6 +179,7 @@ export type ChatEvent =
       cacheReadTokens: number;
       model: string | null;
     }
+  | ({ kind: 'context-observation' } & ContextObservation)
   | { kind: 'turn-duration'; durationMs: number | null }
   | {
       kind: 'session-state';
@@ -190,7 +192,12 @@ export type ChatEvent =
       level: 'info' | 'notice' | 'warning' | 'error';
       message: string;
     }
-  | { kind: 'compaction'; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
+  | {
+      kind: 'compaction';
+      trigger: 'manual' | 'auto' | 'unknown';
+      preTokens: number | null;
+      postTokens: number | null;
+    }
   | { kind: 'sidechain'; role: 'user' | 'assistant' | 'tool'; text: string }
   | { kind: 'agent-dispatch'; runId: ULID; agentName: string }
   | {
@@ -226,6 +233,7 @@ export const CHAT_EVENT_KINDS = [
   'activity-state',
   'tool-state',
   'usage',
+  'context-observation',
   'turn-duration',
   'session-state',
   'system',
@@ -277,6 +285,10 @@ function nonEmptyString(value: unknown): value is string {
 
 function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function nullableString(value: unknown): value is string | null {
@@ -441,6 +453,10 @@ export function isChatEvent(value: unknown): value is ChatEvent {
         finiteNonNegativeNumber(value.cacheReadTokens) &&
         nullableString(value.model)
       );
+    case 'context-observation': {
+      const { kind: _kind, ...observation } = value;
+      return isContextObservation(observation);
+    }
     case 'turn-duration':
       return (
         hasOnlyKeys(value, ['kind', 'durationMs']) &&
@@ -462,9 +478,9 @@ export function isChatEvent(value: unknown): value is ChatEvent {
     case 'compaction':
       return (
         hasOnlyKeys(value, ['kind', 'trigger', 'preTokens', 'postTokens']) &&
-        (value.trigger === 'manual' || value.trigger === 'auto') &&
-        finiteNonNegativeNumber(value.preTokens) &&
-        (value.postTokens === null || finiteNonNegativeNumber(value.postTokens))
+        (value.trigger === 'manual' || value.trigger === 'auto' || value.trigger === 'unknown') &&
+        (value.preTokens === null || nonNegativeSafeInteger(value.preTokens)) &&
+        (value.postTokens === null || nonNegativeSafeInteger(value.postTokens))
       );
     case 'sidechain':
       return (
@@ -591,6 +607,7 @@ export function conversationFamilyForEvent(event: ConversationEvent): Conversati
     case 'send-state':
       return event.item.origin === 'user' ? 'user' : 'agent';
     case 'usage':
+    case 'context-observation':
     case 'turn-duration':
       return 'telemetry';
     case 'system':
@@ -647,6 +664,7 @@ export function isConversationEventFrame(value: unknown): value is ConversationE
     (
       value.event.kind === 'activity-state'
       || value.event.kind === 'tool-state'
+      || value.event.kind === 'context-observation'
     )
     && !nonEmptyString(value.turnId)
   ) return false;

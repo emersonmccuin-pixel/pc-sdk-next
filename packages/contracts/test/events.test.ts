@@ -101,6 +101,13 @@ test('every canonical ChatEvent shape rejects undeclared provider fields', () =>
       cacheReadTokens: 0,
       model: null,
     },
+    {
+      kind: 'context-observation',
+      confidence: 'exact',
+      usedTokens: 1,
+      usableTokens: 8,
+      contextWindowTokens: 10,
+    },
     { kind: 'turn-duration', durationMs: 10 },
     { kind: 'session-state', state: 'running', permissionMode: null },
     { kind: 'system', subtype: 'notice', level: 'info', message: 'safe' },
@@ -166,12 +173,68 @@ test('agent-event frames admit only strict canonical transcript events', () => {
 });
 
 test('every ChatEvent kind is registered', () => {
-  assert.equal(CHAT_EVENT_KINDS.length, 17);
+  assert.equal(CHAT_EVENT_KINDS.length, 18);
   for (const k of CHAT_EVENT_KINDS) assert.equal(isChatEventKind(k), true);
   assert.equal(isChatEventKind('jsonl-user'), false); // old wire kind is dead
   for (const retired of ['tool-call', 'tool-result', 'tool-denied']) {
     assert.equal(isChatEventKind(retired), false);
   }
+});
+
+test('context observations are telemetry, require turn identity, and reject native detail', () => {
+  const frame: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'context-event-1',
+    projectId: 'p',
+    conversationId: 'c',
+    sessionId: 's',
+    sequence: 1,
+    family: 'telemetry',
+    turnId: 'turn-1',
+    itemId: 'context-turn-1',
+    occurredAt: 1,
+    event: {
+      kind: 'context-observation',
+      confidence: 'derived',
+      usedTokens: 4,
+      usableTokens: 8,
+      contextWindowTokens: 10,
+    },
+  };
+  assert.equal(isConversationEventFrame(frame), true);
+  assert.equal(conversationFamilyForEvent(frame.event), 'telemetry');
+  assert.equal(isConversationEventFrame({ ...frame, turnId: undefined }), false);
+  assert.equal(isConversationEventFrame({ ...frame, family: 'control' }), false);
+  assert.equal(isConversationEventFrame({
+    ...frame,
+    event: { ...frame.event, nativeCategories: { system: 1 } },
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'context-observation',
+    confidence: 'unavailable',
+    reason: 'runtime-unavailable',
+  }), true);
+});
+
+test('compaction preserves known edges without inventing token counts', () => {
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'unknown', preTokens: null, postTokens: null,
+  }), true);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'manual', preTokens: Number.MAX_SAFE_INTEGER, postTokens: 0,
+  }), true);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'native', preTokens: null, postTokens: null,
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'auto', preTokens: undefined, postTokens: 0,
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'auto', preTokens: 0.5, postTokens: 0,
+  }), false);
+  assert.equal(isChatEvent({
+    kind: 'compaction', trigger: 'auto', preTokens: Number.MAX_VALUE, postTokens: 0,
+  }), false);
 });
 
 test('stream deltas use the same sequenced envelope and require stream order', () => {
@@ -743,6 +806,13 @@ test('session replay validates every canonical event identity', () => {
   }), false);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 0, events: [event],
+  }), false);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 2,
+    events: [
+      event,
+      { ...event, eventId: 'other-conversation', conversationId: 'other', sequence: 2 },
+    ],
   }), false);
 
   // Migration 0009 cannot safely infer turn ownership for legacy terminals.

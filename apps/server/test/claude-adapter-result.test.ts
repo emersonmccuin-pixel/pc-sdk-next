@@ -83,6 +83,58 @@ test('missing num_turns -> numTurns null', () => {
   assert.equal(rm.numTurns, null);
 });
 
+test('result usage accepts only complete non-negative integer evidence', () => {
+  const valid = {
+    input_tokens: 10,
+    output_tokens: 3,
+    cache_creation_input_tokens: 2,
+    cache_read_input_tokens: 5,
+  };
+  const observed = mapResult({
+    subtype: 'success', usage: valid, modelUsage: { opus: {} },
+  }) as Extract<RuntimeEvent, { type: 'result' }>;
+  assert.deepEqual(observed.usage, {
+    inputTokens: 10,
+    outputTokens: 3,
+    cacheCreationTokens: 2,
+    cacheReadTokens: 5,
+    model: 'opus',
+  });
+
+  for (const usage of [
+    { ...valid, input_tokens: undefined },
+    { ...valid, output_tokens: -1 },
+    { ...valid, cache_creation_input_tokens: 1.5 },
+    { ...valid, cache_read_input_tokens: Number.POSITIVE_INFINITY },
+  ]) {
+    const result = mapResult({ subtype: 'success', usage, modelUsage: { opus: {} } }) as
+      Extract<RuntimeEvent, { type: 'result' }>;
+    assert.equal(result.usage, null);
+  }
+});
+
+test('result usage never assigns multi-model totals to an arbitrary first key', () => {
+  const usage = {
+    input_tokens: 10,
+    output_tokens: 3,
+    cache_creation_input_tokens: 2,
+    cache_read_input_tokens: 5,
+  };
+  for (const [modelUsage, expected] of [
+    [{}, null],
+    [{ opus: {}, sonnet: {} }, null],
+    [{ ' opus ': {} }, null],
+    [{ opus: {} }, 'opus'],
+    ['malformed', null],
+    [42, null],
+    [[], null],
+  ] as const) {
+    const result = mapResult({ subtype: 'success', usage, modelUsage }) as
+      Extract<RuntimeEvent, { type: 'result' }>;
+    assert.equal(result.usage?.model, expected);
+  }
+});
+
 test('missing or malformed success discriminator fails closed', () => {
   for (const subtype of [undefined, null, 42]) {
     const rm = mapResult({ subtype }) as { ok: boolean; outcome: string; error: string | null };

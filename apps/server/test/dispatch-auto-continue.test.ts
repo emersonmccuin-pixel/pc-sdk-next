@@ -158,6 +158,10 @@ class LateAfterDisposeRuntime implements RuntimeSession {
     } as const;
   }
 
+  async observeContext() {
+    return { confidence: 'unavailable' as const, reason: 'unsupported' as const };
+  }
+
   async interrupt(): Promise<void> {}
   async dispose(): Promise<void> { this.releaseDispose(); }
 }
@@ -191,6 +195,10 @@ class DeferredRuntime implements RuntimeSession {
   sendTurn(): AsyncIterable<never> {
     this.sendCalls += 1;
     return (async function* () {})();
+  }
+
+  async observeContext() {
+    return { confidence: 'unavailable' as const, reason: 'unsupported' as const };
   }
 
   async interrupt(): Promise<void> {}

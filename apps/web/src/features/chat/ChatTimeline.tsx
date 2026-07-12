@@ -11,6 +11,7 @@ import { RenderItemView, AssistantBubble } from './Bubbles';
 import { AskCard } from './AskCard';
 import { applyReplay, initialChatState, type ChatState } from './chat-reducer';
 import { sequenceToArray } from './persistent-sequence';
+import { ContextBar } from './ContextBar';
 
 export function ChatTimeline({
   state,
@@ -91,5 +92,17 @@ export function PastSessionTimeline({ replay }: { replay: SessionReplayFrame }) 
     () => applyReplay(initialChatState(), replay),
     [replay],
   );
-  return <ChatTimeline state={state} readOnly />;
+  return (
+    <>
+      <ChatTimeline state={state} readOnly />
+      <div className="border-t border-border bg-card px-4 py-2">
+        <ContextBar
+          sessionId={state.sessionId}
+          ready={state.contextProjectionReady}
+          projection={state.contextProjection}
+          readOnly
+        />
+      </div>
+    </>
+  );
 }

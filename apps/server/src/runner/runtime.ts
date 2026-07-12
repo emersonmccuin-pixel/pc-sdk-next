@@ -17,6 +17,7 @@ import {
   isRuntimeModelDiscovery,
   isRuntimeSelection,
   type ActivityPhase,
+  type ContextObservation,
   type RuntimeCapabilities,
   type RuntimeModel,
   type RuntimeModelDiscovery,
@@ -31,6 +32,7 @@ import {
 import type { BridgeBuild } from '../mcp/bridge.ts';
 
 export type {
+  ContextObservation,
   RuntimeCapabilities,
   RuntimeModel,
   RuntimeModelDiscovery,
@@ -108,8 +110,13 @@ export type RuntimeEvent =
   | RuntimeResultEvent
   // Session-state transitions.
   | { type: 'session-state'; state: 'idle' | 'running' | 'requires_action'; permissionMode: string | null }
-  // Context compaction.
-  | { type: 'compaction'; trigger: 'manual' | 'auto'; preTokens: number; postTokens: number | null }
+  // Context compaction. Malformed native details remain explicit unknown/null.
+  | {
+      type: 'compaction';
+      trigger: 'manual' | 'auto' | 'unknown';
+      preTokens: number | null;
+      postTokens: number | null;
+    }
   // Provider retry normalized to numeric facts; native error prose is absent.
   | { type: 'api-retry'; attempt: number | null; maxRetries: number | null }
   // Durable per-account usage snapshot.
@@ -154,6 +161,9 @@ export interface RuntimeSession {
   /** Send one user turn; yields RuntimeEvents until the turn's `result`. The
    *  iterable completes when the turn ends. */
   sendTurn(text: string): AsyncIterable<RuntimeEvent>;
+  /** Observe current context use without inferring it from turn usage. Runtime
+   *  and transport failures are returned as typed unavailable observations. */
+  observeContext(): Promise<ContextObservation>;
   /** Request abortion of the in-flight turn. Promise resolution acknowledges
    *  native command acceptance only; it never proves abortion. The exact
    *  correlated `sendTurn` terminal is the positive abort receipt. */
@@ -281,6 +291,23 @@ function cloneRuntimeCapabilities(capabilities: RuntimeCapabilities): RuntimeCap
     nativeContinuation: cloneState(capabilities.nativeContinuation),
     modelDiscovery: cloneState(capabilities.modelDiscovery),
     effortControl: cloneState(capabilities.effortControl),
+    context: {
+      currentUse: capabilities.context.currentUse.status === 'supported'
+        ? {
+            status: 'supported',
+            confidences: [...capabilities.context.currentUse.confidences],
+          }
+        : {
+            status: capabilities.context.currentUse.status,
+            code: capabilities.context.currentUse.code,
+          },
+      compaction: capabilities.context.compaction.status === 'supported'
+        ? { status: 'supported' }
+        : {
+            status: capabilities.context.compaction.status,
+            code: capabilities.context.compaction.code,
+          },
+    },
   };
 }
 

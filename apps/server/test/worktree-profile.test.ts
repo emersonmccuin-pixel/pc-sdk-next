@@ -89,6 +89,7 @@ class GatedAdapter implements AgentRuntimeAdapter {
     const gate = this.turnGate.promise;
     const runtime: RuntimeSession = {
       sendTurn: () => turnStream(gate),
+      observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
       interrupt: async () => {},
       dispose: async () => {},
     };

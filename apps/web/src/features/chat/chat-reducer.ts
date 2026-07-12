@@ -7,6 +7,7 @@ import {
   type AskFrame,
   type ChatDeltaEvent,
   type ChatEvent,
+  type ContextObservation,
   type ConversationCommandReceiptFrame,
   type ConversationEventFrame,
   type SendQueueItem,
@@ -75,6 +76,35 @@ export interface CurrentActivityProjection {
   source: ActivitySource;
 }
 
+export type ContextFreshness = 'unobserved' | 'fresh' | 'stale';
+
+export interface ContextObservationProjection {
+  observation: ContextObservation;
+  turnId: string;
+  sequence: number;
+  occurredAt: number;
+}
+
+export interface ContextCompactionProjection {
+  turnId: string | null;
+  sequence: number;
+  occurredAt: number;
+  trigger: Extract<ChatEvent, { kind: 'compaction' }>['trigger'];
+  preTokens: number | null;
+  postTokens: number | null;
+}
+
+/** Latest context truth for one app session. Observation freshness is a
+ * projection of canonical turn/compaction order, never wall-clock inference. */
+export interface SessionContextProjection {
+  integrity: 'valid' | 'conflicted';
+  latestStartedTurnId: string | null;
+  acceptedObservationTurnId: string | null;
+  observation: ContextObservationProjection | null;
+  freshness: ContextFreshness;
+  latestCompaction: ContextCompactionProjection | null;
+}
+
 interface SequenceReceipt {
   eventId: string;
   digest: string;
@@ -94,12 +124,22 @@ interface StreamReceipt {
   deltaReceipts: PersistentIndex<DeltaReceipt>;
 }
 
+interface ContextTurnEvidence {
+  turnId: string;
+  sequence: number;
+}
+
 /** Internal immutable indexes. Values retain identities and digests, never
  * completed raw delta payloads. Plain-data tree nodes survive structuredClone. */
 export interface ProjectorState {
   sequenceReceipts: PersistentIndex<SequenceReceipt>;
   eventSequences: PersistentIndex<number>;
   pendingFrames: PersistentIndex<ConversationEventFrame>;
+  pendingEventSequences: PersistentIndex<number>;
+  pendingContextProjectionCount: number;
+  pendingContextTurnCounts: PersistentIndex<number>;
+  latestContextTurnEvidence: ContextTurnEvidence | null;
+  supersededContextTurns: PersistentIndex<true>;
   streams: PersistentIndex<StreamReceipt>;
 }
 
@@ -133,6 +173,9 @@ export interface ChatState {
   sessionId: string | null;
   /** A connect checkpoint/replay has established the current session context. */
   sessionContextReady: boolean;
+  /** A new-session receipt or valid replay has established context telemetry
+   * truth. Deliberately separate from queue/composer checkpoint readiness. */
+  contextProjectionReady: boolean;
   /** Highest accepted or checkpointed server sequence. */
   highWaterSequence: number;
   /** Highest authoritative sequence whose transition has been folded. */
@@ -142,6 +185,7 @@ export interface ChatState {
   /** Stable render input after fail-closed stream/item exclusions. */
   projectedFrames: PersistentSequence<ConversationEventFrame>;
   aggregates: Aggregates;
+  contextProjection: SessionContextProjection;
   /** Guarded latest lifecycle snapshot per canonical call. */
   toolStates: PersistentIndex<ToolProjection>;
   /** Latest positive operational evidence for the active turn. */
@@ -202,11 +246,27 @@ export function emptyAggregates(): Aggregates {
   };
 }
 
+export function emptyContextProjection(): SessionContextProjection {
+  return {
+    integrity: 'valid',
+    latestStartedTurnId: null,
+    acceptedObservationTurnId: null,
+    observation: null,
+    freshness: 'unobserved',
+    latestCompaction: null,
+  };
+}
+
 function emptyProjector(): ProjectorState {
   return {
     sequenceReceipts: null,
     eventSequences: null,
     pendingFrames: null,
+    pendingEventSequences: null,
+    pendingContextProjectionCount: 0,
+    pendingContextTurnCounts: null,
+    latestContextTurnEvidence: null,
+    supersededContextTurns: null,
     streams: null,
   };
 }
@@ -230,11 +290,13 @@ export function initialChatState(
     conversationId,
     sessionId,
     sessionContextReady: false,
+    contextProjectionReady: sessionId === null,
     highWaterSequence: 0,
     projectedThroughSequence: 0,
     frames: emptySequence(),
     projectedFrames: emptySequence(),
     aggregates: emptyAggregates(),
+    contextProjection: emptyContextProjection(),
     toolStates: null,
     currentActivity: null,
     terminalTurns: null,
@@ -275,6 +337,229 @@ function foldAggregate(agg: Aggregates, event: ChatEvent): Aggregates {
   }
 }
 
+function contextObservationFromEvent(
+  event: Extract<ChatEvent, { kind: 'context-observation' }>,
+): ContextObservation {
+  if (event.confidence === 'unavailable') {
+    return { confidence: 'unavailable', reason: event.reason };
+  }
+  return {
+    confidence: event.confidence,
+    usedTokens: event.usedTokens,
+    usableTokens: event.usableTokens,
+    contextWindowTokens: event.contextWindowTokens,
+  };
+}
+
+function isContextInvalidatorEvent(event: ConversationEventFrame['event']): boolean {
+  return event.kind === 'compaction'
+    || (event.kind === 'activity-state' && event.phase === 'turn-starting');
+}
+
+function isContextProjectionEvent(event: ConversationEventFrame['event']): boolean {
+  return event.kind === 'context-observation' || isContextInvalidatorEvent(event);
+}
+
+function conflictedContextProjection(
+  projection: SessionContextProjection,
+): SessionContextProjection {
+  return {
+    ...projection,
+    integrity: 'conflicted',
+    latestStartedTurnId: null,
+    acceptedObservationTurnId: null,
+    observation: null,
+    latestCompaction: null,
+    freshness: 'unobserved',
+  };
+}
+
+function withPendingContextInvalidation(state: ChatState): ChatState {
+  const { contextProjection, projector } = state;
+  if (
+    contextProjection.integrity !== 'valid'
+    || contextProjection.freshness !== 'fresh'
+    || contextProjection.observation === null
+  ) return state;
+  const pendingTurns = projector.pendingContextTurnCounts;
+  const hasDifferentTurn = pendingTurns !== null && (
+    pendingTurns.size > 1 || pendingTurns.key !== contextProjection.observation.turnId
+  );
+  const hasLaterInvalidator = projector.pendingContextProjectionCount > 0 || hasDifferentTurn;
+  if (!hasLaterInvalidator) return state;
+  return {
+    ...state,
+    contextProjection: {
+      ...contextProjection,
+      freshness: 'stale',
+    },
+  };
+}
+
+function withFrameContextTurnEvidence(
+  state: ChatState,
+  frame: ConversationEventFrame,
+): ChatState {
+  if (typeof frame.turnId !== 'string' || frame.turnId.length === 0) return state;
+  let next = state;
+  if (frame.event.kind !== 'context-observation') {
+    const latest = next.projector.latestContextTurnEvidence;
+    if (
+      latest?.turnId !== frame.turnId
+      && indexGet(next.projector.supersededContextTurns, frame.turnId)
+    ) {
+      return withContextIntegrityConflict(
+        next,
+        `context:${frame.eventId}:superseded-turn`,
+      );
+    }
+    next = {
+      ...next,
+      projector: {
+        ...next.projector,
+        supersededContextTurns: latest && latest.turnId !== frame.turnId
+          ? indexSet(next.projector.supersededContextTurns, latest.turnId, true)
+          : next.projector.supersededContextTurns,
+        latestContextTurnEvidence: {
+          turnId: frame.turnId,
+          sequence: frame.sequence,
+        },
+      },
+    };
+  }
+  const projection = next.contextProjection;
+  if (
+    projection.integrity !== 'valid'
+    || projection.observation === null
+    || frame.turnId === projection.observation.turnId
+  ) return next;
+  return {
+    ...next,
+    contextProjection: {
+      ...projection,
+      freshness: 'stale',
+    },
+  };
+}
+
+function addPendingContextEvidence(
+  projector: ProjectorState,
+  frame: ConversationEventFrame,
+): ProjectorState {
+  let pendingContextTurnCounts = projector.pendingContextTurnCounts;
+  if (typeof frame.turnId === 'string' && frame.turnId.length > 0) {
+    pendingContextTurnCounts = indexSet(
+      pendingContextTurnCounts,
+      frame.turnId,
+      (indexGet(pendingContextTurnCounts, frame.turnId) ?? 0) + 1,
+    );
+  }
+  return {
+    ...projector,
+    pendingContextProjectionCount: projector.pendingContextProjectionCount
+      + (isContextProjectionEvent(frame.event) ? 1 : 0),
+    pendingContextTurnCounts,
+  };
+}
+
+function removePendingContextEvidence(
+  projector: ProjectorState,
+  frame: ConversationEventFrame,
+): ProjectorState {
+  let pendingContextTurnCounts = projector.pendingContextTurnCounts;
+  if (typeof frame.turnId === 'string' && frame.turnId.length > 0) {
+    const count = indexGet(pendingContextTurnCounts, frame.turnId);
+    if (count !== undefined) {
+      pendingContextTurnCounts = count <= 1
+        ? indexDelete(pendingContextTurnCounts, frame.turnId)
+        : indexSet(pendingContextTurnCounts, frame.turnId, count - 1);
+    }
+  }
+  return {
+    ...projector,
+    pendingContextProjectionCount: Math.max(
+      0,
+      projector.pendingContextProjectionCount
+        - (isContextProjectionEvent(frame.event) ? 1 : 0),
+    ),
+    pendingContextTurnCounts,
+  };
+}
+
+function foldContextProjection(
+  projection: SessionContextProjection,
+  frame: ConversationEventFrame,
+  terminalTurns: PersistentIndex<true>,
+  latestTurnEvidence: ContextTurnEvidence | null,
+): { projection: SessionContextProjection; conflict: string | null } {
+  const event = frame.event;
+  if (projection.integrity === 'conflicted' && isContextProjectionEvent(event)) {
+    return event.kind === 'context-observation'
+      ? { projection, conflict: `context:${frame.eventId}:projection-conflicted` }
+      : { projection, conflict: null };
+  }
+  if (event.kind === 'activity-state' && event.phase === 'turn-starting') {
+    if (!frame.turnId) {
+      return { projection, conflict: `context:${frame.eventId}:turn-start` };
+    }
+    return {
+      projection: {
+        ...projection,
+        latestStartedTurnId: frame.turnId,
+        freshness: projection.observation ? 'stale' : 'unobserved',
+      },
+      conflict: null,
+    };
+  }
+  if (event.kind === 'compaction') {
+    return {
+      projection: {
+        ...projection,
+        freshness: projection.observation ? 'stale' : 'unobserved',
+        latestCompaction: {
+          turnId: frame.turnId ?? null,
+          sequence: frame.sequence,
+          occurredAt: frame.occurredAt,
+          trigger: event.trigger,
+          preTokens: event.preTokens,
+          postTokens: event.postTokens,
+        },
+      },
+      conflict: null,
+    };
+  }
+  if (event.kind !== 'context-observation') {
+    return { projection, conflict: null };
+  }
+  if (
+    !frame.turnId
+    || projection.latestStartedTurnId !== frame.turnId
+    || latestTurnEvidence?.turnId !== frame.turnId
+  ) {
+    return { projection, conflict: `context:${frame.eventId}:turn-order` };
+  }
+  if (!indexGet(terminalTurns, frame.turnId)) {
+    return { projection, conflict: `context:${frame.eventId}:turn-not-settled` };
+  }
+  if (projection.acceptedObservationTurnId === frame.turnId) {
+    return { projection, conflict: `context:${frame.eventId}:duplicate-turn` };
+  }
+  return {
+    projection: {
+      ...projection,
+      acceptedObservationTurnId: frame.turnId,
+      observation: {
+        observation: contextObservationFromEvent(event),
+        turnId: frame.turnId,
+        sequence: frame.sequence,
+        occurredAt: frame.occurredAt,
+      },
+      freshness: 'fresh',
+    },
+    conflict: null,
+  };
+}
+
 function sequenceKey(sequence: number): string {
   return String(sequence);
 }
@@ -297,6 +582,15 @@ function withConflict(state: ChatState, conflict: string): ChatState {
   return integrityConflicts === state.integrityConflicts
     ? state
     : { ...state, integrityConflicts };
+}
+
+function withContextIntegrityConflict(state: ChatState, conflict: string): ChatState {
+  const conflicted = withConflict(state, conflict);
+  if (conflicted.contextProjection.integrity === 'conflicted') return conflicted;
+  return {
+    ...conflicted,
+    contextProjection: conflictedContextProjection(conflicted.contextProjection),
+  };
 }
 
 function applyDeltaToBuffer(buffer: DeltaBuffer, delta: ChatDeltaEvent): DeltaBuffer {
@@ -480,6 +774,8 @@ function foldStableFrame(
   let asks = state.asks;
   let pendingAsks = state.pendingAsks;
   let answeredAsks = state.answeredAsks;
+  let contextProjection = state.contextProjection;
+  let contextProjectionReady = state.contextProjectionReady;
 
   if (binding.valid && event.kind === 'tool-state') {
     const previous = indexGet(toolStates, event.callId);
@@ -702,6 +998,27 @@ function foldStableFrame(
     answeredAsks = {};
   }
 
+  if (!binding.valid && isContextProjectionEvent(event)) {
+    contextProjection = conflictedContextProjection(contextProjection);
+  } else if (binding.valid) {
+    const contextFold = foldContextProjection(
+      contextProjection,
+      frame,
+      terminalTurns,
+      state.projector.latestContextTurnEvidence,
+    );
+    if (contextFold.conflict) {
+      binding.valid = false;
+      binding.conflicts = addConflict(binding.conflicts, contextFold.conflict);
+      contextProjection = conflictedContextProjection(contextProjection);
+    } else {
+      contextProjection = contextFold.projection;
+      if (event.kind === 'context-observation' || event.kind === 'compaction') {
+        contextProjectionReady = true;
+      }
+    }
+  }
+
   return {
     ...state,
     frames: sequenceAppend(state.frames, frame),
@@ -711,6 +1028,8 @@ function foldStableFrame(
     aggregates: binding.valid && !streamWasRetracted
       ? foldAggregate(state.aggregates, event)
       : state.aggregates,
+    contextProjection,
+    contextProjectionReady,
     toolStates,
     currentActivity,
     terminalTurns,
@@ -738,14 +1057,18 @@ function foldFrame(
   const priorEventSequence = indexGet(state.projector.eventSequences, frame.eventId);
   if (priorEventSequence !== undefined) {
     work.path = 'conflict';
-    return withConflict(state, `event:${frame.eventId}`);
+    return withContextIntegrityConflict(state, `event:${frame.eventId}`);
   }
   const projector: ProjectorState = {
     ...state.projector,
     eventSequences: indexSet(state.projector.eventSequences, frame.eventId, frame.sequence),
   };
-  const indexedState = { ...state, projector };
-  const binding = bindStream(projector, state.integrityConflicts, frame);
+  const indexedState = withFrameContextTurnEvidence({ ...state, projector }, frame);
+  const binding = bindStream(
+    indexedState.projector,
+    indexedState.integrityConflicts,
+    frame,
+  );
   if (frame.event.kind === 'stream-delta') {
     return foldDeltaFrame(indexedState, frame, binding);
   }
@@ -766,11 +1089,19 @@ function drainContiguous(
     const pendingKey = sequenceKey(frame.sequence + 1);
     frame = indexGet(next.projector.pendingFrames, pendingKey);
     if (frame) {
+      const withoutPendingContext = removePendingContextEvidence(next.projector, frame);
+      const pendingEventSequence = indexGet(
+        withoutPendingContext.pendingEventSequences,
+        frame.eventId,
+      );
       next = {
         ...next,
         projector: {
-          ...next.projector,
+          ...withoutPendingContext,
           pendingFrames: indexDelete(next.projector.pendingFrames, pendingKey),
+          pendingEventSequences: pendingEventSequence === frame.sequence
+            ? indexDelete(withoutPendingContext.pendingEventSequences, frame.eventId)
+            : withoutPendingContext.pendingEventSequences,
         },
       };
     }
@@ -797,7 +1128,12 @@ export function reduceConversationEvent(
     return { state, work: receiptWork };
   }
   if (state.conversationId !== null && frame.conversationId !== state.conversationId) {
-    return { state, work: receiptWork };
+    return {
+      state: state.sessionId === frame.sessionId
+        ? withContextIntegrityConflict(state, `conversation:${frame.conversationId}`)
+        : state,
+      work: receiptWork,
+    };
   }
 
   const key = sequenceKey(frame.sequence);
@@ -809,14 +1145,25 @@ export function reduceConversationEvent(
       return { state, work: receiptWork };
     }
     receiptWork.path = 'conflict';
-    return { state: withConflict(state, `sequence:${frame.sequence}`), work: receiptWork };
+    return {
+      state: withContextIntegrityConflict(state, `sequence:${frame.sequence}`),
+      work: receiptWork,
+    };
   }
   // A replay checkpoint positively accounts for every lower sequence, including
   // hidden legacy rows. An unseen late frame cannot be safely inserted behind it.
   if (frame.sequence <= state.projectedThroughSequence) {
     receiptWork.path = 'conflict';
-    return { state: withConflict(state, `sequence:${frame.sequence}`), work: receiptWork };
+    return {
+      state: withContextIntegrityConflict(state, `sequence:${frame.sequence}`),
+      work: receiptWork,
+    };
   }
+
+  const foldedEventSequence = indexGet(state.projector.eventSequences, frame.eventId);
+  const pendingEventSequence = indexGet(state.projector.pendingEventSequences, frame.eventId);
+  const eventIdentityConflict = foldedEventSequence !== undefined
+    || pendingEventSequence !== undefined;
 
   receiptWork.acceptedEventVisits = 1;
   let projector: ProjectorState = {
@@ -833,19 +1180,28 @@ export function reduceConversationEvent(
     highWaterSequence: Math.max(state.highWaterSequence, frame.sequence),
     projector,
   };
+  if (eventIdentityConflict) {
+    next = withContextIntegrityConflict(next, `event:${frame.eventId}`);
+  }
 
   if (frame.sequence > state.projectedThroughSequence + 1) {
     receiptWork.path = 'buffered';
-    projector = {
-      ...projector,
+    projector = addPendingContextEvidence({
+      ...next.projector,
       pendingFrames: indexSet(projector.pendingFrames, key, frame),
-    };
+      pendingEventSequences: eventIdentityConflict
+        ? projector.pendingEventSequences
+        : indexSet(projector.pendingEventSequences, frame.eventId, frame.sequence),
+    }, frame);
     next = { ...next, projector };
-    return { state: next, work: receiptWork };
+    return { state: withPendingContextInvalidation(next), work: receiptWork };
   }
 
   receiptWork.path = 'ordered';
-  return { state: drainContiguous(next, frame, receiptWork), work: receiptWork };
+  return {
+    state: withPendingContextInvalidation(drainContiguous(next, frame, receiptWork)),
+    work: receiptWork,
+  };
 }
 
 export function applyConversationEvent(
@@ -860,16 +1216,31 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
   receiptWork.fallbackRebuilds = 1;
   receiptWork.historyVisits = replay.events.length;
 
-  const ordered = replay.events
+  const allOrdered = replay.events
     .map((event, inputIndex) => ({ event, inputIndex }))
     .sort((left, right) =>
       left.event.sequence - right.event.sequence || left.inputIndex - right.inputIndex)
     .map(({ event }) => event);
+  const firstDigestBySequence = new Map<number, string>();
+  const conflictingSequences = new Set<number>();
+  for (const event of allOrdered) {
+    const digest = frameDigest(event);
+    const first = firstDigestBySequence.get(event.sequence);
+    if (first === undefined) firstDigestBySequence.set(event.sequence, digest);
+    else if (first !== digest) conflictingSequences.add(event.sequence);
+  }
+  const ordered = allOrdered.filter((event) => !conflictingSequences.has(event.sequence));
   let next = initialChatState(
     replay.sessionId,
-    ordered[0]?.conversationId ?? replay.sessionId,
+    allOrdered[0]?.conversationId ?? replay.sessionId,
   );
   next = { ...next, optimistic: state.optimistic };
+  if (new Set(allOrdered.map((event) => event.conversationId)).size > 1) {
+    next = withContextIntegrityConflict(next, 'replay:conversation');
+  }
+  for (const sequence of [...conflictingSequences].sort((left, right) => left - right)) {
+    next = withContextIntegrityConflict(next, `sequence:${sequence}`);
+  }
 
   for (const event of ordered) {
     const belongs =
@@ -885,9 +1256,9 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     receiptWork.compactedDeltaPayloads += reduced.work.compactedDeltaPayloads;
   }
 
-  const highestVisible = ordered.at(-1)?.sequence ?? 0;
+  const highestVisible = allOrdered.at(-1)?.sequence ?? 0;
   if (replay.highWaterSequence < highestVisible) {
-    next = withConflict(next, 'replay:high-water');
+    next = withContextIntegrityConflict(next, 'replay:high-water');
   }
   const checkpoint = Math.max(
     replay.highWaterSequence,
@@ -899,6 +1270,7 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     highWaterSequence: checkpoint,
     projectedThroughSequence: checkpoint,
     sessionContextReady: true,
+    contextProjectionReady: true,
   };
   return { state: next, work: receiptWork };
 }
@@ -911,6 +1283,7 @@ export function applySessionChanged(state: ChatState, frame: SessionChangedFrame
   const next = {
     ...initialChatState(frame.session?.id ?? null),
     sessionContextReady: frame.session === null,
+    contextProjectionReady: frame.session === null || frame.transition === 'new-session',
   };
   return state.sessionId === null && state.optimistic.length > 0
     ? { ...next, optimistic: state.optimistic }
