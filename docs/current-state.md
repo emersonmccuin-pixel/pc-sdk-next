@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11 after CF-004 sealed verification.
+Last updated: 2026-07-11 after CF-004 guarded landing.
 
 ## Preserved baseline
 
@@ -34,6 +34,11 @@ only in PC-SDK Next.
 - CF-003 feature record: `936058fa866d51344e77bd1b1ec873f3bbb3662a`
 - CF-003 landing merge: `f76579686d2fc5df66e6eac4adcff0344b656256`
 - CF-003 worktree: removed after positive sealed/feature ancestry proof;
+  feature branch preserved
+- CF-004 sealed implementation: `b1a377e7a75007e29a51e36dcdd5f283aaa1378f`
+- CF-004 feature record: `3e80d8fdcae208dabcf46bd01538418e8dc89ad4`
+- CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
+- CF-004 worktree: removed after positive sealed/feature ancestry proof;
   feature branch preserved
 
 Isolation defaults in the planning slice:
