@@ -3,8 +3,8 @@
 Status: **locked architecture with implemented v1 lifecycle** (updated
 2026-07-12). Isolation, readiness, sealed delivery, verification/review,
 guarded landing, teardown, and recovery have live evidence. SF-002 implements
-cooperative same-host repository exclusion on its verified feature branch and
-is ready to seal/land; seal, guarded landing, push, and teardown are pending.
+cooperative same-host repository exclusion and is sealed, guarded-landed,
+post-merge verified, pushed, and cleaned up.
 
 ## Decision
 
@@ -123,6 +123,19 @@ participate. A repository child that outlives a hard-killed server is not
 contained. Until those separate boundaries are completed, simultaneous
 write-capable working-PC-SDK/Next use against one external repository remains
 manually prohibited.
+
+SF-002 landed as merge `a91bb6c8619672f316109d08719b1afea8a918f4`
+from sealed feature record `e3cf861b3f5ffb9fe30ad3d17f328ec1e150d6bc`.
+Contract/feature ancestry and exact tree
+`897142ece8cfa7c27195d7f93f17f4a06e4f78f5` were positively proved;
+post-merge `pnpm ci:check` passed with 370/370 server tests. The code landing
+was pushed and re-fetched exactly at that merge before documentation closeout.
+The feature worktree/residue and two handoff-recorded stale temp roots were
+removed only after the documented guards; the feature branch was preserved.
+These receipts do not broaden the cooperative boundary.
+
+The next bounded hardening action is `SEC-003` child-environment policy;
+`OPS-006` loopback binding remains in N7.
 
 ## Lifecycle states
 
