@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 at BC-002 browser-baseline startup.
+Last updated: 2026-07-12 at BC-002 browser-baseline closeout.
 
 ## Preserved baseline
 
@@ -278,21 +278,34 @@ pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
 domain creation. That bounded uncertainty is retained in the receipt; PM-001
 does not claim the remote stayed unchanged and will not make another live call.
 
-## Active N1 browser-baseline closure
+## N1 browser characterization evidence complete
 
-`BC-002` is active from clean pushed base `36ac71c` in isolated worktree
-`E:\Claude Code Projects\Personal\PC-SDK-Next-bc-002`. It will compare the
-preserved `e233aa5` production shell with the current production bundle using
-disposable ports, databases, logs, and repositories. The current path uses a
-deterministic fake runtime; no live provider, PM call, stable app data, or
-daily-driver checkout mutation is authorized.
+`BC-002` compared preserved `e233aa54` and current base `36ac71c` production
+bundles through isolated disposable fixtures. Four desktop/narrow captures and
+their SHA-256 receipts are tracked. Seven core shell source blobs are identical;
+measured header/tab/rail/composer geometry matched at `1440x900` and `760x720`,
+and neither subject had document-level horizontal overflow at those viewports or
+the targeted `480x720` stress width.
 
-The gate distinguishes direct browser evidence from named deterministic guards,
-reconciles the stale BC-001 findings after CF-001 through CF-004 and RS-001
-through RS-004, and records any real defect as a later bounded slice rather than
-silently changing production behavior. Root may close N1 autonomously when the
-objective gate passes; only an unresolved subjective `UI-001` divergence needs
-product direction.
+The current deterministic journey directly covered Alpha/Beta isolation,
+current/history/resumed session provenance, safe typed chat/tool/activity/
+context/quota/run projection, durable queued-send edit/remove, positive
+interrupt confirmation before replacement delivery, reload equivalence, and
+two-tab convergence. No browser console warning/error, private reasoning, raw
+native session ID, or raw continuation-attempt ID was observed in the bounded
+matrix. Durable invariant claims remain owned by the named CF-001 through
+CF-004 and RS-001 through RS-004 guards; BC-002 does not promote their global
+requirement statuses by manual observation.
+
+Both fixtures were fake-only and used temporary databases, repositories,
+credential homes, logs, and ports. Exact fixture PIDs were stopped, listeners
+were proven closed, temp-root-validated data was removed, the detached baseline
+had no tracked diff and was removed, and the stable checkout retained its
+pre-run HEAD/status. The full matrix and cleanup boundary are in
+`docs/research/browser-baseline.md` and
+`docs/execution/receipts/BC-002.md`. Together with BC-001 and the accepted
+PM-001 ownership seam, this satisfies the bounded N1 evidence gate; guarded
+landing and the post-merge receipt close N1.
 
 ## Known architectural gaps
 
@@ -312,6 +325,10 @@ product direction.
 - Runtime/setup subprocesses inherit a broad server environment. A least-
   privilege allowlist/scrub must prevent unrelated app secrets (including PM
   tokens) from reaching providers or repository commands.
+- At the inherited `480px` stress width the composer narrows to about `101px`,
+  and Escape does not dismiss App Settings in either preserved or current
+  subject. Close remains usable and no document overflow occurs. These are N7
+  usability/accessibility backlog, not a Next regression or N1 blocker.
 
 ## Completed N3 runtime-selection slice
 

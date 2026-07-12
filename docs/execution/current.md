@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 at BC-002 startup from clean pushed PM-001 closeout.
+Updated: 2026-07-12 at BC-002 browser-evidence closeout.
 
 ## Repository
 
@@ -167,13 +167,34 @@ PM-001 is complete on pushed `main` at `1adaad7`. Exact feature/merge tree
 equality, ancestry, full post-merge `pnpm ci:check`, push, and feature-worktree
 teardown passed.
 
+BC-002's bounded browser gate passes on the captured evidence. Pinned preserved
+`e233aa54` and current-base `36ac71c` production bundles retained identical core
+shell blobs and matching inspected geometry. The current deterministic journey
+covered project/session isolation, queued-send edit/remove, confirmed
+interruption, safe canonical projections, current/history/resumed provenance,
+context/quota honesty, reload equivalence, and two-tab convergence without an
+observed console warning/error or raw provider-native identity. Four canonical
+captures and exact hashes are tracked.
+
+Both fake-only fixture processes are stopped, their ports are closed, all
+temp-root-validated data/log roots are removed, the detached preserved worktree
+had no tracked diff and is removed, and the stable app checkout retained its
+pre-run HEAD/status. Full feature-tree `pnpm ci:check` (`331/331` server tests),
+the exact 14-path scope audit, the 139-reference local-path audit, and
+`git diff --check` pass. The first hostile review's matrix/reproducibility gaps
+were corrected; two final independent re-reviews report no P0/P1/P2 blocker.
+Guarded landing, post-merge CI, push, and BC-002 feature-worktree teardown
+remain the active mechanical closeout.
+
 ## Active action
 
-Execute BC-002 from its recorded worktree: prepare isolated current and
-preserved-baseline production bundles, gather reproducible browser evidence,
-reconcile BC-001, and close N1 only if its objective gate passes. A browser
-failure becomes evidence or a later bounded behavior slice; it does not silently
-expand this characterization slice.
+Finish BC-002 from its recorded worktree: run the final full gate and hostile
+review, seal the evidence, guarded-land it, prove ancestry/tree equality, run
+the post-merge gate, push, and tear down the feature worktree. After that
+positive closeout, define the smallest N4 safety slice as SF-001 data-directory
+single-instance admission. Repository exclusion, child-environment hardening,
+loopback binding, and N7 accessibility remain separate owning slices rather
+than being silently bundled into BC-002.
 
 ## Startup checks
 

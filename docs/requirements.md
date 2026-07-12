@@ -180,3 +180,17 @@ its first-run seeding hook. The five root domains were observed only after the
 hook ran; without a pre-call snapshot or private-data inspection, no-op versus
 marker stamp versus default-domain creation is inconclusive. It does not affect
 the ownership result, but the remote-unchanged acceptance item is not claimed.
+
+BC-002 browser receipt (2026-07-12): isolated production-bundle browser
+characterization at preserved `e233aa54` and current base `36ac71c` found no
+unclassified Next regression in the inspected `1440x900`, `760x720`, and
+targeted `480x720` states. Seven core shell blobs and measured geometry match;
+the deterministic current fixture directly exercised project/session
+isolation, queued-send edit/remove, confirmed interruption, safe canonical
+projection, context/quota provenance, reload equivalence, and two-tab
+convergence. Four hashed captures and the evidence-kind matrix are in
+`docs/research/browser-baseline.md`. This is point-in-time rendered-projection
+evidence, not end-to-end verification of every referenced durable invariant, so
+all requirement-table statuses remain unchanged. In particular, `UI-001`
+remains `accepted`; shell-source parity and inspected geometry do not establish
+a permanent global visual-verification gate.

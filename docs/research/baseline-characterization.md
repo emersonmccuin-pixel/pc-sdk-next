@@ -1,26 +1,32 @@
 # PC-SDK Next baseline characterization
 
-Status: reviewed implementation evidence for BC-001, 2026-07-11.
+Status: BC-001 evidence rebaselined through BC-002, 2026-07-12.
 
-This document describes the implementation as it exists at base
-`c3c9480416542cce4d42ad3b8d469887b45c1dfa`. Target ownership remains in
-`docs/architecture/boundaries.md`; differences below are migration inputs, not
-new architecture.
+The component map below records the implementation at BC-001 base
+`c3c9480416542cce4d42ad3b8d469887b45c1dfa`. The disposition sections then
+reconcile that snapshot through CF-001 to CF-004, RS-001 to RS-004, PM-001, and
+the BC-002 browser evidence from clean pushed base `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`.
+Target ownership remains in `docs/architecture/boundaries.md`; this evidence
+does not create new architecture or promote global requirement statuses by
+observation alone.
 
 ## Executive result
 
-The baseline has strong contract, verification, worktree, landing, ask, and
-recovery mechanics, but the seams are not yet the target modular monolith.
-`DispatchService` currently coordinates and owns much of orchestration, agent
-runs, verification, review, landing, teardown, and recovery. Conversation state
-has durable ordered events, but live delivery has no transactional outbox and
-the user send queue is process memory. The Claude adapter is isolated at the
-package-import boundary, while canonical runtime/session vocabulary and durable
-session stamps remain Claude/provider-shaped.
+BC-001 found strong contract, verification, worktree, landing, ask, and recovery
+mechanics but incomplete conversation/runtime seams. CF-001 through CF-004 have
+since landed the canonical transactional conversation/outbox projection,
+durable queue/control receipts, and safe activity/tool/agent families. RS-001
+through RS-004 have landed immutable orchestrator and specialist selection,
+honest context, and provider-neutral subscription quota on the Claude path.
 
-No behavior or schema was changed by BC-001.
+BC-002 proves in real production bundles that these accepted behavior changes
+remain inside the preserved shell: seven core shell blobs are identical,
+desktop/narrow geometry matches, exercised reload and two-tab projections
+converge, and no unclassified N1 regression remains. The remaining critical
+work is dependency-ordered N4 delivery/process hardening, followed by N5 Codex
+parity and later N6/N7 integration and daily-driver gates.
 
-## As-built component and data map
+## BC-001 historical component and data map
 
 | Target concern | As-built owner | Durable data | Characterization |
 | --- | --- | --- | --- |
@@ -49,7 +55,7 @@ Primary evidence: `packages/db/src/schema.ts`,
 `apps/server/src/dispatch/service.ts`, and
 `apps/server/src/dispatch/worktrees.ts`.
 
-## Accepted requirements: evidence corrections
+## BC-001 accepted-requirement evidence corrections
 
 BC-001 promotes only requirements whose complete stated behavior has direct
 implementation and test evidence:
@@ -65,95 +71,80 @@ implementation and test evidence:
   and landing independently derives and rechecks branch-tip provenance;
   `apps/server/test/landing-guards.test.ts` covers the guards.
 
-All runtime and chat requirements remain `accepted`. Notable partial work must
-not be mistaken for end-to-end implementation:
+Those corrections were point-in-time BC-001 promotions. Later slices supply
+additional implementation and verification receipts without making this
+research document the status authority:
 
-- `ARCH-003`: only the Claude SDK import boundary is guarded; `sdkUuid`,
-  `sdkSessionId`, provider IDs, Claude session IDs, and native event details
-  still cross canonical, persistence, or browser seams.
-- `CHAT-002`: durable events and the browser use server sequence, but sequence
-  allocation is process-local and lacks a transactional outbox path.
-- `CHAT-005`: visible FIFO behavior exists only in process memory.
-- `RUN-003` and `AGENT-002`: agent runs have a partial nullable stamp;
-  orchestrator sessions and specialist revisions do not meet the immutable full
-  selection/snapshot contract.
-- `WT-002`, `WT-005`, and `WT-006`: substantial guarded behavior is live, but
-  explicit no-op readiness receipts and approved abandonment remain gaps.
-- `WT-004` and `OPS-005`: isolated builds exist, but landing exclusion is
-  process-local and there is no cross-process repository lease.
-- `SEC-003`: not met. Environment construction copies `process.env` and scrubs
-  only two Anthropic variables.
+- CF-001/CF-002 close the canonical sequence/outbox/live-replay and ordered
+  browser-projection gaps identified under `ARCH-003` and `CHAT-002`.
+- CF-003 closes the process-memory queue/control gap under `CHAT-005` and adds
+  durable FIFO revisions plus positive interrupt receipts.
+- CF-004 closes the unrestricted-thinking/tool-payload presentation gap with
+  safe typed activity, tool, ask, approval, and agent projections.
+- RS-001 closes immutable orchestrator selection and fail-closed native
+  continuation on the Claude path; RS-003 does the same for specialist revision
+  and run selection. RS-002/RS-004 add honest context and quota contracts.
+- Explicit no-op readiness, approved abandonment, remaining repository-phase
+  recovery, cross-process repository exclusion, and child-environment
+  isolation remain N4 gaps under `WT-002`, `WT-004` through `WT-006`,
+  `OPS-005`, and `SEC-003`.
+- Codex adapter conformance and peer-runtime parity remain N5. No Claude-path
+  evidence silently proves the Codex half.
 
-## Characterization and guard-test backlog
+## Characterization and guard-test backlog reconciliation
 
-Highest-value tests before or with the owning migration:
+| BC-001 item | Disposition through BC-002 | Named current evidence |
+| --- | --- | --- |
+| Restart with an active turn/queued sends; duplicate client message; multi-tab ordering; session switch during delivery | **Closed on current path.** CF-003 owns durable restart/idempotency/control; BC-002 directly covers edit/remove, project/session isolation, reload, and two-tab convergence. | `packages/db/test/send-queue.test.ts`; `apps/server/test/conversation-control.test.ts`; `apps/server/test/kill-recovery.test.ts`; `apps/web/test/ws-client.test.ts` |
+| Live/replay equivalence; insert/broadcast crash; reconnect deltas; conflicting/reordered sequence | **Closed.** CF-001/CF-002 own transactional persistence/projection; BC-002 adds a direct reload/two-tab case. | `packages/db/test/conversation-events.test.ts`; `packages/db/test/live-outbox.test.ts`; `apps/server/test/conversation-relay.test.ts`; `apps/web/test/chat-store.test.ts` |
+| Positive interrupt success/failure/timeout receipts | **Closed.** BC-002 directly observes confirmed interruption; negative variants remain guard-backed. | `packages/db/test/send-queue.test.ts`; `apps/server/test/conversation-control.test.ts`; `apps/server/test/session-service.test.ts` |
+| Safe activity and no private reasoning | **Closed.** CF-004 owns safe canonical projections; BC-002 observes only safe summaries. | `apps/server/test/sdk-import-guard.test.ts`; `apps/server/test/sdk-tool-mapping.test.ts`; `apps/web/test/chat-render.test.ts` |
+| Immutable orchestrator selection/resume | **Split/closed for the Claude orchestrator path.** RS-001 includes fail-closed legacy state; Codex/handoff remains N5. | `packages/db/test/runtime-session-selection.test.ts`; `apps/server/test/runtime-session-selection.test.ts`; `apps/web/test/sessions.test.ts` |
+| Adapter conformance | **Partial.** Claude capability/selection/context/quota guards exist; peer Codex remains N5. | `packages/contracts/test/runtime.test.ts`; `apps/server/test/runtime-registry.test.ts`; `apps/server/test/claude-adapter-runtime.test.ts`; `apps/server/test/claude-adapter-quota.test.ts` |
+| Immutable specialist revision/run selection | **Closed.** RS-003 owns immutable specialist/run stamps; BC-002 observes transcript provenance. | `packages/db/test/specialist-execution-stamps.test.ts`; `apps/server/test/dispatch-guards.test.ts`; `apps/web/test/agent-transcript.test.ts` |
+| Least-privilege environment canaries | **Open N4 `SEC-003`.** | `apps/server/src/runner/account-env.ts`; `apps/server/test/account-env.test.ts` covers only the current narrow scrub. |
+| Two server processes contending for one repository | **Open N4 `OPS-005`/`WT-004`;** locks remain process-local. | `apps/server/src/dispatch/service.ts`; `apps/server/test/landing-guards.test.ts` lacks the cross-process proof. |
+| Crash/restart across pre-attach and repository phases | **Partial.** Conversation/control and several repository phases are guarded; residual readiness/recovery UI remains N4. | `apps/server/test/kill-recovery.test.ts`; `apps/server/test/worktree-profile.test.ts`; `apps/server/test/landing-guards.test.ts` |
+| Explicit no-op readiness and authorized abandonment | **Open N4 `WT-002`/`WT-005`/`WT-006`.** | `apps/server/src/dispatch/worktrees.ts`; `apps/server/test/worktree-profile.test.ts` does not cover the missing positive receipts. |
 
-1. Restart with an active turn and queued sends; duplicate `clientMessageId`;
-   multi-tab ordering; session switch during delivery.
-2. Live/replay equivalence across the insert-to-broadcast crash window and
-   reconnect during deltas; duplicate/conflicting sequence and reordered delta
-   handling.
-3. Positive interrupt success/failure/timeout receipts, with replacement send
-   blocked until confirmation.
-4. A safe-activity guard proving provider thinking/private reasoning never
-   enters canonical persistence or presentation.
-5. Immutable orchestrator runtime selection and resume routing after account,
-   model, or effort changes; legacy rows must not silently acquire defaults.
-6. Adapter conformance for capabilities, discovery, typed unsupported states,
-   terminal outcomes, concurrent-send rejection, resume provenance, interrupt,
-   and disposal.
-7. Immutable specialist revision reconstruction after edit/delete/restart,
-   including effort and the complete runtime selection.
-8. Environment canaries proving PM, GitHub, cloud, vault, and unrelated secrets
-   do not reach runtime, setup, readiness, verification, or Git subprocesses.
-9. Two independent server processes contending to land into one repository.
-10. Crash/restart during pre-attach agent-envelope delivery, each recovery
-    phase, and preparation/readiness subprocess execution.
-11. Explicit positive no-op readiness receipts and authorized-abandonment
-    teardown guards.
+## Dependency-ordered migration disposition
 
-## Dependency-ordered N2-N5 slices
+1. **N2 conversation foundation: complete.** CF-001 through CF-004 landed the
+   canonical identity/outbox/replay, durable control, and safe projection work.
+2. **N3 Claude-path runtime/session/context/quota contracts: complete.** RS-001
+   through RS-004 landed immutable selection, specialist snapshots, context,
+   and provider-neutral quota semantics.
+3. **N4 delivery and process hardening: next.** Complete data-directory
+   ownership, cross-process repository exclusion, least-privilege child
+   environments, readiness/recovery receipts, and approved abandonment.
+4. **N5 Codex spike and adapter: ordered after N4's shared safety invariants.**
+   Validate the pinned app-server schema/subscription path, then run the same
+   conformance and real-delivery gates.
+5. **N6/N7 integration and promotion:** implement only the accepted PM/MCP seam,
+   then complete loopback/process, operational, accessibility, and daily-driver
+   promotion gates.
 
-These are planning candidates, not approved behavior-changing slices.
+## Decision dispositions
 
-1. **N2 canonical conversation identity and persistence:** define event
-   families and adapter-neutral turn/item/stream identities; add transactional
-   DB sequence and chat outbox; migrate producer, store, replay, browser, and
-   tests in one pass.
-2. **N2 durable send/control state:** persist idempotent FIFO entries and
-   revisions bound to immutable session/turn IDs; add edit/remove and positive
-   interrupt receipts; rebuild queue UI projection.
-3. **N2 safe activity and tool/agent projections:** replace unrestricted
-   thinking with operational activity; add typed tool lifecycle and durable
-   agent-card projections.
-4. **N3 runtime capability and immutable session selection:** add capability,
-   model/effort discovery, receipts, full orchestrator stamps, resume routing,
-   selection-change session boundaries, and visible provenance.
-5. **N3 context/usage/account normalization:** key observations by runtime and
-   account and retain source semantics, confidence, window, staleness, and
-   explicit unavailable/compacted context.
-6. **N4 specialist/communication/security hardening:** immutable specialist
-   revisions and run selections, mailbox-backed orchestration traffic,
-   least-privilege child environments/permissions, cross-process repository
-   lease, and remaining recovery/abandonment receipts.
-7. **N5 Codex spike and adapter:** only after the canonical contract and Claude
-   conformance pass; validate the pinned app-server schema and subscription
-   path, then run the same conformance and real-delivery gates.
-
-## Decisions required before the first behavior change
-
-1. Historical `thinking` rows: retain but hide as legacy data, or redact them.
-   The recommended default is retain-but-never-project, with no new writes.
-2. Legacy sessions/runs missing immutable selection: mark native resume
-   unavailable and start clean/attributed handoff, or approve explicit
-   assumptions. The fail-closed recommendation is non-resumable legacy state.
-3. Empty preparation/readiness profiles: require explicit positive no-op
-   receipts. This is recommended so absence never means success.
-4. Specialist permissions: decide whether headless `bypassPermissions` can be
-   retained behind an explicit app policy or must move to runtime approvals.
+1. Historical private thinking is retained only as legacy data and never
+   projected; no new private-reasoning writes are accepted. CF-004 implements
+   the safe replacement.
+2. Legacy sessions/runs without immutable selection fail closed for native
+   continuation. RS-001/RS-003 implement that decision.
+3. Empty preparation/readiness profiles still require an explicit positive
+   no-op receipt; N4 owns the implementation.
+4. Specialist permissions remain an explicit N4/N6 policy checkpoint. Existing
+   bypass behavior is not treated as satisfying `SEC-002`.
 
 ## Verification baseline
 
 After worktree-local dependency preparation, `pnpm ci:check` passed: all
 workspace typechecks, all tests (including 179 server tests), and the
 dead-import guard.
+
+BC-002 adds pinned preserved/current production builds, real-browser desktop/
+narrow/stress measurements, four hashed captures, exact core-shell blob parity,
+direct queue/interrupt/reload/two-tab evidence, and positive disposable-process/
+data/worktree cleanup. Its final `pnpm ci:check`, hostile review, and guarded
+landing are recorded in `docs/execution/receipts/BC-002.md` rather than inferred
+from this research summary.
