@@ -1,7 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-002 guarded landing, push, and feature worktree
-teardown.
+Updated: 2026-07-12 after RS-003 definition and startup verification.
 
 ## Repository
 
@@ -66,24 +65,32 @@ teardown.
 - RS-002 feature record: `bc3d90630519b6780a0f300b062c0fd3f9b18963`
 - RS-002 landing merge: `3a274034499f9454e059ded091b79276394780af`
 - RS-002 landed tree: `ca01b1badca3d93ad979b9cf8c261cbb7e671955`
+- Active slice: `docs/execution/slices/RS-003.md`
+- RS-003 base: `ff5b04bbb799293b31800267f061dcc6edb13742`
+- RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
+- RS-003 feature worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
 
 ## Status
 
-RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-002
-adds honest per-session context observation and composer/history projection
-through Claude's positive control receipt and the existing canonical
-conversation/outbox path. Contract, DB, server, web, hostile review, production
-build, isolated browser, and full workspace gates passed. The landing tree
-exactly matches the feature record, and no feature worktree residue remains.
-Quota normalization, Codex, specialist widening, and handoff compilation remain
-out of scope. There is no user-direction blocker.
+RS-001 and RS-002 are complete, guarded-landed, pushed, and torn down. RS-003
+is active from the clean pushed RS-002 closeout. It freezes the current
+execution-effective specialist revision plus complete runtime selection on
+agent runs, adds durable native create/resume attempt receipts, removes native
+session identity from browser/pending-ask seams, and makes continuation/restart
+consume frozen evidence rather than mutable roster defaults. Locked offline
+preparation reused 471 packages with zero downloads and baseline workspace
+typecheck passed. Quota normalization, Codex, selector UI, full revisioned
+builder defaults, and handoff compilation remain out of scope. There is no
+user-direction blocker.
 
 ## Next safe action
 
-Re-read the master plan, current state, requirements, and relevant boundaries;
-then define the next smallest coherent N3 slice in a new recorded run-owned
-worktree. Do not widen RS-002's Claude-backed context receipt into quota, Codex,
-or specialist claims without the next slice's explicit scope.
+Implement RS-003 from `docs/execution/slices/RS-003.md`: land the strict
+snapshot/selection contract and migration first, then move every dispatch,
+continuation, paused-revival, and review path through the durable attempt
+receipt seam. Preserve `main` read-only until all hostile and workspace gates
+pass.
 
 ## Startup checks
 
@@ -94,8 +101,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The RS-002 feature worktree is removed. Create and record a new run-owned
-worktree before the next tracked mutation; the main checkout remains read-only.
+The RS-003 feature worktree is prepared and baseline-green. All tracked RS-003
+mutation occurs there; the main checkout remains read-only.
 
 ## Known blockers
 

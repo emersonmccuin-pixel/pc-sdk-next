@@ -1,7 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-002 guarded landing, push, and feature
-worktree teardown.
+Last updated: 2026-07-12 after RS-003 definition and startup verification.
 
 ## Preserved baseline
 
@@ -58,6 +57,10 @@ only in PC-SDK Next.
 - RS-002 feature worktree: removed after positive sealed/feature ancestry and
   exact tree-equality proof; the deregistered dependency residue was verified
   and removed
+- RS-003 base: `ff5b04bbb799293b31800267f061dcc6edb13742`
+- RS-003 feature branch: `codex/rs-003-specialist-selection-stamps`
+- RS-003 active worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-003`
 
 Isolation defaults in the planning slice:
 
@@ -141,6 +144,21 @@ Isolation defaults in the planning slice:
   persistence; deterministic live/replay/history projection; honest stale,
   unavailable, and compaction states; and a shared context-used bar that never
   renders a percentage without fresh accepted evidence.
+
+## Active N3 specialist-selection slice
+
+`RS-003` is active from clean pushed base
+`ff5b04bbb799293b31800267f061dcc6edb13742`. Its locked boundary is the
+specialist execution/run seam: freeze the execution-effective specialist
+snapshot and complete runtime selection; add durable create/resume attempt
+receipts; eliminate placeholder/provider-named session identity from browser
+and pending-ask surfaces; and make continuation, paused revival, and reviewer
+dispatch consume durable evidence. Locked offline preparation reused all 471
+packages with zero downloads and baseline `pnpm typecheck` passed.
+
+Quota normalization, Codex, selector UI, full revisioned-builder defaults,
+permission/MCP policy changes, and attributed handoff remain separate work.
+There is no user-direction blocker.
 
 ## Known architectural gaps
 
