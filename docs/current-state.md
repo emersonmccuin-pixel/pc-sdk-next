@@ -40,8 +40,12 @@ only in PC-SDK Next.
 - CF-004 landing merge: `ab2ffb95c3fb91931af3853ffc8f7f583080cfa5`
 - CF-004 worktree: removed after positive sealed/feature ancestry proof;
   feature branch preserved
-- RS-001 feature branch: `codex/rs-001-session-selection-stamps`
+- RS-001 feature branch: `codex/rs-001-session-selection-stamps` (preserved)
 - RS-001 sealed implementation: `cb61f255220dd50e95b53418f28e6bdd05f5077c`
+- RS-001 feature record: `9da30c2e30cb29395b28bc8e317fa291599e8d56`
+- RS-001 landing merge: `039af6c56a1235260d9859af1c51a6dca20fb990`
+- RS-001 worktree: removed after positive sealed/feature ancestry and exact
+  tree-equality proof; deregistered dependency residue was verified and removed
 
 Isolation defaults in the planning slice:
 
@@ -148,9 +152,9 @@ Isolation defaults in the planning slice:
   privilege allowlist/scrub must prevent unrelated app secrets (including PM
   tokens) from reaching providers or repository commands.
 
-## Active work
+## Completed N3 runtime-selection slice
 
-`RS-001` completes the bounded orchestrator half of `RUN-001` through `RUN-004`
+`RS-001` completed the bounded orchestrator half of `RUN-001` through `RUN-004`
 and `RUN-007`: immutable selection, account-scoped Claude discovery, exact
 create/resume receipts, durable attempt fencing, atomic account/session
 transitions, and honest typed presentation. Hostile coverage includes mutable
