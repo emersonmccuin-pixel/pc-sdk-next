@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after PM-001 evidence synthesis.
+Last updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
 
 ## Preserved baseline
 
@@ -234,7 +234,7 @@ Sealed/feature ancestry and exact tree equality were proven, post-merge
 `pnpm ci:check` passed, and the feature worktree plus verified dependency/build
 residue were removed. The feature branch is preserved.
 
-## Active N1 AInativePM ownership decision
+## Accepted N1 AInativePM ownership decision
 
 `PM-001` has completed its parallel domain/persistence, UI/REST, MCP, and
 PC-SDK-touchpoint evidence lanes from clean pushed PC-SDK Next base
@@ -252,9 +252,10 @@ Strict reads and deep links may be automatic. Current PM integration writes are
 blocked because the bridge lacks a positive app policy gate and the PM surface
 lacks general caller idempotency, a durable queryable
 mutation receipt, expected revision, remote-authority/principal fingerprints, and replayable
-events. The one remaining gate is product acceptance or correction of that
-ownership direction; no integration, folder-registration, auth/config, or
-remote PM mutation is authorized by the proposal.
+events. The product owner accepted that ownership direction and its future
+immutable verification/landing evidence policy on 2026-07-12. No current
+integration, folder-registration, auth/config, or remote PM mutation is
+authorized by the decision.
 
 No explicit live mutation tool was called. A source audit after one
 `get_started` call found that the tool invokes first-run domain seeding. Five
@@ -271,7 +272,7 @@ does not claim the remote stayed unchanged and will not make another live call.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
 - Some older runtime-notice vocabulary remains not yet fully provider-neutral.
-- The AInativePM ownership proposal awaits product acceptance. Typed PM refs,
+- The accepted AInativePM seam remains unimplemented. Typed PM refs,
   stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
   attachment, and receipt-safe commands remain unimplemented; automatic PM
   writes are blocked.

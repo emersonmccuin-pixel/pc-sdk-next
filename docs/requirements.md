@@ -143,7 +143,7 @@ tests passed.
 | MCP-001 | accepted | MCP registration, health, secrets, tool cache, and consumer attachment policy are globally app-owned and provider-neutral. |
 | MCP-002 | accepted | MCP failure is visible but never blocks unrelated chat or execution. |
 | PM-001 | accepted | AInativePM integration follows a read-only joint code/domain/UI investigation before its ownership seam is designed. |
-| PM-002 | accepted | AInativePM owns long-lived intent and management concepts; PC-SDK owns technical execution evidence. Exact mappings remain open pending investigation. |
+| PM-002 | accepted | AInativePM owns long-lived PM identity, hierarchy, lifecycle, assignment, membership, decisions/context, and content; PC-SDK owns sessions, contracts, execution, verification, worktrees, landing, and technical evidence. Cross-system state is referenced or deep-linked, never mirrored. |
 | PM-003 | accepted | PM unavailability degrades visibly and never blocks PC-SDK execution. |
 | SEC-001 | accepted | Credentials live in runtime-specific homes or the vault and are excluded from project settings, transcripts, logs, and commits. |
 | SEC-002 | accepted | Tool, filesystem, network, external-side-effect, and landing authority are explicit least-privilege policies with attributable approvals. |
@@ -161,14 +161,19 @@ has no general caller idempotency key, durable queryable mutation receipt,
 expected revision, remote-authority/principal fingerprints, or replayable event cursor, so no
 automatic PM write is approved. The current permission-bypassed generic MCP
 bridge is attribution, not the positive app policy/approval required by
-`SEC-002`, so PM-001 authorizes no direct integration write either. `PM-001`
-through `PM-003` remain `accepted`
-until the product owner accepts or changes the proposed seam; the full evidence
-and one genuine decision are in `docs/research/ainativepm-discovery.md`.
-That decision includes whether, after those prerequisites exist, separately
+`SEC-002`, so PM-001 authorizes no direct integration write either. The full
+evidence is in `docs/research/ainativepm-discovery.md`. The product decision
+included whether, after those prerequisites exist, separately
 keyed positive verification and positive landing receipts may each
 automatically append an immutable deduplicated evidence link while every PM
 management-state transition stays suggested or explicit.
+
+PM-001 product receipt (2026-07-12): the product owner accepted the reference-
+first seam, its dependency order, and the future separately keyed immutable
+verification/landing evidence-link policy. This acceptance does not authorize a
+current PM write or mark `PM-002`/`PM-003` implemented. `PM-001` remains
+`accepted` rather than `verified` only because the live `get_started` remote-
+unchanged receipt below is inconclusive.
 
 One live `get_started` orientation call was made before source review exposed
 its first-run seeding hook. The five root domains were observed only after the

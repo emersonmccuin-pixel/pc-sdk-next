@@ -1,7 +1,7 @@
 # AInativePM ownership and integration discovery
 
-Status: evidence complete; reference-first ownership proposal awaits product
-acceptance before implementation.
+Status: evidence complete; reference-first ownership proposal accepted by the
+product owner on 2026-07-12. Implementation remains separately gated.
 
 Source receipts:
 
@@ -55,10 +55,11 @@ anchor:
    positive receipt/query-by-key path, an expected-version conflict contract,
    and attributable authority. None exists across the current generic mutation
    surface.
-6. Attribution alone is not authority. This proposal authorizes no current PM
-   write. A direct PM action requires an explicit originating user request or
-   positive user approval **and** a positive app policy/approval receipt. The
-   current permission-bypassed generic bridge does not satisfy that gate.
+6. Attribution alone is not authority. This accepted decision authorizes no
+   current PM write. A direct PM action requires an explicit originating user
+   request or positive user approval **and** a positive app policy/approval
+   receipt. The current permission-bypassed generic bridge does not satisfy that
+   gate.
 7. Once the receipt/idempotency/identity/revision prerequisites exist, the
    recommended first automatic writes are immutable evidence links from two
    distinct positive triggers: `verification:<verificationReceiptId>` and
@@ -765,7 +766,7 @@ PC-SDK will not add:
 
 ## Dependency-ordered implementation proposal
 
-After product acceptance, implementation should remain split into bounded
+With product acceptance recorded, implementation remains split into bounded
 slices:
 
 1. Add stable PC-SDK session/run/deliverable deep links and access-safe HTTP
@@ -791,9 +792,10 @@ slices:
    verification and positive landing receipts. Lifecycle and other management
    changes remain suggested/explicit.
 
-## Product decision requested
+## Product decision receipt
 
-Accept or reject this direction:
+The product owner accepted this direction in the PC-SDK Next pickup task on
+2026-07-12:
 
 > PC-SDK uses optional generic PM context plus exact external item references;
 > AInativePM owns all PM truth; PC-SDK owns all technical execution truth; reads
@@ -806,10 +808,10 @@ Accept or reject this direction:
 > landing receipt; PM lifecycle and other management-state changes remain
 > suggested or explicit.
 
-Acceptance approves the ownership seam, dependency order, and future evidence-
+Acceptance fixes the ownership seam, dependency order, and future evidence-
 append policy. It does not authorize a current remote write, schema migration,
-UI design, or automatic lifecycle policy. Rejection should identify which
-ownership boundary or desired automatic update differs.
+UI implementation, or automatic lifecycle transition. Each implementation
+slice still requires its own contract, worktree, safety receipts, and gate.
 
 ## Remaining known unknowns
 

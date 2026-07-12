@@ -38,7 +38,7 @@ Runtime / Git / DB / MCP / PM adapters
 | Workspaces | Worktree provision, prepare, readiness, lease, reconciliation | Review decision and merge authority | Workspace lifecycle service and receipts |
 | Landing | Per-repository queue, current-base validation, merge, ancestry proof, teardown | Agent execution | Landing commands and merge/teardown receipts |
 | MCP registry | Servers, vault refs, health, tool cache, attachment policy | Provider-native delivery details | Registry queries/events and adapter-ready attachment package |
-| PM integration (PM-001 proposal; pending product acceptance) | Typed external context/item references, authoritative-at-observation queries, deep links, authority/principal/connection attribution, and future mutation receipts | AInativePM's item/type/hierarchy/lifecycle/assignment/context/membership/files/rules/views/templates/calendar/folder-registration state; PC-SDK run truth | Proposed query/command/event-separated PM port; typed unavailable/stale/not-found-or-inaccessible states; receipt-gated commands; invalidation hints |
+| PM integration | Typed external context/item references, authoritative-at-observation queries, deep links, authority/principal/connection attribution, and future mutation receipts | AInativePM's item/type/hierarchy/lifecycle/assignment/context/membership/files/rules/views/templates/calendar/folder-registration state; PC-SDK run truth | Query/command/event-separated PM port; typed unavailable/stale/not-found-or-inaccessible states; receipt-gated commands; invalidation hints |
 | Usage/context | Provider observations, normalization, confidence, staleness | Runtime routing decisions unless policy explicitly consumes it | Usage/context snapshots and events |
 | Resources | Attachments, artifacts, diffs, retention and access policy | General file browsing | Resource commands and references |
 | Notifications | Durable attention state and one-shot delivery policy | Run or contract truth | Attention commands/events and delivery receipts |
@@ -56,8 +56,7 @@ Runtime / Git / DB / MCP / PM adapters
 6. External systems degrade independently.
 7. Every write is attributable to user, orchestrator, specialist, reviewer, or deterministic service.
 
-Proposed PM-specific rules (not architecture authority until the PM-001 product
-decision is accepted):
+Accepted PM-specific rules (PM-001 product decision, 2026-07-12):
 
 1. Optional project PM context and an exact contract/run PM item reference are
    separate types. Context may target a project or generic container; it never

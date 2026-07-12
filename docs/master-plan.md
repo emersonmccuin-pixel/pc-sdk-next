@@ -48,7 +48,7 @@ Not a public product. No installer, no releases, no marketing — until it earns
 | UI surfaces | Chat + agent run views · MCP manager · usage/quota dashboard. **No board, no workflow builder, no files browser.** |
 | MCP manager | Rebuild, don't port. The old one is unreliable — reliability is the requirement, not a feature. See below. |
 | UI | **Preserve the Caisson shell — no gratuitous redesign.** The layout remains the visual baseline; chat behavior and internal state ownership must be reworked where accepted communication requirements demand it. |
-| AInativePM | Jointly inspect its code, domain, MCP surface, and UI before locking deeper integration. PM-001 has completed that evidence pass and superseded the project-only anchor; its reference-first ownership proposal still requires product acceptance before implementation. |
+| AInativePM | PM-001 jointly inspected its code, domain, MCP surface, and UI, superseded the project-only anchor, and received product acceptance for the reference-first ownership seam on 2026-07-12. Implementation remains dependency- and receipt-gated. |
 | Attention + notifications | When work in a project becomes ready for the user, its inactive left-rail project tile softly pulses until viewed. A configurable one-shot ding and browser/Windows desktop notification alert the user when the app is unfocused. “Ready,” “needs a decision,” and “failed” remain distinct states. Full contract: `docs/attention-notifications.md`. |
 
 Plus everything locked in AGENTS.md: subscription-first auth (Claude Max and ChatGPT/Codex; no API key by default), runtime-aware account switcher, one canonical agent-runtime adapter contract, mandatory worktree isolation, guarded service-controlled landing/teardown, no internal work items, DB as source of truth.
@@ -128,8 +128,9 @@ generic PM context plus an exact external item reference, with AInativePM owning
 management truth and PC-SDK owning technical execution truth. Current PM
 mutations lack the caller idempotency, durable receipt lookup, optimistic
 concurrency, remote-authority/principal identity, and replayable event seam required for
-background writes. The proposal awaits product acceptance; no integration or
-remote write is authorized by discovery.
+background writes. The product owner accepted the seam and future immutable-
+evidence policy on 2026-07-12; no current integration or remote write is
+authorized by that decision.
 
 **N2 — Enforce seams and rebuild the conversation foundation.** Add component
 dependency/ownership guards; replace Claude-first canonical identifiers; make

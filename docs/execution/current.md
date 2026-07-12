@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after PM-001 evidence synthesis and hostile proposal review.
+Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
 
 ## Repository
 
@@ -149,14 +149,10 @@ post-RS-004 full gate.
 
 ## Next safe action
 
-Bring exactly one product decision to the user from sealed checkpoint
-`e2fe6ee`: accept/correct the reference-first ownership seam and the
-recommendation that, only after the full safety prerequisites exist, separately
-keyed positive verification and landing receipts may append immutable evidence
-links while PM management transitions stay suggested/explicit. If accepted,
-record the decision, revalidate the clean feature tip, create the feature
-record, guarded-land to `main`, push, and tear down. Do not perform a PM write or
-jump to Codex/N5 before that decision.
+Record the accepted PM-001 decision, revalidate the clean feature tip, create
+the feature record, guarded-land to `main`, push, and tear down. Then define the
+next safe N1 slice from the remaining characterization/backlog gate. Do not
+perform a PM write or jump to Codex/N5 as part of PM-001 closeout.
 
 ## Startup checks
 
@@ -173,9 +169,8 @@ the PM-001 worktree until guarded landing.
 
 ## Known blockers
 
-One intentional product blocker remains: PM-001 cannot accept its own ownership
-and future evidence policy. Remote-unchanged is also inconclusive because of the
-`get_started` seeding hook, but no repair/private-data inspection is required to
-evaluate the proposal. The Next shortcut code is isolated but has not been
-installed; regular daily driving remains on the original PC-SDK until the
-migration gate.
+No product blocker remains for PM-001. Remote-unchanged is inconclusive because
+of the `get_started` seeding hook, but no repair/private-data inspection is
+required for the accepted ownership decision. The Next shortcut code is
+isolated but has not been installed; regular daily driving remains on the
+original PC-SDK until the migration gate.
