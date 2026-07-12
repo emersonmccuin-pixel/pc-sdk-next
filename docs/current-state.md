@@ -479,6 +479,32 @@ and documentation-only feature record
 remained green with 387/387 server tests. Exact push/re-fetch and guarded
 feature-worktree/residue cleanup passed; the feature branch is preserved.
 
+## Completed N4 positive phase-receipt feature
+
+`DL-001` replaces missing or inferred builder preparation/readiness success
+with exact immutable evidence. Fresh repository builders and continuations
+record outcome-specific executed or explicit no-op receipts before provider
+runtime mint. Continuation preparation is bound to its exact parent; readiness
+follows positive preparation; paused revival reuses the same Git/path/phase
+authority gate. Cancellation across asynchronous repository-lease admission
+cannot start a later command, append late evidence, or mint a runtime.
+
+Migration `0016` promotes only exact legacy command evidence, quarantines
+malformed/discriminator-forged/context-incompatible values, and invalidates
+only old agent-run replay frames. Browser projection distinguishes executed,
+not-required, and unavailable evidence. Independent runtime and persistence
+hostile re-reviews are clean after fixes; full feature and post-merge
+`pnpm ci:check` pass with 392/392 server tests.
+
+Sealed implementation `f5b32a67e814b43f2fe9ed65853c43af2f71cbe7`
+and feature record `b2629c4470aa6e8676b6ded774d2de3819ac79f3`
+guarded-landed as `ae02c1828987aa9c529865391ad2bd67551d49e7`.
+Feature and merge share exact tree
+`a7f255ef25d5cd0d5b08e275f00c5e071f3f0698`; exact push/re-fetch and guarded
+feature-worktree cleanup passed. `WT-002` remains accepted because exact
+detached-review-checkout authority is still separate. DL-002 approved
+abandonment is the next active slice.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator

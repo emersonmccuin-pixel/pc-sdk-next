@@ -192,6 +192,14 @@ attach. `WT-004` stays `accepted` because the broader N4 process-failure gate
 and nonparticipant/escaped-child boundaries remain incomplete; SF-002 seal and
 landing are complete.
 
+DL-001 feature verification strengthens `WT-002`: every fresh repository
+builder and continuation now persists exact contextual preparation and
+readiness receipts before runtime mint, and paused revival uses the same gate.
+Explicit no-op outcomes, first-write/order/parent guards, cancellation-aware
+lease admission, strict migration/replay quarantine, and honest browser
+projection are guarded-landed. `WT-002` stays `accepted` because detached
+write-capable reviewers still lack receipts for their exact review checkout.
+
 ## Integrations, security, and product boundaries
 
 | ID | Status | Requirement |

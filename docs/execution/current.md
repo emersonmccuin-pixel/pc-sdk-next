@@ -312,18 +312,18 @@ teardown all passed.
 
 ## Active action
 
-Implement `DL-001` from `docs/execution/slices/DL-001.md`: explicit positive
-preparation/readiness receipts for repository builder runs and continuations,
-with immutable persistence and pre-mint/revival guards. Keep the detached
-reviewer permission/check-out boundary explicit and leave `WT-002` accepted.
-The implementation is sealed as
-`f5b32a67e814b43f2fe9ed65853c43af2f71cbe7` with exact tree
-`1d34749590c1bdfd1f5a1f72e697c5d674c4229a`; feature verification and hostile
-re-review are complete, so the next action is its documentation-only feature
-record followed by guarded landing.
-After guarded landing and cleanup, continue directly to the separately scoped
-`DL-002` approved-abandonment receipt and teardown authority slice. Do not
-bundle the broader process-failure gate, recovery UI implementation,
+DL-001 is complete. Its sealed implementation `f5b32a67`, feature record
+`b2629c44`, guarded landing `ae02c182`, exact tree `a7f255ef`, pre/post-merge
+392/392 gates, exact push/re-fetch, and feature-worktree teardown all passed.
+`WT-002` remains accepted because detached write-capable reviewers still lack
+exact review-checkout authority.
+
+Implement `DL-002`: a browser-only explicit user approval preview, immutable
+abandonment authority receipt, serialized teardown settlement, and boot
+re-drive for abandoned repository work. Preserve the branch at the approved
+tip, make landing and abandonment mutually exclusive, and keep legacy
+`abandoned` rows without authority non-destructive. Do not expose an MCP/chat
+abandon tool or bundle the broader process-failure gate, recovery-center UI,
 `OPS-006`, or N7.
 
 ## Startup checks
@@ -335,7 +335,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001, BC-002, SF-001, SF-002, and SEC-003 feature worktrees are removed.
+The PM-001, BC-002, SF-001, SF-002, SEC-003, and DL-001 feature worktrees are
+removed.
 Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
