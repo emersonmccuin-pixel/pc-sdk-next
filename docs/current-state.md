@@ -30,6 +30,11 @@ only in PC-SDK Next.
   ancestry proof; feature branch preserved
 - CF-002 sealed implementation: `9ebf2c6284bebdae43f9263193999764a0c8413b`
 - CF-002 closeout landing: `a5943690ddbcbbf11ce3838ffc6dcfc950b90b41`
+- CF-003 sealed implementation: `0ecc8e538935e57466da4b0106311fb65e7927ec`
+- CF-003 feature record: `936058fa866d51344e77bd1b1ec873f3bbb3662a`
+- CF-003 landing merge: `f76579686d2fc5df66e6eac4adcff0344b656256`
+- CF-003 worktree: removed after positive sealed/feature ancestry proof;
+  feature branch preserved
 
 Isolation defaults in the planning slice:
 
