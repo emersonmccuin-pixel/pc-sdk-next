@@ -18,6 +18,7 @@ import {
 import type { ULID } from '@pc/domain';
 import type { SessionRegistry } from '../chat/registry.ts';
 import type { ResourceRelay } from '../resources/relay.ts';
+import { RuntimeSelectionRejectedError } from '../runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from './hub.ts';
 
 export interface RouterSocket extends WebSocketLike {
@@ -167,6 +168,7 @@ async function handleConversationCommand(
     };
     ProjectWebSocketHub.sendTo(socket, frame);
   } catch (error) {
+    const selectionFailure = error instanceof RuntimeSelectionRejectedError;
     const frame: ConversationCommandReceiptFrame = {
       type: 'conversation-command-receipt',
       projectId,
@@ -175,8 +177,10 @@ async function handleConversationCommand(
       command: command.type,
       status: 'rejected',
       error: {
-        code: 'internal',
-        message: error instanceof Error ? error.message : String(error),
+        code: selectionFailure ? error.code : 'internal',
+        message: selectionFailure
+          ? 'the selected runtime session is unavailable'
+          : error instanceof Error ? error.message : String(error),
       },
     };
     ProjectWebSocketHub.sendTo(socket, frame);

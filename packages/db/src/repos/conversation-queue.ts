@@ -12,6 +12,7 @@ import {
   type ConversationCommandStatus,
   type InterruptReplacement,
   type QueuedAgentEnvelope,
+  type RuntimeSelection,
   type SendQueueItem,
   type SendQueueItemOrigin,
   type SendQueueItemStatus,
@@ -34,7 +35,11 @@ import {
   closeOpenConversationToolCallsInDb,
   commitConversationEventInDb,
 } from './conversation-events.ts';
-import type { OrchestratorSessionRow } from './orchestrator-sessions.ts';
+import {
+  isOrchestratorSessionResumeReady,
+  newStampedOrchestratorSession,
+  type OrchestratorSessionRow,
+} from './orchestrator-sessions.ts';
 import {
   getProjectByIdInDb,
   softDeleteProjectInDb,
@@ -121,12 +126,11 @@ export interface SettleConversationTurnInput {
 export interface ReplaceOrchestratorSessionInput {
   projectId: ULID;
   expectedSessionId: ULID | null;
+  /** Complete adapter-validated selection for the replacement row. */
+  selection: RuntimeSelection;
   queueCancellationReason: string;
   endedReason?: SessionEndedReason;
   settingsPatch?: Partial<ProjectSettings>;
-  /** Account changes invalidate native continuation for every prior session
-   * until immutable runtime/account stamps land. */
-  invalidatePriorSessions?: boolean;
   now?: number;
 }
 
@@ -866,6 +870,31 @@ export function cancelQueuedConversationSends(
     cancelQueuedConversationSendsInDb(tx, sessionId, reason, now));
 }
 
+/** Post-migration quarantine sweep. Migration 0012 makes legacy sessions
+ * inactive without inventing a selection; this canonical Conversation-owned
+ * transition closes any queued/failed sends with event + outbox evidence
+ * before the server begins accepting work. */
+export function cancelLegacyUnavailableSessionQueues(
+  now = Date.now(),
+): ULID[] {
+  return getDb().transaction((tx) => {
+    const sessions = tx.select({ id: orchestratorSessions.id })
+      .from(orchestratorSessions)
+      .where(eq(orchestratorSessions.selectionState, 'legacy-unavailable'))
+      .all();
+    const cancelled: ULID[] = [];
+    for (const session of sessions) {
+      cancelled.push(...cancelQueuedConversationSendsInDb(
+        tx,
+        session.id,
+        'runtime selection unavailable after migration',
+        now,
+      ));
+    }
+    return cancelled;
+  });
+}
+
 function cancelQueuedConversationSendsInDb(
   tx: DbTransaction,
   sessionId: string,
@@ -958,41 +987,27 @@ export function replaceOrchestratorSession(
         )
       : [];
     if (active) {
-      tx.update(orchestratorSessions)
+      const ended = tx.update(orchestratorSessions)
         .set({
           status: 'ended',
           endedReason: input.endedReason ?? 'user_ended',
           endedAt: now,
         })
-        .where(eq(orchestratorSessions.id, active.id))
-        .run();
-    }
-    if (input.invalidatePriorSessions) {
-      // Without an immutable account stamp, attempting any prior native
-      // session under the new credential home is unsafe. Keep transcripts,
-      // but make every pre-switch row explicitly non-resumable.
-      tx.update(orchestratorSessions)
-        .set({ endedReason: 'account_switched' })
         .where(and(
-          eq(orchestratorSessions.projectId, input.projectId),
+          eq(orchestratorSessions.id, active.id),
+          eq(orchestratorSessions.status, 'active'),
           isNull(orchestratorSessions.deletedAt),
         ))
         .run();
+      if (ended.changes !== 1) {
+        throw new Error('active session changed during transition');
+      }
     }
-
-    const session: OrchestratorSessionRow = {
-      id: newId(),
+    const session = newStampedOrchestratorSession({
       projectId: input.projectId,
-      provider: 'claude',
-      providerSessionId: '',
-      model: null,
-      title: null,
-      status: 'active',
-      endedReason: null,
-      startedAt: now,
-      endedAt: null,
-      deletedAt: null,
-    };
+      selection: input.selection,
+      now,
+    });
     tx.insert(orchestratorSessions).values(session).run();
     if (input.settingsPatch && !updateProjectMetaInDb(tx, input.projectId, {
       settings: input.settingsPatch,
@@ -1035,10 +1050,24 @@ export function resumeOrchestratorSessionTransition(
         isNull(orchestratorSessions.deletedAt),
       ))
       .get() as OrchestratorSessionRow | undefined;
-    if (!target || target.endedReason === 'account_switched') return null;
+    // Resume eligibility is durable row truth. Reject legacy, incomplete,
+    // unbound, or untrusted targets before cancelling the active FIFO or
+    // changing either app-session status.
+    if (!target || !isOrchestratorSessionResumeReady(target)) return null;
     if (active?.id === target.id) {
       return { session: active, cancelledQueueItemIds: [] };
     }
+    // A historical row with an unsettled durable turn is not safe to attach.
+    // Reject before touching the current FIFO/session; boot recovery must
+    // settle the uncertain turn first.
+    if (tx
+      .select({ id: conversationTurns.id })
+      .from(conversationTurns)
+      .where(and(
+        eq(conversationTurns.sessionId, target.id),
+        eq(conversationTurns.status, 'active'),
+      ))
+      .get()) return null;
     if (active && tx
       .select({ id: conversationTurns.id })
       .from(conversationTurns)
@@ -1057,23 +1086,53 @@ export function resumeOrchestratorSessionTransition(
           now,
         )
       : [];
-    if (active) {
-      tx.update(orchestratorSessions)
-        .set({ status: 'ended', endedReason: 'user_ended', endedAt: now })
-        .where(eq(orchestratorSessions.id, active.id))
-        .run();
+    let continuationAttemptId = newId();
+    while (continuationAttemptId === target.continuationAttemptId) {
+      continuationAttemptId = newId();
     }
-    tx.update(orchestratorSessions)
-      .set({ status: 'active', endedReason: null, endedAt: null, startedAt: now })
-      .where(eq(orchestratorSessions.id, target.id))
+    if (active) {
+      const ended = tx.update(orchestratorSessions)
+        .set({ status: 'ended', endedReason: 'user_ended', endedAt: now })
+        .where(and(
+          eq(orchestratorSessions.id, active.id),
+          eq(orchestratorSessions.status, 'active'),
+          isNull(orchestratorSessions.deletedAt),
+        ))
+        .run();
+      if (ended.changes !== 1) {
+        throw new Error('active session changed during transition');
+      }
+    }
+    const activated = tx.update(orchestratorSessions)
+      .set({
+        status: 'active',
+        endedReason: null,
+        endedAt: null,
+        continuationState: 'resume-pending',
+        continuationAttemptId,
+      })
+      .where(and(
+        eq(orchestratorSessions.id, target.id),
+        eq(orchestratorSessions.status, target.status),
+        eq(orchestratorSessions.selectionState, 'stamped'),
+        eq(orchestratorSessions.nativeIdentityState, 'bound'),
+        eq(orchestratorSessions.nativeSessionId, target.nativeSessionId!),
+        eq(orchestratorSessions.continuationState, target.continuationState),
+        eq(orchestratorSessions.continuationAttemptId, target.continuationAttemptId!),
+        isNull(orchestratorSessions.deletedAt),
+      ))
       .run();
+    if (activated.changes !== 1) {
+      throw new Error('resume target changed during transition');
+    }
     return {
       session: {
         ...target,
         status: 'active',
         endedReason: null,
         endedAt: null,
-        startedAt: now,
+        continuationState: 'resume-pending',
+        continuationAttemptId,
       },
       cancelledQueueItemIds,
     };

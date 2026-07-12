@@ -89,12 +89,7 @@ export {
   resolveRemoteControlEnabled,
   withProjectSettingsDefaults,
 } from './project.ts';
-export type {
-  OrchestratorSession,
-  ProviderId,
-  SessionEndedReason,
-  SessionStatus,
-} from './orchestrator.ts';
+export type { SessionEndedReason, SessionStatus } from './orchestrator.ts';
 export type {
   ActivityPanelSettings,
   AgentDispatchSettings,

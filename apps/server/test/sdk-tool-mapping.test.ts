@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AskDecision, RuntimeEvent } from '../src/runner/runtime.ts';
+import type { AskDecision, RuntimeEvent, RuntimeSelection } from '../src/runner/runtime.ts';
 import {
   ClaudeRuntimeSession,
   createClaudePermissionHandler,
@@ -10,6 +10,13 @@ import {
 } from '../src/runner/claude-adapter.ts';
 
 const ACCOUNT = 'account-1';
+const CONTINUATION_ATTEMPT_ID = 'continuation-attempt-1';
+const SELECTION: RuntimeSelection = {
+  runtimeId: 'claude-agent-sdk',
+  accountId: ACCOUNT,
+  model: 'opus',
+  effort: { kind: 'none' },
+};
 
 function sdk(value: Record<string, unknown>): SDKMessage {
   return value as unknown as SDKMessage;
@@ -496,7 +503,9 @@ test('permission request-id collisions never reuse authorization across tool ide
 });
 
 test('Claude runtime refuses to overwrite an active turn queue', () => {
-  const session = new ClaudeRuntimeSession({ env: {}, accountId: 'account' });
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+  });
   const internals = session as unknown as { started: boolean; currentTurn: object | null };
   internals.started = true;
   internals.currentTurn = {};
@@ -504,7 +513,9 @@ test('Claude runtime refuses to overwrite an active turn queue', () => {
 });
 
 test('Claude runtime drops out-of-turn native frames and resets correlation at the next turn', async () => {
-  const session = new ClaudeRuntimeSession({ env: {}, accountId: 'account' });
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+  });
   const internals = session as unknown as {
     started: boolean;
     keys: ReturnType<typeof createSdkKeyContext>;
@@ -523,7 +534,9 @@ test('Claude runtime drops out-of-turn native frames and resets correlation at t
 });
 
 test('Claude runtime records an idle query-loop death and rejects the next turn', async () => {
-  const session = new ClaudeRuntimeSession({ env: {}, accountId: 'account' });
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+  });
   const internals = session as unknown as {
     started: boolean;
     queryClosed: boolean;
@@ -539,7 +552,9 @@ test('Claude runtime records an idle query-loop death and rejects the next turn'
 });
 
 test('Claude query exceptions become fixed app-authored terminal errors', () => {
-  const session = new ClaudeRuntimeSession({ env: {}, accountId: 'account' });
+  const session = new ClaudeRuntimeSession({
+    env: {}, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+  });
   const events: RuntimeEvent[] = [];
   let ended = false;
   const internals = session as unknown as {

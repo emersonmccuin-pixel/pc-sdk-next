@@ -6,6 +6,7 @@
 // Run:  pnpm --filter @pc-sdk/server smoke  [--work] ["your prompt"]
 // Env:  CLAUDE_CONFIG_DIR is set for you from the account registry.
 
+import { randomUUID } from 'node:crypto';
 import { AccountRegistry, DEFAULT_ACCOUNT_ID } from '../src/runner/account-env.ts';
 import {
   CLAUDE_RUNTIME_ID,
@@ -20,7 +21,7 @@ async function main(): Promise<void> {
     process.argv.slice(2).find((a) => !a.startsWith('--')) ??
     'In one sentence, what files are in the current directory? Use your tools.';
 
-  const account = accounts.get(accountId);
+  const account = accounts.get(CLAUDE_RUNTIME_ID, accountId);
   if (!account) throw new Error(`unknown account: ${accountId}`);
   console.log(`[smoke] account=${accountId} configDir=${account.configDir}`);
   console.log(`[smoke] cwd=${process.cwd()}`);
@@ -30,16 +31,22 @@ async function main(): Promise<void> {
   const session = await adapter.createSession({
     appSessionId: 'smoke',
     projectId: 'smoke',
+    continuationAttemptId: randomUUID(),
     selection: {
       runtimeId: CLAUDE_RUNTIME_ID,
       accountId,
       model: 'opus',
+      effort: { kind: 'none' },
     },
     cwd: process.cwd(),
     // Auto-allow every ask in the smoke (no browser to answer).
-    ask: async (req) => {
+    ask: (req) => {
       console.log(`[smoke][ask] ${req.toolName} → allow`);
-      return { behavior: 'allow' };
+      return {
+        requestId: randomUUID(),
+        decision: Promise.resolve({ behavior: 'allow', decidedBy: 'user' }),
+        cancel: () => {},
+      };
     },
   });
 
@@ -48,7 +55,9 @@ async function main(): Promise<void> {
     emitDelta: () => {
       /* deltas are noisy — count only */
     },
-    onNativeSessionId: (id, model) => console.log(`[smoke] nativeSessionId=${id} model=${model}`),
+    onRuntimeSessionReceipt: (receipt) => {
+      console.log(`[smoke] ${receipt.mode} nativeSessionId=${receipt.nativeSessionId}`);
+    },
     onRateLimit: (snap) => console.log('[usage]', snap),
     onDropped: (reason, msg) => console.log(`[dropped] ${reason}`, preview(msg)),
   });

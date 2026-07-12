@@ -14,15 +14,73 @@ import { create } from 'zustand';
 import { getJson, postJson } from '@/api/http';
 import {
   isSessionReplayFrame,
+  type RuntimeSelectionErrorCode,
+  type SessionChangedFrame,
   type SessionReplayFrame,
   type SessionSummary,
+  type SessionUpdatedFrame,
   type ULID,
 } from '@pc/contracts';
 
 export type { SessionSummary } from '@pc/contracts';
 
 export function canResumeSession(session: SessionSummary): boolean {
-  return session.status === 'ended' && session.resumable;
+  return session.status === 'ended' && session.resumeAvailability.status === 'available';
+}
+
+/** Compact provider-neutral selection label for the existing session chrome. */
+export function sessionSelectionLabel(session: SessionSummary): string {
+  if (!session.selection) return 'selection unavailable';
+  const effort = session.selection.effort.kind === 'selected'
+    ? `effort ${session.selection.effort.value}`
+    : session.selection.effort.kind === 'none'
+      ? 'effort none'
+      : 'effort unavailable';
+  return [
+    session.selection.runtimeId,
+    session.selection.accountId,
+    session.selection.model,
+    effort,
+  ].join(' · ');
+}
+
+/** Provenance only. This never invents a native resume or handoff. */
+export function sessionContinuationLabel(session: SessionSummary): string {
+  switch (session.continuationState) {
+    case 'clean-pending': return 'clean start pending';
+    case 'clean-started': return 'clean start';
+    case 'resume-pending': return 'native resume pending';
+    case 'native-resumed': return 'native resumed';
+    case 'resume-failed': return 'native resume failed';
+    case 'legacy-unavailable': return 'legacy session';
+  }
+}
+
+function resumeUnavailableReason(code: RuntimeSelectionErrorCode): string {
+  switch (code) {
+    case 'runtime-not-registered': return 'runtime unavailable';
+    case 'account-unavailable': return 'account unavailable';
+    case 'account-runtime-mismatch': return 'account/runtime mismatch';
+    case 'capabilities-unavailable': return 'runtime capabilities unavailable';
+    case 'model-discovery-unsupported': return 'model discovery unsupported';
+    case 'model-discovery-unavailable': return 'model discovery unavailable';
+    case 'model-unsupported': return 'selected model unsupported';
+    case 'effort-unsupported': return 'effort control unsupported';
+    case 'effort-unavailable': return 'effort control unavailable';
+    case 'effort-value-unsupported': return 'selected effort unsupported';
+    case 'native-resume-unsupported': return 'native resume unsupported';
+    case 'native-session-missing': return 'native continuation unavailable';
+    case 'selection-unavailable': return 'legacy selection unavailable';
+    case 'native-resume-mismatch': return 'native resume could not be confirmed';
+    case 'session-active': return 'live';
+    case 'resume-failed': return 'native resume failed';
+  }
+}
+
+export function sessionResumeLabel(session: SessionSummary): string {
+  if (session.resumeAvailability.status === 'available') return 'resume available';
+  const reason = resumeUnavailableReason(session.resumeAvailability.code);
+  return session.resumeAvailability.code === 'session-active' ? reason : `${reason} · view only`;
 }
 
 export interface SessionTransition {
@@ -91,6 +149,8 @@ interface SessionNavState {
    *  scanning the chat timeline. */
   nonce: number;
   applyTransition: (projectId: string, t: SessionTransition) => void;
+  applySessionChanged: (frame: SessionChangedFrame) => void;
+  applySessionUpdated: (frame: SessionUpdatedFrame) => void;
   setActive: (projectId: string, sessionId: string | null) => void;
 }
 
@@ -98,8 +158,20 @@ export const useSessionNav = create<SessionNavState>((set) => ({
   activeByProject: {},
   nonce: 0,
   applyTransition: (projectId, t) =>
-    set((s) => ({
+    set((s) => t.session.projectId !== projectId ? s : ({
       activeByProject: { ...s.activeByProject, [projectId]: t.session.id },
+      nonce: s.nonce + 1,
+    })),
+  applySessionChanged: (frame) =>
+    set((s) => ({
+      activeByProject: {
+        ...s.activeByProject,
+        [frame.projectId]: frame.session?.id ?? null,
+      },
+      nonce: s.nonce + 1,
+    })),
+  applySessionUpdated: (frame) =>
+    set((s) => s.activeByProject[frame.projectId] !== frame.session.id ? s : ({
       nonce: s.nonce + 1,
     })),
   setActive: (projectId, sessionId) =>

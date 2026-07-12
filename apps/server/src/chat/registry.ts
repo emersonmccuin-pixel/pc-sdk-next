@@ -3,7 +3,12 @@
 import type { ServerFrame, UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { listProjectsWithQueuedConversationSends } from '@pc/db';
-import type { RuntimeSessionFactory } from '../runner/runtime.ts';
+import type {
+  RuntimeContinuationRequest,
+  RuntimeSelection,
+  RuntimeSelectionValidation,
+  RuntimeSessionFactory,
+} from '../runner/runtime.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { SessionService } from './session-service.ts';
 import type { ConversationRelay } from './conversation-relay.ts';
@@ -12,6 +17,13 @@ export interface SessionRegistryDeps {
   hub: ProjectWebSocketHub<ULID>;
   conversationRelay?: ConversationRelay;
   mintSession: RuntimeSessionFactory;
+  resolveNewSessionSelection: (
+    input: { projectId: ULID; accountId?: string },
+  ) => Promise<RuntimeSelectionValidation>;
+  preflightRuntimeSession: (
+    selection: RuntimeSelection,
+    continuation: RuntimeContinuationRequest,
+  ) => Promise<RuntimeSelectionValidation>;
   cwd?: string;
   askTimeoutMs?: number;
   interruptTimeoutMs?: number;
@@ -48,6 +60,8 @@ export class SessionRegistry {
         projectId,
         broadcast: (frame: ServerFrame) => this.deps.hub.broadcast(projectId, frame),
         mintSession: this.deps.mintSession,
+        resolveNewSessionSelection: this.deps.resolveNewSessionSelection,
+        preflightRuntimeSession: this.deps.preflightRuntimeSession,
         drainConversationOutbox: () => this.deps.conversationRelay?.drain(),
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,

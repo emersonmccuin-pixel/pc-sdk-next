@@ -21,7 +21,6 @@ import type {
   PodAuditActor,
   PodAuditField,
   PodScope,
-  ProviderId,
   SessionEndedReason,
   SessionStatus,
   ULID,
@@ -138,10 +137,35 @@ export const orchestratorSessions = sqliteTable(
       .notNull()
       .$type<ULID>()
       .references(() => projects.id),
-    provider: text('provider').notNull().$type<ProviderId>(),
-    /** Provider's own session ID. Null until first `result` event. */
-    providerSessionId: text('provider_session_id'),
+    selectionState: text('selection_state', {
+      enum: ['stamped', 'legacy-unavailable'],
+    }).notNull().default('legacy-unavailable'),
+    runtimeId: text('runtime_id'),
+    accountId: text('account_id'),
     model: text('model'),
+    effortState: text('effort_state', {
+      enum: ['selected', 'none', 'unavailable', 'legacy-unknown'],
+    }).notNull().default('legacy-unknown'),
+    effort: text('effort'),
+    /** Adapter-native identity. New rows bind this exactly once from the
+     * positive runtime receipt; migrated values remain untrusted evidence. */
+    nativeSessionId: text('native_session_id'),
+    nativeIdentityState: text('native_identity_state', {
+      enum: ['unbound', 'bound', 'legacy-untrusted'],
+    }).notNull().default('legacy-untrusted'),
+    continuationState: text('continuation_state', {
+      enum: [
+        'clean-pending',
+        'clean-started',
+        'resume-pending',
+        'native-resumed',
+        'resume-failed',
+        'legacy-unavailable',
+      ],
+    }).notNull().default('legacy-unavailable'),
+    /** Durable generation token for the one provider create/resume attempt
+     * currently authorized to bind or confirm this app session. */
+    continuationAttemptId: text('continuation_attempt_id'),
     title: text('title'),
     status: text('status', { enum: ['active', 'ended'] })
       .notNull()

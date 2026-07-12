@@ -10,7 +10,12 @@ import { serve } from '@hono/node-server';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { UsageSnapshot } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
-import type { RuntimeSessionFactory } from './runner/runtime.ts';
+import type {
+  RuntimeContinuationRequest,
+  RuntimeSelection,
+  RuntimeSelectionValidation,
+  RuntimeSessionFactory,
+} from './runner/runtime.ts';
 import type { DispatchService } from './dispatch/service.ts';
 import type { AccountRegistry } from './runner/account-env.ts';
 import type { UsageCache } from './usage/cache.ts';
@@ -24,6 +29,13 @@ import { attachSocket, type RouterSocket } from './ws/router.ts';
 
 export interface StartServerOptions {
   mintSession: RuntimeSessionFactory;
+  resolveNewSessionSelection: (
+    input: { projectId: ULID; accountId?: string },
+  ) => Promise<RuntimeSelectionValidation>;
+  preflightRuntimeSession: (
+    selection: RuntimeSelection,
+    continuation: RuntimeContinuationRequest,
+  ) => Promise<RuntimeSelectionValidation>;
   port?: number;
   /** Stable local-process identity returned by /health. Launchers must verify
    *  this before treating an occupied port as their own instance. */
@@ -42,6 +54,7 @@ export interface StartServerOptions {
   version?: string;
   /** Account switcher registry — mounts the accounts + usage HTTP routes. */
   accounts?: AccountRegistry;
+  orchestratorRuntimeId?: string;
   /** Usage cache — served by the `/api/usage` re-prime route. */
   usage?: UsageCache;
   /** Phase-3 dispatch service — mounts the agent-run routes when set. */
@@ -85,10 +98,15 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   const relay = new ResourceRelay({ hub });
   const conversationRelay = new ConversationRelay({ hub });
   relay.primeToHead();
+  // Recovery runs before the listener exists. Consume its canonical outbox now
+  // so cold replay carries the evidence without a stale live redelivery later.
+  conversationRelay.drain();
   const registry = new SessionRegistry({
     hub,
     conversationRelay,
     mintSession: opts.mintSession,
+    resolveNewSessionSelection: opts.resolveNewSessionSelection,
+    preflightRuntimeSession: opts.preflightRuntimeSession,
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
     interruptTimeoutMs: opts.interruptTimeoutMs,
@@ -101,6 +119,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     version: opts.version,
     instanceId: opts.instanceId ?? process.env.PC_INSTANCE_ID ?? 'pc-sdk-next',
     accounts: opts.accounts,
+    orchestratorRuntimeId: opts.orchestratorRuntimeId,
     usage: opts.usage,
     dispatch: opts.dispatch,
     onRestartRequest: opts.onRestartRequest,

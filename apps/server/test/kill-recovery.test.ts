@@ -47,6 +47,7 @@ import { DispatchService } from '../src/dispatch/service.ts';
 import { git, provisionWorktree, type ProvisionedWorktree } from '../src/dispatch/worktrees.ts';
 import { reconcileStrandedWorktreesAtBoot, runBootRecovery } from '../src/boot-recovery.ts';
 import { commitFile, freshDb, newGitProject, newProject, until, type GitProject } from './helpers.ts';
+import { testSessionSelectionDeps, withRuntimeReceipt } from './runtime-fixtures.ts';
 
 function kinds(sessionId: string): string[] {
   return listConversationEvents(sessionId).map((r) => r.eventType);
@@ -65,14 +66,18 @@ test('server dies mid-turn → boot recovery persists exactly one turn-failed', 
   // with the turn in flight). We deliberately never resolve it.
   const backend = new FakeRuntime({
     turns: [[
-      { type: 'init', nativeSessionId: 'sdk-1', model: 'opus', permissionMode: 'default' },
       { type: 'assistant-block', itemId: 'u1', scope: 'primary', block: { kind: 'text', text: 'working on it' } },
       { hang: true },
     ]],
   });
-  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
-  const session = svc.ensureActiveSession();
-  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'do the thing', clientMessageId: 'cm1' });
+  const svc = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt(() => backend),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+  });
+  const session = await svc.ensureActiveSession();
+  await svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'do the thing', clientMessageId: 'cm1' });
 
   // Wait until the turn is genuinely in flight (running persisted, no terminal).
   await until(() =>
@@ -120,9 +125,14 @@ test('a cleanly-idle session is not touched by boot recovery', async () => {
   const backend = new FakeRuntime({
     turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
   });
-  const svc = new SessionService({ projectId: project.id, mintSession: () => backend, broadcast: () => {} });
-  const session = svc.ensureActiveSession();
-  svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'hi', clientMessageId: 'cm1' });
+  const svc = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt(() => backend),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+  });
+  const session = await svc.ensureActiveSession();
+  await svc.handleSend({ type: 'send', commandId: 'cmd1', sessionId: session.id, text: 'hi', clientMessageId: 'cm1' });
   await until(() => terminals(session.id).length === 1);
 
   const before = listConversationEvents(session.id).length;
@@ -448,7 +458,11 @@ test('F3: a terminal envelope minted before attach is queued, not dropped — re
 
     // Boot finishes — attach. F3: the queued envelope must replay now.
     const hub = new ProjectWebSocketHub<ULID>();
-    const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
+    const registry = new SessionRegistry({
+      hub,
+      mintSession: withRuntimeReceipt(() => new FakeRuntime()),
+      ...testSessionSelectionDeps(),
+    });
     dispatch.attach({ registry, hub, serverPort: 1 });
     registry.kickRecoveredQueues();
 

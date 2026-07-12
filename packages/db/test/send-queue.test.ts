@@ -3,12 +3,23 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
+import {
+  safeToolSummary,
+  type RuntimeSelection,
+  type ToolStateEvent,
+} from '@pc/contracts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-conversation-queue-'));
 process.env.PC_DATA_DIR = tmpDir;
 
 const db = await import('../src/index.ts');
+
+const TEST_SELECTION: RuntimeSelection = {
+  runtimeId: 'test-runtime',
+  accountId: 'test-account',
+  model: 'test-model',
+  effort: { kind: 'none' },
+};
 
 before(() => db.runMigrations());
 after(() => {
@@ -18,7 +29,7 @@ after(() => {
 
 function context(name: string) {
   const project = db.createProject({ name, slug: `${name}-${db.newId().toLowerCase()}`, folderPath: '' });
-  const session = db.createOrchestratorSession({ projectId: project.id, providerSessionId: '' });
+  const session = db.createOrchestratorSession({ projectId: project.id, selection: TEST_SELECTION });
   return {
     projectId: project.id,
     conversationId: session.id,
@@ -498,6 +509,66 @@ test('session cancellation is ordered, idempotent, and leaves a delivering item 
   }), true);
 });
 
+test('legacy-session boot quarantine cancels queued work with canonical event and outbox evidence', () => {
+  const project = db.createProject({
+    name: 'Legacy queue quarantine',
+    slug: `legacy-queue-${db.newId().toLowerCase()}`,
+    folderPath: '',
+  });
+  const sessionId = db.newId();
+  const raw = db.getRawDb();
+  const insertGuard = raw.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'trigger' AND name = 'orch_sessions_complete_stamp_insert_guard'`).get() as {
+      sql: string;
+    };
+  raw.exec('DROP TRIGGER orch_sessions_complete_stamp_insert_guard');
+  try {
+    raw.prepare(`INSERT INTO orchestrator_sessions (
+      id, project_id, selection_state, runtime_id, account_id, model,
+      effort_state, effort, native_session_id, native_identity_state,
+      continuation_state, continuation_attempt_id, title, status, ended_reason,
+      started_at, ended_at, deleted_at
+    ) VALUES (?, ?, 'legacy-unavailable', NULL, NULL, 'legacy-model',
+      'legacy-unknown', NULL, 'legacy-native', 'legacy-untrusted',
+      'legacy-unavailable', NULL, NULL, 'active', NULL, 1, NULL, NULL)`).run(
+      sessionId,
+      project.id,
+    );
+  } finally {
+    raw.exec(insertGuard.sql);
+  }
+
+  const ctx = { projectId: project.id, conversationId: sessionId, sessionId };
+  const queued = enqueue(ctx, 'must not run under guessed defaults', 'legacy-command', 'legacy-client', 780);
+  raw.prepare(`UPDATE orchestrator_sessions
+    SET status = 'ended', ended_reason = 'selection_unavailable', ended_at = 781
+    WHERE id = ?`).run(sessionId);
+  const eventsBefore = db.listConversationEvents(sessionId).length;
+
+  assert.deepEqual(db.cancelLegacyUnavailableSessionQueues(782), [queued.queueItemId]);
+  assert.deepEqual(db.getConversationQueueSnapshot(sessionId).items, []);
+  const terminalQueueRow = raw.prepare(`SELECT status, failure_reason
+    FROM conversation_queue_items WHERE id = ?`).get(queued.queueItemId) as {
+      status: string;
+      failure_reason: string;
+    };
+  assert.deepEqual(terminalQueueRow, {
+    status: 'cancelled',
+    failure_reason: 'runtime selection unavailable after migration',
+  });
+  const cancellation = db.listConversationEvents(sessionId).at(-1)!;
+  assert.equal(db.listConversationEvents(sessionId).length, eventsBefore + 1);
+  assert.equal(cancellation.eventType, 'send-state');
+  assert.equal(
+    (cancellation.payload as { item?: { status?: unknown } }).item?.status,
+    'cancelled',
+  );
+  assert.equal(db.listUnrelayedConversationEvents().some((entry) =>
+    entry.event.eventId === cancellation.eventId
+  ), true);
+  assert.deepEqual(db.cancelLegacyUnavailableSessionQueues(783), []);
+});
+
 test('project deletion atomically cancels FIFO state and refuses an active turn', () => {
   const busy = context('delete-busy');
   enqueue(busy, 'active', 'delete-busy-command', 'delete-busy-client', 730);
@@ -530,9 +601,20 @@ test('historical resume rolls back old FIFO/session if target activation fails',
   const project = db.createProject({
     name: 'Resume rollback', slug: `resume-rollback-${db.newId().toLowerCase()}`, folderPath: '',
   });
-  const target = db.createOrchestratorSession({ projectId: project.id, providerSessionId: 'native-target' });
+  const target = db.createOrchestratorSession({ projectId: project.id, selection: TEST_SELECTION });
+  const targetAttempt = db.prepareRuntimeSessionCreate(target.id)!;
+  assert.equal(db.confirmRuntimeSessionReceipt({
+    sessionId: target.id,
+    receipt: {
+      mode: 'created',
+      continuationAttemptId: targetAttempt.continuationAttemptId!,
+      selection: TEST_SELECTION,
+      nativeSessionId: 'native-target',
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
   db.endOrchestratorSession(target.id, 'user_ended');
-  const current = db.createOrchestratorSession({ projectId: project.id, providerSessionId: 'native-current' });
+  const current = db.createOrchestratorSession({ projectId: project.id, selection: TEST_SELECTION });
   const ctx = { projectId: project.id, conversationId: current.id, sessionId: current.id };
   const queued = enqueue(ctx, 'preserve current queue', 'resume-r-command', 'resume-r-client', 740);
   const raw = db.getRawDb();

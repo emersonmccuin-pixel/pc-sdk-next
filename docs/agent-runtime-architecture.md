@@ -1,6 +1,6 @@
 # Agent runtime architecture
 
-Status: **locked target boundary; Claude adapter partially implemented**
+Status: **locked boundary; Claude orchestrator selection path implemented**
 (updated 2026-07-11). `docs/current-state.md` records the as-built gaps.
 `docs/master-plan.md` wins on product scope; `AGENTS.md` holds the short-form
 non-negotiable rules.
@@ -66,7 +66,10 @@ interface RuntimeSelection {
   runtimeId: string;
   accountId: string;
   model: string;
-  effort?: string;
+  effort:
+    | { kind: 'selected'; value: string }
+    | { kind: 'none' }
+    | { kind: 'unavailable' };
 }
 ```
 
@@ -74,11 +77,21 @@ Every app session snapshots its runtime selection. Defaults may live on a
 project or specialist, and a dispatch may override them, but a running session
 never silently changes runtime, account, or native session identity.
 
-The durable stamp includes `runtimeId`, `accountId`, `model`, `effort` (including
-an explicit unavailable/none state where appropriate), and the adapter-native
-session ID. A display-only provider label is not a substitute. Model identifiers
-and allowed effort values come from the selected adapter/account's capability
-result and are validated again when a session is created.
+The durable orchestrator stamp includes `runtimeId`, `accountId`, `model`,
+explicit effort state, bind-once adapter-native session identity, continuation
+provenance, and a non-empty continuation-attempt identity. The attempt identity
+rotates immediately before every native create or resume mint. A receipt or
+failure callback can advance only the exact persisted attempt, so an abandoned
+provider stream cannot confirm or fail a successor after remint, restart, or
+service replacement. These internal identities never cross the orchestrator
+session-frame or session-HTTP browser seam. Existing specialist agent-run and
+pending-ask DTOs still carry native session-shaped fields and are explicitly
+later N3 cleanup, not evidence of this invariant outside the orchestrator path.
+
+A display-only provider label is not a substitute for the stamp. Model
+identifiers and allowed effort values come from the selected adapter/account's
+capability result and are validated again immediately before a session is
+created or resumed.
 
 For repo-mutating work, runtime selection never chooses the working directory:
 the worktree lifecycle supplies the recorded worktree cwd. Write-capable
@@ -93,14 +106,14 @@ vocabulary. Phase 3 generalizes it into a provider-neutral contract resembling:
 interface AgentRuntimeAdapter {
   readonly id: string;
   capabilities(accountId: string): Promise<RuntimeCapabilities>;
-  listModels(accountId: string): Promise<RuntimeModel[]>;
+  listModels(accountId: string): Promise<RuntimeModelDiscovery>;
   createSession(input: CreateRuntimeSession): Promise<RuntimeSession>;
   resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession>;
 }
 
 interface RuntimeSession {
-  sendTurn(input: TurnInput): AsyncIterable<RuntimeEvent>;
-  interrupt(): Promise<InterruptReceipt>;
+  sendTurn(text: string): AsyncIterable<RuntimeEvent>;
+  interrupt(): Promise<void>; // command acceptance, not abort confirmation
   dispose(): Promise<void>;
 }
 ```
@@ -128,9 +141,15 @@ silent fallback or invented context/usage precision.
   cannot shadow the selected subscription login.
 - Native session: Claude SDK session id and `resume`.
 - Instructions/tools: SDK system prompt plus the app-owned MCP/tool bridge.
-- Current state: `ClaudeRuntimeAdapter` is the only Claude SDK importer and the
-  orchestrator/dispatch paths use the canonical session seam. Capability/model
-  discovery and full orchestrator selection persistence remain unimplemented.
+- Current state: `ClaudeRuntimeAdapter` is the only Claude SDK importer. It
+  provides account-scoped capabilities/model discovery, revalidates exact
+  model/effort selection before create/resume, emits correlated positive native
+  session receipts, and fails closed on missing or mismatched resume identity.
+  Orchestrator app sessions persist the complete immutable selection and route
+  every remint/resume through it. Specialist-wide immutable effort/attempt
+  persistence remains a later N3 slice. Specialist dispatch also still imports
+  and selects `CLAUDE_RUNTIME_ID` directly rather than receiving its choice only
+  through the composition/registry boundary.
 
 ### OpenAI Codex
 
@@ -153,7 +172,8 @@ Runtime/account/model changes are session boundaries:
 
 1. positively interrupt or finish the active turn;
 2. end or suspend the current PC-SDK app session;
-3. retain its native runtime session id for same-runtime resume;
+3. retain its bind-once native runtime session id for eligible same-runtime,
+   same-account resume;
 4. create a new app session stamped with the new runtime selection;
 5. start a new native runtime session.
 
@@ -226,17 +246,16 @@ not sufficient evidence to manufacture cumulative context fullness.
 ## Migration and gates
 
 The inherited Phase 3 began with a behavior-preserving boundary extraction.
-PC-SDK Next continues the remaining migration under master-plan phases N3/N5:
+PC-SDK Next continues the remaining migration under master-plan phases N3/N5.
+RS-001 completed the canonical selection/capability types, Claude discovery,
+and immutable orchestrator create/remint/resume path. Remaining gates are:
 
-1. define canonical runtime types and capabilities;
-2. move every Claude-native type and mapping into `ClaudeRuntimeAdapter`;
-3. keep the current Claude orchestrator green through adapter conformance,
-   smoke, resume, interrupt, ask, streaming, and kill-recovery tests;
-4. implement a Codex subscription spike against the same contract;
-5. add `CodexRuntimeAdapter` and run the same conformance suite;
-6. expose runtime/account/model selection for specialists, then the
-   orchestrator;
-7. add provider-aware usage and cross-runtime UI states.
+1. finish specialist revision/run selection and durable attempt stamps;
+2. add provider-neutral context and quota observations;
+3. implement a Codex subscription spike against the same contract;
+4. add `CodexRuntimeAdapter` and run the same conformance suite;
+5. expose deliberate runtime/account/model/effort selection controls;
+6. compile attributed cross-runtime handoffs and their UI provenance.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers
@@ -245,7 +264,8 @@ move in one pass.
 ## Guard rules
 
 1. Only adapter modules import provider runtime packages or parse native events.
-2. Every runtime session is stamped with runtime, account, model, and native id.
+2. Every orchestrator app session is stamped with runtime, account, model,
+   explicit effort, bind-once native identity, and a rotating attempt identity.
 3. Resume always routes through the stamped adapter and account.
 4. Every turn has exactly one canonical terminal outcome.
 5. Interrupt, approval, tool, and resume operations require positive receipts.
@@ -257,6 +277,8 @@ move in one pass.
     resume.
 11. A write-capable runtime session starts only in the ready worktree recorded
     for its run; task size and provider do not weaken isolation.
+12. Native create/resume and their failure callbacks must carry the exact
+    current attempt identity; stale attempt evidence writes nothing.
 
 ## Anti-patterns
 

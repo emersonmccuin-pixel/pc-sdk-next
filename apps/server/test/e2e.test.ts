@@ -10,6 +10,7 @@ import { safeToolSummary } from '@pc/contracts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { freshDb, newProject, sleep } from './helpers.ts';
+import { testSessionSelectionDeps, withRuntimeReceipt } from './runtime-fixtures.ts';
 
 interface Frame {
   type: string;
@@ -44,7 +45,6 @@ function connect(url: string) {
 }
 
 const SCRIPT = [[
-  { type: 'init', nativeSessionId: 'sdk-e2e', model: 'opus', permissionMode: 'default' },
   { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'message-start' } },
   { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'Hel' } },
   { type: 'delta', itemId: 'u1', scope: 'primary', delta: { kind: 'text-delta', text: 'lo' } },
@@ -80,7 +80,12 @@ test('ws connect → send → deltas → persisted frames → turn-end → recon
   const backend = new FakeRuntime({ turns: SCRIPT, stepDelayMs: 1 });
   let server: RunningServer | null = null;
   try {
-    server = await startServer({ mintSession: () => backend, port: 0, runRecovery: false });
+    server = await startServer({
+      ...testSessionSelectionDeps(),
+      mintSession: withRuntimeReceipt(() => backend),
+      port: 0,
+      runRecovery: false,
+    });
     const url = `ws://localhost:${server.port}/ws?projectId=${project.id}`;
 
     const c1 = connect(url);
@@ -130,7 +135,12 @@ test('malformed known conversation command receives a correlated invalid receipt
   const project = newProject('Malformed command');
   let server: RunningServer | null = null;
   try {
-    server = await startServer({ mintSession: () => new FakeRuntime(), port: 0, runRecovery: false });
+    server = await startServer({
+      ...testSessionSelectionDeps(),
+      mintSession: withRuntimeReceipt(() => new FakeRuntime()),
+      port: 0,
+      runRecovery: false,
+    });
     const client = connect(`ws://localhost:${server.port}/ws?projectId=${project.id}`);
     await client.waitFor((frame) => frame.type === 'orchestrator-state');
     client.ws.send(JSON.stringify({

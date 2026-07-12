@@ -18,6 +18,7 @@ import {
   type ActivityPhase,
   type ChatDeltaEvent,
   type ChatEvent,
+  type RuntimeSessionReceipt,
   type ToolStateEvent,
   type UsageSnapshot,
 } from '@pc/contracts';
@@ -41,8 +42,8 @@ export interface TurnRunnerDeps {
   emitChat: (event: ChatEvent, identity?: { itemId?: string; streamId?: string }) => void;
   /** Persist one visible streaming delta with deterministic per-item order. */
   emitDelta: (itemId: string, deltaIndex: number, event: ChatDeltaEvent) => void;
-  /** Adapter-native session id captured from `init` (persisted for resume). */
-  onNativeSessionId?: (id: string, model: string | null) => void;
+  /** Positive exact native create/resume observation. */
+  onRuntimeSessionReceipt?: (receipt: RuntimeSessionReceipt) => void;
   /** Durable per-account usage snapshot (`rate_limit_event`). */
   onRateLimit?: (snapshot: UsageSnapshot) => void;
   /** Dropped/unknown message log (rule 5). */
@@ -175,8 +176,8 @@ export async function runTurn(
         continue;
       }
       switch (msg.type) {
-        case 'init':
-          deps.onNativeSessionId?.(msg.nativeSessionId, msg.model);
+        case 'session-started':
+          deps.onRuntimeSessionReceipt?.(msg.receipt);
           break;
 
         case 'assistant-block': {

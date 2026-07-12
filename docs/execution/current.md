@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after RS-001 provisioning.
+Updated: 2026-07-12 after RS-001 implementation and full workspace verification.
 
 ## Repository
 
@@ -51,19 +51,25 @@ Updated: 2026-07-11 after RS-001 provisioning.
 
 ## Status
 
-RS-001 is provisioned from clean pushed `main`. The bounded slice replaces
-mutable/default-derived orchestrator runtime selection with a complete immutable
-runtime/account/model/effort app-session stamp, bind-once native identity, typed
-capability/resume availability, and exact stamped continuation through Claude.
-Codex, context, quota, specialist widening, and handoff compilation remain out
-of scope. There is no user-direction blocker.
+RS-001 implementation is complete in its run-owned worktree. The bounded slice
+replaces mutable/default-derived orchestrator runtime selection with a complete
+immutable runtime/account/model/effort app-session stamp, bind-once native
+identity, typed capability/resume availability, exact stamped continuation
+through Claude, and a fresh persisted attempt fence for every provider mint.
+Hostile contract, DB, adapter, service, dispatch, web, migration, isolated
+browser checks, and the full `pnpm ci:check` gate are green. Codex, context,
+quota, specialist widening, and
+handoff compilation remain out of scope. Existing specialist browser DTOs still
+carry native session-shaped fields and specialist dispatch still selects
+`CLAUDE_RUNTIME_ID` directly; both are recorded later N3 gaps rather than
+RS-001 claims. There is no user-direction blocker.
 
 ## Next safe action
 
-Implement the canonical selection/capability contract, legacy-safe migration,
-stamped session creation/minting, bind-once native receipt, preflighted resume,
-and minimum honest account/session presentation. Locked offline preparation and
-the baseline workspace typecheck are green.
+Complete the final diff/source-boundary audit, seal the feature commit,
+guarded-merge it to current `main`, record positive ancestry and
+closeout evidence, remove the feature worktree, and push. No live provider smoke
+is required for this offline invariant slice.
 
 ## Startup checks
 

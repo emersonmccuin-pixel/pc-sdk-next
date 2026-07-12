@@ -3,11 +3,17 @@
 // session and mints a new one, so this is a deliberate, visible control. It
 // seeds from the server (registry + the project's current account), POSTs the
 // change, and shows pending/failure state (positive receipt — never silent).
-// The session-changed reset arrives over the WS; the chat store handles it.
+// A guarded session-changed frame also re-syncs this header from the immutable
+// active-session account stamp (important when resuming historical account A).
 
 import { useEffect, useRef, useState } from 'react';
 
 import { useAccounts } from '@/state/accounts';
+import {
+  sessionContinuationLabel,
+  sessionResumeLabel,
+  sessionSelectionLabel,
+} from '@/state/sessions';
 
 export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   const accounts = useAccounts((s) => s.accounts);
@@ -15,8 +21,10 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
   const status = useAccounts((s) => s.status);
   const pendingId = useAccounts((s) => s.pendingId);
   const error = useAccounts((s) => s.error);
+  const activeSession = useAccounts((s) => s.activeSession);
   const loadRegistry = useAccounts((s) => s.loadRegistry);
   const loadForProject = useAccounts((s) => s.loadForProject);
+  const bindProject = useAccounts((s) => s.bindProject);
   const switchAccount = useAccounts((s) => s.switchAccount);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -26,11 +34,16 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
     void loadRegistry();
   }, [loadRegistry]);
   useEffect(() => {
+    bindProject(projectId);
     if (projectId) void loadForProject(projectId);
-  }, [projectId, loadForProject]);
+  }, [projectId, bindProject, loadForProject]);
 
-  const selected = accounts.find((a) => a.id === selectedId) ?? accounts[0] ?? null;
+  const selected = accounts.find((a) => a.id === selectedId) ?? (
+    selectedId ? { id: selectedId, label: labelFromId(selectedId), configDir: '' } : accounts[0] ?? null
+  );
   const pending = status === 'pending';
+  const selectionLabel = activeSession ? sessionSelectionLabel(activeSession) : null;
+  const continuationLabel = activeSession ? sessionContinuationLabel(activeSession) : null;
 
   useEffect(() => {
     if (!open) return;
@@ -73,7 +86,12 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
         title={
           status === 'error' && error
             ? `Account switch failed: ${error}`
-            : `Account: ${selected.label}\n${selected.configDir}`
+            : [
+                `Account: ${selected.label}`,
+                selected.configDir || null,
+                selectionLabel ? `Session: ${selectionLabel}` : null,
+                continuationLabel ? `Continuation: ${continuationLabel}` : null,
+              ].filter(Boolean).join('\n')
         }
         className="flex items-center gap-1.5 px-2 py-1 text-[11px] uppercase tracking-[0.06em] text-muted-foreground hover:bg-muted hover:text-foreground"
       >
@@ -91,6 +109,15 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
           <div className="border-b border-border px-3 py-1 text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
             account
           </div>
+          {activeSession && selectionLabel && continuationLabel && (
+            <div className="border-b border-border px-3 py-1.5 text-[10px] text-muted-foreground">
+              <div className="mb-0.5 text-[9px] uppercase tracking-[0.1em]">active session</div>
+              <div className="max-w-[320px] truncate text-foreground/85" title={selectionLabel}>
+                {selectionLabel}
+              </div>
+              <div>{continuationLabel} · {sessionResumeLabel(activeSession)}</div>
+            </div>
+          )}
           {accounts.map((a) => {
             const active = a.id === selectedId;
             const busy = pending && a.id === pendingId;
@@ -133,4 +160,8 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
 
 function labelOf(accounts: { id: string; label: string }[], id: string): string {
   return accounts.find((a) => a.id === id)?.label ?? id;
+}
+
+function labelFromId(id: string): string {
+  return id.length > 0 ? id[0]!.toUpperCase() + id.slice(1) : id;
 }

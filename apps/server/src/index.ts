@@ -18,9 +18,8 @@ import {
   RuntimeRegistry,
   type MintRuntimeSession,
   type RuntimeSession,
-  type RuntimeSelection,
 } from './runner/runtime.ts';
-import { AccountRegistry } from './runner/account-env.ts';
+import { AccountRegistry, type Account } from './runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter.ts';
 import { seedStockAgents } from './agents/seed.ts';
 import { DispatchService } from './dispatch/service.ts';
@@ -53,6 +52,29 @@ async function main(): Promise<void> {
   const runtimes = new RuntimeRegistry();
   runtimes.register(new ClaudeRuntimeAdapter({ accounts }));
 
+  const resolveNewSessionSelection = async (
+    input: { projectId: ULID; accountId?: string },
+  ) => {
+    const orchestrator = orchestratorRow();
+    const model = orchestrator?.model?.trim();
+    if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
+    let account: Account | null;
+    try {
+      account = input.accountId
+        ? accounts.get(CLAUDE_RUNTIME_ID, input.accountId)
+        : accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
+    } catch {
+      return { status: 'invalid' as const, code: 'account-unavailable' as const };
+    }
+    if (!account) return { status: 'invalid' as const, code: 'account-unavailable' as const };
+    return runtimes.resolveSelection({
+      runtimeId: CLAUDE_RUNTIME_ID,
+      accountId: account.id,
+      model,
+      effort: orchestrator?.effort ?? null,
+    });
+  };
+
   const dispatch = new DispatchService({ runtimes, accounts, mcp });
   // The server's live port — set after listen and before any recovered chat
   // work is explicitly released by the composition root.
@@ -63,15 +85,9 @@ async function main(): Promise<void> {
   // pc_* dispatch tools, run in the project folder. Adapter selection happens
   // HERE and nowhere else.
   const mintSession = async (ctx: MintRuntimeSession): Promise<RuntimeSession> => {
-    const account = accounts.resolveForProject(ctx.projectId as ULID);
     const project = getProjectById(ctx.projectId as ULID);
     const orchestrator = orchestratorRow();
-    const selection: RuntimeSelection = {
-      runtimeId: CLAUDE_RUNTIME_ID,
-      accountId: account.id,
-      model: orchestrator?.model ?? 'opus',
-    };
-    const adapter = runtimes.get(selection.runtimeId);
+    const adapter = runtimes.get(ctx.selection.runtimeId);
     const tools =
       portRef.port > 0
         ? mergePcTools(
@@ -86,7 +102,8 @@ async function main(): Promise<void> {
     const input = {
       appSessionId: ctx.appSessionId,
       projectId: ctx.projectId,
-      selection,
+      continuationAttemptId: ctx.continuationAttemptId,
+      selection: ctx.selection,
       instructions: orchestrator?.prompt || undefined,
       cwd: ctx.cwd ?? (project?.folderPath || undefined),
       tools,
@@ -98,14 +115,18 @@ async function main(): Promise<void> {
       // plumbing stays wired without silently changing daily-driver behavior.
       bypassPermissions: true,
     };
-    return ctx.resumeNativeSessionId
-      ? adapter.resumeSession({ ...input, nativeSessionId: ctx.resumeNativeSessionId })
+    return ctx.continuation.mode === 'resume'
+      ? adapter.resumeSession({ ...input, nativeSessionId: ctx.continuation.nativeSessionId })
       : adapter.createSession(input);
   };
 
   const server = await startServer({
     mintSession,
+    resolveNewSessionSelection,
+    preflightRuntimeSession: (selection, continuation) =>
+      runtimes.preflight(selection, continuation),
     accounts,
+    orchestratorRuntimeId: CLAUDE_RUNTIME_ID,
     usage,
     dispatch,
     onRateLimit: (snapshot) => usage.record(snapshot),

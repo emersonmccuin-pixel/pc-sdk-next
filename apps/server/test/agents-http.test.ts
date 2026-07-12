@@ -11,16 +11,23 @@ import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import { freshDb, newProject } from './helpers.ts';
+import {
+  TEST_RUNTIME_ID,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const body = (r: Response): Promise<Json> => r.json() as Promise<Json>;
 
 async function boot(): Promise<{ server: RunningServer; base: string }> {
   const server = await startServer({
-    mintSession: () => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 }),
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [] as never, stepDelayMs: 1 })),
+    ...testSessionSelectionDeps(),
     port: 0,
     runRecovery: false,
     accounts: new AccountRegistry(),
+    orchestratorRuntimeId: TEST_RUNTIME_ID,
     usage: new UsageCache(),
   });
   return { server, base: `http://localhost:${server.port}` };

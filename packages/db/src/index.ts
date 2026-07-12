@@ -165,6 +165,7 @@ export type {
 
 export {
   cancelQueuedConversationSends,
+  cancelLegacyUnavailableSessionQueues,
   claimNextConversationTurn,
   editQueuedConversationSend,
   enqueueConversationSend,
@@ -255,18 +256,29 @@ export type {
 } from './repos/agent-runs.ts';
 
 export {
+  confirmRuntimeSessionReceipt,
   createOrchestratorSession,
   endOrchestratorSession,
+  failRuntimeSessionResume,
   getActiveOrchestratorSession,
   getOrchestratorSession,
+  isOrchestratorSessionResumeReady,
   listOrchestratorSessionsForProject,
-  reactivateOrchestratorSession,
-  setOrchestratorSessionProvider,
+  prepareRuntimeSessionCreate,
+  prepareRuntimeSessionResume,
+  runtimeSelectionForSession,
   setOrchestratorSessionTitle,
 } from './repos/orchestrator-sessions.ts';
 export type {
+  ConfirmRuntimeSessionReceiptInput,
+  ConfirmRuntimeSessionReceiptResult,
   CreateOrchestratorSessionInput,
+  OrchestratorSessionContinuationState,
+  OrchestratorSessionEffortState,
+  OrchestratorSessionNativeIdentityState,
   OrchestratorSessionRow,
+  OrchestratorSessionSelectionState,
+  RuntimeSessionReceiptRejection,
 } from './repos/orchestrator-sessions.ts';
 
 // ContextDoc repo.

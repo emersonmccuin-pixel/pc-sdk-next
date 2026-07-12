@@ -1,8 +1,9 @@
 # Event contract — PC-SDK Next
 
-As built after `CF-004`, 2026-07-11. This document records the implemented
-browser wire and its persistence/publication semantics. The executable source
-is `packages/contracts/src/events/`; the target behavior beyond this slice is
+As built in the active `RS-001` feature worktree after its full gate and pending
+landing, 2026-07-12. This document records the implemented browser wire and its
+persistence/publication semantics. The executable source is
+`packages/contracts/src/events/`; the target behavior beyond this slice is
 owned by `docs/architecture/chat-communications.md`.
 
 ## Principles
@@ -52,6 +53,16 @@ window commit durably and receive their sender receipt, but no runtime is
 minted until readiness releases both existing services and recovered live-
 project queues. Deleted projects and deleted/inactive sessions are never boot
 feeders.
+
+Migration `0012` conservatively marks inherited orchestrator sessions
+`legacy-unavailable` instead of inventing a runtime selection. Before the
+listener opens, boot recovery canonically cancels every queued or failed send
+owned by those sessions. Each cancellation, queue-revision increment,
+`send-state`, and conversation-outbox row commits in one Conversation-owned
+transaction. A pre-listener conversation-relay drain consumes that outbox, so
+cold replay contains the durable cancellation evidence without a stale live
+redelivery after startup. The sweep is idempotent and never changes delivering
+or accepted items.
 
 ## Channel 1 — canonical conversation events
 
@@ -379,20 +390,51 @@ Starting, resuming, or account-switching an app session atomically cancels the
 old undelivered FIFO, ends the old active row, and creates/reactivates the target
 row; account settings join that same transaction. Project deletion refuses an
 active turn, otherwise cancels the FIFO, ends the session, and soft-deletes the
-project atomically. Until immutable runtime/account stamps land, an account
-switch marks all prior sessions non-resumable: their transcripts remain
-viewable, while native continuation under the wrong credential home is blocked
-and visibly labelled.
+project atomically. Every new orchestrator row carries one immutable complete
+runtime/account/model/effort stamp. Historical resume preflights that stamp and
+its bound native identity before the atomic transition, so returning from
+account B to account A routes through A without changing the mutable project
+default or guessing a credential home.
+
+Immediately before each native create or resume mint, persistence rotates a
+non-empty continuation-attempt identity. The adapter echoes it in the positive
+`session-started` receipt. Receipt confirmation and resume failure both compare
+the exact current attempt in their DB update, making output from an abandoned
+stream harmless even when its native session ID and selection otherwise match.
 
 Session lifecycle remains app-owned:
 
 ```ts
 { type: 'session-changed'; projectId: ULID
   transition: 'new-session' | 'resume-session'
-  session: { id: string; projectId: ULID; model: string | null
+  session: { id: string; projectId: ULID
+    selection: RuntimeSelection | null
     title: string | null; status: 'active' | 'ended'
-    resumable: boolean; startedAt: number } | null }
+    nativeSessionIdPresent: boolean
+    continuationState: 'clean-pending' | 'clean-started'
+      | 'resume-pending' | 'native-resumed' | 'resume-failed'
+      | 'legacy-unavailable'
+    resumeAvailability:
+      | { status: 'available' }
+      | { status: 'unavailable'; code: RuntimeSelectionErrorCode }
+    startedAt: number } | null }
+
+{ type: 'session-updated'; projectId: ULID
+  session: SessionSummary }
 ```
+
+`selection` is null only for conservatively quarantined migrated rows. Native
+session IDs, continuation-attempt IDs, and credential homes never enter this
+orchestrator frame family or the expanded orchestrator HTTP session DTO.
+
+`session-changed` remains the app-session boundary: consumers replace the
+active-session identity and reset/replay chat as required. `session-updated`
+converges only non-boundary metadata for that same active session after an exact
+positive native receipt or current-attempt resume failure. The browser updates
+account/header provenance and invalidates session-list reads, but it does not
+reset, clear, or replay the chat timeline. Both frames use the same strict
+`SessionSummary`; native identity is represented only by
+`nativeSessionIdPresent`.
 
 ## Channel 2 — resource events
 
@@ -455,7 +497,7 @@ native-to-canonical ID map and emits canonical runtime events:
 
 | Native observation | Canonical result |
 | --- | --- |
-| initialization | adapter-owned native session ID for resume metadata |
+| exact initialization | `session-started` with immutable selection, current attempt identity, created/resumed mode, and adapter-owned native session ID |
 | main assistant text/tool block | canonical item ID plus `assistant-text` or safe `tool-state: requested` |
 | tool progress/result | adapter-correlated `running` then `succeeded`/`failed`, with no input/output |
 | permission callback/native denial | canonical approval request/provenance and `running` or `denied` |
@@ -468,8 +510,13 @@ native-to-canonical ID map and emits canonical runtime events:
 | supersession | `retract` with canonical stream IDs |
 | unknown native variant | dropped/logged by the adapter; loop continues |
 
-Native session identity remains adapter/composition metadata and never becomes
-a conversation message identifier.
+On the orchestrator path, native session and attempt identities remain
+adapter/persistence metadata and never become conversation message identifiers
+or orchestrator session browser data. This is not yet a specialist-wide claim:
+the existing browser-facing `AgentRunDto.sessionId` mirrors `ccSessionId`, and
+`PendingAskDto.ccSessionId` retains provider-native session-shaped vocabulary.
+Those DTOs and specialist dispatch's direct `CLAUDE_RUNTIME_ID` selection are
+later N3 boundary work.
 
 ## Guard rules
 
@@ -525,10 +572,20 @@ a conversation message identifier.
     denied immediately as unsupported. Paused-run boot recovery and an incoming
     answer share one provider-resume attempt, and kill/shutdown disposes any
     late candidate before it can install or leave a wall clock armed.
+23. Every native orchestrator create/resume mint has one fresh persisted
+    continuation-attempt identity. Success and failure advance only that exact
+    attempt. Stale or attempt-mismatched evidence writes nothing. Missing,
+    malformed, wrong-mode, wrong-selection, or conflicting evidence cannot bind
+    or confirm native identity and never falls back to a clean start; invalid
+    evidence for the current resume attempt may record `resume-failed`.
 
 ## Deliberately unfinished boundaries
 
-- immutable runtime/account/model/effort app-session stamps;
+- specialist-wide immutable runtime/account/model/effort and attempt stamps;
+- removal of native session-shaped fields from existing agent-run/pending-ask
+  browser DTOs and of direct `CLAUDE_RUNTIME_ID` selection from specialist
+  dispatch;
+- attributed cross-runtime handoff compilation;
 - provider-neutral context and usage observations;
 - Codex adapter and conformance.
 

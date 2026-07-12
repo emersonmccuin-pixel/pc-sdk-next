@@ -18,6 +18,7 @@ import {
   isSendQueueSnapshotFrame,
   isSessionChangedFrame,
   isSessionReplayFrame,
+  isSessionUpdatedFrame,
 } from '@pc/contracts';
 import type {
   ClientMessage,
@@ -26,9 +27,11 @@ import type {
 } from '@pc/contracts';
 
 import { useAgentEventStore } from '@/state/agent-event-store';
+import { useAccounts } from '@/state/accounts';
 import { useChatStore } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
 import { useResourceStore } from '@/state/resource-store';
+import { useSessionNav } from '@/state/sessions';
 import { useUsageStore } from '@/state/usage-store';
 import { useMcpStatus } from '@/state/mcp-status';
 
@@ -215,6 +218,13 @@ export class ProjectSocket {
     }
     if (type === 'session-changed' && isSessionChangedFrame(frame)) {
       useChatStore.getState().ingest(frame);
+      useSessionNav.getState().applySessionChanged(frame);
+      useAccounts.getState().applySessionChanged(frame);
+      return;
+    }
+    if (type === 'session-updated' && isSessionUpdatedFrame(frame)) {
+      useSessionNav.getState().applySessionUpdated(frame);
+      useAccounts.getState().applySessionUpdated(frame);
       return;
     }
     if (type === 'conversation-command-receipt' && isConversationCommandReceiptFrame(frame)) {
@@ -336,6 +346,7 @@ export function useProjectSocket(projectId: string | null): SocketApi | null {
   useLayoutEffect(() => {
     // Project-owned singleton projections must be blanked before the first
     // paint of a successor project. The API is also project-bound below.
+    useAccounts.getState().bindProject(projectId);
     useChatStore.getState().reset();
     useConnectionStore.getState().resetProjectState();
     if (!projectId) {

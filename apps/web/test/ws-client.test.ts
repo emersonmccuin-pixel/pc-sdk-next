@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ProjectSocket } from '../src/lib/ws-client.ts';
+import { useAccounts } from '../src/state/accounts.ts';
 import { useChatStore } from '../src/state/chat-store.ts';
 import { useConnectionStore } from '../src/state/connection.ts';
 import { useAgentEventStore } from '../src/state/agent-event-store.ts';
+import { useSessionNav } from '../src/state/sessions.ts';
 
 const PROJECT_ID = 'project-1';
 const SESSION_ID = 'session-1';
@@ -29,6 +31,154 @@ function queueItem() {
     updatedAt: 1,
   };
 }
+
+function sessionChanged(
+  sessionId: string,
+  accountId: string,
+  transition: 'new-session' | 'resume-session',
+  continuationState: 'clean-started' | 'native-resumed',
+  projectId = PROJECT_ID,
+) {
+  return {
+    type: 'session-changed',
+    projectId,
+    transition,
+    session: {
+      id: sessionId,
+      projectId,
+      selection: {
+        runtimeId: 'claude-agent-sdk',
+        accountId,
+        model: 'claude-opus',
+        effort: { kind: 'none' },
+      },
+      title: null,
+      status: 'active',
+      nativeSessionIdPresent: true,
+      continuationState,
+      resumeAvailability: { status: 'unavailable', code: 'session-active' },
+      startedAt: 1,
+    },
+  };
+}
+
+function sessionUpdated(
+  sessionId: string,
+  accountId: string,
+  continuationState: 'clean-started' | 'native-resumed' | 'resume-failed',
+) {
+  const changed = sessionChanged(
+    sessionId,
+    accountId,
+    'resume-session',
+    continuationState === 'resume-failed' ? 'native-resumed' : continuationState,
+  );
+  return {
+    type: 'session-updated',
+    projectId: PROJECT_ID,
+    session: {
+      ...changed.session,
+      continuationState,
+    },
+  };
+}
+
+test('valid session changes synchronize chat, navigation, and stamped account A -> B -> resume A', () => {
+  useChatStore.getState().reset();
+  useSessionNav.getState().setActive(PROJECT_ID, null);
+  useAccounts.getState().bindProject(null);
+  useAccounts.getState().bindProject(PROJECT_ID);
+  useAccounts.getState().select('unrelated-default');
+  const socket = new ProjectSocket(PROJECT_ID);
+
+  route(socket, sessionChanged('session-a-1', 'account-a', 'new-session', 'clean-started'));
+  assert.equal(useChatStore.getState().state.sessionId, 'session-a-1');
+  assert.equal(useSessionNav.getState().activeByProject[PROJECT_ID], 'session-a-1');
+  assert.equal(useAccounts.getState().selectedId, 'account-a');
+  assert.equal(useAccounts.getState().activeSession?.continuationState, 'clean-started');
+  useAccounts.getState().select('account-b');
+  assert.equal(useAccounts.getState().selectedId, 'account-a', 'local display choice cannot rewrite a stamp');
+
+  route(socket, sessionChanged('session-b', 'account-b', 'new-session', 'clean-started'));
+  assert.equal(useChatStore.getState().state.sessionId, 'session-b');
+  assert.equal(useSessionNav.getState().activeByProject[PROJECT_ID], 'session-b');
+  assert.equal(useAccounts.getState().selectedId, 'account-b');
+
+  route(socket, sessionChanged('session-a-1', 'account-a', 'resume-session', 'native-resumed'));
+  assert.equal(useChatStore.getState().state.sessionId, 'session-a-1');
+  assert.equal(useSessionNav.getState().activeByProject[PROJECT_ID], 'session-a-1');
+  assert.equal(useAccounts.getState().selectedId, 'account-a');
+  assert.equal(useAccounts.getState().activeSession?.continuationState, 'native-resumed');
+});
+
+test('malformed or foreign session changes mutate none of the project-scoped stores', () => {
+  useChatStore.getState().reset();
+  useSessionNav.getState().setActive(PROJECT_ID, null);
+  useAccounts.getState().bindProject(null);
+  useAccounts.getState().bindProject(PROJECT_ID);
+  const socket = new ProjectSocket(PROJECT_ID);
+  route(socket, sessionChanged('session-safe', 'account-a', 'new-session', 'clean-started'));
+
+  const chatBefore = useChatStore.getState().state;
+  const navBefore = useSessionNav.getState().activeByProject[PROJECT_ID];
+  const navNonceBefore = useSessionNav.getState().nonce;
+  const accountBefore = useAccounts.getState().selectedId;
+  const accountSessionBefore = useAccounts.getState().activeSession;
+
+  const malformed = sessionChanged('session-bad', 'account-b', 'resume-session', 'native-resumed');
+  route(socket, {
+    ...malformed,
+    session: {
+      ...malformed.session,
+      nativeSessionId: 'must-not-cross-browser-contract',
+    },
+  });
+  route(socket, {
+    ...malformed,
+    provider: 'must-not-cross-browser-contract',
+  });
+  route(socket, sessionChanged(
+    'session-foreign',
+    'foreign-account',
+    'resume-session',
+    'native-resumed',
+    'foreign-project',
+  ));
+
+  assert.strictEqual(useChatStore.getState().state, chatBefore);
+  assert.equal(useSessionNav.getState().activeByProject[PROJECT_ID], navBefore);
+  assert.equal(useSessionNav.getState().nonce, navNonceBefore);
+  assert.equal(useAccounts.getState().selectedId, accountBefore);
+  assert.strictEqual(useAccounts.getState().activeSession, accountSessionBefore);
+});
+
+test('session metadata updates provenance without resetting the chat timeline', () => {
+  useChatStore.getState().reset();
+  useSessionNav.getState().setActive(PROJECT_ID, null);
+  useAccounts.getState().bindProject(null);
+  useAccounts.getState().bindProject(PROJECT_ID);
+  const socket = new ProjectSocket(PROJECT_ID);
+  route(socket, sessionChanged('session-live', 'account-a', 'new-session', 'clean-started'));
+
+  const chatBefore = useChatStore.getState().state;
+  const nonceBefore = useSessionNav.getState().nonce;
+  route(socket, sessionUpdated('session-live', 'account-a', 'native-resumed'));
+
+  assert.strictEqual(useChatStore.getState().state, chatBefore);
+  assert.equal(useSessionNav.getState().activeByProject[PROJECT_ID], 'session-live');
+  assert.equal(useSessionNav.getState().nonce, nonceBefore + 1);
+  assert.equal(useAccounts.getState().activeSession?.continuationState, 'native-resumed');
+
+  const accountBefore = useAccounts.getState().activeSession;
+  const nonceAfter = useSessionNav.getState().nonce;
+  route(socket, {
+    ...sessionUpdated('session-live', 'account-a', 'clean-started'),
+    continuationAttemptId: 'must-not-cross-browser-contract',
+  });
+  assert.strictEqual(useChatStore.getState().state, chatBefore);
+  assert.strictEqual(useAccounts.getState().activeSession, accountBefore);
+  assert.equal(useSessionNav.getState().nonce, nonceAfter);
+});
 
 test('socket routes only strictly guarded queue and command frames', () => {
   useChatStore.getState().reset(SESSION_ID);

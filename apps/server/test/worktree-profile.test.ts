@@ -24,6 +24,8 @@ import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import {
   RuntimeRegistry,
   type AgentRuntimeAdapter,
+  type CreateRuntimeSession,
+  type ResumeRuntimeSession,
   type RuntimeEvent,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
@@ -33,6 +35,12 @@ import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import type { McpManager } from '../src/mcp/manager.ts';
 import { commitFile, freshDb, newGitProject, until } from './helpers.ts';
+import {
+  testCapabilities,
+  testModelDiscovery,
+  testSessionSelectionDeps,
+  withRuntimeReceipt,
+} from './runtime-fixtures.ts';
 
 const OK_RESULT: RuntimeEvent = {
   type: 'result',
@@ -71,17 +79,32 @@ class GatedAdapter implements AgentRuntimeAdapter {
     this.sessionGate = deferred();
     this.turnGate = deferred();
   }
-  async createSession(): Promise<RuntimeSession> {
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async listModels() { return testModelDiscovery(); }
+  private async mint(
+    input: CreateRuntimeSession,
+    continuation: { mode: 'create' } | { mode: 'resume'; nativeSessionId: string },
+  ): Promise<RuntimeSession> {
     await this.sessionGate.promise;
     const gate = this.turnGate.promise;
-    return {
+    const runtime: RuntimeSession = {
       sendTurn: () => turnStream(gate),
       interrupt: async () => {},
       dispose: async () => {},
     };
+    return withRuntimeReceipt(() => runtime)({
+      projectId: input.projectId,
+      appSessionId: input.appSessionId,
+      continuationAttemptId: input.continuationAttemptId,
+      selection: input.selection,
+      continuation,
+    });
   }
-  resumeSession(): Promise<RuntimeSession> {
-    return this.createSession();
+  createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
+    return this.mint(input, { mode: 'create' });
+  }
+  resumeSession(input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return this.mint(input, { mode: 'resume', nativeSessionId: input.nativeSessionId });
   }
 }
 
@@ -96,7 +119,11 @@ function rig(adapter: AgentRuntimeAdapter): DispatchService {
   runtimes.register(adapter);
   const dispatch = new DispatchService({ runtimes, accounts: new AccountRegistry(), mcp: {} as McpManager });
   const hub = new ProjectWebSocketHub<ULID>();
-  const registry = new SessionRegistry({ hub, mintSession: () => new FakeRuntime() });
+  const registry = new SessionRegistry({
+    hub,
+    ...testSessionSelectionDeps(),
+    mintSession: withRuntimeReceipt(() => new FakeRuntime()),
+  });
   dispatch.attach({ registry, hub, serverPort: 1 });
   return dispatch;
 }
