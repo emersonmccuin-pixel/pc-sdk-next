@@ -78,6 +78,48 @@ function commit(
   } as Parameters<typeof commitConversationEvent>[0]);
 }
 
+function terminal(
+  conversationId: string,
+  turnId: string,
+  deliveryKind: 'chat' | 'agent' = 'chat',
+) {
+  return commitConversationEvent({
+    projectId: 'p1',
+    conversationId,
+    sessionId: conversationId,
+    family: 'control',
+    event: { kind: 'turn-end', text: 'done', stopReason: 'complete' },
+    turnId,
+    itemId: `terminal-${turnId}`,
+    occurredAt: 2000,
+    deliveryKind,
+  });
+}
+
+function contextObservation(
+  conversationId: string,
+  turnId?: string,
+  deliveryKind: 'chat' | 'agent' = 'chat',
+) {
+  return commitConversationEvent({
+    projectId: 'p1',
+    conversationId,
+    sessionId: conversationId,
+    family: 'telemetry',
+    event: {
+      kind: 'context-observation',
+      confidence: 'exact',
+      usedTokens: 1_000,
+      usableTokens: 100_000,
+      contextWindowTokens: 200_000,
+    },
+    ...(turnId === undefined ? {} : { turnId }),
+    itemId: `context-${turnId ?? 'missing'}`,
+    occurredAt: 2001,
+    deliveryKind,
+  });
+}
+
 test('commit allocates gapless conversation sequence and writes one outbox row atomically', () => {
   const first = commit('c1', 'one');
   const second = commit('c1', 'two');
@@ -174,6 +216,114 @@ test('project mismatch and invalid delta identity fail closed without consuming 
   assert.equal(getConversationHighWaterSequence('no-turn-tool'), 0);
   assert.equal(getConversationHighWaterSequence('no-turn-activity'), 0);
   assert.equal(getConversationHighWaterSequence('no-turn-terminal'), 0);
+});
+
+test('context observation requires a non-empty turn identity without consuming sequence', () => {
+  assert.throws(
+    () => contextObservation('context-missing-turn'),
+    /context-observation requires a non-empty turnId/,
+  );
+  assert.throws(
+    () => contextObservation('context-empty-turn', ''),
+    /turnId must be non-empty when provided/,
+  );
+  assert.equal(getConversationHighWaterSequence('context-missing-turn'), 0);
+  assert.equal(getConversationHighWaterSequence('context-empty-turn'), 0);
+  assert.equal(
+    listUnrelayedConversationEvents()
+      .filter((entry) => (
+        entry.event.conversationId === 'context-missing-turn'
+        || entry.event.conversationId === 'context-empty-turn'
+      )).length,
+    0,
+  );
+});
+
+test('context observation rejects nonexistent and open turns without consuming sequence', () => {
+  assert.throws(
+    () => contextObservation('context-nonexistent-turn', 'turn-missing'),
+    /context observation requires a settled terminal: turn-missing/,
+  );
+  assert.equal(getConversationHighWaterSequence('context-nonexistent-turn'), 0);
+
+  commitConversationEvent({
+    projectId: 'p1',
+    conversationId: 'context-open-turn',
+    sessionId: 'context-open-turn',
+    family: 'activity',
+    event: { kind: 'activity-state', phase: 'responding' },
+    turnId: 'turn-open',
+    itemId: 'activity-open',
+    occurredAt: 1000,
+    deliveryKind: 'chat',
+  });
+  assert.throws(
+    () => contextObservation('context-open-turn', 'turn-open'),
+    /context observation requires a settled terminal: turn-open/,
+  );
+  assert.deepEqual(
+    listConversationEvents('context-open-turn').map((row) => row.eventType),
+    ['activity-state'],
+  );
+  assert.equal(getConversationHighWaterSequence('context-open-turn'), 1);
+});
+
+test('context observation accepts one post-terminal event and rejects a duplicate', () => {
+  terminal('context-settled-turn', 'turn-settled');
+  const observation = contextObservation('context-settled-turn', 'turn-settled');
+  assert.equal(observation.event.sequence, 2);
+  assert.deepEqual(
+    listConversationEvents('context-settled-turn').map((row) => row.eventType),
+    ['turn-end', 'context-observation'],
+  );
+  assert.throws(
+    () => contextObservation('context-settled-turn', 'turn-settled'),
+    /context observation already exists for turn: turn-settled/,
+  );
+  assert.equal(getConversationHighWaterSequence('context-settled-turn'), 2);
+  assert.equal(
+    listUnrelayedConversationEvents()
+      .filter((entry) => entry.event.conversationId === 'context-settled-turn').length,
+    2,
+  );
+});
+
+test('context observation and outbox rollback atomically and preserve the next sequence', () => {
+  terminal('context-atomic', 'turn-context-atomic');
+  const raw = getRawDb();
+  raw.exec(`
+    CREATE TEMP TRIGGER fail_context_observation_outbox
+    BEFORE INSERT ON conversation_outbox
+    WHEN NEW.delivery_kind = 'agent'
+    BEGIN SELECT RAISE(ABORT, 'forced context outbox failure'); END;
+  `);
+  assert.throws(
+    () => contextObservation('context-atomic', 'turn-context-atomic', 'agent'),
+    /forced context outbox failure/,
+  );
+  raw.exec('DROP TRIGGER fail_context_observation_outbox');
+  assert.deepEqual(
+    listConversationEvents('context-atomic').map((row) => row.eventType),
+    ['turn-end'],
+  );
+  assert.equal(getConversationHighWaterSequence('context-atomic'), 1);
+  assert.equal(
+    listUnrelayedConversationEvents()
+      .filter((entry) => entry.event.conversationId === 'context-atomic').length,
+    1,
+  );
+
+  const observation = contextObservation('context-atomic', 'turn-context-atomic', 'agent');
+  assert.equal(observation.event.sequence, 2);
+  assert.deepEqual(
+    listConversationEvents('context-atomic').map((row) => row.eventType),
+    ['turn-end', 'context-observation'],
+  );
+  assert.equal(
+    listUnrelayedConversationEvents()
+      .filter((entry) => entry.event.conversationId === 'context-atomic').length,
+    2,
+  );
 });
 
 test('legacy-hidden evidence is retained raw but never appears in product replay', () => {

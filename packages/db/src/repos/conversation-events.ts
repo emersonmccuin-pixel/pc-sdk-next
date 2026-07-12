@@ -73,6 +73,7 @@ export function commitConversationEventInDb(
 ): CommitConversationEventResult {
   validateConversationEventInput(input);
   validateTurnIsOpenInDb(input, tx);
+  validateContextObservationInDb(input, tx);
   validateToolTransitionInDb(input, tx);
   if (input.event.kind === 'turn-end' || input.event.kind === 'turn-failed') {
     closeOpenConversationToolCallsInDb({
@@ -158,6 +159,45 @@ function validateTurnIsOpenInDb(
     .limit(1)
     .get();
   if (terminal) throw new Error(`turn already terminal: ${input.turnId}`);
+}
+
+function validateContextObservationInDb(
+  input: CommitConversationEventInput,
+  tx: DbTransaction,
+): void {
+  if (input.event.kind !== 'context-observation') return;
+  const terminal = tx
+    .select({ eventId: conversationEvents.eventId })
+    .from(conversationEvents)
+    .where(and(
+      eq(conversationEvents.projectId, input.projectId),
+      eq(conversationEvents.conversationId, input.conversationId),
+      eq(conversationEvents.sessionId, input.sessionId),
+      eq(conversationEvents.turnId, input.turnId!),
+      inArray(conversationEvents.eventType, ['turn-end', 'turn-failed']),
+      eq(conversationEvents.projectionState, 'visible'),
+    ))
+    .limit(1)
+    .get();
+  if (!terminal) {
+    throw new Error(`context observation requires a settled terminal: ${input.turnId}`);
+  }
+
+  const previous = tx
+    .select({ eventId: conversationEvents.eventId })
+    .from(conversationEvents)
+    .where(and(
+      eq(conversationEvents.projectId, input.projectId),
+      eq(conversationEvents.conversationId, input.conversationId),
+      eq(conversationEvents.sessionId, input.sessionId),
+      eq(conversationEvents.turnId, input.turnId!),
+      eq(conversationEvents.eventType, 'context-observation'),
+    ))
+    .limit(1)
+    .get();
+  if (previous) {
+    throw new Error(`context observation already exists for turn: ${input.turnId}`);
+  }
 }
 
 function validateToolTransitionInDb(
@@ -308,6 +348,7 @@ function validateConversationEventInput(input: CommitConversationEventInput): vo
       || input.event.kind === 'tool-state'
       || input.event.kind === 'turn-end'
       || input.event.kind === 'turn-failed'
+      || input.event.kind === 'context-observation'
     )
     && !input.turnId
   ) throw new Error(`${input.event.kind} requires a non-empty turnId`);
