@@ -439,6 +439,38 @@ that survives a hard-killed server is not contained. The manual
 working-PC-SDK/Next concurrent-write prohibition remains. `OPS-005` stays
 accepted despite the completed cooperative landing.
 
+## Completed N4 child-environment hardening feature
+
+`SEC-003` replaces broad inherited environments with one provider-neutral
+positive OS-essential allowlist. The policy starts empty, treats Windows names
+case-insensitively while dropping ambiguous or Unicode-lookalike names, keeps
+POSIX matching exact, rejects undefined/NUL/exported-function values, and never
+mutates its input. App/PM variables, raw provider/API credentials, Git
+selectors, shell/loader injection controls, and unknown names do not cross.
+
+Direct Git, setup/readiness/verification/cleanup shells, and the fixed Windows
+tree-kill helper all use that boundary. Real Git filter/hook and shell/
+grandchild canaries prove the current host's PM/OpenAI/app values are absent.
+The shell executable itself is pinned to `/bin/sh` or a positively resolved
+SystemRoot/Windir-consistent `cmd.exe`; ambient `ComSpec` cannot choose it and
+uncertain shell evidence fails closed.
+
+Claude discovery/create/resume starts from the same allowlist and adds only the
+selected `CLAUDE_CONFIG_DIR`. `ClaudeRuntimeSession` sanitizes again at the
+final query seam and refuses missing, malformed, inherited, or lowercase-
+lookalike homes instead of falling back to another account. A provider-free
+fake spawn through pinned SDK 0.3.206 proves the native process receives only
+the safe input plus SDK-authored entrypoint/version markers. MCP stdio retains
+its separate safe SDK defaults plus explicit registered-consumer env; the
+same-engine restart remains the sole broad trusted exception.
+
+The pure/runtime/SDK/profile/verification/Git/MCP/static matrices pass, as does
+full feature-tree `pnpm ci:check` with 387/387 server tests. Three independent
+hostile re-reviews are clean after closing ambient Windows shell selection,
+missing credential-home fallback, and static inventory gaps. No live provider,
+PM/MCP-network, stable-data, original-app, or external-repository action was
+required. Full evidence is in `docs/execution/receipts/SEC-003.md`.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -456,11 +488,10 @@ accepted despite the completed cooperative landing.
   lease is guarded-landed and pushed. Nonparticipating stable/manual
   tools and escaped repository children remain outside that proof. The listener
   is not yet explicitly loopback-bound.
-- Runtime/setup subprocesses still inherit a broad server environment after
-  SF-002's narrow removal of `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR`
-  from Git, shell, and provider child seams. `SEC-003` must still provide the
-  least-privilege allowlist/scrub that prevents unrelated app secrets,
-  including PM tokens, from reaching children.
+- Worktree profiles do not yet have an explicit local-input/environment/secret
+  injection policy. Arbitrary ambient variables are now deliberately absent;
+  private setup dependencies that require credentials must wait for an
+  attributable allowlisted injection design rather than regaining inheritance.
 - At the inherited `480px` stress width the composer narrows to about `101px`,
   and Escape does not dismiss App Settings in either preserved or current
   subject. Close remains usable and no document overflow occurs. These are N7

@@ -331,6 +331,66 @@ test('deferred init-in-place creates a clean initial import that can provision a
   await releaseAllRepositoryLeasesForTesting();
 });
 
+test('repository bootstrap filters cannot observe ambient variables', async (t) => {
+  const scope = new LeaseTestScope(t);
+  const projectDir = join(scope.root, 'filtered-initial-import');
+  const homeDir = join(scope.root, 'controlled-home');
+  const filterScript = join(scope.root, 'sec003-clean-filter.cjs');
+  const markerPath = join(scope.root, 'sec003-clean-filter.marker');
+  const configPath = join(homeDir, '.gitconfig');
+  const canaryName = 'PC_SDK_SEC003_GIT_FILTER_CANARY';
+  const inheritedNames = process.platform === 'win32'
+    ? ['HOME', 'USERPROFILE', canaryName]
+    : ['HOME', canaryName];
+  const prior = new Map(inheritedNames.map((name) => [name, process.env[name]]));
+
+  mkdirSync(projectDir);
+  mkdirSync(homeDir);
+  writeFileSync(join(projectDir, '.gitattributes'), 'seed.txt filter=sec003\n', 'utf8');
+  writeFileSync(join(projectDir, 'seed.txt'), 'seed\n', 'utf8');
+  writeFileSync(
+    filterScript,
+    [
+      "const { writeFileSync } = require('node:fs');",
+      'const chunks = [];',
+      "process.stdin.on('data', (chunk) => chunks.push(chunk));",
+      "process.stdin.on('end', () => {",
+      `  writeFileSync(${JSON.stringify(markerPath)}, process.env.${canaryName} ?? 'absent');`,
+      '  process.stdout.write(Buffer.concat(chunks));',
+      '});',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const quoteForGitShell = (value: string): string =>
+    `"${value.replaceAll('\\', '/').replaceAll('"', '\\"')}"`;
+  await gitOk([
+    'config',
+    '--file',
+    configPath,
+    'filter.sec003.clean',
+    `${quoteForGitShell(process.execPath)} ${quoteForGitShell(filterScript)}`,
+  ], scope.root);
+  await gitOk(['config', '--file', configPath, 'filter.sec003.required', 'true'], scope.root);
+
+  try {
+    process.env.HOME = homeDir;
+    if (process.platform === 'win32') process.env.USERPROFILE = homeDir;
+    process.env[canaryName] = 'must-not-cross-repository-bootstrap';
+
+    const manager = scope.trackManager(new RepositoryLeaseManager());
+    await manager.acquireForRuntimeCwd(projectDir);
+
+    assert.equal(readFileSync(markerPath, 'utf8'), 'absent', 'the clean filter ran without the ambient canary');
+  } finally {
+    for (const name of inheritedNames) {
+      const value = prior.get(name);
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('conflicting attach and init creation claims cannot both cross one cwd transition', async (t) => {
   const scope = new LeaseTestScope(t);
   const projectDir = join(scope.root, 'conflicting-creation-claims');

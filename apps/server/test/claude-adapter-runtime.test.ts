@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import type {
   ModelInfo,
   Query,
@@ -43,13 +44,51 @@ const MODELS: ModelInfo[] = [
 ];
 
 const ATTEMPT_ID = 'continuation-attempt-1';
+const TEST_CLAUDE_ENV = Object.freeze({
+  CLAUDE_CONFIG_DIR: resolve('test-fixtures/claude-personal'),
+});
 
-function accounts(): AccountRegistry {
-  return new AccountRegistry([{
-    id: 'personal',
-    runtimeId: CLAUDE_RUNTIME_ID,
-    configDir: 'C:/claude-personal',
-  }]);
+const DIRTY_RUNTIME_ENV: NodeJS.ProcessEnv = {
+  PATH: 'C:/safe-bin',
+  CLAUDE_CONFIG_DIR: 'C:/ambient-claude-home',
+  claude_config_dir: 'C:/lowercase-lookalike',
+  ANTHROPIC_API_KEY: 'anthropic-api-key-canary',
+  ANTHROPIC_AUTH_TOKEN: 'anthropic-auth-token-canary',
+  OPENAI_API_KEY: 'openai-api-key-canary',
+  PC_AINATIVE_PM_TOKEN: 'pm-token-canary',
+  PC_DATA_DIR: 'C:/private-app-data',
+  GIT_DIR: 'C:/attacker/repository',
+  NODE_OPTIONS: '--require=C:/attacker/preload.js',
+  UNRELATED_CANARY: 'ambient-canary',
+};
+
+class TestAccountRegistry extends AccountRegistry {
+  constructor(private readonly fixedBase?: NodeJS.ProcessEnv) {
+    super([{
+      id: 'personal',
+      runtimeId: CLAUDE_RUNTIME_ID,
+      configDir: 'C:/claude-personal',
+    }]);
+  }
+
+  override buildEnv(
+    runtimeId: string,
+    accountId: string,
+    base: NodeJS.ProcessEnv = this.fixedBase ?? process.env,
+  ): Record<string, string> {
+    return super.buildEnv(runtimeId, accountId, base);
+  }
+}
+
+function accounts(base?: NodeJS.ProcessEnv): AccountRegistry {
+  return new TestAccountRegistry(base);
+}
+
+function assertLeastPrivilegeClaudeEnv(env: NodeJS.ProcessEnv | undefined): void {
+  assert.deepEqual(env, {
+    PATH: 'C:/safe-bin',
+    CLAUDE_CONFIG_DIR: 'C:/claude-personal',
+  });
 }
 
 interface Gate {
@@ -225,22 +264,75 @@ test('Claude session config requires an exact durable continuation attempt ident
   for (const continuationAttemptId of ['', ' attempt-padded ']) {
     assert.throws(
       () => new ClaudeRuntimeSession({
-        env: {}, continuationAttemptId, selection: selection({ kind: 'none' }),
+        env: TEST_CLAUDE_ENV, continuationAttemptId, selection: selection({ kind: 'none' }),
       }),
       /runtime continuation attempt identity is invalid/,
     );
   }
   assert.throws(
     () => new ClaudeRuntimeSession({
-      env: {}, selection: selection({ kind: 'none' }),
+      env: TEST_CLAUDE_ENV, selection: selection({ kind: 'none' }),
     } as never),
     /runtime continuation attempt identity is invalid/,
   );
 });
 
+test('Claude final query seam re-sanitizes a direct dirty session environment', async () => {
+  const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
+  const session = new ClaudeRuntimeSession({
+    env: {
+      ...DIRTY_RUNTIME_ENV,
+      CLAUDE_CONFIG_DIR: 'C:/claude-personal',
+    } as Record<string, string>,
+    continuationAttemptId: ATTEMPT_ID,
+    selection: selection({ kind: 'none' }),
+    queryFactory: (params) => {
+      captures.push(params);
+      return discoveryQuery(MODELS);
+    },
+  });
+
+  // Exercise the final query boundary, not only the constructor snapshot.
+  // A late internal canary still cannot restore an ambient capability.
+  const internal = session as unknown as {
+    config: { env: Record<string, string> };
+  };
+  internal.config.env.PC_AINATIVE_PM_TOKEN = 'late-pm-token-canary';
+  internal.config.env.NODE_OPTIONS = '--require=C:/attacker/late-preload.js';
+  internal.config.env.claude_config_dir = 'C:/late-lowercase-lookalike';
+
+  await session.start({ appSessionId: 'app-direct-env' });
+  assert.equal(captures.length, 1);
+  assertLeastPrivilegeClaudeEnv(captures[0]?.options?.env);
+  await session.dispose();
+});
+
+test('Claude final query seam refuses a missing or malformed selected credential home', () => {
+  const inheritedHome = Object.create({
+    CLAUDE_CONFIG_DIR: resolve('test-fixtures/inherited-home'),
+  }) as Record<string, string>;
+  const invalidEnvironments: Array<Record<string, string>> = [
+    {},
+    { CLAUDE_CONFIG_DIR: 'relative-home' },
+    { CLAUDE_CONFIG_DIR: ' padded-home ' },
+    { claude_config_dir: resolve('test-fixtures/lowercase-lookalike') },
+    inheritedHome,
+  ];
+  for (const env of invalidEnvironments) {
+    assert.throws(
+      () => new ClaudeRuntimeSession({
+        env,
+        continuationAttemptId: ATTEMPT_ID,
+        selection: selection({ kind: 'none' }),
+      }),
+      /runtime credential home is unavailable/,
+    );
+  }
+});
+
 test('Claude context observation uses the latest primary iteration as the exact numerator', async () => {
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -269,7 +361,7 @@ test('Claude context observation uses the latest primary iteration as the exact 
 
 test('Claude compaction invalidates prior exact evidence but preserves its runtime event', async () => {
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -295,7 +387,7 @@ test('Claude compaction invalidates prior exact evidence but preserves its runti
 
 test('Claude accepts valid primary evidence emitted after compaction as exact', async () => {
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -350,7 +442,7 @@ test('Claude fails closed when malformed assistant ownership follows exact evide
       },
     } as unknown as SDKMessage;
     const session = new ClaudeRuntimeSession({
-      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
       queryFactory: ({ prompt }) => completedSessionQuery({
         prompt,
         iterations: [{
@@ -374,7 +466,7 @@ test('Claude fences a pending context control from a late compact boundary', asy
   const controlStarted = gate();
   const releaseControl = gate();
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -406,7 +498,7 @@ test('Claude fences a pending context control from a late compact boundary', asy
 
 test('Claude context observation uses valid direct message usage as an exact fallback', async () => {
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       messageUsage: {
@@ -428,7 +520,7 @@ test('Claude context observation uses valid direct message usage as an exact fal
 
 test('Claude context observation accepts a fallback_message iteration as exact', async () => {
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -454,7 +546,7 @@ test('Claude context observation is derived only when local input/cache evidence
     {},
   ]) {
     const session = new ClaudeRuntimeSession({
-      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
       queryFactory: ({ prompt }) => completedSessionQuery({
         prompt,
         messageUsage,
@@ -527,7 +619,7 @@ test('Claude context observation fails closed on malformed non-null local eviden
     throwingUsage,
   ]) {
     const session = new ClaudeRuntimeSession({
-      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
       queryFactory: ({ prompt }) => completedSessionQuery({
         prompt,
         messageUsage,
@@ -556,7 +648,7 @@ test('Claude context observation rejects malformed native counts and scrubs fail
   ];
   for (const native of observations) {
     const session = new ClaudeRuntimeSession({
-      env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
       queryFactory: ({ prompt }) => completedSessionQuery({
         prompt,
         context: async () => native,
@@ -571,7 +663,7 @@ test('Claude context observation rejects malformed native counts and scrubs fail
   }
 
   const invalidControlWithExactEvidence = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       iterations: [{
@@ -591,7 +683,7 @@ test('Claude context observation rejects malformed native counts and scrubs fail
   await invalidControlWithExactEvidence.dispose();
 
   const failed = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       context: async () => { throw new Error('SECRET native context failure'); },
@@ -609,7 +701,7 @@ test('Claude never starts a context control request while a turn is active', asy
   const allowResult = gate();
   let contextCalls = 0;
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => {
       const stopped = gate();
       async function* messages(): AsyncGenerator<SDKMessage, void> {
@@ -653,7 +745,7 @@ test('Claude bounds a hung context control and fences successor/disposal races',
   const releaseControl = gate();
   let contextCalls = 0;
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       context: async () => {
@@ -689,7 +781,7 @@ test('Claude rejects a pending context receipt after native identity failure', a
   const controlStarted = gate();
   const releaseControl = gate();
   const session = new ClaudeRuntimeSession({
-    env: {}, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
     queryFactory: ({ prompt }) => completedSessionQuery({
       prompt,
       context: async () => {
@@ -717,7 +809,7 @@ test('Claude rejects a pending context receipt after native identity failure', a
 test('Claude discovery is account-scoped and retains per-model effort truth', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({
-    accounts: accounts(),
+    accounts: accounts(DIRTY_RUNTIME_ENV),
     queryFactory: (params) => {
       captures.push(params);
       return discoveryQuery(MODELS);
@@ -774,7 +866,7 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
       },
     ],
   });
-  assert.equal(captures[0]?.options?.env?.CLAUDE_CONFIG_DIR, 'C:/claude-personal');
+  assertLeastPrivilegeClaudeEnv(captures[0]?.options?.env);
 });
 
 test('Claude discovery converts auth/runtime exceptions to fixed typed unavailability', async () => {
@@ -792,7 +884,7 @@ test('Claude discovery converts auth/runtime exceptions to fixed typed unavailab
 test('Claude create revalidates selection, passes selected effort, and emits a positive create receipt', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({
-    accounts: accounts(),
+    accounts: accounts(DIRTY_RUNTIME_ENV),
     queryFactory: factoryWithSession('native-created', captures),
   });
   const selected = selection({ kind: 'selected', value: 'high' });
@@ -808,6 +900,8 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
   assert.equal(captures[1]?.options?.model, 'opus');
   assert.equal(captures[1]?.options?.effort, 'high');
   assert.equal(captures[1]?.options?.resume, undefined);
+  assertLeastPrivilegeClaudeEnv(captures[0]?.options?.env);
+  assertLeastPrivilegeClaudeEnv(captures[1]?.options?.env);
   const started = await firstEvent(runtime);
   assert.deepEqual(started, {
     type: 'session-started',
@@ -831,7 +925,7 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
 test('Claude resume requires an exact native init receipt and never falls back to create', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({
-    accounts: accounts(),
+    accounts: accounts(DIRTY_RUNTIME_ENV),
     queryFactory: factoryWithSession('native-other', captures),
   });
   const selected = selection({ kind: 'none' });
@@ -842,6 +936,8 @@ test('Claude resume requires an exact native init receipt and never falls back t
   });
 
   assert.equal(captures[1]?.options?.resume, 'native-requested');
+  assertLeastPrivilegeClaudeEnv(captures[0]?.options?.env);
+  assertLeastPrivilegeClaudeEnv(captures[1]?.options?.env);
   const event = await firstEvent(runtime);
   assert.equal(event.type, 'result');
   if (event.type === 'result') {

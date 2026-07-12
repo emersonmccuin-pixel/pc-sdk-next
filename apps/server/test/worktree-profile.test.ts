@@ -30,7 +30,12 @@ import {
 } from '../src/runner/runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
 import { releaseAllRepositoryLeasesForTesting } from '../src/dispatch/repository-lease.ts';
-import { git, provisionWorktree, worktreesRoot } from '../src/dispatch/worktrees.ts';
+import {
+  git,
+  provisionWorktree,
+  runShellCommand,
+  worktreesRoot,
+} from '../src/dispatch/worktrees.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { commitFile, freshDb, newGitProject, testDispatchRuntimeDeps, until } from './helpers.ts';
@@ -55,6 +60,45 @@ const OK_RESULT: RuntimeEvent = {
 
 const NODE_OK = (tag: string) => `node -e "console.log('${tag}')"`;
 const NODE_FAIL = (code: number) => `node -e "process.exit(${code})"`;
+const CHILD_ENV_CANARY_NAMES = [
+  'PC_AINATIVE_PM_TOKEN',
+  'OPENAI_API_KEY',
+  'INNOCENT_CANARY',
+  'GIT_DIR',
+  'NODE_OPTIONS',
+  'BASH_ENV',
+] as const;
+const GRANDCHILD_ENV_ASSERTION = Buffer.from(
+  `const names=${JSON.stringify(CHILD_ENV_CANARY_NAMES)};` +
+  'if(names.some((name)=>process.env[name]!==undefined))process.exit(43);',
+).toString('base64');
+
+function nodeEnvClean(tag: string, after = ''): string {
+  const names = `[${CHILD_ENV_CANARY_NAMES.map((name) => `'${name}'`).join(',')}]`;
+  return `node -e "const names=${names};if(names.some((name)=>process.env[name]!==undefined))process.exit(41);require('node:child_process').execFileSync(process.execPath,['-e',Buffer.from('${GRANDCHILD_ENV_ASSERTION}','base64').toString('utf8')],{stdio:'inherit'});${after};console.log('${tag}')"`;
+}
+
+function installAmbientChildCanaries(): () => void {
+  const values: Record<(typeof CHILD_ENV_CANARY_NAMES)[number], string> = {
+    PC_AINATIVE_PM_TOKEN: 'pm-secret-must-not-cross',
+    OPENAI_API_KEY: 'peer-provider-secret-must-not-cross',
+    INNOCENT_CANARY: 'unknown-name-must-not-cross',
+    GIT_DIR: 'ambient-git-selector-must-not-cross',
+    NODE_OPTIONS: '--sec-003-invalid-node-option',
+    BASH_ENV: 'ambient-shell-startup-must-not-cross',
+  };
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+  return () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
 
 async function cleanupGitProject(gp: { dir: string; cleanup(): Promise<void> }): Promise<void> {
   await releaseAllRepositoryLeasesForTesting();
@@ -155,16 +199,21 @@ test('passing setup+readiness lands receipts, reaches completed; cleanup runs be
   freshDb();
   seedStockAgents();
   const gp = await newGitProject();
+  let restoreEnvironment = () => {};
   try {
+    restoreEnvironment = installAmbientChildCanaries();
     const markerPath = join(worktreesRoot(gp.dir), 'cleanup-marker.txt');
     assert.ok(
       updateProjectWorktreeProfile(gp.project.id, {
-        setupCommands: [NODE_OK('setup-ok')],
-        readinessCommands: [NODE_OK('ready-ok')],
+        setupCommands: [nodeEnvClean('setup-ok')],
+        readinessCommands: [nodeEnvClean('ready-ok')],
         // Marker proves cleanup ran; the failing step AFTER it proves a
         // cleanup failure never blocks removal (best-effort).
         cleanupCommands: [
-          `node -e "require('fs').writeFileSync(require('path').join('..','cleanup-marker.txt'),'x')"`,
+          nodeEnvClean(
+            'cleanup-ok',
+            "require('node:fs').writeFileSync(require('node:path').join('..','cleanup-marker.txt'),'x')",
+          ),
           NODE_FAIL(1),
         ],
       }),
@@ -232,7 +281,34 @@ test('passing setup+readiness lands receipts, reaches completed; cleanup runs be
       `landmarks — saw: ${o.seen.join(' → ')}`,
     );
   } finally {
+    restoreEnvironment();
     await cleanupGitProject(gp);
+  }
+});
+
+test('shell executor sanitizes a caller-supplied environment for the command and descendants', async () => {
+  const previousComSpec = process.env.ComSpec;
+  try {
+    if (process.platform === 'win32') {
+      process.env.ComSpec = 'C:\\definitely-missing-sec003\\ambient-shell.exe';
+    }
+    const supplied: NodeJS.ProcessEnv = { ...process.env };
+    for (const name of CHILD_ENV_CANARY_NAMES) supplied[name] = `custom-${name}`;
+    const snapshot = { ...supplied };
+
+    const result = await runShellCommand(nodeEnvClean('custom-env-clean'), {
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+      env: supplied,
+    });
+
+    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+    assert.equal(result.timedOut, false);
+    assert.match(result.stdout, /custom-env-clean/);
+    assert.deepEqual(supplied, snapshot, 'sanitizing the supplied base does not mutate it');
+  } finally {
+    if (previousComSpec === undefined) delete process.env.ComSpec;
+    else process.env.ComSpec = previousComSpec;
   }
 });
 

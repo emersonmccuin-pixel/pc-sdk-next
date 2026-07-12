@@ -20,7 +20,7 @@ import {
   type KernelWitness,
   type KernelWitnessKind,
 } from '../operations/kernel-witness.ts';
-import { withoutAmbientGitRepositorySelectors } from '../operations/git-environment.ts';
+import { buildChildEnvironment } from '../operations/child-environment.ts';
 
 export const REPOSITORY_LEASE_FILE = '.pc-sdk-repository-lease.sqlite';
 export const REPOSITORY_BOOTSTRAP_PENDING_FILE = '.pc-sdk-repository-bootstrap-pending';
@@ -824,7 +824,7 @@ function gitCommonDirectory(cwd: string): Promise<string> {
       ['rev-parse', '--path-format=absolute', '--git-common-dir'],
       {
         cwd,
-        env: withoutAmbientGitRepositorySelectors(),
+        env: buildChildEnvironment(),
         timeout: GIT_IDENTITY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
@@ -861,7 +861,7 @@ function gitWorktreeTopLevel(cwd: string): Promise<string> {
       ['rev-parse', '--path-format=absolute', '--show-toplevel'],
       {
         cwd,
-        env: withoutAmbientGitRepositorySelectors(),
+        env: buildChildEnvironment(),
         timeout: GIT_IDENTITY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         windowsHide: true,
@@ -978,7 +978,7 @@ function runRequiredGit(cwd: string, args: string[]): Promise<string> {
       args,
       {
         cwd,
-        env: withoutAmbientGitRepositorySelectors(),
+        env: buildChildEnvironment(),
         timeout: GIT_IDENTITY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
         windowsHide: true,

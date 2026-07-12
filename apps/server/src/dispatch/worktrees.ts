@@ -14,7 +14,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 import {
   getAgentRunRow,
   getContract,
@@ -40,7 +40,7 @@ import {
   RepositoryLeaseError,
   repositoryLeaseManager,
 } from './repository-lease.ts';
-import { withoutAmbientGitRepositorySelectors } from '../operations/git-environment.ts';
+import { buildChildEnvironment } from '../operations/child-environment.ts';
 
 const GIT_TIMEOUT_MS = 60_000;
 /** Per-command bound for profile setup/readiness steps (matches the
@@ -68,7 +68,7 @@ export function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Pr
       args,
       {
         cwd,
-        env: withoutAmbientGitRepositorySelectors(),
+        env: buildChildEnvironment(),
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         windowsHide: true,
@@ -405,15 +405,12 @@ export interface ShellCommandResult {
   stderr: string;
 }
 
-/** Command env: the server env MINUS the credentials account-env scrubs from
- *  agent sessions. Step output tails persist durably into phase receipts, so
- *  an env-echoing command must never see them (docs/worktree-lifecycle.md:
- *  secrets are injected through explicit policy only). */
+/** Build every profile/verification shell environment from the shared positive
+ *  OS-essential allowlist. Step output tails persist durably into phase
+ *  receipts, so an env-echoing command must never receive an unrelated ambient
+ *  capability (docs/worktree-lifecycle.md: secrets require explicit policy). */
 export function sanitizedShellEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env = withoutAmbientGitRepositorySelectors(base);
-  delete env.ANTHROPIC_API_KEY;
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  return env;
+  return buildChildEnvironment(base);
 }
 
 /** Run a command through the platform shell with a TREE-killing timeout.
@@ -427,12 +424,23 @@ export function runShellCommand(
   command: string,
   opts: { cwd: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
 ): Promise<ShellCommandResult> {
+  const shell = trustedPlatformShell();
+  if (shell === null) {
+    return Promise.resolve({
+      exitCode: 127,
+      timedOut: false,
+      stdout: '',
+      stderr: 'trusted platform shell is unavailable',
+    });
+  }
+  const env = sanitizedShellEnv(opts.env);
+  if (process.platform === 'win32') env.COMSPEC = shell;
   return new Promise((resolve) => {
     const child = spawn(command, {
       cwd: opts.cwd,
-      shell: true,
+      shell,
       windowsHide: true,
-      env: sanitizedShellEnv(opts.env),
+      env,
       detached: process.platform !== 'win32',
     });
     let stdout = '';
@@ -460,11 +468,35 @@ export function runShellCommand(
   });
 }
 
+/** Pin the shell executable rather than letting Node consult ambient ComSpec.
+ *  Windows SystemRoot/windir are independently allowlisted OS inputs; when
+ *  both exist they must identify the same absolute native directory. Missing,
+ *  conflicting, or non-file evidence fails closed with exit 127. */
+function trustedPlatformShell(): string | null {
+  if (process.platform !== 'win32') return '/bin/sh';
+  const host = buildChildEnvironment();
+  const roots = [host.SYSTEMROOT, host.WINDIR].filter(
+    (value): value is string => typeof value === 'string' && isAbsolute(value),
+  );
+  if (roots.length === 0) return null;
+  const identities = new Set(roots.map((root) => normalize(resolve(root)).toLowerCase()));
+  if (identities.size !== 1) return null;
+  const shell = join(roots[0]!, 'System32', 'cmd.exe');
+  try {
+    return lstatSync(shell).isFile() ? realpathSync(shell) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Kill a shell AND everything it spawned. Best-effort, never throws. */
 function killProcessTree(pid: number | undefined): void {
   if (!pid) return;
   if (process.platform === 'win32') {
-    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      env: buildChildEnvironment(),
+      windowsHide: true,
+    }, () => {});
     return;
   }
   try {

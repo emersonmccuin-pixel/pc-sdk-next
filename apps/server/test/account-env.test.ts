@@ -1,6 +1,6 @@
-// Account switcher guards: the subscription-shadowing credentials are ALWAYS
-// scrubbed and CLAUDE_CONFIG_DIR is forced (an API key would shadow the Max
-// login), and a project's default account resolves from its settings.
+// Account switcher guards: ambient capabilities are reduced to the shared
+// positive allowlist and CLAUDE_CONFIG_DIR is forced (an API key would shadow
+// the Max login), and a project's default account resolves from its settings.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +14,7 @@ import {
 } from '../src/runner/account-env.ts';
 import { freshDb, newProject } from './helpers.ts';
 
-test('buildAccountEnv scrubs credentials and ambient Git selectors, then forces CLAUDE_CONFIG_DIR', () => {
+test('buildAccountEnv allowlists OS essentials, then forces only the selected CLAUDE_CONFIG_DIR', () => {
   const base = {
     PATH: '/usr/bin',
     ANTHROPIC_API_KEY: 'sk-should-be-removed',
@@ -26,21 +26,19 @@ test('buildAccountEnv scrubs credentials and ambient Git selectors, then forces 
     GIT_DIR: '/malicious/repository',
     git_work_tree: '/malicious/worktree',
     Git_Common_Dir: '/malicious/common-dir',
+    PC_AINATIVE_PM_TOKEN: 'pm-token-should-be-removed',
+    OPENAI_API_KEY: 'openai-key-should-be-removed',
+    UNRELATED_CANARY: 'ambient-value-should-be-removed',
+    NODE_OPTIONS: '--require=/malicious/preload.js',
   };
   const env = buildAccountEnv('C:/Users/emers/.claude-work', base);
-  assert.equal(env.ANTHROPIC_API_KEY, undefined);
-  assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
-  assert.equal(env.CLAUDE_CONFIG_DIR, 'C:/Users/emers/.claude-work');
-  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'ANTHROPIC_API_KEY'), false);
-  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'ANTHROPIC_AUTH_TOKEN'), false);
-  assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === 'CLAUDE_CONFIG_DIR').length, 1);
-  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_DIR'), false);
-  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_WORK_TREE'), false);
-  assert.equal(Object.keys(env).some((key) => key.toUpperCase() === 'GIT_COMMON_DIR'), false);
-  assert.equal(env.PATH, '/usr/bin'); // inherited vars survive
+  assert.deepEqual(env, {
+    PATH: '/usr/bin',
+    CLAUDE_CONFIG_DIR: 'C:/Users/emers/.claude-work',
+  });
 });
 
-test('registry.buildEnv scrubs for a named account', () => {
+test('registry.buildEnv applies the positive allowlist for a named account', () => {
   const reg = new AccountRegistry(
     [
       { id: 'personal', runtimeId: 'claude-agent-sdk', configDir: '/home/.claude' },
@@ -51,12 +49,13 @@ test('registry.buildEnv scrubs for a named account', () => {
   const env = reg.buildEnv('claude-agent-sdk', 'work', {
     ANTHROPIC_API_KEY: 'x',
     GIT_DIR: '/wrong/repository',
+    PATH: '/safe/bin',
     KEEP: '1',
   });
-  assert.equal(env.ANTHROPIC_API_KEY, undefined);
-  assert.equal(env.CLAUDE_CONFIG_DIR, '/home/.claude-work');
-  assert.equal(env.GIT_DIR, undefined);
-  assert.equal(env.KEEP, '1');
+  assert.deepEqual(env, {
+    PATH: '/safe/bin',
+    CLAUDE_CONFIG_DIR: '/home/.claude-work',
+  });
   assert.throws(() => reg.buildEnv('claude-agent-sdk', 'nope'), /unknown account/);
 });
 

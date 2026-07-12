@@ -82,6 +82,38 @@ test('passing predicates ⇒ passed', async () => {
   assert.equal(outcome.verificationStatus, 'passed');
 });
 
+test('verification shell removes ambient app/provider/injection variables without changing evidence semantics', async () => {
+  const canaries = {
+    PC_AINATIVE_PM_TOKEN: 'pm-secret-must-not-cross',
+    OPENAI_API_KEY: 'peer-secret-must-not-cross',
+    INNOCENT_CANARY: 'unknown-name-must-not-cross',
+    NODE_OPTIONS: '--sec-003-invalid-node-option',
+    BASH_ENV: 'shell-startup-must-not-cross',
+  };
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(canaries)) {
+    previous.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+  try {
+    const command = "node -e \"const names=['PC_AINATIVE_PM_TOKEN','OPENAI_API_KEY','INNOCENT_CANARY','NODE_OPTIONS','BASH_ENV'];if(names.some((name)=>process.env[name]!==undefined))process.exit(29)\"";
+    const outcome = await verifyContract(
+      base({
+        acceptanceCriteria: [{ kind: 'bash_exit_zero', command, cwd: 'project' }],
+        scope: { worktreeDir: null, projectDir: process.cwd() },
+      }),
+    );
+    assert.equal(outcome.verificationStatus, 'passed', outcome.notes ?? 'no notes');
+    assert.deepEqual(outcome.evaluatedPredicateKinds, ['bash_exit_zero']);
+    assert.equal(outcome.inconclusiveCount, 0);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('inconclusive-only failures park pending (env defect ≠ work defect)', async () => {
   // git_diff_nonempty with no worktree/baseSha ⇒ hasGitDiff returns null ⇒ inconclusive.
   const outcome = await verifyContract(
