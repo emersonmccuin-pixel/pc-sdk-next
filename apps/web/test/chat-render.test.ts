@@ -5,7 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { ChatEvent, ConversationEventFrame } from '../../../packages/contracts/src/events/index.ts';
+import {
+  conversationFamilyForEvent,
+  safeToolSummary,
+  type ChatEvent,
+  type ConversationEventFrame,
+} from '../../../packages/contracts/src/events/index.ts';
 import { buildRenderItems } from '../src/features/chat/chat-render.ts';
 
 const SID = 'sess-1';
@@ -18,8 +23,9 @@ function frame(sequence: number, event: ChatEvent): ConversationEventFrame {
     conversationId: SID,
     sessionId: SID,
     sequence,
-    family: event.kind === 'user' ? 'user' : event.kind.startsWith('agent-') ? 'agent' : 'assistant',
-    itemId: `item-${sequence}`,
+    family: conversationFamilyForEvent(event),
+    itemId: event.kind === 'tool-state' ? event.callId : `item-${sequence}`,
+    ...(event.kind === 'tool-state' || event.kind === 'activity-state' ? { turnId: 'turn-1' } : {}),
     occurredAt: sequence,
     event,
   };
@@ -81,4 +87,52 @@ test('distinct runIds each get their own card', () => {
   const items = buildRenderItems([frame(1, askEnvelope('r1')), frame(2, terminalEnvelope('r2', 'failed'))]);
   const agentRuns = items.filter((i) => i.kind === 'agent-run');
   assert.equal(agentRuns.length, 2);
+});
+
+test('tool-state transitions coalesce into one safe call row with no technical payload', () => {
+  const base = {
+    kind: 'tool-state' as const,
+    callId: 'call-1',
+    name: 'Bash',
+    safeSummary: safeToolSummary('Bash'),
+  };
+  const items = buildRenderItems([
+    frame(1, {
+      ...base,
+      state: 'requested',
+      approval: { status: 'unknown', source: null, requestId: null },
+      outcome: null,
+    }),
+    frame(2, {
+      ...base,
+      state: 'running',
+      approval: { status: 'not-required', source: 'runtime', requestId: null },
+      outcome: null,
+    }),
+    frame(3, {
+      ...base,
+      state: 'failed',
+      approval: { status: 'not-required', source: 'runtime', requestId: null },
+      outcome: { reason: 'tool-error' },
+    }),
+  ]);
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.kind, 'tool-group');
+  const call = (items[0] as Extract<(typeof items)[number], { kind: 'tool-group' }>).calls[0]!;
+  assert.equal(call.callId, 'call-1');
+  assert.equal(call.state, 'failed');
+  assert.equal(call.safeSummary, 'Use Bash');
+  assert.equal('input' in call, false);
+  assert.equal('result' in call, false);
+  assert.equal(JSON.stringify(items).includes('secret-command'), false);
+});
+
+test('orphan non-requested tool state is ignored rather than synthesized in presentation', () => {
+  const items = buildRenderItems([frame(1, {
+    kind: 'tool-state', callId: 'call-1', name: 'Read', state: 'running',
+    safeSummary: safeToolSummary('Read'),
+    approval: { status: 'not-required', source: 'runtime', requestId: null },
+    outcome: null,
+  })]);
+  assert.deepEqual(items, []);
 });

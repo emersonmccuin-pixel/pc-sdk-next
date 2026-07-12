@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename, resolve as resolvePath } from 'node:path';
 import {
+  closeOpenConversationToolCalls,
   commitConversationEvent,
   countAgentRunsForSessionAndPod,
   findActiveContinuation,
@@ -30,6 +31,7 @@ import {
   insertAgentRunRow,
   listAgentRunsForContract,
   listConversationEvents,
+  listOpenPendingAsksForProject,
   listTurnBudgetExhaustedRuns,
   markAgentRunDelivered,
   newId,
@@ -134,6 +136,8 @@ const AUTO_CONTINUE_MESSAGE =
   'dispatch. Your worktree, session, and contract are intact exactly as you left them. Pick up where ' +
   'you left off (check git status / your prior progress first) and continue toward completing the ' +
   'contract; do not restart from scratch.';
+const RUNTIME_START_FAILURE_REASON = 'agent runtime session could not be started';
+const RUNTIME_SEND_FAILURE_REASON = 'agent runtime turn could not be sent';
 
 export type DispatchFailureCause =
   | 'unknown-agent'
@@ -166,6 +170,9 @@ export interface DispatchServiceDeps {
   runtimes: RuntimeRegistry;
   accounts: AccountRegistry;
   mcp: McpManager;
+  /** Injectable command boundary keeps async repository evidence races
+   * deterministic under guard tests. Production uses the canonical helper. */
+  gitCommand?: typeof git;
 }
 
 interface AttachContext {
@@ -207,12 +214,46 @@ interface StartRunInput {
   resumeNativeSessionId: string | null;
 }
 
+/** Collapse canonical lifecycle evidence to one executed call per callId.
+ * Requested/denied calls did not execute, and repeated running/terminal
+ * observations must never inflate a contract's tool_called count. A running
+ * observation is the positive execution receipt; exceptional requested ->
+ * failed closure is explicitly not execution. */
+export function executedToolCallsFromEvents(events: readonly ChatEvent[]): Array<{ name: string }> {
+  const calls = new Map<string, { name: string; executed: boolean; corrupt: boolean }>();
+  for (const event of events) {
+    if (event.kind !== 'tool-state') continue;
+    const prior = calls.get(event.callId);
+    if (!prior) {
+      calls.set(event.callId, {
+        name: event.name,
+        executed: event.state === 'running',
+        corrupt: false,
+      });
+      continue;
+    }
+    calls.set(event.callId, {
+      name: prior.name,
+      executed: prior.executed || event.state === 'running',
+      corrupt: prior.corrupt || prior.name !== event.name,
+    });
+  }
+  return [...calls.values()]
+    .filter((call) => call.executed && !call.corrupt)
+    .map((call) => ({ name: call.name.replace(/^mcp__[^_]+__/, '') }));
+}
+
 export class DispatchService {
   private readonly deps: DispatchServiceDeps;
   private readonly gateway = new AgentRunMutationGateway();
   private readonly contracts = new ContractService();
   private ctx: AttachContext | null = null;
   private readonly live = new Map<string, LiveRun>();
+  /** One provider resume per paused run. Boot recovery and an incoming answer
+   * may race; both must share the same candidate instead of overwriting a live
+   * runtime and leaving its wall-clock armed. */
+  private readonly liveRevivals = new Map<string, Promise<LiveRun | null>>();
+  private shuttingDown = false;
   /** Per-repository landing serialization (worktree-lifecycle guard 6): one
    *  active landing mutation per repository at a time. Keyed by canonical
    *  resolved folderPath — two project rows over one folder share the lock. */
@@ -436,13 +477,13 @@ export class DispatchService {
       resumeNativeSessionId: null,
       profile,
       freshProvision: true,
-    }).catch((err) => {
-      console.error(`[pc-sdk][dispatch] startRun crashed for ${runId}:`, err);
+    }).catch(() => {
+      console.error(`[pc-sdk][dispatch] startRun crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
         result: null,
         failureCause: 'spawn-error',
-        failureReason: err instanceof Error ? err.message : String(err),
+        failureReason: RUNTIME_START_FAILURE_REASON,
       });
     });
 
@@ -586,12 +627,13 @@ export class DispatchService {
       resumeNativeSessionId: parent.ccSessionId,
       profile,
       freshProvision: false,
-    }).catch((err) => {
+    }).catch(() => {
+      console.error(`[pc-sdk][dispatch] continuation start crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
         result: null,
         failureCause: 'spawn-error',
-        failureReason: err instanceof Error ? err.message : String(err),
+        failureReason: RUNTIME_START_FAILURE_REASON,
       });
     });
 
@@ -729,6 +771,15 @@ export class DispatchService {
       ? await adapter.resumeSession({ ...sessionInput, nativeSessionId: input.resumeNativeSessionId })
       : await adapter.createSession(sessionInput);
 
+    // Session creation is asynchronous. A kill can land while the provider is
+    // minting the native session; the row must be re-read before installing a
+    // live projection, starting the wall clock, or sending a turn that could
+    // mutate the run-owned worktree.
+    if (this.runIsTerminal(input.runId)) {
+      await session.dispose().catch(() => {});
+      return;
+    }
+
     const liveRun: LiveRun = {
       session,
       selection: input.selection,
@@ -744,7 +795,20 @@ export class DispatchService {
 
     // Agent phase starts NOW — the worktree pipeline moves to 'building'.
     this.stampLifecycle(input.runId, 'building');
-    await this.consumeTurn(input.runId, input.projectId, session.sendTurn(input.firstMessage), { firstTurn: true });
+    let turn: AsyncIterable<RuntimeEvent>;
+    try {
+      turn = session.sendTurn(input.firstMessage);
+    } catch {
+      console.error(`[pc-sdk][dispatch] runtime send failed for ${input.runId}: ${RUNTIME_SEND_FAILURE_REASON}`);
+      this.settleTerminal(input.runId, {
+        status: 'failed',
+        result: null,
+        failureCause: 'send-failed',
+        failureReason: RUNTIME_SEND_FAILURE_REASON,
+      });
+      return;
+    }
+    await this.consumeTurn(input.runId, input.projectId, turn, { firstTurn: true });
   }
 
   /** F1 (comms-hardening): re-mint a live runtime session for a run row
@@ -809,6 +873,14 @@ export class DispatchService {
         bypassPermissions: true,
         nativeSessionId: run.ccSessionId,
       });
+      // The stale `run` snapshot predates an async provider resume. Only a
+      // still-paused row may receive this projection; kill/answer/recovery can
+      // have made the native session obsolete while it was being minted.
+      const current = getAgentRunRow(run.id);
+      if (!current || current.status !== 'paused') {
+        await session.dispose().catch(() => {});
+        return null;
+      }
       const liveRun: LiveRun = {
         session,
         selection,
@@ -824,9 +896,51 @@ export class DispatchService {
       };
       liveRun.wallClock.unref?.();
       return liveRun;
-    } catch (err) {
-      console.error(`[pc-sdk][dispatch] live-session revival failed for run ${run.id}:`, err);
+    } catch {
+      console.error(`[pc-sdk][dispatch] live-session revival failed for run ${run.id}: ${RUNTIME_START_FAILURE_REASON}`);
       return null;
+    }
+  }
+
+  private async ensureRevivedLiveSession(run: AgentRunRow): Promise<LiveRun | null> {
+    if (this.shuttingDown) return null;
+    const installed = this.live.get(run.id);
+    if (installed) return installed;
+    const pending = this.liveRevivals.get(run.id);
+    if (pending) return pending;
+
+    const revival = (async (): Promise<LiveRun | null> => {
+      const candidate = await this.reviveLiveSession(run);
+      if (this.shuttingDown) {
+        if (candidate) {
+          clearTimeout(candidate.wallClock);
+          await candidate.session.dispose().catch(() => {});
+        }
+        return null;
+      }
+      const winner = this.live.get(run.id);
+      if (winner) {
+        if (candidate && candidate !== winner) {
+          clearTimeout(candidate.wallClock);
+          await candidate.session.dispose().catch(() => {});
+        }
+        return winner;
+      }
+      if (!candidate) return null;
+      const current = getAgentRunRow(run.id);
+      if (!current || current.status !== 'paused') {
+        clearTimeout(candidate.wallClock);
+        await candidate.session.dispose().catch(() => {});
+        return null;
+      }
+      this.live.set(run.id, candidate);
+      return candidate;
+    })();
+    this.liveRevivals.set(run.id, revival);
+    try {
+      return await revival;
+    } finally {
+      if (this.liveRevivals.get(run.id) === revival) this.liveRevivals.delete(run.id);
     }
   }
 
@@ -841,16 +955,28 @@ export class DispatchService {
     if (!liveRun) return;
     let lastText = '';
     let markedRunning = !opts.firstTurn;
+    const transcriptTurnId = newId();
 
     const terminalResult = await runTurn(turn, {
       emitChat: (event, identity) => {
         if (event.kind === 'assistant-text') lastText = event.text;
-        this.persistAgentEvent(projectId, runId, event, identity?.itemId);
+        this.persistAgentEvent(projectId, runId, transcriptTurnId, event, identity?.itemId);
       },
       emitDelta: () => {
         /* agent transcripts are persisted-event only; the modal heals over HTTP */
       },
       onNativeSessionId: (nativeId) => {
+        // Provider output may arrive after kill/dispose. A late init is not a
+        // positive receipt that a terminal run restarted; ignore it before it
+        // can rewrite the native id or announce `running` over cancellation.
+        const current = getAgentRunRow(runId);
+        if (
+          !current
+          || current.status === 'paused'
+          || current.status === 'completed'
+          || current.status === 'failed'
+          || current.status === 'cancelled'
+        ) return;
         setAgentRunCcSession(runId, nativeId);
         if (!markedRunning) {
           markedRunning = true;
@@ -891,7 +1017,20 @@ export class DispatchService {
     }
   }
 
-  private persistAgentEvent(projectId: ULID, runId: ULID, event: ChatEvent, itemId?: string): void {
+  private persistAgentEvent(
+    projectId: ULID,
+    runId: ULID,
+    transcriptTurnId: string,
+    event: ChatEvent,
+    itemId?: string,
+  ): void {
+    const before = getAgentRunRow(runId);
+    if (
+      !before
+      || before.status === 'completed'
+      || before.status === 'failed'
+      || before.status === 'cancelled'
+    ) return;
     try {
       commitConversationEvent({
         projectId,
@@ -899,14 +1038,20 @@ export class DispatchService {
         sessionId: runId,
         family: conversationFamilyForEvent(event),
         event,
+        turnId: transcriptTurnId,
         itemId: itemId ?? newId(),
         clientMessageId: null,
         occurredAt: Date.now(),
         deliveryKind: 'agent',
       });
-    } catch (err) {
-      console.warn(`[pc-sdk][dispatch] transcript persist failed for ${runId}:`, err);
-      return;
+    } catch (error) {
+      const current = getAgentRunRow(runId);
+      if (current && (current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled')) {
+        // A kill/terminal path closes transcript tools before stamping the run.
+        // Late output from its disposed runtime is therefore safely ignored.
+        return;
+      }
+      throw error;
     }
     try {
       this.ctx?.conversationRelay?.drain();
@@ -1023,8 +1168,7 @@ export class DispatchService {
       // resumable.
       const row = getAgentRunRow(ask.agentRunId);
       if (row && row.status === 'paused') {
-        liveRun = (await this.reviveLiveSession(row)) ?? undefined;
-        if (liveRun) this.live.set(ask.agentRunId, liveRun);
+        liveRun = (await this.ensureRevivedLiveSession(row)) ?? undefined;
       }
     }
     if (!liveRun) {
@@ -1045,17 +1189,31 @@ export class DispatchService {
       updateAgentRunStatus({ id: ask.agentRunId, status: 'running' });
       this.gateway.announceRunChange({ runId: ask.agentRunId, reason: 'running' });
     }
-    void this.consumeTurn(
-      ask.agentRunId,
-      ask.projectId,
-      liveRun.session.sendTurn(`[answer from ${input.answeredBy}] ${input.answer}`),
-      { firstTurn: false },
-    ).catch((err) => {
+    let turn: AsyncIterable<RuntimeEvent>;
+    try {
+      turn = liveRun.session.sendTurn(`[answer from ${input.answeredBy}] ${input.answer}`);
+    } catch {
+      console.error(`[pc-sdk][dispatch] runtime resume-send failed for ${ask.agentRunId}: ${RUNTIME_SEND_FAILURE_REASON}`);
       this.settleTerminal(ask.agentRunId, {
         status: 'failed',
         result: null,
         failureCause: 'send-failed',
-        failureReason: err instanceof Error ? err.message : String(err),
+        failureReason: RUNTIME_SEND_FAILURE_REASON,
+      });
+      return { ok: true };
+    }
+    void this.consumeTurn(
+      ask.agentRunId,
+      ask.projectId,
+      turn,
+      { firstTurn: false },
+    ).catch(() => {
+      console.error(`[pc-sdk][dispatch] resumed turn crashed for ${ask.agentRunId}: ${RUNTIME_SEND_FAILURE_REASON}`);
+      this.settleTerminal(ask.agentRunId, {
+        status: 'failed',
+        result: null,
+        failureCause: 'send-failed',
+        failureReason: RUNTIME_SEND_FAILURE_REASON,
       });
     });
     return { ok: true };
@@ -1070,11 +1228,28 @@ export class DispatchService {
   ): Promise<{ ok: true; alreadyTerminal: boolean } | { ok: false; message: string; httpStatus: number }> {
     const row = getAgentRunRow(runId);
     if (!row || row.projectId !== projectId) return { ok: false, message: 'unknown run', httpStatus: 404 };
+    const now = Date.now();
+    try {
+      // Close transcript activity before the durable run terminal. A process
+      // death after cancellation can then never strand a visible open call on
+      // a terminal run that boot recovery intentionally skips.
+      closeOpenConversationToolCalls({
+        conversationId: runId,
+        reason: 'turn-ended',
+        deliveryKind: 'agent',
+        occurredAt: now,
+      });
+    } catch (error) {
+      console.error(`[pc-sdk][dispatch] refusing to cancel run ${runId} with open transcript state:`, error);
+      return { ok: false, message: 'could not close the agent transcript before cancellation', httpStatus: 500 };
+    }
+    const openAsk = listOpenPendingAsksForProject(projectId).find((ask) => ask.agentRunId === runId) ?? null;
     const publication = this.gateway.cancelRun({
       runId,
-      now: Date.now(),
+      now,
       failureCause: opts.failureCause ?? 'cancelled',
       failureReason: opts.failureReason ?? 'killed via pc_kill_agent_run',
+      cancelOpenAsk: openAsk?.id ?? null,
       // canTransition pre-check keeps the phantom-safe kill un-throwable.
       ...(row.lifecycleState !== null && canTransition(row.lifecycleState, 'cancelled')
         ? { lifecycleState: 'cancelled' as const }
@@ -1154,7 +1329,8 @@ export class DispatchService {
 
     let deliverable = input.deliverable as unknown as Deliverable;
     if (expectedKind === 'repo' && row.worktreeDir) {
-      const status = await git(['status', '--porcelain'], row.worktreeDir);
+      const runGit = this.deps.gitCommand ?? git;
+      const status = await runGit(['status', '--porcelain'], row.worktreeDir);
       if (!status.ok) {
         return {
           ok: false,
@@ -1174,7 +1350,7 @@ export class DispatchService {
       // so a builder-supplied SHA below the tip would let unverified tip
       // commits land. A mismatching supplied commit is refused (retryable,
       // like the dirty-tree seal); an unreadable HEAD refuses too.
-      const head = await git(['rev-parse', 'HEAD'], row.worktreeDir);
+      const head = await runGit(['rev-parse', 'HEAD'], row.worktreeDir);
       if (!head.ok) {
         return {
           ok: false,
@@ -1209,6 +1385,23 @@ export class DispatchService {
       } else if (filled.diffStat) {
         deliverable = { ...filled, diffStat: undefined };
       }
+    }
+
+    // All repository evidence above is asynchronous. A kill that wins while
+    // Git is reading the worktree seals the run, so re-read at the mutation
+    // door and reject instead of attaching a late deliverable/deliveredAt.
+    const currentRun = getAgentRunRow(input.agentRunId);
+    if (
+      !currentRun
+      || currentRun.status === 'completed'
+      || currentRun.status === 'failed'
+      || currentRun.status === 'cancelled'
+    ) {
+      return {
+        ok: false,
+        message: `run is '${currentRun?.status ?? 'missing'}' — its deliverable is sealed; dispatch a continuation to submit new work`,
+        httpStatus: 409,
+      };
     }
 
     const updated = this.contracts.setDeliverable({
@@ -1317,14 +1510,26 @@ export class DispatchService {
       failureReason: string | null;
     },
   ): void {
+    const row = getAgentRunRow(runId);
+    if (!row) return;
+    try {
+      closeOpenConversationToolCalls({
+        conversationId: runId,
+        reason: 'turn-ended',
+        deliveryKind: 'agent',
+      });
+    } catch (error) {
+      // The run row must remain nonterminal if its visible transcript cannot
+      // first reach a closed lifecycle. Boot recovery can safely retry it.
+      console.error(`[pc-sdk][dispatch] refusing terminal run state with an open transcript for ${runId}:`, error);
+      return;
+    }
     const liveRun = this.live.get(runId);
     if (liveRun) {
       clearTimeout(liveRun.wallClock);
       this.live.delete(runId);
       void liveRun.session.dispose().catch(() => {});
     }
-    const row = getAgentRunRow(runId);
-    if (!row) return;
 
     // The completion gate: delivery is the sole done-signal.
     let status = input.status;
@@ -1875,12 +2080,13 @@ export class DispatchService {
       resumeNativeSessionId: null,
       profile: null,
       freshProvision: false,
-    }).catch((err) => {
+    }).catch(() => {
+      console.error(`[pc-sdk][dispatch] review runtime start crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
         result: null,
         failureCause: 'spawn-error',
-        failureReason: err instanceof Error ? err.message : String(err),
+        failureReason: RUNTIME_START_FAILURE_REASON,
       });
     });
     return this.contracts.get(target.id);
@@ -1927,14 +2133,15 @@ export class DispatchService {
     for (const run of listNonTerminalAgentRuns()) {
       if (run.status !== 'paused' || this.live.has(run.id)) continue;
       try {
-        const liveRun = await this.reviveLiveSession(run);
+        const liveRun = await this.ensureRevivedLiveSession(run);
         if (!liveRun) {
+          const current = getAgentRunRow(run.id);
+          if (!current || current.status !== 'paused') continue;
           console.warn(
             `[pc-sdk][boot-recovery] paused run ${run.id} (${run.podName}) could not be revived — ask left open for a manual continue.`,
           );
           continue;
         }
-        this.live.set(run.id, liveRun);
         console.warn(`[pc-sdk][boot-recovery] paused run ${run.id} (${run.podName}) revived — pending ask resumable.`);
       } catch (err) {
         console.error(`[pc-sdk][boot-recovery] paused-ask revival failed for run ${run.id} — continuing with the rest:`, err);
@@ -2144,15 +2351,14 @@ export class DispatchService {
     );
   }
 
-  /** Tool-call evidence for `tool_called` predicates — read from the durable
+  /** Executed-tool evidence for `tool_called` predicates — read from the durable
    *  transcript (one path; live-handle state is a projection). Bridge-qualified
    *  names (`mcp__pc__pc_x`) are stripped to bare names. */
   private evidenceToolCalls(runId: ULID): Array<{ name: string }> {
     try {
-      return listConversationEvents(runId)
-        .map((r) => r.payload as ChatEvent)
-        .filter((e): e is Extract<ChatEvent, { kind: 'tool-call' }> => e.kind === 'tool-call')
-        .map((e) => ({ name: e.name.replace(/^mcp__[^_]+__/, '') }));
+      return executedToolCallsFromEvents(
+        listConversationEvents(runId).map((row) => row.payload as ChatEvent),
+      );
     } catch {
       return [];
     }
@@ -2213,7 +2419,12 @@ export class DispatchService {
    *  so the orchestrator still sees it (in addition to the durable
    *  contract/receipt state). */
   async recoverSealedRuns(): Promise<void> {
-    const { listNonTerminalAgentRuns, listOpenPendingAsksForProject, markPendingAskCancelled } = await import('@pc/db');
+    const {
+      closeOpenConversationToolCalls,
+      listNonTerminalAgentRuns,
+      listOpenPendingAsksForProject,
+      markPendingAskCancelled,
+    } = await import('@pc/db');
     for (const run of listNonTerminalAgentRuns()) {
       // Per-run isolation: one bad row never aborts boot (Wave-D precedent).
       try {
@@ -2225,6 +2436,11 @@ export class DispatchService {
         // fail loudly in the boot sweep — settling it 'completed' here would
         // fake success and re-fire verification over stale evidence.
         if (!contract?.deliverable || run.deliveredAt === null) continue;
+        closeOpenConversationToolCalls({
+          conversationId: run.id,
+          reason: 'runtime-lost',
+          deliveryKind: 'agent',
+        });
         // Sealed evidence resumes the pipeline at verification; merge-ready
         // (already past verification) keeps its park.
         let lifecycleState: RunLifecycleState | undefined;
@@ -2392,6 +2608,7 @@ export class DispatchService {
   }
 
   async disposeAll(): Promise<void> {
+    this.shuttingDown = true;
     for (const [runId, liveRun] of this.live) {
       clearTimeout(liveRun.wallClock);
       void liveRun.session.dispose().catch(() => {});

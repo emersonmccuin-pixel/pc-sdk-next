@@ -1,20 +1,24 @@
 // Pure canonical conversation projector. Live outbox frames, reconnect replay,
 // and past-session HTTP checkpoints all reduce through this one path.
 
-import type {
-  AskFrame,
-  ChatDeltaEvent,
-  ChatEvent,
-  ConversationCommandReceiptFrame,
-  ConversationEventFrame,
-  SendQueueItem,
-  SendQueueSnapshotFrame,
-  SessionChangedFrame,
-  SessionReplayFrame,
+import {
+  toolStateTransitionError,
+  type ActivityPhase,
+  type AskFrame,
+  type ChatDeltaEvent,
+  type ChatEvent,
+  type ConversationCommandReceiptFrame,
+  type ConversationEventFrame,
+  type SendQueueItem,
+  type SendQueueSnapshotFrame,
+  type SessionChangedFrame,
+  type SessionReplayFrame,
+  type ToolStateEvent,
 } from '@pc/contracts';
 
 import {
   indexDelete,
+  indexEntries,
   indexGet,
   indexSet,
   type PersistentIndex,
@@ -41,12 +45,34 @@ export interface DeltaBuffer {
   itemId: string;
   streamId: string;
   text: string;
-  toolInput: Record<string, string>;
   ended: boolean;
   nextDeltaIndex: number;
   pending: PersistentIndex<ChatDeltaEvent>;
   /** Number of unique raw contributions represented by this live buffer. */
   retainedPayloadCount: number;
+}
+
+export interface ToolProjection extends ToolStateEvent {
+  turnId: string | null;
+  sequence: number;
+  occurredAt: number;
+}
+
+export type ActivitySource =
+  | { kind: 'activity'; phase: ActivityPhase }
+  | {
+      kind: 'tool';
+      callId: string;
+      state: ToolStateEvent['state'];
+      safeSummary: string;
+    };
+
+export interface CurrentActivityProjection {
+  turnId: string;
+  startedAt: number;
+  updatedAt: number;
+  sequence: number;
+  source: ActivitySource;
 }
 
 interface SequenceReceipt {
@@ -116,6 +142,12 @@ export interface ChatState {
   /** Stable render input after fail-closed stream/item exclusions. */
   projectedFrames: PersistentSequence<ConversationEventFrame>;
   aggregates: Aggregates;
+  /** Guarded latest lifecycle snapshot per canonical call. */
+  toolStates: PersistentIndex<ToolProjection>;
+  /** Latest positive operational evidence for the active turn. */
+  currentActivity: CurrentActivityProjection | null;
+  /** Turns whose canonical terminal has already folded. */
+  terminalTurns: PersistentIndex<true>;
   /** Raw/coalesced payload exists only while a stream is active. */
   deltas: Record<string, DeltaBuffer>;
   queueRevision: number;
@@ -127,6 +159,8 @@ export interface ChatState {
   interrupts: Record<string, InterruptProjection>;
   latestInterruptRequestId: string | null;
   asks: AskFrame[];
+  /** Out-of-order ephemeral cards waiting for their canonical approval state. */
+  pendingAsks: AskFrame[];
   answeredAsks: Record<string, string>;
   /** Fail-closed protocol/data conflicts; accepted projection is preserved. */
   integrityConflicts: string[];
@@ -201,6 +235,9 @@ export function initialChatState(
     frames: emptySequence(),
     projectedFrames: emptySequence(),
     aggregates: emptyAggregates(),
+    toolStates: null,
+    currentActivity: null,
+    terminalTurns: null,
     deltas: {},
     queueRevision: 0,
     sendQueue: [],
@@ -211,6 +248,7 @@ export function initialChatState(
     interrupts: {},
     latestInterruptRequestId: null,
     asks: [],
+    pendingAsks: [],
     answeredAsks: {},
     integrityConflicts: [],
     projector: emptyProjector(),
@@ -267,16 +305,6 @@ function applyDeltaToBuffer(buffer: DeltaBuffer, delta: ChatDeltaEvent): DeltaBu
       return buffer;
     case 'text-delta':
       return { ...buffer, text: buffer.text + delta.text };
-    case 'tool-input-delta': {
-      const key = delta.toolUseId ?? '';
-      return {
-        ...buffer,
-        toolInput: {
-          ...buffer.toolInput,
-          [key]: (buffer.toolInput[key] ?? '') + delta.partialJson,
-        },
-      };
-    }
     case 'message-end':
       return { ...buffer, ended: true };
   }
@@ -412,7 +440,6 @@ function foldDeltaFrame(
     itemId: frame.itemId,
     streamId,
     text: '',
-    toolInput: {},
     ended: false,
     nextDeltaIndex: 0,
     pending: null,
@@ -447,6 +474,100 @@ function foldStableFrame(
   let sendQueue = state.sendQueue;
   let interrupts = state.interrupts;
   let latestInterruptRequestId = state.latestInterruptRequestId;
+  let toolStates = state.toolStates;
+  let currentActivity = state.currentActivity;
+  let terminalTurns = state.terminalTurns;
+  let asks = state.asks;
+  let pendingAsks = state.pendingAsks;
+  let answeredAsks = state.answeredAsks;
+
+  if (binding.valid && event.kind === 'tool-state') {
+    const previous = indexGet(toolStates, event.callId);
+    const transitionError = toolStateTransitionError(previous ?? null, event);
+    const turnId = frame.turnId ?? null;
+    const ownershipError = frame.itemId !== event.callId
+      ? 'item'
+      : turnId === null
+        ? 'turn'
+        : indexGet(terminalTurns, turnId)
+          ? 'post-terminal'
+          : previous && previous.turnId !== turnId
+            ? 'turn'
+            : null;
+    if (ownershipError || transitionError) {
+      binding.valid = false;
+      binding.conflicts = addConflict(
+        binding.conflicts,
+        `tool:${event.callId}:${ownershipError ?? transitionError}`,
+      );
+    } else {
+      const projection: ToolProjection = {
+        ...event,
+        turnId,
+        sequence: frame.sequence,
+        occurredAt: frame.occurredAt,
+      };
+      toolStates = indexSet(toolStates, event.callId, projection);
+      const startedAt = currentActivity?.turnId === turnId
+        ? currentActivity.startedAt
+        : frame.occurredAt;
+      currentActivity = {
+        turnId: turnId!,
+        startedAt,
+        updatedAt: frame.occurredAt,
+        sequence: frame.sequence,
+        source: {
+          kind: 'tool',
+          callId: event.callId,
+          state: event.state,
+          safeSummary: event.safeSummary,
+        },
+      };
+      if (event.state === 'approval-needed' && event.approval.status === 'pending') {
+        const ready = pendingAsks.filter((ask) => (
+          ask.sessionId === state.sessionId
+          && ask.callId === event.callId
+          && ask.toolName === event.name
+          && ask.askId === event.approval.requestId
+          && !Object.prototype.hasOwnProperty.call(answeredAsks, ask.askId)
+        ));
+        if (ready.length > 0) {
+          const existing = new Set(asks.map((ask) => ask.askId));
+          asks = [...asks, ...ready.filter((ask) => !existing.has(ask.askId))];
+          pendingAsks = pendingAsks.filter((ask) => !ready.some((readyAsk) => readyAsk.askId === ask.askId));
+        }
+      } else if (event.state !== 'requested') {
+        const removed = asks.filter((ask) => ask.callId === event.callId);
+        if (removed.length > 0) {
+          asks = asks.filter((ask) => ask.callId !== event.callId);
+          answeredAsks = { ...answeredAsks };
+          for (const ask of removed) delete answeredAsks[ask.askId];
+        }
+        pendingAsks = pendingAsks.filter((ask) => ask.callId !== event.callId);
+      }
+    }
+  }
+
+  if (binding.valid && event.kind === 'activity-state') {
+    if (!frame.turnId) {
+      binding.valid = false;
+      binding.conflicts = addConflict(binding.conflicts, `activity:${frame.eventId}:turn`);
+    } else if (indexGet(terminalTurns, frame.turnId)) {
+      binding.valid = false;
+      binding.conflicts = addConflict(binding.conflicts, `activity:${frame.eventId}:post-terminal`);
+    } else {
+      const startedAt = event.phase === 'turn-starting' || currentActivity?.turnId !== frame.turnId
+        ? frame.occurredAt
+        : currentActivity.startedAt;
+      currentActivity = {
+        turnId: frame.turnId,
+        startedAt,
+        updatedAt: frame.occurredAt,
+        sequence: frame.sequence,
+        source: { kind: 'activity', phase: event.phase },
+      };
+    }
+  }
 
   if (binding.valid && event.kind === 'user' && frame.clientMessageId) {
     optimistic = optimistic.filter((send) => send.clientMessageId !== frame.clientMessageId);
@@ -544,6 +665,24 @@ function foldStableFrame(
     binding.valid &&
     (event.kind === 'turn-end' || event.kind === 'turn-failed')
   ) {
+    if (frame.turnId) {
+      for (const [, tool] of indexEntries(toolStates)) {
+        if (
+          tool.turnId === frame.turnId &&
+          tool.state !== 'succeeded' && tool.state !== 'failed' && tool.state !== 'denied'
+        ) {
+          binding.conflicts = addConflict(
+            binding.conflicts,
+            `turn:${frame.turnId}:open-tool:${tool.callId}`,
+          );
+        }
+      }
+    }
+    if (frame.turnId) terminalTurns = indexSet(terminalTurns, frame.turnId, true);
+    currentActivity = null;
+    asks = [];
+    pendingAsks = [];
+    answeredAsks = {};
     for (const streamId of Object.keys(deltas)) {
       const current = indexGet(projector.streams, streamId);
       if (current && !current.completed) {
@@ -556,6 +695,13 @@ function foldStableFrame(
     }
   }
 
+  if (binding.valid && event.kind === 'session-state' && event.state === 'idle') {
+    currentActivity = null;
+    asks = [];
+    pendingAsks = [];
+    answeredAsks = {};
+  }
+
   return {
     ...state,
     frames: sequenceAppend(state.frames, frame),
@@ -565,6 +711,9 @@ function foldStableFrame(
     aggregates: binding.valid && !streamWasRetracted
       ? foldAggregate(state.aggregates, event)
       : state.aggregates,
+    toolStates,
+    currentActivity,
+    terminalTurns,
     deltas,
     queueRevision,
     sendQueue,
@@ -573,6 +722,9 @@ function foldStableFrame(
     cancelledClientMessages,
     interrupts,
     latestInterruptRequestId,
+    asks,
+    pendingAsks,
+    answeredAsks,
     integrityConflicts: binding.conflicts,
     projector,
   };
@@ -832,15 +984,64 @@ export function applySendQueueSnapshot(state: ChatState, frame: SendQueueSnapsho
   };
 }
 
-export function applyAsk(state: ChatState, frame: AskFrame): ChatState {
-  if (state.answeredAsks[frame.askId] || state.asks.some((ask) => ask.askId === frame.askId)) return state;
-  return { ...state, asks: [...state.asks, frame] };
+export function applyAsk(
+  state: ChatState,
+  frame: AskFrame,
+  activeTurnId: string | null = null,
+): ChatState {
+  if (frame.sessionId !== state.sessionId) return state;
+  if (
+    Object.prototype.hasOwnProperty.call(state.answeredAsks, frame.askId)
+    || state.asks.some((ask) => ask.askId === frame.askId)
+    || state.pendingAsks.some((ask) => ask.askId === frame.askId)
+  ) return state;
+  const requestOwner = indexEntries(state.toolStates)
+    .map(([, candidate]) => candidate)
+    .find((candidate) => (
+      candidate.state === 'approval-needed'
+      && candidate.approval.status === 'pending'
+      && candidate.approval.requestId === frame.askId
+    ));
+  if (
+    requestOwner
+    && (requestOwner.callId !== frame.callId || requestOwner.name !== frame.toolName)
+  ) return state;
+  const tool = indexGet(state.toolStates, frame.callId);
+  if (tool) {
+    if (
+      tool.name === frame.toolName
+      && tool.state === 'approval-needed'
+      && tool.approval.status === 'pending'
+      && tool.approval.requestId === frame.askId
+    ) {
+      return state.currentActivity?.turnId === tool.turnId
+        ? { ...state, asks: [...state.asks, frame] }
+        : state;
+    }
+    if (
+      tool.name === frame.toolName
+      && tool.state === 'requested'
+      && state.currentActivity?.turnId === tool.turnId
+    ) {
+      return { ...state, pendingAsks: [...state.pendingAsks, frame].slice(-100) };
+    }
+    // Existing lifecycle evidence can only advance; a mismatched card is
+    // stale or corrupt and can never become actionable later.
+    return state;
+  }
+  const turnIsActive = (
+    activeTurnId !== null && !indexGet(state.terminalTurns, activeTurnId)
+  ) || state.currentActivity !== null
+    || state.aggregates.sessionState === 'running'
+    || state.aggregates.sessionState === 'requires_action';
+  return turnIsActive
+    ? { ...state, pendingAsks: [...state.pendingAsks, frame].slice(-100) }
+    : state;
 }
 
 export function answerAsk(state: ChatState, askId: string, answer: string): ChatState {
   return {
     ...state,
-    asks: state.asks.filter((ask) => ask.askId !== askId),
     answeredAsks: { ...state.answeredAsks, [askId]: answer },
   };
 }

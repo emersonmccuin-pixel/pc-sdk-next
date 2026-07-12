@@ -25,6 +25,7 @@ import {
   initialChatState,
   type ChatState,
 } from '@/features/chat/chat-reducer';
+import { useConnectionStore } from '@/state/connection';
 
 /** Channel-1 frames the chat store owns. Resource/usage/mcp/orchestrator frames
  *  are routed elsewhere by the ws-client. */
@@ -60,7 +61,9 @@ export const useChatStore = create<ChatStore>((set) => ({
         case 'send-queue-snapshot':
           return { state: applySendQueueSnapshot(s.state, frame) };
         case 'ask':
-          return { state: applyAsk(s.state, frame) };
+          return {
+            state: applyAsk(s.state, frame, useConnectionStore.getState().activeTurnId),
+          };
         default:
           return s;
       }

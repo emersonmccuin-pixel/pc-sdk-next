@@ -11,10 +11,37 @@ test('ExitPlanMode: reject denies with a plan-rejected message', () => {
   assert.deepEqual(decision, { behavior: 'deny', message: 'plan rejected' });
 });
 
-test('ExitPlanMode: any non-reject answer allows and echoes input', () => {
+test('ExitPlanMode: the exact visible approval answer allows and echoes input', () => {
   const input = { plan: 'do the thing' };
-  const decision = resolveAnswerDecision('ExitPlanMode', input, 'accept');
+  const decision = resolveAnswerDecision('ExitPlanMode', input, 'approve');
   assert.deepEqual(decision, { behavior: 'allow', updatedInput: input });
+});
+
+test('answer-style tools fail closed when their visible payload is malformed', () => {
+  assert.deepEqual(
+    resolveAnswerDecision('ExitPlanMode', { plan: { hidden: true } }, 'allow'),
+    { behavior: 'deny', message: 'plan details unavailable' },
+  );
+  assert.deepEqual(
+    resolveAnswerDecision('ExitPlanMode', { plan: '   ' }, 'approve'),
+    { behavior: 'deny', message: 'plan details unavailable' },
+  );
+  assert.deepEqual(
+    resolveAnswerDecision('ExitPlanMode', { plan: 'visible' }, 'allow'),
+    { behavior: 'deny', message: 'invalid plan response' },
+  );
+  assert.deepEqual(
+    resolveAnswerDecision('AskUserQuestion', { questions: 'hidden' }, 'allow'),
+    { behavior: 'deny', message: 'question details unavailable' },
+  );
+  assert.deepEqual(
+    resolveAnswerDecision('AskUserQuestion', { questions: [null] }, 'allow'),
+    { behavior: 'deny', message: 'question details unavailable' },
+  );
+  assert.deepEqual(
+    resolveAnswerDecision('AskUserQuestion', { questions: [{ question: '   ' }] }, 'allow'),
+    { behavior: 'deny', message: 'question details unavailable' },
+  );
 });
 
 test('AskUserQuestion: single-question rawAnswer is the chosen label', () => {

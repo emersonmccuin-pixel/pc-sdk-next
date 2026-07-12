@@ -25,6 +25,7 @@
 // Never silently resume, never fake success. Idempotent.
 
 import {
+  closeOpenConversationToolCalls,
   commitConversationEvent,
   getActiveConversationTurn,
   getActiveOrchestratorSession,
@@ -61,13 +62,14 @@ function hasOpenTurn(sessionId: string): boolean {
   return lastOpenSeq > lastTerminalSeq;
 }
 
-function append(sessionId: string, projectId: ULID, event: ChatEvent): void {
+function append(sessionId: string, projectId: ULID, turnId: string, event: ChatEvent): void {
   commitConversationEvent({
     projectId,
     conversationId: sessionId,
     sessionId,
     family: 'control',
     event,
+    turnId,
     itemId: newId(),
     occurredAt: Date.now(),
     deliveryKind: 'chat',
@@ -106,12 +108,13 @@ export function runBootRecovery(): BootRecoveryResult {
       continue;
     }
     if (!hasOpenTurn(session.id)) continue;
-    append(session.id, project.id, {
+    const recoveryTurnId = newId();
+    append(session.id, project.id, recoveryTurnId, {
       kind: 'turn-failed',
       error: RESTART_ERROR,
       source: 'internal',
     });
-    append(session.id, project.id, { kind: 'session-state', state: 'idle', permissionMode: null });
+    append(session.id, project.id, recoveryTurnId, { kind: 'session-state', state: 'idle', permissionMode: null });
     recovered.push(session.id);
     console.warn(
       `[pc-sdk][boot-recovery] session ${session.id} (project ${project.id}) had a turn in flight — ` +
@@ -159,6 +162,12 @@ function recoverAgentRuns(): string[] {
       // persisted native session id so `answerPendingAsk` resumes it instead
       // of 410ing on a dead in-process handle.
       if (run.status === 'paused') {
+        closeOpenConversationToolCalls({
+          conversationId: run.id,
+          reason: 'runtime-lost',
+          deliveryKind: 'agent',
+          occurredAt: now,
+        });
         console.warn(
           `[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) is paused on a pending ask — left for DispatchService.recoverPausedAsks.`,
         );
@@ -180,6 +189,12 @@ function recoverAgentRuns(): string[] {
         continue;
       }
       for (const askId of openAsksByRun.get(run.id) ?? []) markPendingAskCancelled(askId, now);
+      closeOpenConversationToolCalls({
+        conversationId: run.id,
+        reason: 'runtime-lost',
+        deliveryKind: 'agent',
+        occurredAt: now,
+      });
       // Lifecycle (worktree pipeline): no sealed evidence — the pipeline dies
       // with the process. 'failed' can be illegal from review/land states
       // stamped onto a still-live run (review-rejected/conflict/merged/

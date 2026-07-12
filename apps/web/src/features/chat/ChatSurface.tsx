@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 
 import type { Project } from '@/features/projects/client';
-import type { ConversationEventFrame } from '@pc/contracts';
+import type { SessionReplayFrame } from '@pc/contracts';
 import { useChatStore } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
 import { sessionsApi } from '@/state/sessions';
@@ -15,6 +15,10 @@ import { useViewingSession } from '@/store/viewing-session';
 import { randomId, type SocketApi } from '@/lib/ws-client';
 import { ChatTimeline, PastSessionTimeline } from './ChatTimeline';
 import { ChatComposer } from './ChatComposer';
+
+export function isTurnBusy(activeTurnId: string | null): boolean {
+  return activeTurnId !== null;
+}
 
 export function ChatSurface({ project, api }: { project: Project; api: SocketApi | null }) {
   const state = useChatStore((s) => s.state);
@@ -34,7 +38,7 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
     );
   }
 
-  const busy = state.aggregates.sessionState === 'running';
+  const busy = isTurnBusy(activeTurnId);
 
   function handleSend(
     text: string,
@@ -120,8 +124,7 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
   }
 
   function handleAskReply(askId: string, answer: string) {
-    api?.askReply(askId, answer);
-    answerAsk(askId, answer);
+    if (api?.askReply(askId, answer)) answerAsk(askId, answer);
   }
 
   return (
@@ -137,6 +140,8 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
         onInterrupt={handleInterrupt}
         onInterruptAndSend={handleInterruptAndSend}
         sessionState={state.aggregates.sessionState}
+        currentActivity={state.currentActivity}
+        latestModel={state.aggregates.latestModel}
         busy={busy}
         sessionId={state.sessionId}
         sessionContextReady={state.sessionContextReady}
@@ -162,17 +167,17 @@ function PastSessionView({
   sessionId: string;
   onExit: () => void;
 }) {
-  const [frames, setFrames] = useState<ConversationEventFrame[] | null>(null);
+  const [replay, setReplay] = useState<SessionReplayFrame | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setFrames(null);
+    setReplay(null);
     setError(null);
     sessionsApi
       .sessionEvents(projectId, sessionId)
-      .then((rows) => {
-        if (!cancelled) setFrames(rows);
+      .then((checkpoint) => {
+        if (!cancelled) setReplay(checkpoint);
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
@@ -196,10 +201,10 @@ function PastSessionView({
       </div>
       {error ? (
         <div className="p-4 text-sm text-destructive">Failed to load session: {error}</div>
-      ) : frames === null ? (
+      ) : replay === null ? (
         <div className="p-4 text-sm text-muted-foreground">Loading session…</div>
       ) : (
-        <PastSessionTimeline frames={frames} />
+        <PastSessionTimeline replay={replay} />
       )}
     </>
   );

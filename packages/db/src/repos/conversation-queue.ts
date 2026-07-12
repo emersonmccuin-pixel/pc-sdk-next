@@ -30,7 +30,10 @@ import {
   projects,
   turnInterruptRequests,
 } from '../schema.ts';
-import { commitConversationEventInDb } from './conversation-events.ts';
+import {
+  closeOpenConversationToolCallsInDb,
+  commitConversationEventInDb,
+} from './conversation-events.ts';
 import type { OrchestratorSessionRow } from './orchestrator-sessions.ts';
 import {
   getProjectByIdInDb,
@@ -1262,6 +1265,10 @@ export function claimNextConversationTurn(
       state: 'running',
       permissionMode: null,
     }, { itemId: newId(), turnId: row.turnId, now });
+    appendEvent(tx, context, {
+      kind: 'activity-state',
+      phase: 'turn-starting',
+    }, { itemId: newId(), turnId: row.turnId, now });
     return {
       projectId: row.projectId,
       conversationId: row.conversationId,
@@ -1642,6 +1649,13 @@ export function settleConversationTurn(input: SettleConversationTurnInput): bool
       .get();
     if (!item) throw new Error(`active turn ${turn.id} references missing queue item`);
     const context: QueueContext = turn;
+    closeOpenConversationToolCallsInDb({
+      conversationId: turn.conversationId,
+      turnId: turn.id,
+      reason: input.terminalOutcome === 'recovered' ? 'runtime-lost' : 'turn-ended',
+      deliveryKind: 'chat',
+      occurredAt: now,
+    }, tx);
     const terminalEventId = newId();
     appendEvent(tx, context, input.terminalEvent, {
       eventId: terminalEventId,

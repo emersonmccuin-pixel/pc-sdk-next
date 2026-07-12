@@ -9,19 +9,20 @@
 // `{ type: 'agent-event' }` frame. Nothing wires it yet.
 
 import { create } from 'zustand';
-import type { AgentEventFrame } from '@pc/contracts';
+import { isAgentEventFrame, type AgentEventFrame } from '@pc/contracts';
 
 const MAX_PER_RUN = 500;
 
 interface AgentEventStoreState {
   byRunId: Map<string, AgentEventFrame[]>;
-  applyAgentEventFrame: (frame: AgentEventFrame) => void;
+  applyAgentEventFrame: (frame: unknown) => void;
   clearAll: () => void;
 }
 
 export const useAgentEventStore = create<AgentEventStoreState>((set, get) => ({
   byRunId: new Map(),
   applyAgentEventFrame: (frame) => {
+    if (!isAgentEventFrame(frame)) return;
     const byRunId = get().byRunId;
     const existing = byRunId.get(frame.runId) ?? [];
     // dedupId collision (re-delivery) — drop, don't double-append.

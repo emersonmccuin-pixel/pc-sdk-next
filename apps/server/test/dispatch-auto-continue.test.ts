@@ -29,6 +29,7 @@ import {
   markAgentRunTerminal,
   newId,
 } from '@pc/db';
+import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import { AccountRegistry } from '../src/runner/account-env.ts';
@@ -38,6 +39,7 @@ import {
   RuntimeRegistry,
   type AgentRuntimeAdapter,
   type CreateRuntimeSession,
+  type ResumeRuntimeSession,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
 import { DispatchService } from '../src/dispatch/service.ts';
@@ -90,7 +92,88 @@ class FakeAdapter implements AgentRuntimeAdapter {
   }
 }
 
-function rig(adapter: FakeAdapter): DispatchService {
+class LateAfterDisposeRuntime implements RuntimeSession {
+  sentTexts: string[] = [];
+  private releaseDispose!: () => void;
+  private readonly disposed = new Promise<void>((resolve) => { this.releaseDispose = resolve; });
+  private markLateDelivered!: () => void;
+  readonly lateDelivered = new Promise<void>((resolve) => { this.markLateDelivered = resolve; });
+
+  async *sendTurn(text: string) {
+    this.sentTexts.push(text);
+    const requested: ToolStateEvent = {
+      kind: 'tool-state', callId: 'before-kill-call', name: 'Read', state: 'requested',
+      safeSummary: safeToolSummary('Read'),
+      approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
+    };
+    yield { type: 'init', nativeSessionId: 'late-runtime', model: null, permissionMode: null } as const;
+    yield { type: 'tool-state', scope: 'primary', event: requested } as const;
+    yield {
+      type: 'tool-state', scope: 'primary',
+      event: {
+        ...requested, state: 'running',
+        approval: { status: 'not-required', source: 'runtime', requestId: null },
+      },
+    } as const;
+    await this.disposed;
+    yield { type: 'init', nativeSessionId: 'late-runtime-after-kill', model: null, permissionMode: null } as const;
+    yield {
+      type: 'tool-state', scope: 'primary',
+      event: {
+        ...requested, callId: 'late-after-kill-call', state: 'requested',
+      },
+    } as const;
+    this.markLateDelivered();
+    yield {
+      type: 'result', ok: false, stopReason: null, usage: null, durationMs: null,
+      error: 'interrupted', outcome: 'aborted', numTurns: null,
+    } as const;
+  }
+
+  async interrupt(): Promise<void> {}
+  async dispose(): Promise<void> { this.releaseDispose(); }
+}
+
+class SingleRuntimeAdapter implements AgentRuntimeAdapter {
+  readonly id = CLAUDE_RUNTIME_ID;
+  constructor(private readonly runtime: RuntimeSession) {}
+  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
+  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> { return this.runtime; }
+}
+
+class DeferredRuntime implements RuntimeSession {
+  sendCalls = 0;
+  disposeCalls = 0;
+
+  sendTurn(): AsyncIterable<never> {
+    this.sendCalls += 1;
+    return (async function* () {})();
+  }
+
+  async interrupt(): Promise<void> {}
+  async dispose(): Promise<void> { this.disposeCalls += 1; }
+}
+
+class DeferredCreateAdapter implements AgentRuntimeAdapter {
+  readonly id = CLAUDE_RUNTIME_ID;
+  private markStarted!: () => void;
+  readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
+  private resolveMint!: (session: RuntimeSession) => void;
+  private readonly mint = new Promise<RuntimeSession>((resolve) => { this.resolveMint = resolve; });
+
+  async createSession(_input: CreateRuntimeSession): Promise<RuntimeSession> {
+    this.markStarted();
+    return this.mint;
+  }
+
+  async resumeSession(_input: ResumeRuntimeSession): Promise<RuntimeSession> {
+    return this.createSession(_input);
+  }
+
+  resolve(session: RuntimeSession): void { this.resolveMint(session); }
+}
+
+function rig(adapter: AgentRuntimeAdapter): DispatchService {
   const runtimes = new RuntimeRegistry();
   runtimes.register(adapter);
   const dispatch = new DispatchService({
@@ -201,6 +284,22 @@ test('a killed (cancelled) run never auto-continues', async () => {
   // actually reaches 'running' (onSdkSessionId fires the announce).
   const hangingTurn: ScriptedTurn = [
     { type: 'init', nativeSessionId: 'sdk-1', model: null, permissionMode: null },
+    {
+      type: 'tool-state', scope: 'primary',
+      event: {
+        kind: 'tool-state', callId: 'kill-call', name: 'Read', state: 'requested',
+        safeSummary: safeToolSummary('Read'),
+        approval: { status: 'unknown', source: null, requestId: null }, outcome: null,
+      },
+    },
+    {
+      type: 'tool-state', scope: 'primary',
+      event: {
+        kind: 'tool-state', callId: 'kill-call', name: 'Read', state: 'running',
+        safeSummary: safeToolSummary('Read'),
+        approval: { status: 'not-required', source: 'runtime', requestId: null }, outcome: null,
+      },
+    },
     { hang: true },
   ];
   const adapter = new FakeAdapter([hangingTurn]);
@@ -215,14 +314,84 @@ test('a killed (cancelled) run never auto-continues', async () => {
   assert.equal(result.ok, true);
   const runId = (result as { run: { runId: string } }).run.runId as ULID;
   await until(() => getAgentRunRow(runId)?.status === 'running');
+  await until(() => listConversationEvents(runId).some((row) => (
+    (row.payload as { kind?: string; state?: string }).kind === 'tool-state'
+    && (row.payload as { state?: string }).state === 'running'
+  )));
 
   const killed = await dispatch.killRun(project.id, runId);
   assert.equal(killed.ok, true);
   await until(() => getAgentRunRow(runId)?.status === 'cancelled');
   assert.equal(getAgentRunRow(runId)!.failureCause, 'cancelled');
+  const toolEvents = listConversationEvents(runId)
+    .map((row) => row.payload)
+    .filter((event): event is ToolStateEvent => (
+      typeof event === 'object' && event !== null && (event as { kind?: string }).kind === 'tool-state'
+    ));
+  assert.equal(toolEvents.at(-1)?.state, 'failed');
+  assert.deepEqual(toolEvents.at(-1)?.outcome, { reason: 'turn-ended' });
 
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(hasContinuation(runId), false, 'a cancelled run is never auto-continued');
+});
+
+test('runtime output with a fresh call id after kill cannot reopen a terminal agent transcript', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('late-after-kill');
+  const runtime = new LateAfterDisposeRuntime();
+  const dispatch = rig(new SingleRuntimeAdapter(runtime));
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'wait to be killed',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true);
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+  await until(() => listConversationEvents(runId).some((row) => (
+    (row.payload as { kind?: string; state?: string }).kind === 'tool-state'
+    && (row.payload as { state?: string }).state === 'running'
+  )));
+  assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
+  await runtime.lateDelivered;
+  const cancelled = getAgentRunRow(runId)!;
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.ccSessionId, 'late-runtime', 'late init cannot replace the last live native id');
+  const callIds = listConversationEvents(runId)
+    .map((row) => row.payload)
+    .filter((event): event is ToolStateEvent => (
+      typeof event === 'object' && event !== null && (event as { kind?: string }).kind === 'tool-state'
+    ))
+    .map((event) => event.callId);
+  assert.equal(callIds.includes('late-after-kill-call'), false);
+});
+
+test('kill while runtime creation is deferred disposes the late session before any turn can be sent', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('deferred-create-kill');
+  const adapter = new DeferredCreateAdapter();
+  const dispatch = rig(adapter);
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'must never reach the provider after kill',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true);
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+  await adapter.started;
+
+  assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
+  const runtime = new DeferredRuntime();
+  adapter.resolve(runtime);
+  await until(() => runtime.disposeCalls === 1);
+
+  assert.equal(getAgentRunRow(runId)?.status, 'cancelled');
+  assert.equal(runtime.sendCalls, 0, 'late native session has no send/worktree mutation path');
+  assert.equal(dispatch.hasLiveRun(runId), false);
+  assert.equal(listConversationEvents(runId).length, 0);
 });
 
 test('the auto-continue counter is durable and survives a simulated restart — boot re-entry resumes from it exactly once', async () => {

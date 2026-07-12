@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { safeToolSummary, type ToolStateEvent } from '@pc/contracts';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-conversation-queue-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -191,7 +192,7 @@ test('claim atomically freezes delivery content, opens one turn, and terminal se
   assert.equal(db.claimNextConversationTurn(ctx.sessionId, 302), null);
   assert.equal(db.getConversationQueueSnapshot(ctx.sessionId).items[0]?.status, 'delivering');
   const eventTypes = db.listConversationEvents(ctx.sessionId).map((row) => row.eventType);
-  assert.deepEqual(eventTypes.slice(-3), ['send-state', 'user', 'session-state']);
+  assert.deepEqual(eventTypes.slice(-4), ['send-state', 'user', 'session-state', 'activity-state']);
 
   assert.equal(db.settleConversationTurn({
     turnId: claimed.turnId,
@@ -213,6 +214,75 @@ test('claim atomically freezes delivery content, opens one turn, and terminal se
     queueStatus: 'accepted',
     now: 304,
   }), false);
+});
+
+test('terminal settlement closes every open tool before the turn terminal in the same transaction', () => {
+  const ctx = context('settle-tools');
+  enqueue(ctx, 'use tools', 'settle-tools-c1', 'settle-tools-m1', 350);
+  const claimed = db.claimNextConversationTurn(ctx.sessionId, 351)!;
+  const requested = (callId: string, name: string): ToolStateEvent => ({
+    kind: 'tool-state',
+    callId,
+    name,
+    state: 'requested',
+    safeSummary: safeToolSummary(name),
+    approval: { status: 'unknown', source: null, requestId: null },
+    outcome: null,
+  });
+  const commitTool = (event: ToolStateEvent, occurredAt: number) => db.commitConversationEvent({
+    projectId: ctx.projectId,
+    conversationId: ctx.conversationId,
+    sessionId: ctx.sessionId,
+    family: 'tool',
+    event,
+    turnId: claimed.turnId,
+    itemId: event.callId,
+    occurredAt,
+    deliveryKind: 'chat',
+  });
+
+  const runningStart = requested('call-running', 'Read');
+  commitTool(runningStart, 352);
+  commitTool({
+    ...runningStart,
+    state: 'running',
+    approval: { status: 'not-required', source: 'policy', requestId: null },
+  }, 353);
+  const approvalStart = requested('call-approval', 'Bash');
+  commitTool(approvalStart, 354);
+  commitTool({
+    ...approvalStart,
+    state: 'approval-needed',
+    approval: { status: 'pending', source: null, requestId: 'approval-settle' },
+  }, 355);
+
+  assert.equal(db.settleConversationTurn({
+    turnId: claimed.turnId,
+    terminalEvent: { kind: 'turn-failed', error: 'runtime ended', source: 'internal' },
+    terminalOutcome: 'turn-failed',
+    queueStatus: 'failed',
+    now: 356,
+  }), true);
+
+  const events = db.listConversationEvents(ctx.sessionId);
+  const terminalIndex = events.findIndex((row) => row.eventType === 'turn-failed');
+  const finalTools = events
+    .map((row, index) => ({ index, event: row.payload }))
+    .filter((entry): entry is { index: number; event: ToolStateEvent } => (
+      typeof entry.event === 'object'
+      && entry.event !== null
+      && (entry.event as { kind?: string }).kind === 'tool-state'
+      && ['failed', 'denied'].includes((entry.event as ToolStateEvent).state)
+    ));
+  assert.equal(finalTools.length, 2);
+  assert.ok(finalTools.every((entry) => entry.index < terminalIndex));
+  assert.deepEqual(
+    finalTools.map(({ event }) => [event.callId, event.state, event.approval.status, event.outcome?.reason ?? null]),
+    [
+      ['call-running', 'failed', 'not-required', 'turn-ended'],
+      ['call-approval', 'denied', 'denied', null],
+    ],
+  );
 });
 
 test('interrupt-and-send releases only after the exact aborted terminal', () => {

@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-11 after CF-003 sealed verification.
+Last updated: 2026-07-11 after CF-004 sealed verification.
 
 ## Preserved baseline
 
@@ -83,6 +83,19 @@ Isolation defaults in the planning slice:
 - Atomic new/resume/account-switch/project-delete conversation transitions,
   including safe cancellation and rollback. Until immutable account stamps
   land, pre-account-switch transcripts are view-only/non-resumable.
+- Closed app-authored activity phases and a browser-derived elapsed/“still
+  waiting” presentation that stays honest without exposing provider reasoning
+  or inventing durable status.
+- One canonical guarded tool lifecycle per adapter-minted call identity, with
+  deterministic safe summary, explicit approval provenance, terminal closure
+  before turn/run termination, and execution-only `tool_called` evidence.
+- Replayable process-local approvals with bounded/redacted transient details;
+  malformed special-tool payloads are deny-only and fail closed again at the
+  runtime adapter. Unsupported sidechain approvals deny immediately rather than
+  opening an unpublishable waiter.
+- Strict exact-shape ingestion for conversation and agent transcript events
+  across live sockets and HTTP replay/backfill. Legacy raw tool/system rows stay
+  retained as hidden evidence while preserving canonical high-water sequence.
 
 ## Known architectural gaps
 
@@ -97,9 +110,6 @@ Isolation defaults in the planning slice:
 - Usage DTOs are Claude-shaped and do not retain general source semantics,
   confidence, staleness, or runtime attribution.
 - No honest per-session context-use contract exists yet.
-- Private reasoning no longer crosses the canonical runtime or browser seams,
-  but a typed safe operational-activity taxonomy and continuous honest waiting
-  feedback still need their own N2 slice.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
 - Process identity is positive at `/health`, but a data-directory mutex and
@@ -111,12 +121,16 @@ Isolation defaults in the planning slice:
 
 ## Active work
 
-`CF-003` completes durable queued-send and positive interruption semantics on
-the landed CF-001/CF-002 conversation foundation. Adversarial probes cover
-restart/shutdown uncertainty, delayed runtime startup, boot readiness, stale
-CAS and duplicate commands, socket failure, false abort classification, late
-session-global native interruption, deleted projects, and atomic account/
-session transitions. The compact existing composer shell exposes FIFO state,
-edit/remove, interrupt-and-send, failure evidence, and safe view-only history.
-The next safe conversation slice is `CHAT-007/CHAT-008`: typed honest activity
-and complete tool-call lifecycle without private reasoning.
+`CF-004` completes `CHAT-007/CHAT-008` on the landed canonical conversation
+foundation. Adversarial coverage spans callback/stream races, result without
+progress, approval timeout/session/runtime denial, restart/kill closure, late
+dispatch initialization, raw exception and tool payload leakage, shuffled/
+duplicate replay, strict HTTP/socket ingestion, and malformed special-tool
+approval. Isolated no-provider visual QA confirmed one safe tool row, visible
+approval waiting, busy composer state, terminal update, and replay-equivalent
+reload without technical data. Final hostile review also forced turn-scoped
+non-evicting native correlation and singleflight paused-run revival so map
+pressure, concurrent answers, kill, or shutdown cannot duplicate/leak a live
+runtime. The next master-plan phase is N3: immutable
+runtime/account/model/effort app-session stamps, capability discovery, honest
+context observation, and provider-neutral quota semantics.

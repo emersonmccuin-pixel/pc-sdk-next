@@ -1,30 +1,13 @@
-// Bubble renderers for every render item. Tool calls pair into collapsible
-// groups; Edit/Write/NotebookEdit promote to diff cards; tool-result.isError
-// renders as a visible failed state (the old UI dropped it — ours must not);
-// Compaction dividers, denied tools, dispatch anchors, sidechains, system, and
-// turn-failed bubbles all render structurally. Private reasoning has no
+// Bubble renderers for canonical timeline items. Each tool call stays one safe,
+// app-authored lifecycle row keyed by callId; raw input, output, and provider
+// denial text have no browser render path. Private reasoning likewise has no
 // canonical render path.
 
 import { useState } from 'react';
 
 import { formatToolLabel } from '@/lib/tool-labels';
 import { Markdown } from './Markdown';
-import { DiffView } from './DiffView';
 import type { RenderItem, ToolCall } from './chat-render';
-
-function stringify(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function truncate(text: string, max = 2000): string {
-  return text.length > max ? `${text.slice(0, max)}\n… (${text.length - max} more chars)` : text;
-}
 
 // ── Content bubbles ─────────────────────────────────────────────────────────
 
@@ -57,88 +40,34 @@ export function AssistantBubble({ text, live }: { text: string; live?: boolean }
 
 // ── Tools ───────────────────────────────────────────────────────────────────
 
-function editDiff(call: ToolCall): { oldText: string; newText: string; path?: string } {
-  const input = (call.input ?? {}) as Record<string, unknown>;
-  const path = (input.file_path ?? input.notebook_path) as string | undefined;
-  if (call.name === 'Write') return { oldText: '', newText: String(input.content ?? ''), path };
-  if (call.name === 'MultiEdit' && Array.isArray(input.edits)) {
-    const edits = input.edits as Array<{ old_string?: string; new_string?: string }>;
-    return {
-      oldText: edits.map((e) => e.old_string ?? '').join('\n'),
-      newText: edits.map((e) => e.new_string ?? '').join('\n'),
-      path,
-    };
-  }
-  return {
-    oldText: String(input.old_string ?? ''),
-    newText: String(input.new_string ?? input.new_source ?? ''),
-    path,
-  };
-}
-
-export function EditCard({ call }: { call: ToolCall }) {
-  const { oldText, newText, path } = editDiff(call);
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-        <span className="text-accent">{formatToolLabel(call.name)}</span>
-        {!call.ended && <span className="text-warning">running…</span>}
-        {call.isError && <span className="text-destructive">failed</span>}
-      </div>
-      <DiffView oldText={oldText} newText={newText} path={path} />
-      {call.isError && <ToolResultBody result={call.result} isError />}
-    </div>
-  );
-}
-
-function ToolResultBody({ result, isError }: { result: unknown; isError: boolean }) {
-  const text = truncate(stringify(result));
-  if (!text) return null;
-  return (
-    <pre
-      className={
-        'mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border px-2 py-1 font-mono text-[11px] ' +
-        (isError ? 'border-destructive/50 bg-destructive/10 text-foreground' : 'border-border bg-background text-muted-foreground')
-      }
-    >
-      {isError && <span className="mr-1 font-semibold uppercase text-destructive">error</span>}
-      {text}
-    </pre>
-  );
-}
+const TOOL_STATE_TONE: Record<ToolCall['state'], string> = {
+  requested: 'text-muted-foreground',
+  'approval-needed': 'text-warning',
+  running: 'text-accent',
+  succeeded: 'text-success',
+  failed: 'text-destructive',
+  denied: 'text-warning',
+};
 
 function ToolCallRow({ call }: { call: ToolCall }) {
-  const [open, setOpen] = useState(false);
-  const inputText = truncate(stringify(call.input), 800);
+  const provenance = call.approval.source
+    ? ` · ${call.approval.source}`
+    : '';
   return (
-    <div className="text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 text-left hover:text-foreground"
-      >
-        <span className="text-[10px]">{open ? '▾' : '▸'}</span>
-        <span className="text-accent">{formatToolLabel(call.name)}</span>
-        {!call.ended && <span className="text-[10px] uppercase tracking-wider text-warning">running…</span>}
-        {call.isError && <span className="text-[10px] uppercase tracking-wider text-destructive">failed</span>}
-        {call.ended && !call.isError && <span className="text-[10px] text-success">✓</span>}
-      </button>
-      {open && (
-        <div className="mt-1 space-y-1 pl-4">
-          {inputText && (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words border border-border bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground">
-              {inputText}
-            </pre>
-          )}
-          <ToolResultBody result={call.result} isError={call.isError} />
-        </div>
+    <div className="flex items-center gap-2 text-xs" data-tool-call-id={call.callId}>
+      <span className="text-accent" title={formatToolLabel(call.name)}>{call.safeSummary}</span>
+      <span className={`text-[10px] uppercase tracking-wider ${TOOL_STATE_TONE[call.state]}`}>
+        {call.state.replace('-', ' ')}{provenance}
+      </span>
+      {call.outcome && (
+        <span className="text-[10px] text-muted-foreground">{call.outcome.reason.replace('-', ' ')}</span>
       )}
     </div>
   );
 }
 
 export function ToolGroup({ calls }: { calls: ToolCall[] }) {
-  const anyError = calls.some((c) => c.isError);
+  const anyError = calls.some((call) => call.state === 'failed' || call.state === 'denied');
   return (
     <div
       className={
@@ -146,23 +75,13 @@ export function ToolGroup({ calls }: { calls: ToolCall[] }) {
       }
     >
       {calls.map((c) => (
-        <ToolCallRow key={c.toolUseId} call={c} />
+        <ToolCallRow key={c.callId} call={c} />
       ))}
     </div>
   );
 }
 
 // ── Structural bubbles ──────────────────────────────────────────────────────
-
-export function DeniedBubble({ name, reason }: { name: string; reason: string }) {
-  return (
-    <div className="border border-warning/50 bg-warning/10 px-3 py-1.5 text-xs">
-      <span className="font-semibold uppercase tracking-wider text-warning">tool denied</span>{' '}
-      <span className="text-foreground">{formatToolLabel(name)}</span>
-      <div className="mt-0.5 text-muted-foreground">{reason}</div>
-    </div>
-  );
-}
 
 export function DispatchBubble({ agentName, runId }: { agentName: string; runId: string }) {
   return (
@@ -297,10 +216,6 @@ export function RenderItemView({ item }: { item: RenderItem }) {
       return <AssistantBubble text={item.text} />;
     case 'tool-group':
       return <ToolGroup calls={item.calls} />;
-    case 'edit':
-      return <EditCard call={item.call} />;
-    case 'denied':
-      return <DeniedBubble name={item.name} reason={item.reason} />;
     case 'dispatch':
       return <DispatchBubble agentName={item.agentName} runId={item.runId} />;
     case 'agent-run':

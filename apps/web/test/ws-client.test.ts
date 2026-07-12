@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { ProjectSocket } from '../src/lib/ws-client.ts';
 import { useChatStore } from '../src/state/chat-store.ts';
 import { useConnectionStore } from '../src/state/connection.ts';
+import { useAgentEventStore } from '../src/state/agent-event-store.ts';
 
 const PROJECT_ID = 'project-1';
 const SESSION_ID = 'session-1';
@@ -113,6 +114,28 @@ test('socket rejects foreign projects and exposes exact active-turn identity', (
     failureReason: null,
   });
   assert.equal(useConnectionStore.getState().activeTurnId, 'turn-1');
+});
+
+test('socket admits only strict canonical agent transcript frames', () => {
+  useAgentEventStore.getState().clearAll();
+  const socket = new ProjectSocket(PROJECT_ID);
+  const frame = {
+    type: 'agent-event',
+    projectId: PROJECT_ID,
+    runId: 'run-1',
+    dedupId: 'agent-event-1',
+    event: { kind: 'assistant-text', text: 'safe', midLoop: false },
+  };
+  route(socket, frame);
+  assert.equal(useAgentEventStore.getState().byRunId.get('run-1')?.length, 1);
+
+  route(socket, { ...frame, dedupId: 'agent-event-2', nativeSessionId: 'SECRET' });
+  route(socket, {
+    ...frame,
+    dedupId: 'agent-event-3',
+    event: { ...frame.event, rawThinking: 'SECRET' },
+  });
+  assert.equal(useAgentEventStore.getState().byRunId.get('run-1')?.length, 1);
 });
 
 test('socket generation guards suppress connecting duplicates and superseded handlers', () => {

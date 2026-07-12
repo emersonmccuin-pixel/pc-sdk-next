@@ -12,7 +12,15 @@
 // It does NOT persist directly. `emitChat` and `emitDelta` both enter the
 // canonical atomic event/outbox door; the conversation relay publishes later.
 
-import type { ChatDeltaEvent, ChatEvent, UsageSnapshot } from '@pc/contracts';
+import {
+  isChatEvent,
+  toolStateTransitionError,
+  type ActivityPhase,
+  type ChatDeltaEvent,
+  type ChatEvent,
+  type ToolStateEvent,
+  type UsageSnapshot,
+} from '@pc/contracts';
 import type { RuntimeEvent } from '../runner/runtime.ts';
 
 export type TurnTerminal = 'turn-end' | 'turn-failed';
@@ -49,11 +57,104 @@ export async function runTurn(
   let terminated = false;
   let sawToolCall = false;
   let lastAssistantText = '';
+  let currentActivity: ActivityPhase | null = null;
+  const tools = new Map<string, ToolStateEvent>();
   const nextDeltaIndex = new Map<string, number>();
   // Overwritten the moment a real terminal is emitted; the post-terminal-throw
   // branch below relies on this holding the actual result, not a placeholder.
   let terminalResult: TurnResult = { terminal: 'turn-failed', outcome: 'error', numTurns: null };
   const drop = (reason: string, msg: unknown): void => deps.onDropped?.(reason, msg);
+
+  const emitActivity = (phase: Exclude<ActivityPhase, 'turn-starting'>): void => {
+    if (currentActivity === phase) return;
+    currentActivity = phase;
+    deps.emitChat({ kind: 'activity-state', phase });
+  };
+
+  const emitTool = (observed: ToolStateEvent): void => {
+    if (!isChatEvent(observed) || observed.kind !== 'tool-state') {
+      drop('invalid tool-state observation', observed);
+      return;
+    }
+    let previous = tools.get(observed.callId) ?? null;
+    if (!previous && observed.state !== 'requested') {
+      const requested: ToolStateEvent = {
+        ...observed,
+        state: 'requested',
+        approval: { status: 'unknown', source: null, requestId: null },
+        outcome: null,
+      };
+      deps.emitChat(requested, { itemId: requested.callId });
+      tools.set(requested.callId, requested);
+      previous = requested;
+      sawToolCall = true;
+    }
+    if (
+      previous &&
+      (observed.state === 'succeeded' || observed.state === 'failed') &&
+      (observed.state !== 'failed' || observed.outcome?.reason === 'tool-error') &&
+      (previous.state === 'requested' || previous.state === 'approval-needed')
+    ) {
+      if (
+        previous.state === 'approval-needed'
+        && (
+          previous.approval.status !== 'pending'
+          || observed.approval.status !== 'allowed'
+          || observed.approval.source !== 'user'
+          || observed.approval.requestId !== previous.approval.requestId
+        )
+      ) {
+        drop('terminal tool observation lacks positive approval provenance', observed);
+        return;
+      }
+      const approval = observed.approval.status === 'allowed' || observed.approval.status === 'not-required'
+        ? observed.approval
+        : { status: 'not-required' as const, source: 'runtime' as const, requestId: null };
+      const running: ToolStateEvent = { ...observed, state: 'running', approval, outcome: null };
+      const runningError = toolStateTransitionError(previous, running);
+      if (runningError) {
+        drop(`invalid synthesized tool transition: ${runningError}`, observed);
+        return;
+      }
+      deps.emitChat(running, { itemId: running.callId });
+      tools.set(running.callId, running);
+      previous = running;
+    }
+    const transitionError = toolStateTransitionError(previous, observed);
+    if (transitionError) {
+      // Exact duplicate observations are expected from some runtimes; all
+      // regressions/conflicts are dropped without changing accepted state.
+      drop(`invalid tool transition: ${transitionError}`, observed);
+      return;
+    }
+    deps.emitChat(observed, { itemId: observed.callId });
+    tools.set(observed.callId, observed);
+    if (observed.state === 'requested') sawToolCall = true;
+  };
+
+  const closeOpenTools = (): void => {
+    for (const previous of tools.values()) {
+      if (previous.state === 'succeeded' || previous.state === 'failed' || previous.state === 'denied') continue;
+      if (previous.state === 'approval-needed') {
+        if (previous.approval.status !== 'pending') {
+          drop('invalid pending approval during tool closure', previous);
+          continue;
+        }
+        emitTool({
+          ...previous,
+          state: 'denied',
+          approval: {
+            status: 'denied',
+            source: 'session',
+            requestId: previous.approval.requestId,
+          },
+          outcome: null,
+        });
+      } else {
+        emitTool({ ...previous, state: 'failed', outcome: { reason: 'turn-ended' } });
+      }
+    }
+  };
 
   const emitUsage = (usage: NonNullable<RuntimeEvent & { type: 'result' }>['usage']): void => {
     if (!usage) return;
@@ -84,31 +185,25 @@ export async function runTurn(
             break;
           }
           const b = msg.block;
-          if (b.kind === 'text') {
-            lastAssistantText = b.text;
-            deps.emitChat(
-              { kind: 'assistant-text', text: b.text, midLoop: sawToolCall },
-              { itemId: msg.itemId, streamId: msg.itemId },
-            );
-          } else {
-            sawToolCall = true;
-            deps.emitChat(
-              { kind: 'tool-call', toolUseId: b.toolUseId, name: b.name, input: b.input },
-              { itemId: msg.itemId, streamId: msg.itemId },
-            );
-          }
+          emitActivity('responding');
+          lastAssistantText = b.text;
+          deps.emitChat(
+            { kind: 'assistant-text', text: b.text, midLoop: sawToolCall },
+            { itemId: msg.itemId, streamId: msg.itemId },
+          );
           break;
         }
 
-        case 'tool-result':
+        case 'tool-state':
           if (msg.scope === 'sidechain') {
-            drop('subagent tool-result', msg);
+            drop('subagent tool-state', msg);
             break;
           }
-          deps.emitChat(
-            { kind: 'tool-result', toolUseId: msg.toolUseId, result: msg.result, isError: msg.isError },
-            { itemId: msg.itemId, streamId: msg.itemId },
-          );
+          emitTool(msg.event);
+          break;
+
+        case 'activity-state':
+          emitActivity(msg.phase);
           break;
 
         case 'delta':
@@ -118,12 +213,35 @@ export async function runTurn(
           }
           const deltaIndex = nextDeltaIndex.get(msg.itemId) ?? 0;
           nextDeltaIndex.set(msg.itemId, deltaIndex + 1);
+          if (msg.delta.kind === 'text-delta') emitActivity('responding');
           deps.emitDelta(msg.itemId, deltaIndex, msg.delta);
           break;
 
         case 'result': {
+          closeOpenTools();
           emitUsage(msg.usage);
           deps.emitChat({ kind: 'turn-duration', durationMs: msg.durationMs });
+          // Keep a runtime check in addition to the discriminated TypeScript
+          // contract: adapters are an I/O boundary and malformed JS can still
+          // reach this function at runtime.
+          const observed = msg as unknown as { ok: unknown; outcome: unknown; error: unknown };
+          const coherent = (observed.ok === true && observed.outcome === 'ok' && observed.error === null)
+            || (
+              observed.ok === false
+              && (observed.outcome === 'error' || observed.outcome === 'aborted' || observed.outcome === 'budget-exhausted')
+              && (observed.error === null || typeof observed.error === 'string')
+            );
+          if (!coherent) {
+            drop('incoherent runtime result', msg);
+            deps.emitChat({
+              kind: 'turn-failed',
+              error: 'runtime returned an invalid terminal receipt',
+              source: 'internal',
+            });
+            terminated = true;
+            terminalResult = { terminal: 'turn-failed', outcome: 'error', numTurns: null };
+            return terminalResult;
+          }
           if (msg.ok) {
             deps.emitChat({ kind: 'turn-end', text: lastAssistantText, stopReason: msg.stopReason });
           } else {
@@ -149,6 +267,7 @@ export async function runTurn(
           break;
 
         case 'compaction':
+          emitActivity('compacting');
           deps.emitChat({
             kind: 'compaction',
             trigger: msg.trigger,
@@ -157,17 +276,17 @@ export async function runTurn(
           });
           break;
 
-        case 'permission-denied':
-          deps.emitChat({ kind: 'tool-denied', toolUseId: msg.toolUseId, name: msg.toolName, reason: msg.reason });
-          break;
-
         case 'api-retry':
+          emitActivity('retrying');
           deps.emitChat({
             kind: 'system',
-            subtype: 'api_retry',
+            subtype: 'runtime-retry',
             level: 'warning',
-            message: msg.message,
-            raw: msg.attempt !== null ? { attempt: msg.attempt } : undefined,
+            message: msg.attempt === null
+              ? 'Retrying the runtime request.'
+              : msg.maxRetries === null
+                ? `Retrying the runtime request (attempt ${msg.attempt}).`
+                : `Retrying the runtime request (attempt ${msg.attempt} of ${msg.maxRetries}).`,
           });
           break;
 
@@ -176,7 +295,7 @@ export async function runTurn(
           break;
 
         case 'system':
-          deps.emitChat({ kind: 'system', subtype: msg.subtype, level: msg.level, message: msg.message, raw: msg.raw });
+          deps.emitChat({ kind: 'system', subtype: msg.subtype, level: msg.level, message: msg.message });
           break;
 
         case 'supersedes':
@@ -189,10 +308,11 @@ export async function runTurn(
     }
   } catch (err) {
     if (!terminated) {
-      const message = err instanceof Error ? err.message : String(err);
+      closeOpenTools();
+      drop('runtime stream error', err);
       deps.emitChat({
         kind: 'turn-failed',
-        error: message,
+        error: 'runtime stream failed',
         // Exception text is not typed interruption evidence. Only a runtime
         // `result { outcome: 'aborted' }` may produce an abort terminal.
         source: 'internal',
@@ -209,6 +329,7 @@ export async function runTurn(
 
   // Stream ended with no `result` — positive receipt, never silence (rule 3).
   if (!terminated) {
+    closeOpenTools();
     deps.emitChat({ kind: 'turn-failed', error: 'stream ended without result', source: 'internal' });
     return { terminal: 'turn-failed', outcome: 'error', numTurns: null };
   }

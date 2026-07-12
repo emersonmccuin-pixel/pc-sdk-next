@@ -7,7 +7,12 @@ import type { ConversationCommandReceiptFrame, SendQueueItem } from '@pc/contrac
 
 import { uploadPastedImage } from '@/features/pasted-images/client';
 import { randomId } from '@/lib/ws-client';
-import type { InterruptProjection, OptimisticSend } from './chat-reducer';
+import type {
+  CurrentActivityProjection,
+  InterruptProjection,
+  OptimisticSend,
+} from './chat-reducer';
+import { deriveActivityDisplay, formatActivityElapsed } from './activity-display';
 
 const PROMPT_HISTORY_CAP = 100;
 
@@ -108,6 +113,8 @@ export function ChatComposer({
   onInterrupt,
   onInterruptAndSend,
   sessionState,
+  currentActivity,
+  latestModel,
   busy,
   sessionId,
   sessionContextReady,
@@ -140,6 +147,8 @@ export function ChatComposer({
     },
   ) => { requestId: string; clientMessageId?: string } | null;
   sessionState: string | null;
+  currentActivity: CurrentActivityProjection | null;
+  latestModel: string | null;
   busy: boolean;
   sessionId: string | null;
   sessionContextReady: boolean;
@@ -162,6 +171,7 @@ export function ChatComposer({
     text: string;
   } | null>(null);
   const [rowCommand, setRowCommand] = useState<{ itemId: string; commandId: string } | null>(null);
+  const [activityClock, setActivityClock] = useState(() => Date.now());
   const [pasteUpload, setPasteUpload] = useState<{ uploading: number; errors: string[] } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const historyRef = useRef<string[]>(readHistory(historyKey));
@@ -222,6 +232,13 @@ export function ChatComposer({
     setEditing(null);
     setRowCommand(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!busy) return;
+    setActivityClock(Date.now());
+    const timer = window.setInterval(() => setActivityClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [busy, currentActivity?.sequence]);
 
   function rememberCommittedPrompt(committed: string): void {
     const hist = historyRef.current;
@@ -503,9 +520,27 @@ export function ChatComposer({
           : interruptPending
             ? 'Saving interrupt request…'
             : null;
+  const activityDisplay = busy
+    ? deriveActivityDisplay(currentActivity, activityClock)
+    : null;
+  const queuedCount = sendQueue.filter((item) => item.status === 'queued').length;
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-border bg-card px-4 py-2.5">
+      {busy && (
+        <div
+          className="flex items-center gap-2 border border-primary/25 bg-primary/5 px-2 py-1 text-[10px] text-muted-foreground"
+          data-testid="current-activity"
+        >
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+          <span className="min-w-0 flex-1 truncate text-foreground">
+            {activityDisplay?.text ?? 'Starting the turn'}
+          </span>
+          {latestModel && <span className="truncate text-[var(--fg-dim)]">{latestModel}</span>}
+          <span className="font-mono">{formatActivityElapsed(activityDisplay?.elapsedMs ?? 0)}</span>
+          <span>{queuedCount} queued</span>
+        </div>
+      )}
       {(uncertainPending || precommit.length > 0 || sendQueue.length > 0) && (
         <div className="flex max-h-40 flex-col gap-1 overflow-y-auto border border-border bg-background/60 p-1.5" data-testid="send-queue-tray">
           <div className="px-1 text-[9px] uppercase tracking-wider text-muted-foreground">Send queue · FIFO</div>

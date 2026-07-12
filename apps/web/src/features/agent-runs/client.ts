@@ -10,7 +10,13 @@
 // region shows its empty state (degrade, never block).
 
 import { getJson } from '@/api/http';
-import type { AgentRunDto, ChatEvent, ULID } from '@pc/contracts';
+import {
+  isAgentRunStatus,
+  isChatEvent,
+  type AgentRunDto,
+  type ChatEvent,
+  type ULID,
+} from '@pc/contracts';
 
 export type AgentRunTranscriptStatus = 'ready' | 'empty' | 'missing';
 
@@ -28,6 +34,40 @@ export interface AgentRunEventsResponse {
   status: AgentRunDto['status'];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function isAgentRunEventEntry(value: unknown): value is AgentRunEventEntry {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) => key === 'dedupId' || key === 'event') &&
+    typeof value.dedupId === 'string' &&
+    value.dedupId.length > 0 &&
+    isChatEvent(value.event)
+  );
+}
+
+export function parseAgentRunEventsResponse(value: unknown): AgentRunEventsResponse {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !['events', 'transcriptStatus', 'status'].includes(key)) ||
+    !Array.isArray(value.events) ||
+    !value.events.every(isAgentRunEventEntry) ||
+    (value.transcriptStatus !== 'ready' &&
+      value.transcriptStatus !== 'empty' &&
+      value.transcriptStatus !== 'missing') ||
+    !isAgentRunStatus(value.status)
+  ) {
+    throw new Error('invalid agent transcript response');
+  }
+  return {
+    events: value.events,
+    transcriptStatus: value.transcriptStatus,
+    status: value.status,
+  };
+}
+
 export const agentRunsApi = {
   listAgentRuns: (projectId: ULID) =>
     getJson<{ runs: AgentRunDto[] }>(`/api/projects/${projectId}/agent-runs`).then(
@@ -35,7 +75,7 @@ export const agentRunsApi = {
     ),
 
   getAgentRunEvents: (projectId: ULID, runId: string) =>
-    getJson<AgentRunEventsResponse>(
+    getJson<unknown>(
       `/api/projects/${projectId}/agent-runs/${runId}/events`,
-    ),
+    ).then(parseAgentRunEventsResponse),
 };

@@ -185,7 +185,9 @@ export interface AskFrame {
   askId: ULID;
   sessionId: string | null;
   toolName: string;
-  toolUseId: string;
+  /** App-minted canonical tool-call identity. */
+  callId: string;
+  /** Ephemeral bounded/redacted approval detail; never a durable tool event. */
   toolInput: unknown;
 }
 
@@ -203,6 +205,11 @@ export interface ServerPongFrame {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -321,6 +328,20 @@ export function isSendQueueItemStatus(value: unknown): value is SendQueueItemSta
 export function isSendQueueItem(value: unknown): value is SendQueueItem {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, [
+      'id',
+      'clientMessageId',
+      'origin',
+      'enqueuePosition',
+      'revision',
+      'deliveryRevision',
+      'text',
+      'status',
+      'interruptRequestId',
+      'failureReason',
+      'createdAt',
+      'updatedAt',
+    ]) &&
     nonEmptyString(value.id) &&
     nonEmptyString(value.clientMessageId) &&
     typeof value.origin === 'string' &&
@@ -420,11 +441,13 @@ export function isConversationCommandReceiptFrame(
 export function isAskFrame(value: unknown): value is AskFrame {
   return (
     isRecord(value) &&
+    hasOnlyKeys(value, ['type', 'projectId', 'askId', 'sessionId', 'toolName', 'callId', 'toolInput']) &&
     value.type === 'ask' &&
     nonEmptyString(value.projectId) &&
     nonEmptyString(value.askId) &&
     (value.sessionId === null || nonEmptyString(value.sessionId)) &&
     nonEmptyString(value.toolName) &&
-    nonEmptyString(value.toolUseId)
+    nonEmptyString(value.callId) &&
+    Object.prototype.hasOwnProperty.call(value, 'toolInput')
   );
 }
