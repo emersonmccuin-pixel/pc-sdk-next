@@ -23,6 +23,7 @@ import {
   PRESERVED_LIFECYCLE_STATES,
   RUN_LIFECYCLE_STATES,
   canTransition,
+  isMatchingWorktreeAbandonmentTeardown,
   isPositivePreparationReceiptForRun,
   isPositiveWorktreePhaseReceipt,
   isWorktreePhaseReceipt,
@@ -39,7 +40,7 @@ import {
 
 import { getDb, type DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentRuns } from '../schema-agent-system.ts';
+import { agentContracts, agentRuns } from '../schema-agent-system.ts';
 
 export interface InsertAgentRunRowInput {
   /** PC-minted ULID. Matches the AgentRun wrapper's `agentRunId`. */
@@ -89,6 +90,24 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
   }
   if (!isRuntimeSelection(input.selection)) {
     throw new Error('agent run requires an exact complete runtime selection');
+  }
+  if (input.contractId) {
+    const contract = getDb().select({
+      landingStatus: agentContracts.landingStatus,
+      abandonmentReceipt: agentContracts.abandonmentReceipt,
+    }).from(agentContracts).where(eq(agentContracts.id, input.contractId)).get();
+    if (
+      contract &&
+      (
+        contract.abandonmentReceipt !== null ||
+        contract.landingStatus === 'pending' ||
+        contract.landingStatus === 'abandoning' ||
+        contract.landingStatus === 'landed' ||
+        contract.landingStatus === 'abandoned'
+      )
+    ) {
+      throw new Error('agent run admission refused: contract abandonment or landing is reserved or settled');
+    }
   }
   const nativeSessionId = input.continuation.mode === 'resume'
     ? exactNonEmpty(input.continuation.nativeSessionId, 'nativeSessionId')
@@ -765,7 +784,8 @@ export function listRecentTerminalAgentRuns(since: number): AgentRunRow[] {
  *  until resolved — no age window. Non-repo rows (lifecycleState NULL) never
  *  match; they keep the recent-terminal window. Newest first. */
 export function listPreservedTerminalAgentRuns(projectId: ULID): AgentRunRow[] {
-  return getDb()
+  const db = getDb();
+  const rows = db
     .select()
     .from(agentRuns)
     .where(
@@ -777,6 +797,19 @@ export function listPreservedTerminalAgentRuns(projectId: ULID): AgentRunRow[] {
     )
     .orderBy(desc(agentRuns.completedAt))
     .all();
+  return rows.filter((run) => {
+    if (run.contractId === null) return true;
+    const contract = db.select({
+      landingStatus: agentContracts.landingStatus,
+      abandonmentReceipt: agentContracts.abandonmentReceipt,
+      abandonmentTeardownReceipt: agentContracts.abandonmentTeardownReceipt,
+    }).from(agentContracts).where(eq(agentContracts.id, run.contractId)).get();
+    return contract?.landingStatus !== 'abandoned' ||
+      !isMatchingWorktreeAbandonmentTeardown(
+        contract.abandonmentReceipt,
+        contract.abandonmentTeardownReceipt,
+      );
+  });
 }
 
 /** Every run bound to one contract — the original dispatch plus its

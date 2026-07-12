@@ -7,6 +7,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type {
+  ULID as DomainULID,
+  WorktreeAbandonmentReceipt,
+  WorktreeAbandonmentTeardownReceipt,
+} from '@pc/domain';
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'pc-contract-service-'));
 process.env.PC_DATA_DIR = tmpDir;
@@ -40,6 +45,84 @@ function makeService() {
 
 function seedProject(slug: string) {
   return db.createProject({ slug, name: slug, stages, folderPath: '' });
+}
+
+function seedAbandonment(service: InstanceType<typeof ContractService>, slug: string) {
+  const project = seedProject(slug);
+  const producerRunId = db.newId() as DomainULID;
+  const worktreePath = join(tmpDir, slug);
+  const branch = `agent-${slug}`;
+  const contract = service.create({
+    projectId: project.id,
+    agentRunId: producerRunId,
+    podName: 'code-writer',
+    expectedOutput: { kind: 'repo', auto_land: false },
+    worktreePath,
+    worktreeBaseBranch: 'main',
+    worktreeBaseSha: 'b'.repeat(40),
+  });
+  const worktree = db.upsertWorktree({
+    name: branch,
+    path: worktreePath,
+    projectId: project.id,
+    agentRunId: producerRunId,
+    contractId: contract.id as DomainULID,
+    branch,
+    baseBranch: 'main',
+    baseSha: 'b'.repeat(40),
+  });
+  const receipt: WorktreeAbandonmentReceipt = {
+    protocol: 'worktree-abandonment-v1',
+    requestId: '123e4567-e89b-42d3-a456-426614174000',
+    approvedBy: 'user',
+    approvalSurface: 'browser',
+    approvalReason: 'explicit-browser-confirmation',
+    approvedAt: 100,
+    reason: 'User approved cleanup.',
+    approvedContractVersion: contract.version,
+    projectId: project.id,
+    contractId: contract.id as DomainULID,
+    producerRunId,
+    worktreeId: worktree.id,
+    worktreeStatus: 'active',
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1',
+      gitCommonDir: 'E:/repo/.git',
+      leaseKey: `sha256:${'a'.repeat(64)}`,
+    },
+    worktreePath,
+    branch,
+    branchTip: 'c'.repeat(40),
+    baseBranch: 'main',
+    validatedBaseSha: 'b'.repeat(40),
+    targetTip: 'b'.repeat(40),
+    integrationState: 'unmerged',
+    worktreeState: {
+      directory: 'present', registration: 'registered', status: 'clean',
+      staged: 0, unstaged: 0, untracked: 0,
+      worktreeStateDigest: `sha256:${'d'.repeat(64)}`,
+      changedPaths: [], ignoredContents: 'uninspected',
+    },
+    previewDigest: `sha256:${'e'.repeat(64)}`,
+  };
+  return { project, contract, worktree, producerRunId, receipt };
+}
+
+function teardown(authority: WorktreeAbandonmentReceipt): WorktreeAbandonmentTeardownReceipt {
+  return {
+    protocol: 'worktree-abandonment-teardown-v1',
+    authorityRequestId: authority.requestId,
+    startedAt: 200,
+    finishedAt: 300,
+    repositoryIdentity: authority.repositoryIdentity,
+    worktreePath: authority.worktreePath,
+    branch: authority.branch,
+    approvedBranchTip: authority.branchTip,
+    observedBranchTip: authority.branchTip,
+    directoryAbsent: true,
+    registrationAbsent: true,
+    branchPreserved: true,
+  };
 }
 
 test('create emits exactly one contract.changed (created) fact', () => {
@@ -137,4 +220,72 @@ test('a mutation on a missing contract emits NOTHING (returns null)', () => {
   const out = service.setDeliverable({ id: 'no-such', deliverable: null });
   assert.equal(out, null);
   assert.equal(drafts.length, 0);
+});
+
+test('abandonment authority, retry error, and settlement publish exact durable facts', () => {
+  const { service, drafts } = makeService();
+  const { project, contract, worktree, producerRunId, receipt } =
+    seedAbandonment(service, 'svc-abandon');
+  drafts.length = 0;
+
+  const authorized = service.authorizeAbandonment({ id: contract.id, receipt });
+  assert.ok(authorized);
+  assert.equal(authorized.landingStatus, 'abandoning');
+  assert.deepEqual(authorized.abandonmentReceipt, receipt);
+  assert.equal(drafts.length, 1);
+  assert.equal((drafts[0]!.payload as { reason: string }).reason, 'abandonment-authorized');
+  assert.equal(drafts[0]!.version, authorized.version);
+
+  const errored = service.setAbandonmentError({
+    id: contract.id,
+    expectedVersion: authorized.version,
+    authorityRequestId: receipt.requestId,
+    error: 'git worktree remove failed',
+  });
+  assert.ok(errored);
+  assert.equal(errored.abandonmentError, 'git worktree remove failed');
+  assert.equal((drafts[1]!.payload as { reason: string }).reason, 'abandonment-error');
+
+  const settlement = teardown(receipt);
+  assert.equal(db.markExactWorktreeDestroyed({
+    id: worktree.id,
+    projectId: project.id,
+    agentRunId: producerRunId,
+    contractId: contract.id as DomainULID,
+    path: worktree.path,
+    name: worktree.name,
+    branch: worktree.branch!,
+    baseBranch: worktree.baseBranch!,
+    destroyedAt: settlement.finishedAt,
+  }), true);
+  const settled = service.settleAbandonment({
+    id: contract.id,
+    expectedVersion: errored.version,
+    receipt: settlement,
+  });
+  assert.ok(settled);
+  assert.equal(settled.landingStatus, 'abandoned');
+  assert.deepEqual(settled.abandonmentTeardownReceipt, settlement);
+  assert.equal(settled.abandonmentError, null);
+  assert.equal((drafts[2]!.payload as { reason: string }).reason, 'abandonment-settled');
+  assert.equal(drafts[2]!.version, settled.version);
+});
+
+test('abandonment authority rolls back when its outbox fact cannot commit', () => {
+  const { service } = makeService();
+  const { contract, receipt } = seedAbandonment(service, 'svc-abandon-rollback');
+  const failing = new ContractService({
+    insertLiveEvent: (() => {
+      throw new Error('outbox unavailable');
+    }) as typeof db.insertLiveEvent,
+  });
+
+  assert.throws(
+    () => failing.authorizeAbandonment({ id: contract.id, receipt }),
+    /outbox unavailable/,
+  );
+  const persisted = db.getContract(contract.id as DomainULID);
+  assert.equal(persisted?.landingStatus, null);
+  assert.equal(persisted?.abandonmentReceipt, null);
+  assert.equal(persisted?.version, contract.version);
 });

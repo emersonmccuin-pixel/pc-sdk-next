@@ -78,12 +78,19 @@ export {
   listContractsForRun,
   listContractsForRunInDb,
   listAbandonedContractBranches,
+  listContractsNeedingAbandonmentRecovery,
+  listProtectedAbandonmentWorktreePaths,
   listContractsAwaitingIndependentReview,
   listContractsLandedTeardownIncomplete,
   listContractsPendingLanding,
   listContractsSealedUnverified,
   setContractDeliverable,
   setContractLanding,
+  reserveContractLanding,
+  settleContractLanding,
+  authorizeContractAbandonment,
+  setContractAbandonmentError,
+  settleContractAbandonment,
   setContractReviewState,
   reserveContractReview,
   clearContractReviewReservation,
@@ -93,9 +100,14 @@ export {
 } from './repos/contracts.ts';
 export type {
   ContractRow,
+  AuthorizeContractAbandonmentInput,
   CreateContractInput,
+  ReserveContractLandingInput,
+  SetContractAbandonmentErrorInput,
   SetDeliverableInput,
   SetLandingInput,
+  SettleContractAbandonmentInput,
+  SettleContractLandingInput,
   ReserveContractReviewInput,
   SetRunRecoveryVerificationInput,
   SetReviewStateInput,
@@ -104,15 +116,24 @@ export type {
 
 export {
   getActiveWorktreeByName,
+  getWorktreeById,
+  getWorktreeForContract,
   listActiveWorktrees,
   listStrandedWorktrees,
   markWorktreeDestroyed,
+  markExactWorktreeDestroyed,
+  markExactUnpublishedWorktreeDestroyed,
   markWorktreeStranded,
   reviveStrandedWorktree,
   setWorktreeContractId,
   upsertWorktree,
 } from './repos/worktrees.ts';
-export type { UpsertWorktreeInput, WorktreeRow } from './repos/worktrees.ts';
+export type {
+  MarkExactWorktreeDestroyedInput,
+  MarkExactUnpublishedWorktreeDestroyedInput,
+  UpsertWorktreeInput,
+  WorktreeRow,
+} from './repos/worktrees.ts';
 
 export { getGlobalSettings, setGlobalSettings } from './repos/settings.ts';
 

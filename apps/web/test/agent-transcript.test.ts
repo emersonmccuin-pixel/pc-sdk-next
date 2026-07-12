@@ -4,13 +4,16 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { TranscriptRow } from '../src/components/TranscriptRow.tsx';
-import { PhaseReceiptDetails } from '../src/components/AgentTranscriptModal.tsx';
+import {
+  AbandonmentReceiptDetails,
+  PhaseReceiptDetails,
+} from '../src/components/AgentTranscriptModal.tsx';
 import {
   parseAgentRunEventsResponse,
   type AgentRunEventEntry,
 } from '../src/features/agent-runs/client.ts';
 import { mergeAgentTranscriptEvents } from '../src/features/agent-runs/transcript.ts';
-import type { AgentEventFrame } from '@pc/contracts';
+import type { AgentEventFrame, Contract } from '@pc/contracts';
 
 const ENTRY = {
   dedupId: 'event-1',
@@ -157,4 +160,57 @@ test('phase receipts distinguish executed evidence from an explicit positive no-
   assert.equal(renderToStaticMarkup(createElement(PhaseReceiptDetails, {
     phase: 'readiness', applicable: false, receipt: null,
   })), '', 'non-repo and detached-review phases remain not applicable');
+});
+
+test('abandonment receipt presentation distinguishes pending, settled, and legacy authority', () => {
+  const authority = {
+    approvedAt: 10,
+    branch: 'feature-safe',
+    branchTip: 'a'.repeat(40),
+    integrationState: 'unmerged',
+    reason: 'superseded',
+    worktreeState: { status: 'dirty', staged: 1, unstaged: 2, untracked: 3 },
+  } as NonNullable<Contract['abandonmentReceipt']>;
+  const pending = renderToStaticMarkup(createElement(AbandonmentReceiptDetails, {
+    contract: {
+      landingStatus: 'abandoning',
+      abandonmentReceipt: authority,
+      abandonmentTeardownReceipt: null,
+      abandonmentError: 'locked file; retry at boot',
+    } as Contract,
+  }));
+  assert.match(pending, /approval recorded/);
+  assert.match(pending, /cleanup pending/);
+  assert.match(pending, /not integrated/);
+  assert.match(pending, /ignored worktree contents were uninspected/i);
+  assert.match(pending, /locked file/);
+
+  const settled = renderToStaticMarkup(createElement(AbandonmentReceiptDetails, {
+    contract: {
+      landingStatus: 'abandoned',
+      abandonmentReceipt: authority,
+      abandonmentTeardownReceipt: {
+        observedBranchTip: 'a'.repeat(40),
+        finishedAt: 20,
+      },
+      abandonmentError: null,
+    } as Contract,
+  }));
+  assert.match(settled, /settled/);
+  assert.match(settled, /branch retained/);
+  assert.match(settled, /worktree/);
+  assert.match(settled, /removed/);
+  assert.match(settled, /did not merge the branch/i);
+
+  const legacy = renderToStaticMarkup(createElement(AbandonmentReceiptDetails, {
+    contract: {
+      landingStatus: 'abandoned',
+      abandonmentReceipt: null,
+      abandonmentTeardownReceipt: null,
+      abandonmentError: null,
+    } as Contract,
+  }));
+  assert.match(legacy, /authority unavailable/);
+  assert.match(legacy, /no explicit user approval receipt/i);
+  assert.match(legacy, /automatic cleanup is not authorized/i);
 });

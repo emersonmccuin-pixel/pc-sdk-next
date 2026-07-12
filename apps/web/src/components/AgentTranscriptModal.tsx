@@ -12,7 +12,12 @@ import { useEffect, useMemo, useState } from 'react';
 import type { AgentRunDto, Contract, WorktreePhaseReceiptDto } from '@pc/contracts';
 import { agentRunsApi, type AgentRunEventEntry, type AgentRunTranscriptStatus } from '@/features/agent-runs/client';
 import { useProjectContracts } from '@/features/contracts/use-project-contracts';
-import { effectivePolicy } from '@/features/contracts/view';
+import {
+  canRequestAbandonment,
+  effectivePolicy,
+  isLegacyAbandonment,
+  isSettledAbandonment,
+} from '@/features/contracts/view';
 import {
   agentTranscriptEmptyMessage,
   mergeAgentTranscriptEvents,
@@ -21,6 +26,7 @@ import {
 import { useLiveAgentEvents } from '@/state/agent-event-store';
 import { useResourceEvent } from '@/state/resource-store';
 import { useAgentTranscript } from '@/store/agent-transcript';
+import { AbandonWorktreeModal } from './AbandonWorktreeModal';
 import { RichAgentTranscript } from './RichAgentTranscript';
 
 interface AgentTranscriptModalProps {
@@ -43,6 +49,7 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
     events: AgentRunEventEntry[];
     error: string | null;
   }>({ status: 'loading', transcriptStatus: null, events: [], error: null });
+  const [showAbandonment, setShowAbandonment] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,12 +81,16 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
 
   const liveEvents = useLiveAgentEvents(run.runId);
 
-  // Landing receipt lives on the contract; find this run's (newest-first, so
-  // `find` picks the latest if a run somehow produced several).
+  // Landing receipt lives on the contract. A continuation advances
+  // `agentRunId`, so the immutable worktree binding is the fallback when an
+  // earlier retained run opens the same contract.
   const { contracts } = useProjectContracts(run.projectId);
   const contract = useMemo(
-    () => contracts.find((c) => c.agentRunId === run.runId) ?? null,
-    [contracts, run.runId],
+    () =>
+      contracts.find((c) => c.agentRunId === run.runId) ??
+      contracts.find((c) => run.worktreeDir.length > 0 && c.worktreePath === run.worktreeDir) ??
+      null,
+    [contracts, run.runId, run.worktreeDir],
   );
 
   const items = useMemo(
@@ -166,6 +177,15 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
             receipt={run.readinessReceipt ?? null}
           />
           <LandingReceiptDetails contract={contract} />
+          {!nonTerminal && contract && canRequestAbandonment(contract) && (
+            <button
+              type="button"
+              onClick={() => setShowAbandonment(true)}
+              className="mt-1 border border-destructive/40 bg-destructive/10 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-destructive hover:bg-destructive/20"
+            >
+              Abandon worktree…
+            </button>
+          )}
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col">
@@ -188,6 +208,13 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
           )}
         </div>
       </aside>
+      {showAbandonment && contract && (
+        <AbandonWorktreeModal
+          projectId={contract.projectId}
+          contractId={contract.id}
+          onClose={() => setShowAbandonment(false)}
+        />
+      )}
     </div>
   );
 }
@@ -272,7 +299,7 @@ export function PhaseReceiptDetails({
 /** Landing receipt (docs/worktree-lifecycle.md 'Merge receipt') — target
  *  before/after, merge sha, authorizer, policy. Renders once landing state or
  *  a merge-ready park exists on the run's contract. */
-function LandingReceiptDetails({ contract }: { contract: Contract | null }) {
+export function LandingReceiptDetails({ contract }: { contract: Contract | null }) {
   if (!contract) return null;
   // Repo-only: null landing status means 'not applicable' for every other
   // kind (a passed answer/payload run is NOT parked merge-ready) — same
@@ -282,6 +309,12 @@ function LandingReceiptDetails({ contract }: { contract: Contract | null }) {
     contract.verificationStatus === 'passed' &&
     contract.landingStatus === null;
   if (contract.landingStatus === null && !parked) return null;
+  if (
+    contract.landingStatus === 'abandoning' ||
+    contract.landingStatus === 'abandoned'
+  ) {
+    return <AbandonmentReceiptDetails contract={contract} />;
+  }
   const rows: [string, string | null][] = [
     ['status', contract.landingStatus ?? 'merge-ready (awaiting review)'],
     ['policy', effectivePolicy(contract)],
@@ -335,6 +368,82 @@ function LandingReceiptDetails({ contract }: { contract: Contract | null }) {
         </div>
       )}
     </details>
+  );
+}
+
+export function AbandonmentReceiptDetails({ contract }: { contract: Contract }) {
+  const authority = contract.abandonmentReceipt;
+  const settlement = contract.abandonmentTeardownReceipt;
+  const legacy = isLegacyAbandonment(contract);
+  const settled = isSettledAbandonment(contract);
+  const summary = legacy
+    ? 'authority unavailable'
+    : settled
+      ? 'settled · branch retained'
+      : 'approval recorded · cleanup pending';
+  const summaryClass = legacy || contract.abandonmentError
+    ? 'text-destructive'
+    : settled
+      ? 'text-primary'
+      : 'text-warning';
+
+  return (
+    <details className="mt-1 border border-border/60 bg-card/40 px-2 py-1">
+      <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
+        abandonment · <span className={summaryClass}>{summary}</span>
+      </summary>
+      {legacy ? (
+        <div className="mt-1 text-[11px] text-destructive">
+          This legacy status has no explicit user approval receipt. The branch and worktree remain preserved;
+          automatic cleanup is not authorized.
+        </div>
+      ) : authority ? (
+        <div className="mt-1 space-y-1 text-[11px]">
+          <dl className="space-y-0.5 font-mono text-[10px]">
+            <ReceiptRow label="approved by" value="user · browser" />
+            <ReceiptRow label="approved at" value={new Date(authority.approvedAt).toLocaleString()} />
+            <ReceiptRow label="branch" value={authority.branch} />
+            <ReceiptRow label="branch tip" value={authority.branchTip} />
+            <ReceiptRow label="integration" value={authority.integrationState === 'unmerged' ? 'not integrated' : 'no exclusive commits'} />
+            <ReceiptRow
+              label="contents"
+              value={`${authority.worktreeState.status} · ${authority.worktreeState.staged} staged · ${authority.worktreeState.unstaged} unstaged · ${authority.worktreeState.untracked} untracked`}
+            />
+            <ReceiptRow
+              label="worktree"
+              value={settlement ? 'removed' : 'cleanup pending'}
+            />
+            <ReceiptRow
+              label="branch proof"
+              value={settlement ? `retained @ ${settlement.observedBranchTip}` : 'pending'}
+            />
+            {settlement && (
+              <ReceiptRow label="settled at" value={new Date(settlement.finishedAt).toLocaleString()} />
+            )}
+          </dl>
+          <div className="text-muted-foreground">
+            This action did not merge the branch. Ignored worktree contents were uninspected before removal.
+          </div>
+          {authority.reason && (
+            <div className="whitespace-pre-wrap text-muted-foreground">Reason: {authority.reason}</div>
+          )}
+          {contract.abandonmentError && (
+            <div className="text-destructive">{contract.abandonmentError}</div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-1 text-[11px] text-destructive">Abandonment evidence is unavailable.</div>
+      )}
+    </details>
+  );
+}
+
+function ReceiptRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-2">
+      <dt className="w-24 shrink-0 text-muted-foreground/80">{label}</dt>
+      <dd className="min-w-0 flex-1 break-all text-foreground" title={value}>{value}</dd>
+    </div>
   );
 }
 

@@ -35,7 +35,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import type { Contract, Deliverable } from '@pc/contracts';
-import { createContract, createPendingAsk, getContract, insertAgentRunRow, markPendingAskAnswered, newId, updateAgentRunStatus } from '@pc/db';
+import { createContract, createPendingAsk, getActiveWorktreeByName, getAgentRunRow, getContract, getRawDb, insertAgentRunRow, listAgentRunsForContract, listProjects, markAgentRunDelivered, markPendingAskAnswered, newId, setContractReviewState, setWorktreeContractId, updateAgentRunStatus } from '@pc/db';
 import type {
   AcceptanceCriteria,
   ExpectedOutput,
@@ -75,7 +75,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 async function provisionOk(projectDir: string, runId: string) {
-  const out = await provisionWorktree(projectDir, runId);
+  const projectId = listProjects().find((project) => project.folderPath === projectDir)?.id;
+  const out = await provisionWorktree(projectDir, runId, projectId ? { projectId } : {});
   if (!out.ok) throw new Error(`provision failed: ${out.error}`);
   return out;
 }
@@ -112,7 +113,9 @@ function deliveredContract(
   tip: string,
   landingPolicy: Contract['landingPolicy'] = null,
 ): Contract {
-  const runId = newId() as ULID;
+  const persistedWorktree = getActiveWorktreeByName(wt.branch);
+  assert.ok(persistedWorktree?.agentRunId, 'provisioned worktree has an exact producing run');
+  const runId = persistedWorktree.agentRunId;
   const contract = contracts.create({
     projectId: gp.project.id,
     podName: 'code-writer',
@@ -124,6 +127,7 @@ function deliveredContract(
     worktreeBaseSha: wt.baseSha,
     landingPolicy,
   });
+  setWorktreeContractId(wt.branch, contract.id as ULID);
   insertAgentRunRow({
     id: runId,
     projectId: gp.project.id,
@@ -752,6 +756,7 @@ async function completedRepoRun(
     worktreeBaseSha: wt.baseSha,
     landingPolicy: opts.landingPolicy === undefined ? 'auto-merge' : opts.landingPolicy,
   });
+  setWorktreeContractId(wt.branch, contract.id as ULID);
   const desiredStatus = opts.runStatus ?? 'completed';
   insertAgentRunRow({
     id: runId,
@@ -783,6 +788,252 @@ const SCOPED_CRITERIA: AcceptanceCriteria = [
   { kind: 'git_diff_nonempty', cwd: 'worktree' },
   { kind: 'changed_paths_within', allowed: ['feature.txt'] },
 ];
+
+test('post-terminal verification fences continuation, abandonment, review, and shutdown until it settles', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const verificationStarted = deferred();
+  const releaseVerification = deferred();
+  const dispatch = rig({
+    verifyContract: async () => {
+      verificationStarted.resolve();
+      await releaseVerification.promise;
+      return {
+        verificationStatus: 'passed',
+        notes: 'delayed positive verification',
+        escalatedToReview: false,
+        evaluatedPredicateKinds: ['git_diff_nonempty', 'changed_paths_within'],
+        inconclusiveCount: 0,
+      };
+    },
+  });
+  dispatch.attach({
+    registry: { get: () => ({ injectAgentEnvelope: async () => {} }) } as never,
+    hub: {} as never,
+    serverPort: 5124,
+  });
+  try {
+    const contracts = new ContractService();
+    const { runId, contract } = await completedRepoRun(contracts, gp, {
+      spec: SCOPED_SPEC,
+      acceptanceCriteria: SCOPED_CRITERIA,
+      landingPolicy: 'default-review',
+      runStatus: 'running',
+    });
+    markAgentRunDelivered(runId, Date.now());
+    const internals = dispatch as unknown as {
+      settleTerminal(
+        id: ULID,
+        input: {
+          status: 'completed';
+          result: string | null;
+          failureCause: null;
+          failureReason: null;
+        },
+      ): void;
+      postTerminalTasks: Map<string, { promise: Promise<void>; status: string }>;
+      reviewTargetsByRun: Map<string, string>;
+    };
+    internals.settleTerminal(runId, {
+      status: 'completed',
+      result: 'done',
+      failureCause: null,
+      failureReason: null,
+    });
+    await verificationStarted.promise;
+    assert.equal(internals.postTerminalTasks.get(runId)?.status, 'pending');
+
+    const continuation = await dispatch.dispatchContinue({
+      projectId: gp.project.id,
+      runId,
+      input: 'must wait for verification',
+      dispatcherSessionId: 'post-terminal-fence',
+    });
+    assert.equal(continuation.ok, false);
+    if (!continuation.ok) assert.match(continuation.message, /post-terminal settlement is still pending/);
+
+    const abandonment = await dispatch.previewContractAbandonment({
+      projectId: gp.project.id,
+      contractId: contract.id as ULID,
+    });
+    assert.equal(abandonment.ok, false);
+    if (!abandonment.ok) assert.match(abandonment.message, /post-terminal settlement is still pending/);
+
+    const reservedReviewerId = newId() as ULID;
+    assert.ok(setContractReviewState(contract.id as ULID, {
+      reviewRound: 1,
+      reviewRunId: reservedReviewerId,
+      reviewSealedCommit: (contract.deliverable as { commit: string }).commit,
+    }));
+    internals.reviewTargetsByRun.set(reservedReviewerId, contract.id);
+    const review = await dispatch.reviewContract({
+      projectId: gp.project.id,
+      contractId: contract.id as ULID,
+      verdict: 'accept',
+    });
+    assert.equal(review.ok, false);
+    if (!review.ok) assert.match(review.message, /post-terminal settlement is still pending/);
+    assert.equal(
+      getContract(contract.id as ULID)?.reviewRunId,
+      reservedReviewerId,
+      'producer preflight refuses before mutating the reviewer reservation',
+    );
+    let disposed = false;
+    const disposal = dispatch.disposeAll().then(() => {
+      disposed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(disposed, false, 'shutdown drains post-terminal repository authority');
+
+    releaseVerification.resolve();
+    await disposal;
+    assert.equal(internals.postTerminalTasks.get(runId)?.status, 'completed');
+    assert.equal(
+      getContract(contract.id as ULID)?.verificationStatus,
+      null,
+      'the synthetic reservation changes the version, so the delayed outcome is correctly discarded',
+    );
+    assert.equal(getContract(contract.id as ULID)?.landingStatus, null, 'default-review remains parked');
+    internals.reviewTargetsByRun.delete(reservedReviewerId);
+    assert.ok(setContractReviewState(contract.id as ULID, {
+      reviewRunId: null,
+      reviewSealedCommit: null,
+    }));
+  } finally {
+    releaseVerification.resolve();
+    await gp.cleanup();
+  }
+});
+
+test('review cleanup rejection fails its post-terminal owner and shutdown', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const dispatch = rig();
+  try {
+    const contracts = new ContractService();
+    const { runId } = await completedRepoRun(contracts, gp, {
+      spec: SCOPED_SPEC,
+      acceptanceCriteria: SCOPED_CRITERIA,
+      landingPolicy: 'default-review',
+    });
+    const row = getAgentRunRow(runId)!;
+    const cleanupFailure = new Error('forced reviewer cleanup failure');
+    const internals = dispatch as unknown as {
+      trackPostTerminalTask(id: ULID, work: () => Promise<void>): Promise<void>;
+      ensureReviewCleanup(
+        id: ULID,
+        observed: NonNullable<ReturnType<typeof getAgentRunRow>>,
+        targetId: ULID | null,
+      ): Promise<void>;
+      reclaimReviewCheckout(observed: NonNullable<ReturnType<typeof getAgentRunRow>>): Promise<void>;
+      postTerminalTasks: Map<string, { status: string }>;
+    };
+    internals.reclaimReviewCheckout = async () => {
+      throw cleanupFailure;
+    };
+    const owner = internals.trackPostTerminalTask(
+      runId,
+      () => internals.ensureReviewCleanup(runId, row, null),
+    );
+    await assert.rejects(owner, /forced reviewer cleanup failure/);
+    assert.equal(internals.postTerminalTasks.get(runId)?.status, 'failed');
+    await assert.rejects(
+      dispatch.disposeAll(),
+      (error: unknown) => error instanceof AggregateError && error.errors.includes(cleanupFailure),
+    );
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('shutdown drains tracked task generations to a fixed point', async () => {
+  freshDb();
+  const dispatch = rig();
+  const firstGeneration = deferred();
+  const secondGeneration = deferred();
+  const producerId = newId() as ULID;
+  const settlementId = newId() as ULID;
+  const internals = dispatch as unknown as {
+    runTasks: Map<string, Promise<void>>;
+    trackPostTerminalTask(id: ULID, work: () => Promise<void>): Promise<void>;
+  };
+  const producer = firstGeneration.promise.then(() => {
+    void internals.trackPostTerminalTask(settlementId, () => secondGeneration.promise).catch(() => {});
+  });
+  internals.runTasks.set(producerId, producer);
+  void producer.finally(() => {
+    internals.runTasks.delete(producerId);
+  });
+
+  let disposed = false;
+  const disposal = dispatch.disposeAll().then(() => {
+    disposed = true;
+  });
+  firstGeneration.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(disposed, false, 'a second-generation settlement keeps shutdown open');
+  secondGeneration.resolve();
+  await disposal;
+  assert.equal(disposed, true);
+});
+
+test('continuation rechecks shutdown after repository authority before child insertion', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  const repositoryAuthorityHeld = deferred();
+  const releaseRepositoryAuthority = deferred();
+  const dispatch = rig({
+    preflightRuntimeSession: async (selection) => ({ status: 'valid' as const, selection }),
+    mintSpecialistRuntimeSession: async (input) => withRuntimeReceipt(() => new FakeRuntime())(input),
+  });
+  dispatch.attach({
+    registry: { get: () => ({ injectAgentEnvelope: async () => {} }) } as never,
+    hub: {} as never,
+    serverPort: 5124,
+  });
+  try {
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    const parentRunId = contract.agentRunId as ULID;
+    const leases = (
+      dispatch as unknown as {
+        repositoryLeases: {
+          acquire(path: string, identity: RepositoryIdentityReceipt): Promise<unknown>;
+        };
+      }
+    ).repositoryLeases;
+    const originalAcquire = leases.acquire.bind(leases);
+    leases.acquire = async (path, identity) => {
+      const guard = await originalAcquire(path, identity);
+      repositoryAuthorityHeld.resolve();
+      await releaseRepositoryAuthority.promise;
+      return guard;
+    };
+
+    const continuation = dispatch.dispatchContinue({
+      projectId: gp.project.id,
+      runId: parentRunId,
+      input: 'must lose to shutdown after lease acquisition',
+      dispatcherSessionId: 'shutdown-recheck',
+    });
+    await repositoryAuthorityHeld.promise;
+    const disposal = dispatch.disposeAll();
+    releaseRepositoryAuthority.resolve();
+    const refused = await continuation;
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.equal(refused.cause, 'not-attached');
+      assert.match(refused.message, /repository authority/);
+    }
+    assert.equal(listAgentRunsForContract(contract.id as ULID).length, 1, 'no child row was inserted');
+    await disposal;
+  } finally {
+    releaseRepositoryAuthority.resolve();
+    await gp.cleanup();
+  }
+});
 
 test('guard 5 happy path: all-positive evidence auto-lands with authorizer auto', async () => {
   freshDb();
@@ -907,6 +1158,51 @@ test('deferred continuation preflight wins before queued landing and invalidates
   } finally {
     continuationGate.resolve();
     landingGate.resolve();
+    await dispatch.disposeAll();
+    await gp.cleanup();
+  }
+});
+
+test('continuation refuses and terminalizes its child when exact worktree ownership transfer fails', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  let mintCalls = 0;
+  const dispatch = rig({
+    preflightRuntimeSession: async (selection) => ({ status: 'valid' as const, selection }),
+    mintSpecialistRuntimeSession: async (input) => {
+      mintCalls += 1;
+      return withRuntimeReceipt(() => new FakeRuntime())(input);
+    },
+  });
+  dispatch.attach({ registry: {} as never, hub: {} as never, serverPort: 5124 });
+  try {
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'feature.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    const parentRunId = contract.agentRunId as ULID;
+    const row = getActiveWorktreeByName(wt.branch);
+    assert.ok(row);
+    getRawDb().prepare('UPDATE worktrees SET agent_run_id = NULL WHERE id = ?').run(row.id);
+
+    const refused = await dispatch.dispatchContinue({
+      projectId: gp.project.id,
+      runId: parentRunId,
+      input: 'must not start without ownership transfer',
+      dispatcherSessionId: 'ownership-transfer-refusal',
+    });
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.equal(refused.cause, 'not-continuable');
+      assert.match(refused.message, /ownership transfer/);
+    }
+    assert.equal(mintCalls, 0);
+    assert.equal(getContract(contract.id as ULID)?.agentRunId, parentRunId);
+    const child = listAgentRunsForContract(contract.id as ULID)
+      .find((run) => run.id !== parentRunId);
+    assert.equal(child?.status, 'failed');
+    assert.match(child?.failureReason ?? '', /ownership transfer/);
+  } finally {
     await dispatch.disposeAll();
     await gp.cleanup();
   }

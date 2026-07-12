@@ -46,8 +46,55 @@ export function landingIssueContracts(contracts: readonly Contract[]): Contract[
     (c) =>
       c.landingStatus === 'conflict' ||
       c.landingStatus === 'failed' ||
-      c.landingStatus === 'stale-base',
+      c.landingStatus === 'stale-base' ||
+      c.landingStatus === 'abandoning' ||
+      isLegacyAbandonment(c),
   );
+}
+
+/** A legacy `abandoned` value has no positive user-authority or teardown
+ * receipt. It remains visible and non-destructive; absence never becomes an
+ * approval merely because an old status string exists. */
+export function isLegacyAbandonment(contract: Contract): boolean {
+  return contract.landingStatus === 'abandoned' &&
+    contract.abandonmentReceipt === null &&
+    contract.abandonmentTeardownReceipt === null;
+}
+
+export function isSettledAbandonment(contract: Contract): boolean {
+  return contract.landingStatus === 'abandoned' &&
+    contract.abandonmentReceipt !== null &&
+    contract.abandonmentTeardownReceipt !== null;
+}
+
+/** Cheap presentation predicate only. The server re-derives eligibility,
+ * repository identity, branch tip, integration, and worktree state. */
+export function canRequestAbandonment(contract: Contract): boolean {
+  return contract.expectedOutput?.kind === 'repo' &&
+    contract.worktreePath !== null &&
+    (
+      contract.landingStatus === null ||
+      contract.landingStatus === 'conflict' ||
+      contract.landingStatus === 'failed' ||
+      contract.landingStatus === 'stale-base' ||
+      isLegacyAbandonment(contract)
+    );
+}
+
+export function landingIssueLabel(contract: Contract): string {
+  if (contract.landingStatus === 'abandoning') return 'cleanup pending';
+  if (isLegacyAbandonment(contract)) return 'authority unavailable';
+  return contract.landingStatus ?? 'unknown';
+}
+
+export function landingIssueDetail(contract: Contract): string | null {
+  if (contract.landingStatus === 'abandoning') {
+    return contract.abandonmentError ?? 'User approval recorded; worktree cleanup is pending.';
+  }
+  if (isLegacyAbandonment(contract)) {
+    return 'Legacy abandonment has no approval receipt; automatic cleanup is not authorized.';
+  }
+  return contract.landingError;
 }
 
 /** `landingPolicy` with the legacy-NULL fallback (mirror of @pc/domain

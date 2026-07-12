@@ -120,6 +120,13 @@
       "when": 1783936800000,
       "tag": "0016_phase_receipt_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1783940400000,
+      "tag": "0017_worktree_abandonment",
+      "breakpoints": true
     }
   ]
 }

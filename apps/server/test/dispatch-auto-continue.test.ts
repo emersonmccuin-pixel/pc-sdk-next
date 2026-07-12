@@ -212,6 +212,8 @@ class DeferredRuntime implements RuntimeSession {
   sendCalls = 0;
   disposeCalls = 0;
 
+  constructor(private readonly failDispose = false) {}
+
   sendTurn(): AsyncIterable<never> {
     this.sendCalls += 1;
     return (async function* () {})();
@@ -222,7 +224,10 @@ class DeferredRuntime implements RuntimeSession {
   }
 
   async interrupt(): Promise<void> {}
-  async dispose(): Promise<void> { this.disposeCalls += 1; }
+  async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    if (this.failDispose) throw new Error('deferred runtime disposal failed');
+  }
 }
 
 class DeferredCreateAdapter implements AgentRuntimeAdapter {
@@ -474,14 +479,42 @@ test('kill while runtime creation is deferred disposes the late session before a
   await adapter.started;
 
   assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
+  const runTasks = (dispatch as unknown as { runTasks: Map<string, Promise<void>> }).runTasks;
+  assert.equal(runTasks.has(runId), true, 'terminal DB state does not imply a deferred mint is quiescent');
   const runtime = new DeferredRuntime();
   adapter.resolve(runtime);
   await until(() => runtime.disposeCalls === 1);
+  await until(() => !runTasks.has(runId));
 
   assert.equal(getAgentRunRow(runId)?.status, 'cancelled');
   assert.equal(runtime.sendCalls, 0, 'late native session has no send/worktree mutation path');
   assert.equal(dispatch.hasLiveRun(runId), false);
   assert.equal(listConversationEvents(runId).length, 0);
+});
+
+test('failed disposal of a late uninstalled runtime remains explicit quiescence uncertainty', async () => {
+  freshDb();
+  seedStockAgents();
+  const project = newProject('deferred-create-disposal-failure');
+  const adapter = new DeferredCreateAdapter();
+  const dispatch = rig(adapter);
+  const result = await dispatch.dispatchFresh({
+    projectId: project.id,
+    agentName: 'researcher',
+    input: 'must remain blocked if stale disposal fails',
+    dispatcherSessionId: 'S1',
+  });
+  assert.equal(result.ok, true);
+  const runId = (result as { run: { runId: string } }).run.runId as ULID;
+  await adapter.started;
+  assert.equal((await dispatch.killRun(project.id, runId)).ok, true);
+  adapter.resolve(new DeferredRuntime(true));
+
+  const failures = (
+    dispatch as unknown as { runtimeRetirementFailures: Map<string, unknown> }
+  ).runtimeRetirementFailures;
+  await until(() => failures.has(runId));
+  assert.match(String(failures.get(runId)), /disposal failed/);
 });
 
 test('the auto-continue counter is durable and survives a simulated restart — boot re-entry resumes from it exactly once', async () => {

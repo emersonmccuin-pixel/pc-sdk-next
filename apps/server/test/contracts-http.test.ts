@@ -173,3 +173,73 @@ test('run list retention: preserved lifecycle states outlive the 24h window; une
     await server.close();
   }
 });
+
+test('abandonment HTTP authority is same-origin, no-store, JSON-only, and strictly parsed', async () => {
+  freshDb();
+  const project = newProject();
+  const contractId = newId();
+  const { server, base } = await boot();
+  const url = `${base}/api/projects/${project.id}/contracts/${contractId}/abandonment`;
+  try {
+    const missingFetchMetadata = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(missingFetchMetadata.status, 403);
+    assert.equal(missingFetchMetadata.headers.get('cache-control'), 'no-store');
+
+    const crossSitePreview = await fetch(`${url}-preview`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(crossSitePreview.status, 403);
+    assert.equal(crossSitePreview.headers.get('cache-control'), 'no-store');
+
+    const wrongMediaType = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: '{}',
+    });
+    assert.equal(wrongMediaType.status, 400);
+
+    const deceptiveMediaType = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/jsonx',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: '{}',
+    });
+    assert.equal(deceptiveMediaType.status, 400);
+
+    const parameterizedJson = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({
+        requestId: '4cbfe782-bd4d-4a08-8261-d158251240fa',
+        expectedContractVersion: 1,
+        previewDigest: `sha256:${'a'.repeat(64)}`,
+        confirmation: 'agent/test',
+      }),
+    });
+    assert.notEqual(parameterizedJson.status, 400, 'valid JSON parameters pass media parsing');
+
+    const malformed = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({ requestId: 'not-a-uuid' }),
+    });
+    assert.equal(malformed.status, 400);
+  } finally {
+    await server.close();
+  }
+});

@@ -17,7 +17,9 @@ import type {
   VerificationStatus,
   VerificationTier,
 } from '@pc/contracts';
+import { isContract } from '@pc/contracts';
 import {
+  authorizeContractAbandonment as authorizeContractAbandonmentInDb,
   createContractInDb,
   getContractInDb,
   getDb,
@@ -25,9 +27,13 @@ import {
   listContractsForProjectInDb,
   listContractsForRunInDb,
   reserveContractReview as reserveContractReviewInDb,
+  reserveContractLanding as reserveContractLandingInDb,
   clearContractReviewReservation as clearContractReviewReservationInDb,
   setContractDeliverable as setContractDeliverableInDb,
   setContractLanding as setContractLandingInDb,
+  setContractAbandonmentError as setContractAbandonmentErrorInDb,
+  settleContractAbandonment as settleContractAbandonmentInDb,
+  settleContractLanding as settleContractLandingInDb,
   setContractReviewState as setContractReviewStateInDb,
   setContractRunRecoveryVerification as setContractRunRecoveryVerificationInDb,
   setContractRun as setContractRunInDb,
@@ -36,12 +42,21 @@ import {
   type DbExecutor,
   type InsertLiveEventDraft,
   type SetLandingInput,
+  type ReserveContractLandingInput,
+  type SetContractAbandonmentErrorInput,
+  type SettleContractAbandonmentInput,
+  type SettleContractLandingInput,
   type SetReviewStateInput,
 } from '@pc/db';
-import type { AcceptanceCriteria, ContractV2, ULID as DomainULID } from '@pc/domain';
+import type {
+  AcceptanceCriteria,
+  ContractV2,
+  ULID as DomainULID,
+  WorktreeAbandonmentReceipt,
+} from '@pc/domain';
 
 export function toContractDto(row: ContractRow): Contract {
-  return {
+  const contract: Contract = {
     id: row.id,
     projectId: row.projectId,
     pmRef: row.pmRef ?? null,
@@ -72,11 +87,18 @@ export function toContractDto(row: ContractRow): Contract {
     reviewRound: row.reviewRound,
     reviewRunId: row.reviewRunId,
     reviewSealedCommit: row.reviewSealedCommit,
+    abandonmentReceipt: row.abandonmentReceipt,
+    abandonmentTeardownReceipt: row.abandonmentTeardownReceipt,
+    abandonmentError: row.abandonmentError,
     status: row.status,
     version: row.version,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+  if (!isContract(contract)) {
+    throw new Error(`invalid contract row: unsafe or inconsistent projection (${row.id})`);
+  }
+  return contract;
 }
 
 /** Build the canonical `contract.changed` outbox draft. Project-scoped; carries
@@ -213,6 +235,74 @@ export class ContractService {
       if (!row) return null;
       const contract = toContractDto(row);
       this.insert(tx, buildContractChangedDraft({ reason: 'landing-set', contract }));
+      return contract;
+    });
+  }
+
+  /** Exact pre-mutation landing reservation. */
+  reserveLanding(input: { id: ULID } & ReserveContractLandingInput): Contract | null {
+    return this.tx((tx) => {
+      const { id, ...fields } = input;
+      const row = reserveContractLandingInDb(id as DomainULID, {
+        ...fields,
+        expectedAgentRunId: fields.expectedAgentRunId as DomainULID,
+      }, tx);
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'landing-set', contract }));
+      return contract;
+    });
+  }
+
+  /** Exact pending-reservation settlement. */
+  settleLanding(input: { id: ULID } & SettleContractLandingInput): Contract | null {
+    return this.tx((tx) => {
+      const { id, ...fields } = input;
+      const row = settleContractLandingInDb(id as DomainULID, {
+        ...fields,
+        expectedAgentRunId: fields.expectedAgentRunId as DomainULID,
+      }, tx);
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'landing-set', contract }));
+      return contract;
+    });
+  }
+
+  /** Commit immutable browser-user authority and its outbox fact before any
+   * filesystem teardown is allowed to begin. */
+  authorizeAbandonment(input: { id: ULID; receipt: WorktreeAbandonmentReceipt }): Contract | null {
+    return this.tx((tx) => {
+      const row = authorizeContractAbandonmentInDb(
+        input.id as DomainULID,
+        { receipt: input.receipt },
+        tx,
+      );
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'abandonment-authorized', contract }));
+      return contract;
+    });
+  }
+
+  setAbandonmentError(input: { id: ULID } & SetContractAbandonmentErrorInput): Contract | null {
+    return this.tx((tx) => {
+      const { id, ...fields } = input;
+      const row = setContractAbandonmentErrorInDb(id as DomainULID, fields, tx);
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'abandonment-error', contract }));
+      return contract;
+    });
+  }
+
+  settleAbandonment(input: { id: ULID } & SettleContractAbandonmentInput): Contract | null {
+    return this.tx((tx) => {
+      const { id, ...fields } = input;
+      const row = settleContractAbandonmentInDb(id as DomainULID, fields, tx);
+      if (!row) return null;
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'abandonment-settled', contract }));
       return contract;
     });
   }

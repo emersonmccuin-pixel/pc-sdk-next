@@ -32,6 +32,8 @@ import type {
   ULID,
   VerificationStatus,
   VerificationTier,
+  WorktreeAbandonmentReceipt,
+  WorktreeAbandonmentTeardownReceipt,
   WorktreeGitReceipt,
   WorktreePhaseReceipt,
 } from '@pc/domain';
@@ -235,6 +237,17 @@ export const agentContracts = sqliteTable(
      *  CURRENT deliverable.commit: a mid-review reseal voids the verdict (the
      *  approval covers a commit nobody reviewed). Cleared with reviewRunId. */
     reviewSealedCommit: text('review_sealed_commit'),
+    /** DL-002 — immutable browser-user authority for destructive reclaim.
+     * Legacy `landing_status='abandoned'` rows retain NULL authority and are
+     * never cleanup authority. */
+    abandonmentReceipt: text('abandonment_receipt', { mode: 'json' })
+      .$type<WorktreeAbandonmentReceipt | null>(),
+    /** Positive post-teardown proof: directory + registration absent while
+     * the approved branch remains at its approved tip. */
+    abandonmentTeardownReceipt: text('abandonment_teardown_receipt', { mode: 'json' })
+      .$type<WorktreeAbandonmentTeardownReceipt | null>(),
+    /** Retryable visible recovery error. Authority/settlement remain immutable. */
+    abandonmentError: text('abandonment_error'),
     status: text('status').notNull().default('issued').$type<ContractStatus>(),
     /** Optimistic-concurrency counter. */
     version: integer('version').notNull().default(1),
