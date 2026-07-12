@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-001 implementation and full workspace verification.
+Updated: 2026-07-12 after RS-001 guarded landing and teardown.
 
 ## Repository
 
@@ -48,12 +48,14 @@ Updated: 2026-07-12 after RS-001 implementation and full workspace verification.
 - RS-001 feature branch: `codex/rs-001-session-selection-stamps`
 - RS-001 sealed implementation:
   `cb61f255220dd50e95b53418f28e6bdd05f5077c`
-- RS-001 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-001`
+- RS-001 feature record: `9da30c2e30cb29395b28bc8e317fa291599e8d56`
+- RS-001 landing merge: `039af6c56a1235260d9859af1c51a6dca20fb990`
+- RS-001 feature worktree: removed after positive landing/tree proof; exact
+  deregistered dependency residue was verified and removed
 
 ## Status
 
-RS-001 implementation is complete in its run-owned worktree. The bounded slice
+RS-001 is complete. The bounded slice
 replaces mutable/default-derived orchestrator runtime selection with a complete
 immutable runtime/account/model/effort app-session stamp, bind-once native
 identity, typed capability/resume availability, exact stamped continuation
@@ -64,14 +66,17 @@ quota, specialist widening, and
 handoff compilation remain out of scope. Existing specialist browser DTOs still
 carry native session-shaped fields and specialist dispatch still selects
 `CLAUDE_RUNTIME_ID` directly; both are recorded later N3 gaps rather than
-RS-001 claims. There is no user-direction blocker.
+RS-001 claims. The sealed implementation and feature record are both proven
+ancestors of the guarded merge, the landed tree exactly matches the verified
+feature tip, and the feature worktree is torn down. There is no user-direction
+blocker.
 
 ## Next safe action
 
-Record the feature verification receipt, guarded-merge the sealed feature tip
-to current `main`, record positive ancestry and
-closeout evidence, remove the feature worktree, and push. No live provider smoke
-is required for this offline invariant slice.
+Define and provision `RS-002` as the next bounded N3 slice: an honest
+per-session context observation contract and composer-adjacent projection with
+exact/derived/approximate/compacted/unavailable states. Prove the shape through
+Claude without mixing subscription quota normalization or Codex into the slice.
 
 ## Startup checks
 
@@ -82,8 +87,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Run startup checks in the recorded feature worktree and confirm its HEAD equals
-the RS-001 base before writing. The main checkout remains read-only.
+Run startup checks, read the N3 runtime/context boundaries, and provision a new
+run-owned worktree from current `main` before writing. The main checkout remains
+read-only.
 
 ## Known blockers
 

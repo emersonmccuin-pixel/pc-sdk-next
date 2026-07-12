@@ -39,7 +39,7 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | RUN-006 | accepted | The UI states whether a session was natively resumed, started with a handoff, or started clean. |
 | RUN-007 | accepted | Unsupported runtime capabilities return typed degradation and never silently fall back to another behavior or billing path. |
 
-RS-001 verification receipt (2026-07-11): the orchestrator path implements the
+RS-001 verification receipt (2026-07-12): the orchestrator path implements the
 `RUN-001` through `RUN-004` and `RUN-007` subset with immutable complete
 selection, Claude capability/model discovery, exact attempt-correlated native
 receipts, stamped remint/resume, and typed browser availability. These rows stay
