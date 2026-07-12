@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-11 after CF-003 guarded landing and teardown.
+Updated: 2026-07-11 after CF-004 provisioning.
 
 ## Repository
 
@@ -32,20 +32,26 @@ Updated: 2026-07-11 after CF-003 guarded landing and teardown.
   `0ecc8e538935e57466da4b0106311fb65e7927ec`
 - CF-003 feature record: `936058fa866d51344e77bd1b1ec873f3bbb3662a`
 - CF-003 landing merge: `f76579686d2fc5df66e6eac4adcff0344b656256`
+- CF-003 closeout landing:
+  `8ad3437d5acef31f6f4aa99a3b50f282f124446c`
+- Active slice: `docs/execution/slices/CF-004.md`
+- CF-004 branch: `codex/cf-004-safe-activity-tools`
+- CF-004 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cf-004`
+- CF-004 base: `8ad3437d5acef31f6f4aa99a3b50f282f124446c`
 
 ## Status
 
-CF-003 is complete: durable revisioned FIFO sends, restart recovery, positive
-interrupt receipts, and fail-closed interrupt-and-send gating are verified and
-guarded-landed. The sealed implementation and feature record are both proven
-ancestors of the landing merge, and the feature worktree is torn down. There is
-no user-direction blocker.
+CF-003 is complete and pushed. CF-004 is provisioned from its clean landing tip,
+with locked dependencies and baseline workspace typecheck green. Independent
+read-only audits found no product-direction blocker. Implementation is active.
 
 ## Next safe action
 
-Define and provision `CF-004` for the next accepted N2 behavior:
-`CHAT-007/CHAT-008` honest safe activity and complete tool-call lifecycle. Keep
-private reasoning excluded and keep immutable runtime selection/Codex in N3.
+Implement the bounded CF-004 contract: closed honest activity, one safe guarded
+tool lifecycle with canonical call identity and replayable approval state, and
+terminal closure before every turn terminal/recovery. Keep the production
+permission-bypass policy unchanged and keep runtime selection/Codex in N3.
 
 ## Startup checks
 
@@ -56,8 +62,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-Read `AGENTS.md`, `docs/master-plan.md`, `docs/current-state.md`, CF-003, and
-the named conversation/runtime boundary documents before continuing.
+Startup checks and required reads are complete. Continue only in the recorded
+CF-004 feature worktree; the main checkout remains read-only.
 
 ## Known blockers
 
