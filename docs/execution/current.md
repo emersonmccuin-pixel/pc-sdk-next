@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after BC-002 guarded landing and teardown.
+Updated: 2026-07-12 at SF-002 contract definition.
 
 ## Repository
 
@@ -224,10 +224,11 @@ dependency/build cleanup all passed.
 
 ## Active action
 
-Define SF-002 as the smallest cross-process repository-lease slice. It must
-serialize repository mutation across distinct PC-SDK data directories/processes
-without bundling `SEC-003` child-environment scrubbing, `OPS-006` loopback
-binding, or N7 accessibility work.
+Execute `docs/execution/slices/SF-002.md` from clean pushed base `94dee1a`.
+Implement the cooperative, engine-lifetime repository lease without bundling
+escaped-child authority, `SEC-003` child-environment scrubbing, `OPS-006`
+loopback binding, or N7 work. Keep `OPS-005` accepted and retain the manual
+working-PC-SDK/Next concurrent-write prohibition.
 
 ## Startup checks
 
@@ -239,7 +240,9 @@ git log --oneline --decorate -8
 ```
 
 The PM-001, BC-002, and SF-001 feature worktrees are removed. Keep the PC-SDK
-Next main checkout read-only; define SF-002 in a new recorded feature worktree.
+Next main checkout read-only. SF-002 is active in
+`E:\Claude Code Projects\Personal\PC-SDK-Next-sf-002` on
+`codex/sf-002-repository-lease`.
 
 ## Known blockers
 
