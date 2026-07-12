@@ -113,12 +113,13 @@ dynamic agent routing, and execution slices. *Gate:* every item in
 `docs/phases/phase-00-freeze-and-foundation.md` has positive evidence and the
 planning commit lands cleanly on Next `main`.
 
-**N1 — Baseline characterization and discovery (active).** Audit actual component/data
-ownership, session/event schemas, browser behavior, recovery, permissions, and
-provider leakage. Complete the pending user-driven browser baseline. In
-parallel, perform the read-only joint AInativePM domain/code/UI/MCP discovery.
-*Gate:* an evidence-backed as-built map, behavior characterization tests,
-approved PM ownership proposal, and a dependency-ordered migration backlog.
+**N1 — Baseline characterization and discovery (closing).** Audit
+actual component/data ownership, session/event schemas, browser behavior,
+recovery, permissions, and provider leakage. Complete the isolated preserved/
+current browser baseline and the read-only joint AInativePM domain/code/UI/MCP
+discovery. *Gate:* an evidence-backed as-built map, behavior characterization
+tests, approved PM ownership proposal, and a dependency-ordered migration
+backlog.
 
 PM-001 completed the joint AInativePM evidence pass from initial source
 `5033d5e` and delta-revalidated its UI/route claims through clean pushed
@@ -131,6 +132,18 @@ concurrency, remote-authority/principal identity, and replayable event seam requ
 background writes. The product owner accepted the seam and future immutable-
 evidence policy on 2026-07-12; no current integration or remote write is
 authorized by that decision.
+
+BC-001 supplied the historical as-built map; CF-001 through CF-004 and RS-001
+through RS-004 supplied the named durable guards that supersede its closed
+conversation/runtime findings. BC-002 then compared pinned preserved
+`e233aa54` and current production bundles using fake-only disposable state. The
+real-browser matrix found no unclassified Next regression in the inspected
+desktop/narrow/stress states: core shell blobs and measured geometry match,
+queue/interrupt/reload/two-tab projections converged under the deterministic
+fixture, and remaining work is explicitly ordered into N4 and later phases.
+This satisfies the evidence portion of the planning/discovery gate; BC-002's
+guarded landing and post-merge receipt close it. It does not promote every
+observed requirement globally or authorize daily-driver migration.
 
 **N2 — Enforce seams and rebuild the conversation foundation.** Add component
 dependency/ownership guards; replace Claude-first canonical identifiers; make
@@ -151,8 +164,9 @@ quota presentation is used/consumed with source semantics retained.
 
 **N4 — Agent communication and delivery hardening.** Complete durable two-way
 mailbox/ask semantics, specialist revision snapshots, effort propagation,
-contract/deliverable evidence, readiness, cross-process repository exclusion,
-landing queue, stale-base revalidation, and recovery UI. *Gate:* parallel
+contract/deliverable evidence, readiness, data-directory single-instance
+admission, cross-process repository exclusion, landing queue, stale-base
+revalidation, and recovery UI. *Gate:* parallel
 specialists complete real isolated work while shared-repository mutation and
 landing remain positively serialized across process failure and restart.
 
@@ -170,8 +184,9 @@ add policy UX over the fixed lifecycle and complete provider-aware usage views.
 *Gate:* PM/MCP outages remain visible and nonblocking, idempotent updates survive
 retry, and no domain ownership is duplicated.
 
-**N7 — Daily-driver hardening and migration.** Loopback/process identity,
-service/launcher hardening, backup/migration/rollback, long boot-recovery soak,
+**N7 — Daily-driver hardening and migration.** Loopback listener and remaining
+process-identity hardening after the N4 data mutex, service/launcher hardening,
+backup/migration/rollback, long boot-recovery soak,
 attention/notifications, performance, accessibility, and real daily use. *Gate:*
 the user explicitly promotes Next after side-by-side evidence; the original
 baseline remains available for rollback.

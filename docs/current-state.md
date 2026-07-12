@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
+Last updated: 2026-07-12 at BC-002 browser-baseline closeout.
 
 ## Preserved baseline
 
@@ -81,8 +81,7 @@ only in PC-SDK Next.
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
 - PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
-- PM-001 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 feature worktree: removed after positive ancestry/tree proof
 - PM-001 sealed proposal checkpoint:
   `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
 - PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
@@ -279,6 +278,35 @@ pre-call snapshot can distinguish a no-op, one-time marker stamp, or default-
 domain creation. That bounded uncertainty is retained in the receipt; PM-001
 does not claim the remote stayed unchanged and will not make another live call.
 
+## N1 browser characterization evidence complete
+
+`BC-002` compared preserved `e233aa54` and current base `36ac71c` production
+bundles through isolated disposable fixtures. Four desktop/narrow captures and
+their SHA-256 receipts are tracked. Seven core shell source blobs are identical;
+measured header/tab/rail/composer geometry matched at `1440x900` and `760x720`,
+and neither subject had document-level horizontal overflow at those viewports or
+the targeted `480x720` stress width.
+
+The current deterministic journey directly covered Alpha/Beta isolation,
+current/history/resumed session provenance, safe typed chat/tool/activity/
+context/quota/run projection, durable queued-send edit/remove, positive
+interrupt confirmation before replacement delivery, reload equivalence, and
+two-tab convergence. No browser console warning/error, private reasoning, raw
+native session ID, or raw continuation-attempt ID was observed in the bounded
+matrix. Durable invariant claims remain owned by the named CF-001 through
+CF-004 and RS-001 through RS-004 guards; BC-002 does not promote their global
+requirement statuses by manual observation.
+
+Both fixtures were fake-only and used temporary databases, repositories,
+credential homes, logs, and ports. Exact fixture PIDs were stopped, listeners
+were proven closed, temp-root-validated data was removed, the detached baseline
+had no tracked diff and was removed, and the stable checkout retained its
+pre-run HEAD/status. The full matrix and cleanup boundary are in
+`docs/research/browser-baseline.md` and
+`docs/execution/receipts/BC-002.md`. Together with BC-001 and the accepted
+PM-001 ownership seam, this satisfies the bounded N1 evidence gate; guarded
+landing and the post-merge receipt close N1.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -297,6 +325,10 @@ does not claim the remote stayed unchanged and will not make another live call.
 - Runtime/setup subprocesses inherit a broad server environment. A least-
   privilege allowlist/scrub must prevent unrelated app secrets (including PM
   tokens) from reaching providers or repository commands.
+- At the inherited `480px` stress width the composer narrows to about `101px`,
+  and Escape does not dismiss App Settings in either preserved or current
+  subject. Close remains usable and no document overflow occurs. These are N7
+  usability/accessibility backlog, not a Next regression or N1 blocker.
 
 ## Completed N3 runtime-selection slice
 
