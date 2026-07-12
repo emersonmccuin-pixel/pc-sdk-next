@@ -95,6 +95,9 @@ Updated: 2026-07-12 after PM-001 evidence synthesis and hostile proposal review.
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
 - PM-001 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 sealed proposal checkpoint:
+  `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
+- PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
 
@@ -146,13 +149,14 @@ post-RS-004 full gate.
 
 ## Next safe action
 
-Finish the corrected proposal re-review and documentation checks, seal a clean
-feature checkpoint, then bring exactly one product decision to the user:
-accept/correct the reference-first ownership seam and the recommendation that,
-only after the full safety prerequisites exist, separately keyed positive
-verification and landing receipts may append immutable evidence links while PM
-management transitions stay suggested/explicit. Do not land the proposal,
-perform a PM write, or jump to Codex/N5 before that decision.
+Bring exactly one product decision to the user from sealed checkpoint
+`e2fe6ee`: accept/correct the reference-first ownership seam and the
+recommendation that, only after the full safety prerequisites exist, separately
+keyed positive verification and landing receipts may append immutable evidence
+links while PM management transitions stay suggested/explicit. If accepted,
+record the decision, revalidate the clean feature tip, create the feature
+record, guarded-land to `main`, push, and tear down. Do not perform a PM write or
+jump to Codex/N5 before that decision.
 
 ## Startup checks
 

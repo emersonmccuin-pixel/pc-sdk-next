@@ -9,6 +9,9 @@ Source receipts:
   `a7c5423cb5a4aa8549521badcfdd320437a74def`.
 - PC-SDK Next discovery branch: `codex/pm-001-ainativepm-discovery`, defined by
   `85c8fbadd43d85ec0429755ab5b9a655d0f6eeaa`.
+- Sealed proposal checkpoint:
+  `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`, tree
+  `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`.
 - AInativePM initial audit snapshot: clean pushed `main` at
   `5033d5ecae931d2f60e9672849f1f5c9650125f4`.
 - A concurrent external landing advanced AInativePM during proposal review. The

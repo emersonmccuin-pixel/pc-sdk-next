@@ -83,6 +83,9 @@ only in PC-SDK Next.
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
 - PM-001 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001`
+- PM-001 sealed proposal checkpoint:
+  `e2fe6ee11f8ddd9641eb20262913a648b47a73e8`
+- PM-001 proposal tree: `e4c32ad64a635aeafa95230ccf6d8a69eed6ceef`
 
 Isolation defaults in the planning slice:
 
