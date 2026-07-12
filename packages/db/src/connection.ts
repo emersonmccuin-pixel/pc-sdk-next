@@ -34,7 +34,8 @@ export function getRawDb(): Database.Database {
   return _sqlite!;
 }
 
-/** Test/teardown only. Production keeps the connection for its lifetime. */
+/** Close the process-lifetime product DB after writers are quiescent. Used by
+ *  tests and by production shutdown before data-directory ownership release. */
 export function closeDb(): void {
   _sqlite?.close();
   _sqlite = null;

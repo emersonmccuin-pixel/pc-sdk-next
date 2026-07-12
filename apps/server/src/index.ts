@@ -1,4 +1,4 @@
-// Boot: migrate → boot-recovery (inside startServer) → HTTP + WS listen →
+// Boot: data-dir admission → migrate → boot-recovery (inside startServer) → HTTP + WS listen →
 // required dispatch/MCP bootstrap → recovered chat-queue drain. apps/web/dist
 // is served when built (tolerated absent in dev).
 //
@@ -12,13 +12,14 @@
 import { spawn, type StdioOptions } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
 import { join } from 'node:path';
-import { getAgentByName, getProjectById, runMigrations } from '@pc/db';
+import { closeDb, getAgentByName, getProjectById, runMigrations } from '@pc/db';
 import {
   OlderSubscriptionQuotaObservationError,
   SubscriptionQuotaService,
 } from '@pc/app-services';
 import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
+import { getDataDir } from '@pc/utils';
 import {
   RuntimeRegistry,
   type MintRuntimeSession,
@@ -32,13 +33,39 @@ import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch
 import { McpManager } from './mcp/manager.ts';
 import { SubscriptionQuotaPoller } from './subscription-quota/poller.ts';
 import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
-import { startServer } from './server.ts';
+import { startServer, type RunningServer } from './server.ts';
+import {
+  acquireDataDirectoryAdmission,
+  DATA_DIRECTORY_OCCUPIED_EXIT_CODE,
+  DATA_DIRECTORY_UNAVAILABLE_EXIT_CODE,
+  DataDirectoryAdmissionError,
+  type DataDirectoryAdmission,
+} from './operations/data-dir-admission.ts';
 
 /** Current composition policy for a specialist that has no explicit model.
  *  Concrete provider vocabulary is intentionally confined to this root. */
 const DEFAULT_CLAUDE_SPECIALIST_MODEL = 'sonnet';
+const RESTART_ADMISSION_WAIT_ENV = 'PC_DATA_ADMISSION_RESTART_WAIT';
+const RESTART_ADMISSION_WAIT_MS = 15_000;
+
+let dataDirectoryAdmission: DataDirectoryAdmission | null = null;
+let activeDispatch: DispatchService | null = null;
+let activeServer: RunningServer | null = null;
+let subscriptionQuotaPoller: SubscriptionQuotaPoller | null = null;
+let engineStopPromise: Promise<void> | null = null;
+let terminationMode: 'shutdown' | 'restart' | null = null;
 
 async function main(): Promise<void> {
+  dataDirectoryAdmission = await acquireDataDirectoryAdmission(getDataDir(), {
+    waitForOccupiedMs: process.env[RESTART_ADMISSION_WAIT_ENV] === '1'
+      ? RESTART_ADMISSION_WAIT_MS
+      : 0,
+  });
+  delete process.env[RESTART_ADMISSION_WAIT_ENV];
+  // Make every later lazy data-path lookup use the exact identity that won
+  // admission, including when PC_DATA_DIR was relative or passed through an
+  // alias/junction.
+  process.env.PC_DATA_DIR = dataDirectoryAdmission.dataDir;
   runMigrations();
 
   const seeded = seedStockAgents();
@@ -48,7 +75,6 @@ async function main(): Promise<void> {
 
   const accounts = new AccountRegistry();
   const subscriptionQuota = new SubscriptionQuotaService();
-  let subscriptionQuotaPoller: SubscriptionQuotaPoller | null = null;
   const mcp = new McpManager();
 
   // The chat runs under the orchestrator agent row (seeded above, editable in
@@ -119,6 +145,7 @@ async function main(): Promise<void> {
     },
     onSubscriptionQuota: recordSubscriptionQuota,
   });
+  activeDispatch = dispatch;
   // The server's live port — set after listen and before any recovered chat
   // work is explicitly released by the composition root.
   const portRef = { port: 0 };
@@ -177,29 +204,18 @@ async function main(): Promise<void> {
     webDist: join(process.cwd(), '..', 'web', 'dist'),
     version: '0.0.0',
     deferConversationQueueDrain: true,
-    // Settings → Restart engine: close the listener (releases the port), then
-    // respawn this exact process detached, and exit. execArgv MUST be carried —
+    // Settings → Restart engine: one lifecycle door closes new HTTP/WS work,
+    // attempts every tracked runtime disposal, closes the product DB, then
+    // spawns this exact process behind a positive-admission retry. The kernel
+    // witness remains held until this process actually exits. execArgv MUST be
+    // carried —
     // tsx injects its TS loader there, not in argv; without it the child is
     // plain `node src/index.ts` and dies instantly (2026-07-10 live finding).
     // Child stdio appends to the launcher's log files so a failed respawn is
     // never invisible.
-    onRestartRequest: () => {
-      console.warn('[pc-sdk] restart requested — closing, respawning, exiting.');
-      void (async () => {
-        subscriptionQuotaPoller?.stop();
-        await dispatch.disposeAll().catch(() => {});
-        await server.close().catch(() => {});
-        spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
-          cwd: process.cwd(),
-          env: process.env,
-          detached: true,
-          stdio: respawnStdio(),
-          windowsHide: true,
-        }).unref();
-        process.exit(0);
-      })();
-    },
+    onRestartRequest: () => requestTermination('restart'),
   });
+  activeServer = server;
   portRef.port = server.port;
   // Probe MCP after listen so startup remains observable, but gate recovered
   // chat work on the completed attempt. Failure degrades to an empty/failed
@@ -278,12 +294,80 @@ async function main(): Promise<void> {
   });
   subscriptionQuotaPoller.start();
 
-  const shutdown = (): void => {
+  process.once('SIGINT', () => requestTermination('shutdown'));
+  process.once('SIGTERM', () => requestTermination('shutdown'));
+}
+
+function requestTermination(mode: 'shutdown' | 'restart'): void {
+  if (terminationMode !== null) return;
+  terminationMode = mode;
+  console.warn(
+    mode === 'restart'
+      ? '[pc-sdk] restart requested — quiescing engine before replacement.'
+      : '[pc-sdk] shutdown requested — quiescing engine.',
+  );
+  void stopEngine().then(
+    () => {
+      if (mode === 'restart') {
+        try {
+          spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+            cwd: process.cwd(),
+            env: { ...process.env, [RESTART_ADMISSION_WAIT_ENV]: '1' },
+            detached: true,
+            stdio: respawnStdio(),
+            windowsHide: true,
+          }).unref();
+        } catch (error) {
+          console.error('[pc-sdk] replacement spawn failed after clean shutdown:', fatalText(error));
+          process.exit(1);
+        }
+      }
+      process.exit(0);
+    },
+    (error) => {
+      console.error(
+        `[pc-sdk] ${mode} refused because a tracked shutdown operation failed:`,
+        fatalText(error),
+      );
+      // Do not spawn a replacement. Process exit lets the OS close any handle
+      // whose explicit close was inconclusive; no success is inferred from it.
+      process.exit(1);
+    },
+  );
+}
+
+function stopEngine(): Promise<void> {
+  if (engineStopPromise) return engineStopPromise;
+  engineStopPromise = (async () => {
     subscriptionQuotaPoller?.stop();
-    void server.close().then(() => process.exit(0));
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+
+    const shutdownOperations: Promise<void>[] = [];
+    // RunningServer.close() synchronously gates HTTP/upgrade admission before
+    // its returned promise begins draining orchestrator sessions. Invoke that
+    // door before starting the specialist drain.
+    if (activeServer) {
+      shutdownOperations.push(activeServer.close());
+    }
+    if (activeDispatch) shutdownOperations.push(activeDispatch.disposeAll());
+    const shutdownResults = await Promise.allSettled(shutdownOperations);
+    const shutdownFailures = shutdownResults
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (shutdownFailures.length > 0) {
+      throw new AggregateError(
+        shutdownFailures,
+        'one or more tracked engine shutdown operations failed',
+      );
+    }
+
+    // Close known product-state resources, but deliberately retain the kernel
+    // admission witness until actual process exit. The replacement's bounded
+    // retry can proceed only after the OS positively releases that witness, so
+    // incomplete in-process bookkeeping can never authorize overlap.
+    closeDb();
+    subscriptionQuotaPoller = null;
+  })();
+  return engineStopPromise;
 }
 
 /** Respawn stdio: append to the launcher's log directory so a failed respawn
@@ -302,4 +386,39 @@ function respawnStdio(): StdioOptions {
   }
 }
 
-void main();
+function fatalText(error: unknown): string {
+  return error instanceof Error ? error.stack ?? error.message : String(error);
+}
+
+void main().catch(async (error: unknown) => {
+  let cleanupFailure: unknown = null;
+  try {
+    await stopEngine();
+  } catch (cleanupError) {
+    cleanupFailure = cleanupError;
+  }
+
+  if (error instanceof DataDirectoryAdmissionError) {
+    console.error(`[pc-sdk][data-dir-admission] ${JSON.stringify({
+      status: 'rejected',
+      code: error.code,
+      dataDir: error.dataDir,
+      lockPath: error.lockPath,
+      reasonCode: error.reasonCode,
+    })}`);
+    if (cleanupFailure) {
+      console.error('[pc-sdk] admission-failure cleanup was inconclusive:', fatalText(cleanupFailure));
+    }
+    process.exit(
+      error.code === 'data-directory-occupied'
+        ? DATA_DIRECTORY_OCCUPIED_EXIT_CODE
+        : DATA_DIRECTORY_UNAVAILABLE_EXIT_CODE,
+    );
+  }
+
+  console.error('[pc-sdk] fatal startup failure:', fatalText(error));
+  if (cleanupFailure) {
+    console.error('[pc-sdk] startup-failure cleanup was inconclusive:', fatalText(cleanupFailure));
+  }
+  process.exit(1);
+});

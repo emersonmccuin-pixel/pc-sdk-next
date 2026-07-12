@@ -35,6 +35,7 @@ export class SessionRegistry {
   private readonly services = new Map<ULID, SessionService>();
   private readonly deps: SessionRegistryDeps;
   private queueDrainReady = false;
+  private closing = false;
 
   constructor(deps: SessionRegistryDeps) {
     this.deps = deps;
@@ -44,6 +45,7 @@ export class SessionRegistry {
    * the required boot sequence (live port, dispatch attach, and MCP probe).
    * Constructing the registry must never mint a partially configured runtime. */
   kickRecoveredQueues(): void {
+    if (this.closing) return;
     this.queueDrainReady = true;
     for (const service of this.services.values()) service.enableQueueDrain();
     for (const projectId of listProjectsWithQueuedConversationSends()) {
@@ -54,6 +56,7 @@ export class SessionRegistry {
   }
 
   get(projectId: ULID): SessionService {
+    if (this.closing) throw new Error('session registry is shutting down');
     let svc = this.services.get(projectId);
     if (!svc) {
       svc = new SessionService({
@@ -76,8 +79,23 @@ export class SessionRegistry {
   }
 
   async disposeAll(): Promise<void> {
-    await Promise.all([...this.services.values()].map((s) => s.dispose()));
+    this.beginShutdown();
+    const settled = await Promise.allSettled(
+      [...this.services.values()].map((service) => service.dispose()),
+    );
     this.services.clear();
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'one or more orchestrator runtimes failed to dispose');
+    }
+  }
+
+  /** Synchronous admission fence used before the listener/session snapshot. */
+  beginShutdown(): void {
+    this.closing = true;
+    this.queueDrainReady = false;
   }
 
   async disposeProject(projectId: ULID): Promise<void> {

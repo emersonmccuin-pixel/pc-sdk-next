@@ -3106,10 +3106,18 @@ export class DispatchService {
 
   async disposeAll(): Promise<void> {
     this.shuttingDown = true;
+    const disposals: Promise<void>[] = [];
     for (const [runId, liveRun] of this.live) {
       clearTimeout(liveRun.wallClock);
-      void liveRun.session.dispose().catch(() => {});
+      disposals.push(Promise.resolve().then(() => liveRun.session.dispose()));
       this.live.delete(runId);
+    }
+    const settled = await Promise.allSettled(disposals);
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'one or more specialist runtimes failed to dispose');
     }
   }
 }
