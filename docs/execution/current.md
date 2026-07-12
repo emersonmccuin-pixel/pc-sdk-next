@@ -183,8 +183,9 @@ pre-run HEAD/status. Full feature-tree `pnpm ci:check` (`331/331` server tests),
 the exact 14-path scope audit, the 139-reference local-path audit, and
 `git diff --check` pass. The first hostile review's matrix/reproducibility gaps
 were corrected; two final independent re-reviews report no P0/P1/P2 blocker.
-Guarded landing, post-merge CI, push, and BC-002 feature-worktree teardown
-remain the active mechanical closeout.
+The evidence is sealed at commit `871c7986` with tree `f52848f`. Guarded
+landing, post-merge CI, push, and BC-002 feature-worktree teardown remain the
+active mechanical closeout.
 
 ## Active action
 

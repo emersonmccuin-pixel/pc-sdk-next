@@ -1,8 +1,8 @@
 # BC-002 reproducible browser baseline
 
 Status: browser evidence, disposable-fixture teardown, final feature-tree CI,
-scope/reference audits, and hostile re-review completed on 2026-07-12;
-sealing, landing, and post-merge verification remain pending.
+scope/reference audits, and hostile re-review completed and sealed at
+`871c7986` on 2026-07-12; landing and post-merge verification remain pending.
 
 ## Executive result
 
