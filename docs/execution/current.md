@@ -1,6 +1,6 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
+Updated: 2026-07-12 after PM-001 guarded landing and teardown.
 
 ## Repository
 
@@ -90,7 +90,7 @@ Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
   `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
 - RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
 - RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
-- Active slice: `docs/execution/slices/PM-001.md`
+- Completed slice: `docs/execution/slices/PM-001.md`
 - PM-001 base: `a7c5423cb5a4aa8549521badcfdd320437a74def`
 - PM-001 feature branch: `codex/pm-001-ainativepm-discovery`
 - PM-001 feature worktree:
@@ -102,6 +102,15 @@ Updated: 2026-07-12 after product acceptance of the PM-001 ownership seam.
   `4f0503f2a3b3201c28f21f1e5b4cd0d45f877e58`
 - PM-001 accepted-decision tree:
   `913cc4905b0d0a2c133820da67e15f9dedeb19cf`
+- PM-001 feature record:
+  `16ed919628fd12f5f74bf5713e02fb2f3d89eb7b`
+- PM-001 landing merge:
+  `1adaad7926ca64a47fc3935c8afffbc799ada70e`
+- PM-001 landed tree: `18cfeb9177130f697ad30358d76b5db27104bae4`
+- PM-001 feature worktree: removed; feature branch preserved
+- PM-001 closeout branch: `codex/pm-001-closeout`
+- PM-001 closeout worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-pm-001-closeout`
 - AInativePM source: initial snapshot `5033d5e`; final committed boundary
   `c146162` after audited concurrent UI-only landings
 
@@ -151,12 +160,15 @@ unprepared documentation worktree because `node_modules`/`@types/node` is
 absent; no install/residue was introduced, and the clean base retains its
 post-RS-004 full gate.
 
+PM-001 is complete on pushed `main` at `1adaad7`. Exact feature/merge tree
+equality, ancestry, full post-merge `pnpm ci:check`, push, and feature-worktree
+teardown passed.
+
 ## Next safe action
 
-Revalidate the clean accepted-decision feature tip, guarded-land to `main`, push,
-and tear down. Then define the
-next safe N1 slice from the remaining characterization/backlog gate. Do not
-perform a PM write or jump to Codex/N5 as part of PM-001 closeout.
+Close this receipt, then define the smallest remaining N1 characterization/
+backlog slice from the baseline evidence. Do not begin PM implementation or
+jump to Codex/N5 merely because the ownership seam is now accepted.
 
 ## Startup checks
 
@@ -167,14 +179,13 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The isolated PM-001 worktree is active for documentation only. Keep the PC-SDK
-Next and AInativePM main checkouts read-only; all tracked PM-001 changes stay in
-the PM-001 worktree until guarded landing.
+The isolated PM-001 feature worktree is removed. Keep the PC-SDK Next main
+checkout read-only; closeout changes stay in the recorded closeout worktree
+until guarded landing.
 
 ## Known blockers
 
-No product blocker remains for PM-001. Remote-unchanged is inconclusive because
-of the `get_started` seeding hook, but no repair/private-data inspection is
-required for the accepted ownership decision. The Next shortcut code is
-isolated but has not been installed; regular daily driving remains on the
-original PC-SDK until the migration gate.
+No PM-001 blocker remains. Its `get_started` remote-state uncertainty is retained
+in the completion receipt rather than repaired through private-data inspection.
+The Next shortcut code is isolated but has not been installed; regular daily
+driving remains on the original PC-SDK until the migration gate.
