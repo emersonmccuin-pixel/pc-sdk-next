@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 after the complete RS-002 verification gate and
-sealed feature record, pending guarded landing.
+Last updated: 2026-07-12 after RS-002 guarded landing, push, and feature
+worktree teardown.
 
 ## Preserved baseline
 
@@ -52,6 +52,12 @@ only in PC-SDK Next.
 - RS-002 sealed implementation:
   `84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`
 - RS-002 sealed tree: `1322938d45c6ca75557da896d68179ddf5c55325`
+- RS-002 feature record: `bc3d90630519b6780a0f300b062c0fd3f9b18963`
+- RS-002 landing merge: `3a274034499f9454e059ded091b79276394780af`
+- RS-002 landed tree: `ca01b1badca3d93ad979b9cf8c261cbb7e671955`
+- RS-002 feature worktree: removed after positive sealed/feature ancestry and
+  exact tree-equality proof; the deregistered dependency residue was verified
+  and removed
 
 Isolation defaults in the planning slice:
 
@@ -190,6 +196,7 @@ Claude-backed orchestrator context observation through the canonical
 conversation/outbox path and never uses cumulative turn usage as context.
 Contracts, persistence, adapter/service races, browser projection, hostile
 review, production build, isolated browser QA, and full `pnpm ci:check` passed.
-Guarded landing, ancestry/tree proof, push, and teardown remain the next
-repository transition; quota normalization, Codex, and specialist widening
-remain separate slices.
+The guarded landing merge `3a274034499f9454e059ded091b79276394780af` is
+pushed on `origin/main`; sealed and feature ancestry plus exact feature-tree
+equality were positively proven, and the feature worktree/residue were removed.
+Quota normalization, Codex, and specialist widening remain separate slices.
