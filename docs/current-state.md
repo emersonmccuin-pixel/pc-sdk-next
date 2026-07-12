@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 at BC-002 browser-baseline closeout.
+Last updated: 2026-07-12 at SF-001 sealed implementation.
 
 ## Preserved baseline
 
@@ -103,6 +103,11 @@ only in PC-SDK Next.
 - BC-002 landed tree: `75c83dd3024d47fe73a655a41e46fae604b824ed`
 - BC-002 feature worktree: removed after positive ancestry/tree proof; feature
   branch preserved
+- SF-001 base: `5581af7918ac438b51785cb825f216ab3d79d738`
+- SF-001 feature branch: `codex/sf-001-data-dir-admission`
+- SF-001 sealed implementation:
+  `c22d5278419ca6ad3d96add8a3d0109aaefca796`
+- SF-001 sealed tree: `64c0a414bb159498faf64e16be4f3ecaeef5cdae`
 
 Isolation defaults in the planning slice:
 
@@ -127,6 +132,9 @@ Isolation defaults in the planning slice:
 - Global MCP client/bridge foundation and durable provider-neutral subscription
   quota observations, with Claude pull/passive acquisition adapter-local
 - One-click hidden launcher and boot recovery
+- Pre-migration canonical data-directory admission through a kernel IPC witness
+  plus a dedicated SQLite ownership transaction, with typed launcher failure,
+  crash release, and replacement handoff gated on positive acquisition
 - Canonical pre-listener boot quarantine of queued/failed sends owned by
   `legacy-unavailable` orchestrator sessions, with queue revision plus
   `send-state`/outbox evidence committed together
@@ -314,6 +322,37 @@ pre-run HEAD/status. The full matrix and cleanup boundary are in
 PM-001 ownership seam, the guarded landing and post-merge receipt close the
 bounded N1 planning/discovery gate.
 
+## Completed N4 data-directory admission slice
+
+`SF-001` implements the data-directory half of `OPS-005` from clean pushed base
+`5581af7918ac438b51785cb825f216ab3d79d738`. The sealed implementation is
+`c22d5278419ca6ad3d96add8a3d0109aaefca796`, with tree
+`64c0a414bb159498faf64e16be4f3ecaeef5cdae`.
+
+Production now canonicalizes `PC_DATA_DIR` and, before `runMigrations`, holds a
+SHA-256-addressed Windows named pipe or Linux abstract socket plus a dedicated
+zero-wait SQLite `BEGIN IMMEDIATE`. The IPC witness closes the POSIX unlink/
+recreate hole of a path-only file lock. A normal contender exits with typed
+occupied/unavailable evidence before `pc.sqlite`, recovery, provider
+construction, or listener startup. Restart keeps the witness until actual
+parent-process exit; its bounded waiter can only proceed on a later positive
+acquisition and never on elapsed time.
+
+Shutdown gates HTTP/upgrades and `SessionRegistry.get()` before disposal
+snapshots, attempts all tracked specialist/orchestrator disposals, propagates
+known native-close uncertainty, and closes the product DB. The focused matrix
+covers aliases/junctions, path replacement, deterministic `EACCES`, corruption,
+graceful and hard-kill handoff, simultaneous reclaim, real production-entry
+rejection, registry shutdown races, and launcher ordering. Full
+`pnpm ci:check` passed with 342/342 server tests and the dead-import guard.
+Independent lock, lifecycle, and test reviews report no remaining P0/P1/P2 code
+blocker. The detailed receipt is `docs/execution/receipts/SF-001.md`.
+
+This slice excludes only a second PC-SDK engine from one app data directory. It
+does not claim positive provider/setup/repository subprocess-tree exit; the
+cross-process repository lease, child-environment scrub, and remaining process
+hardening retain their separate owning slices.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -326,9 +365,10 @@ bounded N1 planning/discovery gate.
   stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
   attachment, and receipt-safe commands remain unimplemented; automatic PM
   writes are blocked.
-- Process identity is positive at `/health`, but a data-directory mutex and
-  cross-process repository lease do not yet exist; the listener is not yet
-  explicitly loopback-bound.
+- Process identity is positive at `/health` and SF-001 now enforces canonical
+  data-directory single-engine admission. The separate cross-process
+  repository lease does not yet exist, and the listener is not yet explicitly
+  loopback-bound.
 - Runtime/setup subprocesses inherit a broad server environment. A least-
   privilege allowlist/scrub must prevent unrelated app secrets (including PM
   tokens) from reaching providers or repository commands.

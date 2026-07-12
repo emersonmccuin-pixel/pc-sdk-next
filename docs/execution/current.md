@@ -116,6 +116,9 @@ Updated: 2026-07-12 after BC-002 guarded landing and teardown.
 - SF-001 branch: `codex/sf-001-data-dir-admission`
 - SF-001 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-sf-001`
+- SF-001 sealed implementation:
+  `c22d5278419ca6ad3d96add8a3d0109aaefca796`
+- SF-001 sealed tree: `64c0a414bb159498faf64e16be4f3ecaeef5cdae`
 - BC-002 base: `36ac71c59bb1d4095e30c9e2e4ed4d8ef73c9fd1`
 - BC-002 branch: `codex/bc-002-browser-baseline`
 - BC-002 sealed evidence: `871c7986a4683eec585159ad52ca9cffcdc83f8c`
@@ -197,15 +200,26 @@ Full post-merge `pnpm ci:check` (`331/331` server tests), push to exact
 dependency residue during worktree removal; its exact parent/name/process guard
 passed before recursive removal. N1 is complete.
 
+SF-001 is implementation-complete and sealed. Production admission now binds a
+non-replaceable Windows named pipe/Linux abstract socket and a dedicated
+zero-wait SQLite transaction before migrations. Ordinary same-directory
+contenders exit typed before product-state activity; distinct directories
+coexist; process death releases ownership; restart waits for positive
+post-parent-exit acquisition. HTTP/upgrade and registry admission close before
+shutdown snapshots, and known runtime-disposal uncertainty propagates.
+
+The 11-case focused matrix, launcher parser, full `pnpm ci:check` (342/342
+server tests), 14-path scope audit, process/temp-root cleanup, and final hostile
+reviews pass. No live provider/integration call or stable-data/external-repo
+mutation was made. `OPS-005` remains accepted because its cross-process
+repository-lease half is still open.
+
 ## Active action
 
-Execute `docs/execution/slices/SF-001.md`: acquire one OS-enforced lifetime
-SQLite admission lock for the canonical data directory before migrations,
-recovery, runtime composition, or listener startup. Prove same-directory
-exclusion, distinct-directory coexistence, graceful handoff, hard-crash
-recovery, alias collision, fail-closed corruption, and launcher-visible typed
-failure. Repository exclusion, child-environment hardening, loopback binding,
-and N7 accessibility remain separate owning slices.
+Guarded-land the sealed SF-001 feature record into the current clean `main`,
+prove sealed/feature ancestry and exact tree equality, rerun `pnpm ci:check`,
+push, and remove the feature worktree only after positive landing proof. Then
+define SF-002 as the smallest cross-process repository-lease slice.
 
 ## Startup checks
 
