@@ -46,6 +46,8 @@ Updated: 2026-07-12 after RS-001 implementation and full workspace verification.
 - RS-001 base: `c52713770a7196c5b7cd805e0d2d8dc8700f223f`
 - Active slice: `docs/execution/slices/RS-001.md`
 - RS-001 feature branch: `codex/rs-001-session-selection-stamps`
+- RS-001 sealed implementation:
+  `cb61f255220dd50e95b53418f28e6bdd05f5077c`
 - RS-001 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-001`
 
@@ -66,8 +68,8 @@ RS-001 claims. There is no user-direction blocker.
 
 ## Next safe action
 
-Complete the final diff/source-boundary audit, seal the feature commit,
-guarded-merge it to current `main`, record positive ancestry and
+Record the feature verification receipt, guarded-merge the sealed feature tip
+to current `main`, record positive ancestry and
 closeout evidence, remove the feature worktree, and push. No live provider smoke
 is required for this offline invariant slice.
 

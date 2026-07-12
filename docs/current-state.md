@@ -41,6 +41,7 @@ only in PC-SDK Next.
 - CF-004 worktree: removed after positive sealed/feature ancestry proof;
   feature branch preserved
 - RS-001 feature branch: `codex/rs-001-session-selection-stamps`
+- RS-001 sealed implementation: `cb61f255220dd50e95b53418f28e6bdd05f5077c`
 
 Isolation defaults in the planning slice:
 
