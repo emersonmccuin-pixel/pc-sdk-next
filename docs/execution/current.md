@@ -1,6 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after RS-002 definition and worktree preparation.
+Updated: 2026-07-12 after RS-002 sealed implementation and full verification,
+pending guarded landing.
 
 ## Repository
 
@@ -59,21 +60,27 @@ Updated: 2026-07-12 after RS-002 definition and worktree preparation.
 - RS-002 feature branch: `codex/rs-002-context-observation`
 - RS-002 feature worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-002`
+- RS-002 sealed implementation:
+  `84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`
+- RS-002 sealed tree: `1322938d45c6ca75557da896d68179ddf5c55325`
 
 ## Status
 
-RS-001 is complete, pushed, and torn down. RS-002 is active in its clean
-run-owned worktree. It adds the honest per-session context observation contract
-and composer projection through Claude's positive control receipt and the
-existing canonical conversation/outbox path. Quota normalization, Codex,
-specialist widening, and handoff compilation remain out of scope. There is no
-user-direction blocker.
+RS-001 is complete, pushed, and torn down. RS-002 implementation and
+verification are complete in its clean run-owned worktree. The sealed feature
+tip adds honest per-session context observation and composer/history projection
+through Claude's positive control receipt and the existing canonical
+conversation/outbox path. Contract, DB, server, web, hostile review, production
+build, isolated browser, and full workspace gates passed. Quota normalization,
+Codex, specialist widening, and handoff compilation remain out of scope. There
+is no user-direction blocker.
 
 ## Next safe action
 
-Implement the shared context/capability contracts and strict Claude observation
-mapper first, then add terminal observation fencing, canonical persistence/
-replay, and the composer bar. Do not use cumulative turn usage as context.
+Commit this RS-002 completion receipt, then perform the guarded merge into the
+unchanged pushed `main` base. Prove sealed-tip ancestry and exact tree equality,
+push the landing/closeout record, remove the worktree only after positive proof,
+and verify no residue remains. Do not widen into quota, Codex, or specialists.
 
 ## Startup checks
 

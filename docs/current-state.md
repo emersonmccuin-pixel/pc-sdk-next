@@ -1,6 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-002 definition and worktree preparation.
+Last updated: 2026-07-12 after the complete RS-002 verification gate and
+sealed feature record, pending guarded landing.
 
 ## Preserved baseline
 
@@ -46,6 +47,11 @@ only in PC-SDK Next.
 - RS-001 landing merge: `039af6c56a1235260d9859af1c51a6dca20fb990`
 - RS-001 worktree: removed after positive sealed/feature ancestry and exact
   tree-equality proof; deregistered dependency residue was verified and removed
+- RS-002 feature branch: `codex/rs-002-context-observation`
+- RS-002 base: `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`
+- RS-002 sealed implementation:
+  `84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`
+- RS-002 sealed tree: `1322938d45c6ca75557da896d68179ddf5c55325`
 
 Isolation defaults in the planning slice:
 
@@ -123,6 +129,12 @@ Isolation defaults in the planning slice:
 - Runtime-aware immutable account records and credential-environment isolation;
   Claude subscription launches scrub API/auth variables that could shadow the
   selected credential home.
+- Closed provider-neutral context observation/capability contracts; strict
+  Claude exact/derived mapping from the pinned context control; one bounded,
+  fenced post-terminal observation per eligible turn; atomic canonical
+  persistence; deterministic live/replay/history projection; honest stale,
+  unavailable, and compaction states; and a shared context-used bar that never
+  renders a percentage without fresh accepted evidence.
 
 ## Known architectural gaps
 
@@ -139,10 +151,9 @@ Isolation defaults in the planning slice:
   those leaks and routing specialists solely through registry-owned selection
   remain later N3 work; RS-001's browser-boundary claim covers orchestrator
   session surfaces only.
-- Usage DTOs are Claude-shaped and do not retain general source semantics,
-  confidence, staleness, or runtime attribution; some runtime-notice vocabulary
-  is also not yet fully provider-neutral.
-- No honest per-session context-use contract exists yet.
+- Subscription-quota DTOs are Claude-shaped and do not retain general source
+  semantics, confidence, staleness, or runtime attribution; some runtime-notice
+  vocabulary is also not yet fully provider-neutral.
 - AInativePM ownership and UI/domain integration have not been jointly audited;
   the old anchoring proposal is provisional.
 - Process identity is positive at `/health`, but a data-directory mutex and
@@ -169,11 +180,16 @@ Specialist-wide stamps, attributed handoff, Codex, context observation, and
 provider-neutral quota semantics remain later N3 slices; this receipt does not
 claim those global requirements complete.
 
-## Active N3 context slice
+## Completed N3 context slice
 
-`RS-002` is defined and prepared from clean pushed
-`bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`. It establishes honest per-session
-context observation through the canonical conversation/outbox path, using the
-pinned Claude runtime's positive context-control receipt and never cumulative
-turn usage. Quota normalization, Codex, and specialist widening remain separate
-slices.
+`RS-002` completed its full implementation and verification gate from clean
+pushed base `bdd4ce0be8aebff284c2cbbb425ab0b5e61b0a0b`. The sealed feature tip is
+`84c30f3a5fd782d3ec1b008e75d3729c3b5d96c0`, with tree
+`1322938d45c6ca75557da896d68179ddf5c55325`. It establishes honest
+Claude-backed orchestrator context observation through the canonical
+conversation/outbox path and never uses cumulative turn usage as context.
+Contracts, persistence, adapter/service races, browser projection, hostile
+review, production build, isolated browser QA, and full `pnpm ci:check` passed.
+Guarded landing, ancestry/tree proof, push, and teardown remain the next
+repository transition; quota normalization, Codex, and specialist widening
+remain separate slices.
