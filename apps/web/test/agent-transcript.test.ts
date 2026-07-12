@@ -96,4 +96,13 @@ test('context telemetry stays in the session bar and unknown compaction renders 
   assert.match(compaction, /compaction/);
   assert.match(compaction, /token counts unavailable/);
   assert.doesNotMatch(compaction, /auto|0 →/);
+
+  const beforeOnly = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: { kind: 'compaction', trigger: 'unknown', preTokens: 80, postTokens: null },
+  }));
+  const afterOnly = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: { kind: 'compaction', trigger: 'unknown', preTokens: null, postTokens: 20 },
+  }));
+  assert.match(beforeOnly, /80 → … tokens/);
+  assert.match(afterOnly, /… → 20 tokens/);
 });

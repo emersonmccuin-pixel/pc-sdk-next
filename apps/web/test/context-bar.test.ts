@@ -17,11 +17,13 @@ import {
   type SessionContextProjection,
 } from '../src/features/chat/chat-reducer.ts';
 import { PastSessionTimeline } from '../src/features/chat/ChatTimeline.tsx';
+import { CompactionDivider } from '../src/features/chat/Bubbles.tsx';
 
 function observed(
   confidence: 'exact' | 'derived' | 'approximate' = 'exact',
 ): SessionContextProjection {
   return {
+    integrity: 'valid',
     latestStartedTurnId: 'turn-1',
     acceptedObservationTurnId: 'turn-1',
     freshness: 'fresh',
@@ -105,6 +107,58 @@ test('latest compaction stays visible after a fresh post-compaction observation'
   assert.match(markup, /compacted manual · 80 → 15/);
 });
 
+test('nullable compaction attribution and counts remain explicit without a percentage', () => {
+  const projection = observed();
+  projection.freshness = 'stale';
+  projection.latestCompaction = {
+    turnId: null, sequence: 4, occurredAt: 40,
+    trigger: 'unknown', preTokens: 80, postTokens: null,
+  };
+  let markup = html(projection);
+  assert.match(markup, /data-context-state="compacted"/);
+  assert.match(markup, /compacted · 80 → …/);
+  assert.doesNotMatch(markup, /role="progressbar"/);
+
+  projection.latestCompaction = {
+    ...projection.latestCompaction,
+    preTokens: null,
+    postTokens: 20,
+  };
+  markup = html(projection);
+  assert.match(markup, /compacted · … → 20/);
+
+  projection.latestCompaction = {
+    ...projection.latestCompaction,
+    postTokens: null,
+  };
+  markup = html(projection);
+  assert.match(markup, /token counts unavailable/);
+
+  const dividerBefore = renderToStaticMarkup(createElement(CompactionDivider, {
+    trigger: 'unknown', preTokens: 80, postTokens: null,
+  }));
+  const dividerAfter = renderToStaticMarkup(createElement(CompactionDivider, {
+    trigger: 'unknown', preTokens: null, postTokens: 20,
+  }));
+  assert.match(dividerBefore, /80 → … tokens/);
+  assert.match(dividerAfter, /… → 20 tokens/);
+});
+
+test('projection integrity conflict never renders an accepted percentage', () => {
+  const projection = {
+    ...observed(),
+    integrity: 'conflicted' as const,
+    latestCompaction: {
+      turnId: 'turn-1', sequence: 4, occurredAt: 40,
+      trigger: 'manual' as const, preTokens: 80, postTokens: 20,
+    },
+  };
+  const markup = html(projection);
+  assert.match(markup, /data-context-state="unavailable"/);
+  assert.match(markup, /context replay conflict/);
+  assert.doesNotMatch(markup, /role="progressbar"|% used|compacted/);
+});
+
 test('presentation does not derive context from absence or stale evidence', () => {
   assert.deepEqual(deriveContextBarPresentation({
     sessionId: 'session-1',
@@ -114,6 +168,17 @@ test('presentation does not derive context from absence or stale evidence', () =
     state: 'not-observed',
     label: 'Not yet observed',
     title: 'No runtime context observation has been recorded for this session.',
+    percent: null,
+    compactionLabel: null,
+  });
+  assert.deepEqual(deriveContextBarPresentation({
+    sessionId: 'session-1',
+    ready: true,
+    projection: { ...observed(), freshness: 'stale' },
+  }), {
+    state: 'stale',
+    label: 'Prior observation stale · awaiting current observation',
+    title: 'Newer context-changing evidence arrived after the last accepted observation.',
     percent: null,
     compactionLabel: null,
   });

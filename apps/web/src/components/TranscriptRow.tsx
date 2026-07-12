@@ -130,9 +130,9 @@ export function TranscriptRow({ event }: { event: unknown }) {
       return (
         <Row label={`compaction${event.trigger === 'unknown' ? '' : ` · ${event.trigger}`}`} tone="muted">
           <div className="font-mono text-[10px] text-muted-foreground">
-            {event.preTokens === null
+            {event.preTokens === null && event.postTokens === null
               ? 'token counts unavailable'
-              : `${event.preTokens} → ${event.postTokens ?? '…'} tokens`}
+              : `${event.preTokens ?? '…'} → ${event.postTokens ?? '…'} tokens`}
           </div>
         </Row>
       );

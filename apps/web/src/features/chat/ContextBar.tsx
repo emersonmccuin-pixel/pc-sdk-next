@@ -37,10 +37,12 @@ function compactionLabel(
 ): string | null {
   if (!compaction) return null;
   const trigger = compaction.trigger === 'unknown' ? '' : ` ${compaction.trigger}`;
-  if (compaction.preTokens === null) return `compacted${trigger}`;
-  const tokens = compaction.postTokens === null
-    ? formatTokens(compaction.preTokens)
-    : `${formatTokens(compaction.preTokens)} → ${formatTokens(compaction.postTokens)}`;
+  if (compaction.preTokens === null && compaction.postTokens === null) {
+    return `compacted${trigger} · token counts unavailable`;
+  }
+  const tokens = `${compaction.preTokens === null ? '…' : formatTokens(compaction.preTokens)} → ${
+    compaction.postTokens === null ? '…' : formatTokens(compaction.postTokens)
+  }`;
   return `compacted${trigger} · ${tokens} tokens`;
 }
 
@@ -70,13 +72,19 @@ export function deriveContextBarPresentation(input: {
     };
   }
 
+  if (projection.integrity === 'conflicted') {
+    return {
+      state: 'unavailable',
+      label: 'Unavailable · context replay conflict',
+      title: 'Conflicting canonical evidence prevents a current context percentage.',
+      percent: null,
+      compactionLabel: null,
+    };
+  }
+
   const observation = projection.observation;
   const compactionIsCurrent = projection.latestCompaction !== null
-    && (observation === null || projection.latestCompaction.sequence > observation.sequence)
-    && (
-      projection.latestStartedTurnId === null
-      || projection.latestCompaction.turnId === projection.latestStartedTurnId
-    );
+    && (observation === null || projection.latestCompaction.sequence > observation.sequence);
   if (compactionIsCurrent) {
     return {
       state: 'compacted',
@@ -89,8 +97,8 @@ export function deriveContextBarPresentation(input: {
   if (projection.freshness === 'stale') {
     return {
       state: 'stale',
-      label: 'Prior observation stale · awaiting this turn',
-      title: 'A newer turn started after the last accepted context observation.',
+      label: 'Prior observation stale · awaiting current observation',
+      title: 'Newer context-changing evidence arrived after the last accepted observation.',
       percent: null,
       compactionLabel: latestCompactionLabel,
     };

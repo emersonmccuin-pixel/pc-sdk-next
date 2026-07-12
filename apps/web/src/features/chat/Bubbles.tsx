@@ -149,9 +149,11 @@ export function CompactionDivider({
   postTokens: number | null;
 }) {
   const triggerLabel = trigger === 'unknown' ? '' : ` (${trigger})`;
-  const tokenLabel = preTokens === null
+  const tokenLabel = preTokens === null && postTokens === null
     ? 'token counts unavailable'
-    : `${preTokens.toLocaleString()}${postTokens !== null ? ` → ${postTokens.toLocaleString()}` : ''} tokens`;
+    : `${preTokens === null ? '…' : preTokens.toLocaleString()} → ${
+      postTokens === null ? '…' : postTokens.toLocaleString()
+    } tokens`;
   return (
     <div className="flex items-center gap-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
       <span className="h-px flex-1 bg-border" />
