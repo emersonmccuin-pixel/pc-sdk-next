@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 2026-07-12 after RS-004 sealed verification.
+Last updated: 2026-07-12 after RS-004 guarded landing and teardown.
 
 ## Preserved baseline
 
@@ -70,11 +70,15 @@ only in PC-SDK Next.
 - RS-003 closeout landing: `6a0beb90a7b730dbee94181f012c0918f464af8b`
 - RS-004 base: `6a0beb90a7b730dbee94181f012c0918f464af8b`
 - RS-004 feature branch: `codex/rs-004-quota-observations`
-- RS-004 feature worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-rs-004`
+- RS-004 feature worktree: removed after positive sealed/feature ancestry and
+  exact tree-equality proof; verified dependency/build residue was removed
 - RS-004 sealed implementation:
   `f7bcb60e9f242c72a56ffda508da6451012e172b`
 - RS-004 sealed tree: `316ec12a2f94991cb89ed069886feec17e02ad03`
+- RS-004 feature record:
+  `37d8f7e4d9e67202c3487d1ef3fe6512f6343d66`
+- RS-004 landing merge: `1bd333903660b0ada212e305846efaee1b7bdd62`
+- RS-004 landed tree: `8cb674bd82c10a07eac8ab34a91adf4293b28ef6`
 
 Isolation defaults in the planning slice:
 
@@ -216,8 +220,12 @@ runtime/provider mapping, and HTTP/web/browser ingress. Full `pnpm ci:check`
 audits, and isolated browser QA at 1440x900 and 760x720 passed. Browser QA
 rendered 24 dynamic windows with accessible progress semantics, independent
 bounded scrolling, no horizontal overflow, and no console warnings/errors; its
-temporary listener/data were removed. Guarded landing, positive ancestry/tree
-proof, push, and worktree teardown remain pending.
+temporary listener/data were removed. Feature record
+`37d8f7e4d9e67202c3487d1ef3fe6512f6343d66` was guarded-merged as
+`1bd333903660b0ada212e305846efaee1b7bdd62` and pushed to `origin/main`.
+Sealed/feature ancestry and exact tree equality were proven, post-merge
+`pnpm ci:check` passed, and the feature worktree plus verified dependency/build
+residue were removed. The feature branch is preserved.
 
 ## Known architectural gaps
 
