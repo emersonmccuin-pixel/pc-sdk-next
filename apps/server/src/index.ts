@@ -278,10 +278,12 @@ async function main(): Promise<void> {
   //    guard stack incl. base advancement when not yet merged);
   // 3. approved-abandonment re-drive — authority is durable before removal;
   // 4. teardown resume — landed contracts whose worktree survived the crash;
-  // 5. stranded scan — must see 1-4's FINAL state (a landed worktree awaiting
+  // 5. independent-review workspace re-drive — retire every old-process
+  //    reservation/checkout before any successor reviewer may be admitted;
+  // 6. stranded scan — must see 1-5's FINAL state (a landed worktree awaiting
   //    teardown must never classify stranded; re-driven landings finish
   //    tearing down first);
-  // 6. attach — only now can a dispatch start. A dispatch mid-flight during
+  // 7. attach — only now can a dispatch start. A dispatch mid-flight during
   //    the scan has an async window between its worktree row (active) and its
   //    run row (live) that the scan would misclassify 'no-live-run' — until
   //    attach, dispatch verbs refuse 503 'server still booting'; chat itself
@@ -293,19 +295,19 @@ async function main(): Promise<void> {
     conversationRelay: server.conversationRelay,
     serverPort: server.port,
   });
-  // 7. review re-entry — AFTER attach (a review dispatch needs the live
+  // 8. review re-entry — AFTER attach (a review dispatch needs the live
   //    context): full-review contracts whose reviewer died (or was never
   //    dispatched pre-attach) re-enter the review gate re-dispatchable.
   await dispatch
     .recoverPendingReviews()
     .catch((err) => console.warn('[pc-sdk][dispatch] review re-entry failed:', err));
-  // 8. auto-continue re-entry — AFTER attach, same reason as review re-entry:
+  // 9. auto-continue re-entry — AFTER attach, same reason as review re-entry:
   //    a run that settled 'failed'/'turn-budget-exhausted' but never got its
   //    auto-continuation fired (crash in that window) resumes here.
   await dispatch
     .recoverPendingAutoContinues()
     .catch((err) => console.warn('[pc-sdk][dispatch] auto-continue re-entry failed:', err));
-  // 9. paused-ask revival (F1, comms-hardening) — AFTER attach, same reason:
+  // 10. paused-ask revival (F1, comms-hardening) — AFTER attach, same reason:
   //    re-mints a live session for every run the boot sweep left 'paused'
   //    (its ask survives with it) so answering it doesn't 410 on a dead
   //    in-process handle.
@@ -313,7 +315,7 @@ async function main(): Promise<void> {
     .recoverPausedAsks()
     .catch((err) => console.warn('[pc-sdk][dispatch] paused-ask revival failed:', err));
 
-  // 9. recovered conversation queue — only after the live port, dispatch
+  // 11. recovered conversation queue — only after the live port, dispatch
   // routes, paused-run sessions, and MCP initialization attempt are ready.
   // Queued rows need no browser connection, but they do need the same fully
   // composed runtime package as a newly submitted turn.
