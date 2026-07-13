@@ -2,8 +2,8 @@
 
 Date: 2026-07-13
 
-Status: CX-002 code guarded-landed, post-merge verified, pushed, and feature
-worktree removed; documentation closeout is pending.
+Status: CX-002 complete — code and documentation guarded-landed, verified,
+pushed/re-fetched exactly, and all slice worktrees removed.
 
 ## Result
 
@@ -131,6 +131,10 @@ promoted.
   tree `ce1c31e8ba38095a6e7571f2fe2705939436e645`.
 - Post-merge `pnpm ci:check` passes with 660/660 server tests; the production
   build, exact push/re-fetch, and guarded feature-worktree/residue teardown pass.
+- Documentation closeout `30fe8bb5604d68eb924f73bf2b40d0f4d4a71e3c`
+  guarded-landed as `a48db361026fc999bd4226797f329a85c0e795d7`
+  with exact tree `2bb0d86efee8316711985edb88a1022b6ad52cad`; its
+  documentation-only scope, push/re-fetch, and worktree teardown pass.
 
 ## Next boundary
 
