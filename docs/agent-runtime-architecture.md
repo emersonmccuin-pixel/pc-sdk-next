@@ -1,7 +1,8 @@
 # Agent runtime architecture
 
-Status: **locked boundary; Claude selection path implemented; bounded Codex
-admission spike complete, no Codex adapter** (updated 2026-07-13).
+Status: **locked boundary; Claude selection path implemented; unregistered
+provider-free Codex adapter/conformance mapping implemented** (updated
+2026-07-13).
 `docs/current-state.md` records the as-built gaps.
 `docs/master-plan.md` wins on product scope; `AGENTS.md` holds the short-form
 non-negotiable rules.
@@ -191,9 +192,20 @@ silent fallback or invented context/usage precision.
   positively disposed native processes.
 - CX-001 did not send a thread, turn, login, logout, tool, MCP, approval,
   context, quota, or inference request. It is not registered or composed as a
-  `CodexRuntimeAdapter`. Cached auth and catalog presence do not establish
+  production `CodexRuntimeAdapter`. Cached auth and catalog presence do not establish
   credential freshness, entitlement, subscription usability, billing route,
   model usability, or inference.
+- CX-002 implements the provider-local `CodexRuntimeAdapter`, stable 0.144.1
+  response/event mapping, exact create/resume and historical-identity fencing,
+  and the shared public conformance contract behind injected provider-free
+  discovery/execution peers plus an independent fake-only conformance authority.
+  It is unregistered, has no native/default peer or production authority, and
+  is statically unable to reach the CX-001 native client/process substrate.
+- CX-002's fake authority supplies complete execution-policy evidence and
+  atomically sealed terminal-boundary receipts for its contained fake only.
+  Stable native 0.144.1 supplies no equivalent positive effective-tool/MCP/
+  approval/containment evidence, so CX-002 authorizes no native thread or turn.
+  Context and quota remain typed unavailable.
 
 Additional runtimes are allowed only by implementing the same adapter and
 conformance suite. Do not add provider conditionals to core services.
@@ -214,9 +226,10 @@ that reduction. The Claude session sanitizes both its constructor input and
 the final SDK query options; the pinned SDK fake-spawn guard proves the native
 process receives only that result plus SDK-authored version/entrypoint markers.
 CX-001 supplies a tested Codex environment/executable substrate for its
-admission-only spike. A production Codex adapter must reuse that boundary, add
-positive escaped-descendant containment, and pass the shared adapter
-conformance suite before registration; the spike itself is not an adapter.
+admission-only spike. CX-002 supplies the unregistered provider-free adapter
+mapping and shared conformance target. A production peer must reuse the CX-001
+boundary, satisfy the CX-002 closed port, and add positive effective tool/MCP/
+approval policy plus escaped-descendant containment before registration.
 
 MCP stdio remains a separate explicit-consumer boundary: the MCP SDK supplies
 its small safe default environment and PC-SDK merges only the registered
@@ -347,19 +360,23 @@ and immutable orchestrator create/remint/resume path. RS-002 added honest
 Claude-backed orchestrator context observation and projection. RS-003 completed
 specialist revision/run selection, native attempt receipts, and safe public
 provenance. RS-004 completed provider-neutral subscription quota on the Claude
-path. CX-001 completed only the bounded pinned Codex admission dependency:
-exact-home/file-store cached-auth-kind and advertised-catalog observation across
-two directly disposed native processes, without a turn or adapter registration.
-The remaining runtime-boundary N3/N5 backlog below does not reorder or authorize
-skipping the master plan's global N1/N4 gates:
+  path. CX-001 completed the bounded pinned Codex admission dependency:
+  exact-home/file-store cached-auth-kind and advertised-catalog observation across
+  two directly disposed native processes, without a turn or adapter registration.
+  CX-002 then completed the unregistered provider-free Codex adapter/session
+  mapping, exact resume/history identity fences, and shared public conformance,
+  without constructing or reaching a native execution peer.
+  The remaining runtime-boundary N3/N5 backlog below does not reorder or authorize
+  skipping the master plan's global N1/N4 gates:
 
-1. add `CodexRuntimeAdapter`, positive containment, and the same conformance
-   suite without production registration until its gates pass;
+1. implement a contained native Codex peer with positive tool/MCP/approval and
+   escaped-descendant receipts, then run native conformance and the real-fix
+   gate before production registration;
 2. expose deliberate runtime/account/model/effort selection controls;
 3. compile attributed cross-runtime handoffs and their UI provenance.
 
-CX-001 itself authorizes no live thread or turn; any later live step requires a
-separate contract and positive safety gates.
+Neither CX-001 nor CX-002 authorizes a live thread or turn; any later live step
+requires a separate contract and positive safety gates.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers
@@ -417,3 +434,5 @@ CX-001 generated and reverified the stable app-server schema from pinned
 0.144.1. Re-run the bounded spike and regenerate/re-review that schema before an
 upgrade or production adapter change. Public docs and the generated version-
 matched schema win over remembered event shapes.
+CX-002's mapping and static conformance guards must also be re-run against the
+regenerated schema as part of that upgrade gate.

@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-13 after CX-001 guarded code and documentation-closeout
-landings, post-merge verification, exact push/re-fetch, and guarded feature and
-closeout-worktree cleanup.
+Last updated: 2026-07-13 after CX-002 implementation sealing, final feature-tree
+verification, and hostile re-review. Its guarded landing and closeout are still
+pending; main remains on the clean pushed CX-001 closeout base.
 
 ## Preserved baseline
 
@@ -169,6 +169,14 @@ only in PC-SDK Next.
   `61c6848dd6a06e1598fdc8fd308792a8c41c9e3c`
 - CX-001 documentation closeout worktree: removed after exact
   path/clean-tip/ancestry/remote/zero-process proof
+- CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
+- CX-002 branch: `codex/cx-002-codex-runtime-adapter`
+- CX-002 contract commit: `23b2b90ca75b47daa7fca1ccf9f859e2b7c271ef`
+- CX-002 sealed implementation:
+  `bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`
+- CX-002 sealed tree: `9de0007e4420849af4cf4b7f999856167f29c46f`
+- CX-002 feature worktree: active and clean except for the pending feature
+  record; guarded landing has not started
 
 Isolation defaults in the planning slice:
 
@@ -254,6 +262,12 @@ Isolation defaults in the planning slice:
   version-matched stable schema, exact-home/file-store isolation, strict config/
   account/catalog admission, redacted receipt, and positive direct-child
   disposal. It is not registered or composed as a production adapter.
+- Unregistered provider-free `CodexRuntimeAdapter` mapping against stable
+  0.144.1: account-scoped discovery, exact create/resume/history identity,
+  ordered redacted text turns, interrupt-versus-terminal proof, typed unavailable
+  context/quota, cancellation/disposal fencing, and shared Claude/Codex/fake
+  conformance. It has no native/default peer or production authority and cannot
+  reach the native process boundary.
 - A fresh persisted continuation-attempt identity for every orchestrator native
   create/resume mint. Positive receipts and failure callbacks use exact DB CAS,
   so output from abandoned creates, resumes, restarts, or disposed services
@@ -722,16 +736,51 @@ remain unavailable. CX-001 promotes no requirement. Full evidence is in
 `docs/research/codex-app-server-spike.md` and
 `docs/execution/receipts/CX-001.md`.
 
+## Sealed N5 provider-free Codex adapter mapping (pre-landing)
+
+CX-002 implements the provider-local `CodexRuntimeAdapter`, runtime session,
+stable 0.144.1 mapping, and reusable public conformance harness without
+registering or composing Codex. Construction requires explicit discovery and
+execution peers plus an independent provider-free authority; no production
+source imports the adapter, and transitive dependency guards prevent its four-
+file runtime surface from reaching the CX-001 native process owners.
+
+The fake-only authority attests exact empty-native-tool/empty-MCP/no-approval
+policy before thread admission and atomically seals each notification epoch
+before terminal-boundary attestation. Exact create/resume posture, root-thread
+provenance, full persisted history shape, historical/live identity freshness,
+terminal item snapshots, redaction, interruption, cancellation, iterator
+cleanup, disposal, and peer reuse are fail-closed. The shared public harness
+runs against Claude, Codex, and a generic fake. Context and quota are explicitly
+unavailable.
+
+The implementation sealed as
+`bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`, tree
+`9de0007e4420849af4cf4b7f999856167f29c46f`. Focused typecheck/conformance/
+mapping/static coverage passes 99/99; final feature-tree `pnpm ci:check` passes
+with 660/660 server tests and the dead-import guard; the production web build
+and three independent final hostile re-reviews pass.
+
+This implementation starts no native process, thread, turn, or inference and
+promotes no requirement. Native continuation support is true only for the
+explicitly injected conformance peer. Credential/subscription/billing/model
+usability, effective native tool/MCP/approval enforcement, escaped-descendant
+containment, native dispatch, selectors, handoff, context/quota acquisition,
+and the real-fix gate remain open. Detailed pre-landing evidence is in
+`docs/research/codex-runtime-adapter.md`; the verification receipt remains
+explicitly pre-landing until the guarded landing and teardown gates succeed.
+
 ## Known architectural gaps
 
-- Production composition remains Claude-only. CX-001 is an unregistered
-  admission spike; no `CodexRuntimeAdapter`, shared Codex conformance, positive
+- Production composition remains Claude-only. CX-002's `CodexRuntimeAdapter`
+  and shared conformance exist only behind injected provider-free peers. No
+  contained native execution peer, positive effective tool/MCP/approval policy,
   escaped-descendant containment, or deliberate runtime/model/effort selector
   exists yet.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
-- Codex context and subscription-quota acquisition/normalization remain
-  unavailable; CX-001 does not advance RS-002 or RS-004 parity.
+- Codex context and subscription-quota acquisition/normalization remain typed
+  unavailable; CX-002 does not advance RS-002 or RS-004 native parity.
 - Some older runtime-notice vocabulary remains not yet fully provider-neutral.
 - The accepted AInativePM seam remains unimplemented. Typed PM refs,
   stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer
