@@ -21,6 +21,7 @@ import {
 } from '@pc/db';
 import { ContractService, toAgentRunDto, toPendingAskDto } from '@pc/app-services';
 import {
+  parseApproveWorktreeAbandonmentRequest,
   parseAnswerPendingAskRequest,
   parseCreatePendingAskRequest,
   type ChatEvent,
@@ -29,6 +30,14 @@ import type { AgentRunStatus, ULID } from '@pc/domain';
 import type { DispatchService } from '../dispatch/service.ts';
 
 const TERMINAL_LIST_WINDOW_MS = 24 * 60 * 60 * 1000;
+const JSON_PARAMETER = /^[!#$%&'*+.^_`|~0-9a-z-]+\s*=\s*(?:"[^"\r\n]*"|[!#$%&'*+.^_`|~0-9a-z-]+)$/i;
+
+function isJsonContentType(value: string | undefined): boolean {
+  if (!value) return false;
+  const [mediaType, ...parameters] = value.split(';');
+  return mediaType?.trim().toLowerCase() === 'application/json' &&
+    parameters.every((parameter) => JSON_PARAMETER.test(parameter.trim()));
+}
 
 export interface AgentRunsHttpDeps {
   dispatch: DispatchService;
@@ -317,6 +326,58 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
         landingError: result.contract.landingError,
       },
     });
+  });
+
+  // Browser-only destructive authority surface. Fetch metadata is CSRF
+  // hardening within the trusted-local-process boundary; no pc_*/MCP tool
+  // exposes these verbs.
+  app.get('/api/projects/:id/contracts/:contractId/abandonment-preview', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    if (c.req.header('Sec-Fetch-Site') !== 'same-origin') {
+      return c.json({ ok: false, error: 'same-origin browser action required' }, 403);
+    }
+    const result = await dispatch.previewContractAbandonment({
+      projectId,
+      contractId: c.req.param('contractId') as ULID,
+    });
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.message }, result.httpStatus as 409);
+    }
+    return c.json({ ok: true, preview: result.preview });
+  });
+
+  app.post('/api/projects/:id/contracts/:contractId/abandonment', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    if (c.req.header('Sec-Fetch-Site') !== 'same-origin') {
+      return c.json({ ok: false, error: 'same-origin browser action required' }, 403);
+    }
+    if (!isJsonContentType(c.req.header('Content-Type'))) {
+      return c.json({ ok: false, error: 'application/json required' }, 400);
+    }
+    const parsed = parseApproveWorktreeAbandonmentRequest(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.ok) return c.json({ ok: false, error: parsed.error }, 400);
+    const result = await dispatch.approveContractAbandonment({
+      projectId,
+      contractId: c.req.param('contractId') as ULID,
+      request: parsed.value,
+    });
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.message }, result.httpStatus as 409);
+    }
+    return c.json(
+      {
+        ok: true,
+        settlement: result.settlement,
+        contract: result.contract,
+      },
+      result.settlement === 'completed' ? 200 : 202,
+    );
   });
 
   // ── ask doors ───────────────────────────────────────────────────────────────

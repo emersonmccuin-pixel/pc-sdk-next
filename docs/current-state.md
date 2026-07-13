@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 after SF-002 guarded landing, push, and feature-
-worktree cleanup.
+Last updated: 2026-07-12 after DL-002 implementation seal and full feature
+verification; guarded landing is in progress.
 
 ## Preserved baseline
 
@@ -505,6 +505,43 @@ feature-worktree cleanup passed. `WT-002` remains accepted because exact
 detached-review-checkout authority is still separate. DL-002 approved
 abandonment is the next active slice.
 
+## N4 approved worktree abandonment implementation
+
+`DL-002` implements the explicit-abandonment half of repository delivery from
+clean pushed base `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`.
+The browser obtains a strict same-origin preview that binds contract version,
+producer, durable repository identity, owned worktree row/path, branch and
+validated base/tip, integration state, canonical tracked/untracked content
+evidence, and a deterministic digest. Approval accepts only a UUID, exact
+version/digest, exact typed branch confirmation, and an optional bounded
+reason; the server authors the user/browser attribution.
+
+Approval commits an immutable authority receipt and outbox event before any
+removal. Teardown is serialized with landing, omits profile cleanup commands,
+uses exact row/repository/path/branch evidence, removes the worktree without
+deleting the branch, and settles `abandoned` only after positive directory and
+registration absence plus exact branch-tip preservation. Boot re-drives the
+durable `abandoning` state. Legacy receipt-free `abandoned` rows authorize no
+cleanup and remain protected and visible.
+
+Landing, continuation, independent review, runtime disposal, and shutdown now
+use one-winner DB/service fences and tracked fixed-point quiescence. Dedicated
+unpublished-worktree rollback proves a clean exact-base branch, performs a
+non-force worktree removal, atomically compare-deletes only that ref, proves
+absence, and settles only the exact active DB row; same-name history is
+preserved. No chat, MCP, specialist, prompt, or generic landing door can mint
+abandonment authority.
+
+Three independent hostile re-reviews report no P0/P1/P2 blocker. Focused race
+and recovery matrices pass, `git diff --check` passes, and full feature-tree
+`pnpm ci:check` is green with 413/413 server tests and the dead-import guard.
+The sealed implementation is
+`367f208b976d554ed58703a172e18045b045fe30`, tree
+`1d5367a4a2c2a93033e0b1c2c8a5f505de416616`. No provider, PM/MCP-network,
+stable-data, original-app, or external-repository action was required.
+Guarded landing, post-merge verification, exact push/re-fetch, and feature-
+worktree cleanup remain the current closeout action.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -522,6 +559,9 @@ abandonment is the next active slice.
   lease is guarded-landed and pushed. Nonparticipating stable/manual
   tools and escaped repository children remain outside that proof. The listener
   is not yet explicitly loopback-bound.
+- Approved abandonment is implemented and feature-verified, but the broader
+  N4 process-failure/recovery experience and general recovery-center UI remain
+  incomplete.
 - Worktree profiles do not yet have an explicit local-input/environment/secret
   injection policy. Arbitrary ambient variables are now deliberately absent;
   private setup dependencies that require credentials must wait for an

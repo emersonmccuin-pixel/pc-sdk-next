@@ -8,7 +8,12 @@ import assert from 'node:assert/strict';
 
 import type { Contract, ResourceEvent } from '../../../packages/contracts/src/index.ts';
 import {
+  canRequestAbandonment,
   effectivePolicy,
+  isLegacyAbandonment,
+  isSettledAbandonment,
+  landingIssueDetail,
+  landingIssueLabel,
   landingIssueContracts,
   mergeReadyContracts,
   overlayContracts,
@@ -44,6 +49,9 @@ function contract(overrides: Partial<Contract> & { id: string }): Contract {
     reviewRound: null,
     reviewRunId: null,
     reviewSealedCommit: null,
+    abandonmentReceipt: null,
+    abandonmentTeardownReceipt: null,
+    abandonmentError: null,
     status: 'issued',
     version: 1,
     createdAt: 0,
@@ -118,17 +126,54 @@ test('mergeReadyContracts: repo + passed + unlanded only', () => {
   );
 });
 
-test('landingIssueContracts: conflict/failed/stale-base only — abandoned is resolved', () => {
+test('landingIssueContracts: pending cleanup and legacy abandonment stay visible; settled abandonment resolves', () => {
   const conflict = contract({ id: 'c', landingStatus: 'conflict' });
   const failed = contract({ id: 'f', landingStatus: 'failed' });
   const stale = contract({ id: 's', landingStatus: 'stale-base' });
-  const abandoned = contract({ id: 'a', landingStatus: 'abandoned' });
+  const legacy = contract({ id: 'legacy', landingStatus: 'abandoned' });
+  const authority = {} as NonNullable<Contract['abandonmentReceipt']>;
+  const teardown = {} as NonNullable<Contract['abandonmentTeardownReceipt']>;
+  const abandoning = contract({
+    id: 'pending-cleanup',
+    landingStatus: 'abandoning',
+    abandonmentReceipt: authority,
+    abandonmentError: 'locked file',
+  });
+  const abandoned = contract({
+    id: 'settled',
+    landingStatus: 'abandoned',
+    abandonmentReceipt: authority,
+    abandonmentTeardownReceipt: teardown,
+  });
   const landed = contract({ id: 'l', landingStatus: 'landed' });
-  const out = landingIssueContracts([conflict, failed, stale, abandoned, landed]);
+  const out = landingIssueContracts([conflict, failed, stale, legacy, abandoning, abandoned, landed]);
   assert.deepEqual(
     out.map((c) => c.id),
-    ['c', 'f', 's'],
+    ['c', 'f', 's', 'legacy', 'pending-cleanup'],
   );
+  assert.equal(isLegacyAbandonment(legacy), true);
+  assert.equal(isSettledAbandonment(abandoned), true);
+  assert.equal(landingIssueLabel(abandoning), 'cleanup pending');
+  assert.equal(landingIssueDetail(abandoning), 'locked file');
+  assert.equal(landingIssueLabel(legacy), 'authority unavailable');
+  assert.match(landingIssueDetail(legacy) ?? '', /no approval receipt/);
+});
+
+test('canRequestAbandonment is only a conservative presentation gate', () => {
+  const eligible = contract({ id: 'eligible', worktreePath: 'C:\\repo-worktrees\\run-1' });
+  assert.equal(canRequestAbandonment(eligible), true);
+  assert.equal(canRequestAbandonment(contract({
+    id: 'reviewed', worktreePath: 'x', reviewRunId: 'review-1',
+  })), true, 'a historical review link is not evidence that the reviewer remains live');
+  assert.equal(canRequestAbandonment(contract({
+    id: 'legacy', worktreePath: 'x', landingStatus: 'abandoned',
+  })), true, 'legacy status is not authority and may enter a fresh explicit preview');
+  assert.equal(canRequestAbandonment(contract({
+    id: 'landing', worktreePath: 'x', landingStatus: 'pending',
+  })), false);
+  assert.equal(canRequestAbandonment(contract({
+    id: 'non-repo', worktreePath: 'x', expectedOutput: { kind: 'answer' },
+  })), false);
 });
 
 test('effectivePolicy: column wins; legacy NULL falls back through auto_land', () => {

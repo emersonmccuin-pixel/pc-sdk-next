@@ -4,7 +4,7 @@
 //  - a dead run's worktree goes durable 'no-live-run' + the run's lifecycle
 //    stamps 'stranded' (canTransition-guarded)
 //  - a missing directory goes 'dir-missing'
-//  - an abandoned-contract branch is EXCLUDED (awaiting user-approved cleanup)
+//  - a legacy receipt-less abandoned contract remains protected from cleanup
 //  - a false positive self-heals: dir back + live run ⇒ row flips to active
 //    with the stranded stamp cleared
 //  - sweepOrphanedWorktreeDirs (orphan GC): a registered git worktree, an
@@ -19,6 +19,7 @@ import {
   createContract,
   getActiveWorktreeByName,
   getAgentRunRow,
+  getRawDb,
   insertAgentRunRow,
   listStrandedWorktrees,
   markWorktreeStranded,
@@ -66,7 +67,20 @@ function insertRun(input: {
   advanceTestAgentRunStatus(input.id, input.status);
 }
 
-test('reconcile: live run excluded, dead run stranded, dir-missing stranded, abandoned excluded', async () => {
+/** Migration 0017 preserves pre-existing `abandoned` rows but correctly
+ * prevents manufacturing new receipt-less authority. These recovery tests
+ * need the historical shape, so emulate a pre-migration row explicitly after
+ * dropping only the two transition guards in this isolated per-test DB. */
+function stampLegacyAbandoned(contractId: ULID, branch: string): void {
+  const raw = getRawDb();
+  raw.exec('DROP TRIGGER agent_contracts_abandonment_state_guard');
+  raw.exec('DROP TRIGGER agent_contracts_legacy_abandoned_transition_guard');
+  raw.prepare(
+    "UPDATE agent_contracts SET landing_status = 'abandoned', landed_branch = ? WHERE id = ?",
+  ).run(branch, contractId);
+}
+
+test('reconcile: live run excluded, dead/dir-missing stranded, legacy abandoned remains protected', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
@@ -84,10 +98,11 @@ test('reconcile: live run excluded, dead run stranded, dir-missing stranded, aba
     const wtC = await provisionFor(gp, newId() as ULID);
     rmSync(wtC.dir, { recursive: true, force: true });
 
-    // D — abandoned contract branch: preserved on purpose, never stranded.
+    // D — legacy abandoned contract with no approval/settlement authority:
+    // protected by its contract/branch record, never treated as cleanup proof.
     const wtD = await provisionFor(gp, newId() as ULID);
     const contract = createContract({ projectId: gp.project.id, podName: 'builder' });
-    setContractLanding(contract.id, { landingStatus: 'abandoned', landedBranch: wtD.branch });
+    stampLegacyAbandoned(contract.id, wtD.branch);
 
     const { stranded, revived } = reconcileStrandedWorktrees();
     assert.equal(revived.length, 0);
@@ -95,9 +110,9 @@ test('reconcile: live run excluded, dead run stranded, dir-missing stranded, aba
     assert.equal(byName.has(wtA.branch), false, 'live worktree not stranded');
     assert.equal(byName.get(wtB.branch), 'no-live-run');
     assert.equal(byName.get(wtC.branch), 'dir-missing');
-    assert.equal(byName.has(wtD.branch), false, 'abandoned branch excluded');
+    assert.equal(byName.has(wtD.branch), false, 'receipt-less abandoned branch stays deliberately protected');
 
-    // Durable rows: B + C stranded, A + D still active.
+    // Durable rows: B + C stranded; live A + protected D stay active.
     const strandedRows = listStrandedWorktrees(gp.project.id);
     assert.deepEqual(new Set(strandedRows.map((w) => w.name)), new Set([wtB.branch, wtC.branch]));
     assert.ok(strandedRows.every((w) => w.strandedAt !== null && w.strandedReason !== null));
@@ -240,12 +255,27 @@ test('sweepOrphanedWorktreeDirs: registered/active-row/awaiting-review dirs are 
     setWorktreeContractId('agent-awaitingreview', contractC.id);
     markWorktreeStranded('agent-awaitingreview', 'no-live-run');
 
-    // D — a true orphan: no git registration, no worktree row at all, no live
+    // D — a legacy receipt-less abandoned contract whose worktree row was
+    // lost. Contract-owned path evidence alone protects it from recursive GC.
+    const dirD = join(root, 'agent-legacy-abandoned');
+    mkdirSync(dirD, { recursive: true });
+    writeFileSync(join(dirD, 'uncommitted.txt'), 'must remain');
+    const contractD = createContract({
+      projectId: gp.project.id,
+      podName: 'builder',
+      expectedOutput: { kind: 'repo' },
+      worktreePath: dirD,
+      worktreeBaseBranch: 'main',
+      worktreeBaseSha: '0'.repeat(40),
+    });
+    stampLegacyAbandoned(contractD.id, 'agent-legacy-abandoned');
+
+    // E — a true orphan: no git registration, no worktree row at all, no live
     // run — exactly the leftover a locked `git worktree remove --force`
     // (or a crash before registration) can strand.
-    const dirD = join(root, 'agent-trueorphan');
-    mkdirSync(join(dirD, 'nested'), { recursive: true });
-    writeFileSync(join(dirD, 'file.txt'), 'x');
+    const dirE = join(root, 'agent-trueorphan');
+    mkdirSync(join(dirE, 'nested'), { recursive: true });
+    writeFileSync(join(dirE, 'file.txt'), 'x');
 
     const removed = await sweepOrphanedWorktreeDirs(gp.dir);
 
@@ -253,7 +283,8 @@ test('sweepOrphanedWorktreeDirs: registered/active-row/awaiting-review dirs are 
     assert.equal(existsSync(wtA.dir), true, 'registered/live worktree kept');
     assert.equal(existsSync(dirB), true, 'active row directory kept');
     assert.equal(existsSync(dirC), true, 'stranded-but-awaiting-review directory kept');
-    assert.equal(existsSync(dirD), false, 'true orphan removed');
+    assert.equal(existsSync(dirD), true, 'legacy abandoned contract path kept without a worktree row');
+    assert.equal(existsSync(dirE), false, 'true orphan removed');
   } finally {
     await gp.cleanup();
   }

@@ -29,6 +29,7 @@ import {
   getPendingAsk,
   getPodForSpawn,
   getProjectById,
+  getWorktreeForContract,
   hasContinuation,
   hasOpenPendingAskForRun,
   hasPendingAskForRun,
@@ -38,6 +39,7 @@ import {
   listConversationEvents,
   listOpenPendingAsksForProject,
   listTurnBudgetExhaustedRuns,
+  listContractsNeedingAbandonmentRecovery,
   markAgentRunDelivered,
   newId,
   prepareAgentRunCreate,
@@ -58,6 +60,7 @@ import {
 import {
   conversationFamilyForEvent,
   runtimeSelectionsEqual,
+  type ApproveWorktreeAbandonmentRequest,
   type ChatEvent,
   type Contract,
   type Deliverable as ContractDeliverable,
@@ -74,6 +77,7 @@ import {
   isPositivePreparationReceiptForRun,
   isPositiveWorktreePhaseReceipt,
   isRepositoryIdentityReceipt,
+  isWorktreeAbandonmentReceipt,
   parseReviewVerdictPayload,
   parseWorktreeProfile,
   reviewVerdictExpectedOutput,
@@ -89,6 +93,8 @@ import {
   type PodSpawnBundle,
   type ULID,
   type WorktreeCommandStep,
+  type WorktreeAbandonmentPreview,
+  type WorktreeAbandonmentReceipt,
   type WorktreeGitReceipt,
   type WorktreePhaseReceipt,
   type WorktreeProfile,
@@ -122,9 +128,12 @@ import {
   probeAlreadyLanded,
   provisionReviewCheckout,
   provisionWorktree,
+  rollbackUnpublishedWorktree,
   removeReviewCheckout,
   reviewCheckoutName,
   runProfileCommands,
+  inspectWorktreeAbandonment,
+  settleAbandonedWorktree,
   sweepOrphanedWorktreeDirs,
   teardownWorktree,
 } from './worktrees.ts';
@@ -211,6 +220,14 @@ export type DispatchResult =
   | { ok: true; run: ReturnType<typeof toAgentRunDto> }
   | { ok: false; cause: DispatchFailureCause; message: string; httpStatus: number };
 
+export type WorktreeAbandonmentPreviewResult =
+  | { ok: true; preview: WorktreeAbandonmentPreview }
+  | { ok: false; message: string; httpStatus: 404 | 409 | 503 };
+
+export type WorktreeAbandonmentApprovalResult =
+  | { ok: true; settlement: 'completed' | 'pending'; contract: Contract }
+  | { ok: false; message: string; httpStatus: 404 | 409 | 503 };
+
 export interface DispatchFreshInput {
   projectId: ULID;
   agentName: string;
@@ -244,6 +261,9 @@ export interface DispatchServiceDeps {
   /** Injectable verification boundary keeps evidence-drift races
    * deterministic under guard tests. Production uses the canonical helper. */
   verifyContract?: typeof verifyContract;
+  /** Injectable provisioning boundary keeps shutdown-after-provision races
+   * deterministic under guard tests. Production uses the canonical helper. */
+  provisionWorktree?: typeof provisionWorktree;
 }
 
 interface AttachContext {
@@ -272,6 +292,18 @@ interface LiveRun {
   continuationAttemptId: string;
   receiptConfirmed: boolean;
   wallClock: ReturnType<typeof setTimeout>;
+}
+
+interface RuntimeRetirement {
+  promise: Promise<void>;
+  status: 'pending' | 'failed';
+  error: unknown;
+}
+
+interface PostTerminalTask {
+  promise: Promise<void>;
+  status: 'pending' | 'completed' | 'failed';
+  error: unknown;
 }
 
 interface StartRunInput {
@@ -324,6 +356,21 @@ export class DispatchService {
   private readonly repositoryLeases = repositoryLeaseManager;
   private ctx: AttachContext | null = null;
   private readonly live = new Map<string, LiveRun>();
+  /** Provider disposal is an asynchronous mutation boundary. A terminal DB
+   * row is not quiescence evidence until this tracked promise resolves. Failed
+   * retirement stays visible and blocks worktree reclamation. */
+  private readonly retiringRuns = new Map<string, RuntimeRetirement>();
+  /** Full preparation/runtime tasks remain mutation authority until they
+   * return. This closes kill-during-preparation/mint windows where the DB row
+   * is terminal before a late native session has been positively disposed. */
+  private readonly runTasks = new Map<string, Promise<void>>();
+  /** Terminal DB state is not repository quiescence: verification, review,
+   * landing, and auto-continuation may still execute after runtime disposal.
+   * Retained entries make every observer share one post-terminal owner. */
+  private readonly postTerminalTasks = new Map<string, PostTerminalTask>();
+  /** A stale, never-installed native session whose disposal failed is durable
+   * process-local uncertainty and must continue blocking repository cleanup. */
+  private readonly runtimeRetirementFailures = new Map<string, unknown>();
   /** One provider resume per paused run. Boot recovery and an incoming answer
    * may race; both must share the same candidate instead of overwriting a live
    * runtime and leaving its wall-clock armed. */
@@ -338,6 +385,21 @@ export class DispatchService {
    * a crashed no-row marker for review recovery to replace. A real restart
    * naturally clears the set, making the durable orphan re-dispatchable. */
   private readonly reviewAdmissions = new Set<string>();
+  /** Async review admission and target association survive marker clearing
+   * until the separate reviewer runtime is positively quiescent. */
+  private readonly reviewAdmissionTasks = new Map<string, Promise<void>>();
+  private readonly reviewTargetsByRun = new Map<string, string>();
+  /** Terminal, kill, and orchestrator override can observe the same reviewer.
+   * They must share one cleanup owner so no caller releases its contract fence
+   * while a peer still reclaims the checkout or settles/re-enters review. */
+  private readonly reviewCleanupTasks = new Map<string, Promise<void>>();
+  private readonly pendingReviewCleanupTasks = new Set<Promise<void>>();
+  private readonly reviewCleanupFailures = new Map<string, unknown>();
+  /** A public review decision remains repository-mutation authority until the
+   * whole verdict/landing path returns. Reference counts keep concurrent stale
+   * callers fenced independently instead of letting the first completion clear
+   * the contract-wide guard for a decision that is still running. */
+  private readonly reviewDecisionCounts = new Map<string, number>();
   /** F3 (comms-hardening): envelopes minted pre-attach (boot recovery, e.g.
    *  recoverSealedRuns, runs BEFORE dispatch.attach) have nowhere live to
    *  land — queued here instead of dropped, then replayed in order by
@@ -521,13 +583,26 @@ export class DispatchService {
         return refuseProvision(failure.message, failure.cause);
       }
     }
+    if (this.ctx !== ctx || this.shuttingDown) {
+      return refuse('not-attached', 'dispatch service changed while acquiring fresh repository authority', 503);
+    }
     if (spec.kind === 'repo') {
-      const provisioned = await provisionWorktree(project.folderPath, runId, {
+      const provisioned = await (this.deps.provisionWorktree ?? provisionWorktree)(project.folderPath, runId, {
         baseBranch: profile?.baseBranch ?? null,
         projectId: input.projectId,
         expectedIdentity: repositoryLease!.identity,
       });
       if (!provisioned.ok) return refuseProvision(provisioned.error);
+      if (this.ctx !== ctx || this.shuttingDown) {
+        const reclaimed = await rollbackUnpublishedWorktree(project.folderPath, provisioned);
+        return refuse(
+          'not-attached',
+          reclaimed
+            ? 'dispatch service changed after fresh worktree provisioning; the unpublished checkout was reclaimed'
+            : 'dispatch service changed after fresh worktree provisioning; checkout cleanup did not positively settle',
+          503,
+        );
+      }
       worktree = provisioned;
       gitReceipt = {
         worktreePath: provisioned.dir,
@@ -583,16 +658,32 @@ export class DispatchService {
           queuedAt: now,
         }),
     });
-    this.contracts.setRun(contract.id, runId);
+    const linkedContract = this.contracts.setRun(contract.id, runId);
+    if (!linkedContract) {
+      this.gateway.commitTerminal({
+        runId,
+        status: 'failed',
+        result: null,
+        failureCause: 'worktree-provision-failed',
+        failureReason: 'fresh producer/contract ownership binding was not positively committed',
+        completedAt: Date.now(),
+        ...(spec.kind === 'repo' ? { lifecycleState: 'failed' as const } : {}),
+      });
+      return refuse(
+        'worktree-provision-failed',
+        'fresh producer/contract ownership binding could not be committed',
+        409,
+      );
+    }
 
     // Fire the run; the dispatch call returns immediately (always async).
     // Prepare/readiness (profile commands) run BEFORE any agent phase.
-    void this.prepareAndStart({
+    const startTask = this.prepareAndStart({
       row: publication.run as unknown as { runId: string },
       runId,
       projectId: input.projectId,
       snapshot,
-      contract,
+      contract: linkedContract,
       spec,
       selection,
       worktree,
@@ -601,7 +692,9 @@ export class DispatchService {
       repositoryLease,
       profile,
       freshProvision: true,
-    }).catch(() => {
+    });
+    this.trackRunTask(runId, startTask);
+    void startTask.catch(() => {
       console.error(`[pc-sdk][dispatch] startRun crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
@@ -650,8 +743,23 @@ export class DispatchService {
     if (parent.status !== 'completed' && parent.status !== 'failed') {
       return refuse('not-continuable', `run is '${parent.status}' — only completed/failed runs can be continued`, 409);
     }
+    const parentMutationIssue = this.runMutationQuiescenceIssue(
+      parent.id,
+      input.autoContinueCount > 0,
+    );
+    if (parentMutationIssue) return refuse('not-continuable', parentMutationIssue, 409);
     if (findActiveContinuation(input.runId)) {
       return refuse('concurrent-continuation', 'an active continuation for this run already exists', 409);
+    }
+    const parentRetirement = this.retiringRuns.get(parent.id);
+    if (parentRetirement) {
+      return refuse(
+        'not-continuable',
+        parentRetirement.status === 'pending'
+          ? 'the parent runtime is still disposing — retry after positive quiescence'
+          : 'the parent runtime failed to dispose — worktree mutation remains blocked',
+        409,
+      );
     }
     const project = getProjectById(input.projectId);
     if (!project) return refuse('project-missing', `unknown project ${input.projectId}`, 404);
@@ -695,6 +803,7 @@ export class DispatchService {
     // receipt is final; failed/conflict/stale-base parks remain fixable.
     if (
       contract.landingStatus === 'pending' ||
+      contract.landingStatus === 'abandoning' ||
       contract.landingStatus === 'landed' ||
       contract.landingStatus === 'abandoned'
     ) {
@@ -774,6 +883,33 @@ export class DispatchService {
         return refuse(failure.cause, failure.message, failure.httpStatus);
       }
     }
+    if (this.ctx !== ctx || this.shuttingDown) {
+      return refuse('not-attached', 'dispatch service changed while acquiring continuation repository authority', 503);
+    }
+    const currentContract = this.contracts.get(contract.id);
+    const quiescenceIssue = this.contractRuntimeQuiescenceIssue(
+      contract.id,
+      false,
+      input.autoContinueCount > 0 ? parent.id : null,
+    );
+    if (!currentContract || currentContract.version !== contract.version) {
+      return refuse('not-continuable', 'contract changed while continuation authority was awaiting', 409);
+    }
+    if (
+      currentContract.landingStatus === 'pending' ||
+      currentContract.landingStatus === 'abandoning' ||
+      currentContract.landingStatus === 'landed' ||
+      currentContract.landingStatus === 'abandoned'
+    ) {
+      return refuse(
+        'not-continuable',
+        `contract landing is '${currentContract.landingStatus}' — continuation cannot mutate this worktree`,
+        409,
+      );
+    }
+    if (quiescenceIssue) {
+      return refuse('not-continuable', quiescenceIssue, 409);
+    }
     const runId = newId() as ULID;
     const now = Date.now();
 
@@ -813,14 +949,30 @@ export class DispatchService {
       }
       throw error;
     }
-    this.contracts.setRun(contract.id, runId);
+    const linkedContract = this.contracts.setRun(contract.id, runId);
+    if (!linkedContract) {
+      this.gateway.commitTerminal({
+        runId,
+        status: 'failed',
+        result: null,
+        failureCause: 'worktree-provision-failed',
+        failureReason: 'continuation producer/worktree ownership transfer was not positively committed',
+        completedAt: Date.now(),
+        ...(spec.kind === 'repo' ? { lifecycleState: 'failed' as const } : {}),
+      });
+      return refuse(
+        'not-continuable',
+        'continuation producer/worktree ownership transfer could not be committed',
+        409,
+      );
+    }
 
-    void this.prepareAndStart({
+    const startTask = this.prepareAndStart({
       row: publication.run as unknown as { runId: string },
       runId,
       projectId: input.projectId,
       snapshot,
-      contract,
+      contract: linkedContract,
       spec,
       selection,
       worktree: parent.worktreeDir
@@ -831,7 +983,9 @@ export class DispatchService {
       repositoryLease,
       profile,
       freshProvision: false,
-    }).catch(() => {
+    });
+    this.trackRunTask(runId, startTask);
+    void startTask.catch(() => {
       console.error(`[pc-sdk][dispatch] continuation start crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
@@ -891,7 +1045,7 @@ export class DispatchService {
           setup,
           undefined,
           input.repositoryLease?.identity ?? null,
-          () => !this.runIsTerminal(input.runId),
+          () => !this.shuttingDown && !this.runIsTerminal(input.runId),
         );
         if (prep.cancelled || this.runIsTerminal(input.runId)) return;
         const recorded = this.persistPhaseReceipt(input.runId, {
@@ -937,7 +1091,7 @@ export class DispatchService {
           readiness,
           undefined,
           input.repositoryLease?.identity ?? null,
-          () => !this.runIsTerminal(input.runId),
+          () => !this.shuttingDown && !this.runIsTerminal(input.runId),
         );
         if (ready.cancelled || this.runIsTerminal(input.runId)) return;
         const recorded = this.persistPhaseReceipt(input.runId, {
@@ -980,6 +1134,129 @@ export class DispatchService {
     return !row || row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled';
   }
 
+  private trackRunTask(runId: ULID, task: Promise<void>): void {
+    this.runTasks.set(runId, task);
+    void task.finally(() => {
+      if (this.runTasks.get(runId) === task) this.runTasks.delete(runId);
+    }).catch(() => {});
+  }
+
+  private trackPostTerminalTask(runId: ULID, work: () => Promise<void>): Promise<void> {
+    const existing = this.postTerminalTasks.get(runId);
+    if (existing) return existing.promise;
+    const promise = Promise.resolve().then(work);
+    const tracked: PostTerminalTask = { promise, status: 'pending', error: null };
+    this.postTerminalTasks.set(runId, tracked);
+    void promise.then(
+      () => {
+        tracked.status = 'completed';
+      },
+      (error) => {
+        tracked.status = 'failed';
+        tracked.error = error;
+      },
+    );
+    return promise;
+  }
+
+  private async disposeUninstalledRuntime(runId: ULID, session: RuntimeSession): Promise<void> {
+    try {
+      await session.dispose();
+    } catch (error) {
+      this.runtimeRetirementFailures.set(runId, error);
+      console.error(`[pc-sdk][dispatch] stale runtime disposal failed for ${runId}:`, error);
+    }
+  }
+
+  /** Track runtime retirement as positive quiescence evidence. Callers may
+   * remove the live projection immediately, but repository teardown remains
+   * fenced until this promise resolves. */
+  private retireRuntime(runId: ULID, session: RuntimeSession): Promise<void> {
+    const existing = this.retiringRuns.get(runId);
+    if (existing) return existing.promise;
+    const retirement: RuntimeRetirement = {
+      status: 'pending',
+      error: null,
+      promise: Promise.resolve().then(() => session.dispose()),
+    };
+    this.retiringRuns.set(runId, retirement);
+    void retirement.promise.then(
+      () => {
+        if (this.retiringRuns.get(runId) === retirement) {
+          this.retiringRuns.delete(runId);
+        }
+      },
+      (error) => {
+        retirement.status = 'failed';
+        retirement.error = error;
+        console.error(`[pc-sdk][dispatch] runtime retirement failed for ${runId}:`, error);
+      },
+    );
+    return retirement.promise;
+  }
+
+  private runRuntimeQuiescenceIssue(runId: string): string | null {
+    if (this.reviewAdmissionTasks.has(runId)) return `run ${runId} review admission is still pending`;
+    if (this.runTasks.has(runId)) return `run ${runId} preparation or runtime task is still pending`;
+    if (this.liveRevivals.has(runId)) return `run ${runId} runtime revival is still pending`;
+    if (this.live.has(runId)) return `run ${runId} still has a live runtime session`;
+    const retirement = this.retiringRuns.get(runId);
+    if (retirement?.status === 'pending') return `run ${runId} runtime disposal is still pending`;
+    if (retirement?.status === 'failed') return `run ${runId} runtime disposal failed`;
+    if (this.runtimeRetirementFailures.has(runId)) return `run ${runId} stale runtime disposal failed`;
+    return null;
+  }
+
+  private runMutationQuiescenceIssue(runId: string, excludePostTerminal = false): string | null {
+    const runtimeIssue = this.runRuntimeQuiescenceIssue(runId);
+    if (runtimeIssue) return runtimeIssue;
+    const task = this.postTerminalTasks.get(runId);
+    if (!excludePostTerminal && task?.status === 'pending') {
+      return `run ${runId} post-terminal settlement is still pending`;
+    }
+    if (!excludePostTerminal && task?.status === 'failed') {
+      return `run ${runId} post-terminal settlement failed`;
+    }
+    return null;
+  }
+
+  private async awaitRunRuntimeQuiescence(runId: ULID): Promise<string | null> {
+    const pending = [
+      this.reviewAdmissionTasks.get(runId),
+      this.runTasks.get(runId),
+      this.liveRevivals.get(runId),
+      this.retiringRuns.get(runId)?.promise,
+    ].filter((promise) => promise !== undefined);
+    await Promise.allSettled(pending);
+    return this.runRuntimeQuiescenceIssue(runId);
+  }
+
+  /** Null means every same-process runtime bound to the contract, including a
+   * separately contracted reviewer, has retired. */
+  private contractRuntimeQuiescenceIssue(
+    contractId: string,
+    excludeCurrentReviewDecision = false,
+    excludePostTerminalRunId: string | null = null,
+    excludeReviewRunId: string | null = null,
+  ): string | null {
+    const reviewDecisionCount = this.reviewDecisionCounts.get(contractId) ?? 0;
+    if (reviewDecisionCount > (excludeCurrentReviewDecision ? 1 : 0)) {
+      return `contract ${contractId} review decision is still pending`;
+    }
+    for (const [reviewRunId, targetId] of this.reviewTargetsByRun) {
+      if (reviewRunId === excludeReviewRunId) continue;
+      if (targetId === contractId) {
+        return this.runMutationQuiescenceIssue(reviewRunId) ??
+          `review run ${reviewRunId} cleanup has not positively settled`;
+      }
+    }
+    for (const run of listAgentRunsForContract(contractId as ULID)) {
+      const issue = this.runMutationQuiescenceIssue(run.id, run.id === excludePostTerminalRunId);
+      if (issue) return issue;
+    }
+    return null;
+  }
+
   /** Preparation/readiness failure → the existing typed provision-failure
    *  terminal. The receipt is already persisted; the worktree is preserved
    *  (retention rules — never torn down on a prep failure). */
@@ -1002,7 +1279,7 @@ export class DispatchService {
       completedAt: Date.now(),
       lifecycleState: 'provisioning-failed',
     });
-    void this.verifyAndLand(runId, 'failed').catch((err) => {
+    void this.trackPostTerminalTask(runId, () => this.verifyAndLand(runId, 'failed')).catch((err) => {
       console.error(`[pc-sdk][dispatch] post-prep-failure settle crashed for ${runId}:`, err);
     });
   }
@@ -1020,7 +1297,7 @@ export class DispatchService {
       completedAt: Date.now(),
       lifecycleState: 'failed',
     });
-    void this.verifyAndLand(runId, 'failed').catch((settleError) => {
+    void this.trackPostTerminalTask(runId, () => this.verifyAndLand(runId, 'failed')).catch((settleError) => {
       console.error(`[pc-sdk][dispatch] repository-authority settlement failed for ${runId}:`, settleError);
     });
   }
@@ -1037,7 +1314,7 @@ export class DispatchService {
       completedAt: Date.now(),
       lifecycleState: 'failed',
     });
-    void this.verifyAndLand(runId, 'failed').catch((error) => {
+    void this.trackPostTerminalTask(runId, () => this.verifyAndLand(runId, 'failed')).catch((error) => {
       console.error(`[pc-sdk][dispatch] phase-evidence settlement failed for ${runId}:`, error);
     });
   }
@@ -1242,7 +1519,7 @@ export class DispatchService {
         ? afterMint.continuationState !== 'clean-pending'
         : afterMint.continuationState !== 'resume-pending')
     ) {
-      await session.dispose().catch(() => {});
+      await this.disposeUninstalledRuntime(input.runId, session);
       return;
     }
 
@@ -1419,7 +1696,7 @@ export class DispatchService {
         current.continuationAttemptId !== continuationAttemptId ||
         current.continuationState !== 'resume-pending'
       ) {
-        await session.dispose().catch(() => {});
+        await this.disposeUninstalledRuntime(run.id as ULID, session);
         return null;
       }
       const liveRun: LiveRun = {
@@ -1457,7 +1734,7 @@ export class DispatchService {
       if (this.shuttingDown) {
         if (candidate) {
           clearTimeout(candidate.wallClock);
-          await candidate.session.dispose().catch(() => {});
+          await this.disposeUninstalledRuntime(run.id as ULID, candidate.session);
         }
         return null;
       }
@@ -1465,7 +1742,7 @@ export class DispatchService {
       if (winner) {
         if (candidate && candidate !== winner) {
           clearTimeout(candidate.wallClock);
-          await candidate.session.dispose().catch(() => {});
+          await this.disposeUninstalledRuntime(run.id as ULID, candidate.session);
         }
         return winner;
       }
@@ -1478,7 +1755,7 @@ export class DispatchService {
         current.continuationState !== 'resume-pending'
       ) {
         clearTimeout(candidate.wallClock);
-        await candidate.session.dispose().catch(() => {});
+        await this.disposeUninstalledRuntime(run.id as ULID, candidate.session);
         return null;
       }
       this.live.set(run.id, candidate);
@@ -1871,12 +2148,14 @@ export class DispatchService {
       }, liveRun.continuationAttemptId);
       return { ok: true };
     }
-    void this.consumeTurn(
+    const resumedTask = this.consumeTurn(
       ask.agentRunId,
       ask.projectId,
       turn,
       { firstTurn: false },
-    ).catch(() => {
+    );
+    this.trackRunTask(ask.agentRunId as ULID, resumedTask);
+    void resumedTask.catch(() => {
       console.error(`[pc-sdk][dispatch] resumed turn crashed for ${ask.agentRunId}: ${RUNTIME_SEND_FAILURE_REASON}`);
       this.settleTerminal(ask.agentRunId, {
         status: 'failed',
@@ -1928,21 +2207,19 @@ export class DispatchService {
     if (liveRun) {
       clearTimeout(liveRun.wallClock);
       this.live.delete(runId);
-      void liveRun.session.dispose().catch(() => {});
+      this.retireRuntime(runId, liveRun.session);
     }
     // A killed REVIEW run must not wedge its target: route the (verdict-less)
     // terminal into the review gate — re-dispatch or the exhausted park.
     if (publication !== null) {
-      const reviewTarget = findContractByReviewRun(runId);
-      if (reviewTarget) {
-        const reviewerContract = row.contractId ? this.contracts.get(row.contractId) : null;
-        void this.settleReviewVerdict(reviewTarget.id, runId, reviewerContract, 'cancelled').catch((err) => {
-          console.error(`[pc-sdk][dispatch] review-kill settlement failed for contract ${reviewTarget.id}:`, err);
+      const reviewTargetId = findContractByReviewRun(runId)?.id ?? this.reviewTargetsByRun.get(runId);
+      const isReviewCheckout = row.worktreeDir !== null &&
+        basename(row.worktreeDir) === reviewCheckoutName(runId);
+      if (reviewTargetId || isReviewCheckout) {
+        void this.ensureReviewCleanup(runId, row, reviewTargetId as ULID | null).catch((err) => {
+          console.error(`[pc-sdk][dispatch] review-kill retirement/settlement failed for ${runId}:`, err);
         });
       }
-      // A killed reviewer's disposable checkout is reclaimed here — the kill
-      // path never reaches verifyAndLand's reclaim.
-      this.reclaimReviewCheckout(row);
     }
     return { ok: true, alreadyTerminal: publication === null };
   }
@@ -2110,6 +2387,23 @@ export class DispatchService {
     verdict: 'accept' | 'reject';
     notes?: string | null;
   }): Promise<{ ok: true; contract: Contract } | { ok: false; message: string; httpStatus: number }> {
+    const count = this.reviewDecisionCounts.get(input.contractId) ?? 0;
+    this.reviewDecisionCounts.set(input.contractId, count + 1);
+    try {
+      return await this.reviewContractInner(input);
+    } finally {
+      const remaining = (this.reviewDecisionCounts.get(input.contractId) ?? 1) - 1;
+      if (remaining > 0) this.reviewDecisionCounts.set(input.contractId, remaining);
+      else this.reviewDecisionCounts.delete(input.contractId);
+    }
+  }
+
+  private async reviewContractInner(input: {
+    projectId: ULID;
+    contractId: ULID;
+    verdict: 'accept' | 'reject';
+    notes?: string | null;
+  }): Promise<{ ok: true; contract: Contract } | { ok: false; message: string; httpStatus: number }> {
     const contract = this.contracts.get(input.contractId);
     if (!contract || contract.projectId !== input.projectId) return { ok: false, message: 'unknown contract', httpStatus: 404 };
     if (contract.landingStatus === 'landed') {
@@ -2129,6 +2423,23 @@ export class DispatchService {
           httpStatus: 409,
         };
       }
+    }
+    // Refuse before clearing/killing any reviewer when the target producer is
+    // still verifying/landing (or failed to settle). Only the exact reviewer
+    // this decision intends to supersede is excluded from this preflight; the
+    // post-cleanup check below restores the full fence.
+    const preOverrideIssue = this.contractRuntimeQuiescenceIssue(
+      contract.id,
+      true,
+      null,
+      contract.reviewRunId,
+    );
+    if (preOverrideIssue) {
+      return {
+        ok: false,
+        message: preOverrideIssue,
+        httpStatus: 409,
+      };
     }
     let reviewRepositoryIdentity: RepositoryIdentityReceipt | null = null;
     if ((contract.expectedOutput as ExpectedOutput | null)?.kind === 'repo') {
@@ -2158,7 +2469,19 @@ export class DispatchService {
     // accept, still occupies its checkout during teardown.
     if (contract.reviewRunId) {
       const supersededReviewId = contract.reviewRunId as ULID;
-      this.contracts.setReviewState({ id: contract.id, reviewRunId: null, reviewSealedCommit: null });
+      const clearedReservation = this.contracts.clearReviewReservation({
+        id: contract.id,
+        reviewRunId: supersededReviewId,
+      });
+      if (!clearedReservation) {
+        return {
+          ok: false,
+          message: 'independent reviewer changed while override authority was awaiting — review the current reservation instead',
+          httpStatus: 409,
+        };
+      }
+      const admissionTask = this.reviewAdmissionTasks.get(supersededReviewId);
+      if (admissionTask) await admissionTask;
       const reviewRun = getAgentRunRow(supersededReviewId);
       if (reviewRun && !['completed', 'failed', 'cancelled'].includes(reviewRun.status)) {
         await this.killRun(contract.projectId as ULID, supersededReviewId, {
@@ -2166,6 +2489,33 @@ export class DispatchService {
           failureReason: 'independent review superseded by orchestrator pc_review_contract',
         });
       }
+      const settledReviewRun = getAgentRunRow(supersededReviewId) ?? reviewRun;
+      if (!settledReviewRun && this.reviewTargetsByRun.get(supersededReviewId) === contract.id) {
+        return {
+          ok: false,
+          message: 'independent reviewer admission settled without a durable run row',
+          httpStatus: 409,
+        };
+      }
+      if (settledReviewRun) {
+        try {
+          await this.ensureReviewCleanup(supersededReviewId, settledReviewRun, contract.id as ULID);
+        } catch (error) {
+          return {
+            ok: false,
+            message: `independent reviewer could not be positively retired: ${error instanceof Error ? error.message : 'cleanup failed'}`,
+            httpStatus: 409,
+          };
+        }
+      }
+    }
+    const settlementIssue = this.contractRuntimeQuiescenceIssue(contract.id, true);
+    if (settlementIssue) {
+      return {
+        ok: false,
+        message: settlementIssue,
+        httpStatus: 409,
+      };
     }
     // Clearing/killing a reviewer can await. Bind this decision to the same
     // settled producer the caller reviewed; a continuation that moved the
@@ -2179,6 +2529,7 @@ export class DispatchService {
       decision.agentRunId !== contract.agentRunId ||
       decision.reviewRunId !== null ||
       decision.landingStatus === 'pending' ||
+      decision.landingStatus === 'abandoning' ||
       decision.landingStatus === 'landed' ||
       decision.landingStatus === 'abandoned' ||
       !decisionProducer ||
@@ -2355,13 +2706,14 @@ export class DispatchService {
     if (!publication) return; // already terminal or stale runtime attempt
 
     const liveRun = this.live.get(runId);
+    let retirement: Promise<void> = Promise.resolve();
     if (liveRun && (
       continuationAttemptId === undefined ||
       liveRun.continuationAttemptId === continuationAttemptId
     )) {
       clearTimeout(liveRun.wallClock);
       this.live.delete(runId);
-      void liveRun.session.dispose().catch(() => {});
+      retirement = this.retireRuntime(runId, liveRun.session);
     }
 
     if (autoContinue) {
@@ -2371,15 +2723,23 @@ export class DispatchService {
       // routing) runs only on the FINAL outcome — skipping it here also
       // avoids reclaiming a review checkout the continuation is about to
       // resume in.
-      void this.fireAutoContinue(runId, row).catch((err) => {
-        console.error(`[pc-sdk][dispatch] auto-continue crashed for ${runId}:`, err);
-      });
+      void this.trackPostTerminalTask(runId, async () => {
+        await retirement;
+        await this.fireAutoContinue(runId, row);
+      })
+        .catch((err) => {
+          console.error(`[pc-sdk][dispatch] auto-continue retirement/start failed for ${runId}:`, err);
+        });
       return;
     }
 
-    void this.verifyAndLand(runId, status).catch((err) => {
-      console.error(`[pc-sdk][dispatch] verify/land crashed for ${runId}:`, err);
-    });
+    void this.trackPostTerminalTask(runId, async () => {
+      await retirement;
+      await this.verifyAndLand(runId, status);
+    })
+      .catch((err) => {
+        console.error(`[pc-sdk][dispatch] runtime retirement or verify/land failed for ${runId}:`, err);
+      });
   }
 
   /** Fire one automatic continuation off a 'turn-budget-exhausted' terminal —
@@ -2413,9 +2773,7 @@ export class DispatchService {
         runId,
         `hit turn budget, but the auto-continuation could not be dispatched (${result.message}) — needs attention`,
       );
-      void this.verifyAndLand(runId, 'failed').catch((err) => {
-        console.error(`[pc-sdk][dispatch] verify/land crashed for ${runId}:`, err);
-      });
+      await this.verifyAndLand(runId, 'failed');
     }
   }
 
@@ -2436,7 +2794,10 @@ export class DispatchService {
         console.warn(
           `[auto-continue] resuming after restart — run ${row.id}, attempt ${row.autoContinueCount + 1}/${MAX_AUTO_CONTINUES}`,
         );
-        await this.fireAutoContinue(row.id as ULID, row);
+        await this.trackPostTerminalTask(
+          row.id as ULID,
+          () => this.fireAutoContinue(row.id as ULID, row),
+        );
       } catch (err) {
         console.error(`[pc-sdk][dispatch] auto-continue re-entry failed for run ${row.id} — continuing with the rest:`, err);
       }
@@ -2550,7 +2911,15 @@ export class DispatchService {
     // auto_land); otherwise it parks merge-ready for the orchestrator to
     // review the diff and authorize via pc_review_contract accept.
     const spec = contract?.expectedOutput as ExpectedOutput | null;
-    if (!verificationDrifted && contract && contract.landingStatus !== 'landed' && contract.verificationStatus === 'passed' && spec?.kind === 'repo') {
+    if (
+      !verificationDrifted &&
+      contract &&
+      contract.landingStatus !== 'landed' &&
+      contract.landingStatus !== 'abandoning' &&
+      contract.landingStatus !== 'abandoned' &&
+      contract.verificationStatus === 'passed' &&
+      spec?.kind === 'repo'
+    ) {
       const policy = effectiveLandingPolicy(contract.landingPolicy, spec);
       if (policy === 'auto-merge') {
         // Guard 5: auto-merge is policy + POSITIVE evidence, never model
@@ -2625,16 +2994,59 @@ export class DispatchService {
     // Independent-review settlement: when THIS run was a review dispatch (the
     // durable reviewRunId marker on the target contract), its terminal carries
     // the verdict for the contract under review.
-    const reviewTarget = findContractByReviewRun(runId);
-    if (reviewTarget) {
-      await this.settleReviewVerdict(reviewTarget.id, runId, contract, terminalStatus);
+    const reviewTargetId = findContractByReviewRun(runId)?.id ?? this.reviewTargetsByRun.get(runId);
+    const isReviewCheckout = freshRow.worktreeDir !== null &&
+      basename(freshRow.worktreeDir) === reviewCheckoutName(runId);
+    if (reviewTargetId || isReviewCheckout) {
+      await this.ensureReviewCleanup(runId, freshRow, reviewTargetId as ULID | null);
     }
-    // A review run's disposable checkout is reclaimed at its terminal — also
-    // when the marker was already superseded (no reviewTarget).
-    this.reclaimReviewCheckout(freshRow);
   }
 
   // ── full independent review (docs/worktree-lifecycle.md :175-187) ───────────
+
+  /** One idempotent cleanup owner per reviewer. The promise is retained for the
+   * service lifetime so a late terminal/kill/override observer can only await
+   * the original work; it can never start a second Git cleanup pipeline. */
+  private ensureReviewCleanup(
+    runId: ULID,
+    observedRow: AgentRunRow,
+    observedTargetId: ULID | null,
+  ): Promise<void> {
+    const existing = this.reviewCleanupTasks.get(runId);
+    if (existing) return existing;
+    const task = (async () => {
+      const quiescenceIssue = await this.awaitRunRuntimeQuiescence(runId);
+      if (quiescenceIssue) throw new Error(quiescenceIssue);
+      const row = getAgentRunRow(runId) ?? observedRow;
+      if (!['completed', 'failed', 'cancelled'].includes(row.status)) {
+        throw new Error(`review run ${runId} is still '${row.status}'`);
+      }
+      await this.reclaimReviewCheckout(row);
+      const reviewTarget = findContractByReviewRun(runId);
+      const reviewTargetId = reviewTarget?.id ?? this.reviewTargetsByRun.get(runId) ?? observedTargetId;
+      if (reviewTarget) {
+        const reviewerContract = row.contractId ? this.contracts.get(row.contractId) : null;
+        await this.settleReviewVerdict(
+          reviewTarget.id,
+          runId,
+          reviewerContract,
+          row.status as 'completed' | 'failed' | 'cancelled',
+        );
+      }
+      if (reviewTargetId && this.reviewTargetsByRun.get(runId) === reviewTargetId) {
+        this.reviewTargetsByRun.delete(runId);
+      }
+    })();
+    this.reviewCleanupTasks.set(runId, task);
+    this.pendingReviewCleanupTasks.add(task);
+    void task.finally(() => {
+      this.pendingReviewCleanupTasks.delete(task);
+    }).catch(() => {});
+    void task.catch((error) => {
+      this.reviewCleanupFailures.set(runId, error);
+    });
+    return task;
+  }
 
   /** Route a review run's terminal into the target contract: approve → land
    *  via the normal guarded path (authorizer 'reviewer'); reject → verification
@@ -2651,7 +3063,11 @@ export class DispatchService {
     const target = this.contracts.get(targetId);
     if (!target) return;
     // A landed receipt is final; abandoned work never re-enters review.
-    if (target.landingStatus === 'landed' || target.landingStatus === 'abandoned') return;
+    if (
+      target.landingStatus === 'landed' ||
+      target.landingStatus === 'abandoning' ||
+      target.landingStatus === 'abandoned'
+    ) return;
     // Stale verdict: the marker moved on (orchestrator override via
     // pc_review_contract, or a newer round) — this run's verdict is void.
     if (target.reviewRunId !== reviewRunId) return;
@@ -2759,7 +3175,11 @@ export class DispatchService {
   private async ensureIndependentReview(contractId: ULID): Promise<Contract | null> {
     const contract = this.contracts.get(contractId);
     if (!contract) return null;
-    if (contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned') return contract;
+    if (
+      contract.landingStatus === 'landed' ||
+      contract.landingStatus === 'abandoning' ||
+      contract.landingStatus === 'abandoned'
+    ) return contract;
     if (contract.verificationStatus !== 'passed') return contract;
     // A reviewer may be admitted only against a settled producer. In
     // particular, boot review recovery can race a continuation that moved the
@@ -2875,6 +3295,10 @@ export class DispatchService {
     });
     if (!reserved) return this.contracts.get(target.id);
     this.reviewAdmissions.add(runId);
+    let settleAdmission!: () => void;
+    const admissionTask = new Promise<void>((resolve) => { settleAdmission = resolve; });
+    this.reviewAdmissionTasks.set(runId, admissionTask);
+    this.reviewTargetsByRun.set(runId, target.id);
     const parkOwnedReservation = (why: string): Contract | null => {
       // Release only this admission. If an override/newer reservation moved
       // the marker while an async step was pending, it wins untouched.
@@ -2911,6 +3335,7 @@ export class DispatchService {
     }
     const admitted = this.contracts.get(target.id);
     if (
+      this.shuttingDown ||
       !admitted ||
       admitted.reviewRunId !== runId ||
       admitted.reviewSealedCommit !== sealedCommit ||
@@ -2974,7 +3399,24 @@ export class DispatchService {
           queuedAt: now,
         }),
     });
-    this.contracts.setRun(reviewContract.id, runId);
+    const linkedReviewContract = this.contracts.setRun(reviewContract.id, runId);
+    if (!linkedReviewContract) {
+      this.gateway.commitTerminal({
+        runId,
+        status: 'failed',
+        result: null,
+        failureCause: 'worktree-provision-failed',
+        failureReason: 'review producer/contract ownership binding was not positively committed',
+        completedAt: Date.now(),
+      });
+      await removeReviewCheckout(
+        project.folderPath,
+        checkout.dir,
+        repositoryIdentity,
+      ).catch(() => false);
+      this.reviewTargetsByRun.delete(runId);
+      return parkOwnedReservation('review producer/contract ownership binding could not be committed');
+    }
     const note = `independent review round ${round} dispatched (run ${runId})`;
     const priorNotes = admitted.verificationNotes;
     this.contracts.setVerification({
@@ -2983,12 +3425,12 @@ export class DispatchService {
       verificationNotes: priorNotes ? `${priorNotes}\n${note}` : note,
     });
 
-    void this.prepareAndStart({
+    const startTask = this.prepareAndStart({
       row: publication.run as unknown as { runId: string },
       runId,
       projectId,
       snapshot,
-      contract: reviewContract,
+      contract: linkedReviewContract,
       spec,
       selection,
       worktree: {
@@ -3002,7 +3444,9 @@ export class DispatchService {
       repositoryLease,
       profile: null,
       freshProvision: false,
-    }).catch(() => {
+    });
+    this.trackRunTask(runId, startTask);
+    void startTask.catch(() => {
       console.error(`[pc-sdk][dispatch] review runtime start crashed for ${runId}: ${RUNTIME_START_FAILURE_REASON}`);
       this.settleTerminal(runId, {
         status: 'failed',
@@ -3014,6 +3458,13 @@ export class DispatchService {
     return this.contracts.get(target.id);
     } finally {
       this.reviewAdmissions.delete(runId);
+      if (this.reviewAdmissionTasks.get(runId) === admissionTask) {
+        this.reviewAdmissionTasks.delete(runId);
+        settleAdmission();
+      }
+      if (!getAgentRunRow(runId) && this.reviewTargetsByRun.get(runId) === target.id) {
+        this.reviewTargetsByRun.delete(runId);
+      }
     }
   }
 
@@ -3074,6 +3525,385 @@ export class DispatchService {
     }
   }
 
+  // ── browser-approved worktree abandonment (DL-002) ────────────────────────
+
+  async previewContractAbandonment(input: {
+    projectId: ULID;
+    contractId: ULID;
+  }): Promise<WorktreeAbandonmentPreviewResult> {
+    if (!this.ctx || this.shuttingDown) {
+      return { ok: false, message: 'dispatch service not ready', httpStatus: 503 };
+    }
+    const initial = this.contracts.get(input.contractId);
+    if (!initial || initial.projectId !== input.projectId) {
+      return { ok: false, message: 'contract not found', httpStatus: 404 };
+    }
+    const authority = this.abandonmentQueueAuthority(initial);
+    if (!authority) {
+      return { ok: false, message: 'repository authority is unavailable', httpStatus: 503 };
+    }
+    try {
+      return await this.enqueueRepositoryMutation(
+        authority.projectDir,
+        authority.repositoryIdentity,
+        () => this.inspectContractAbandonmentLocked(
+          input.projectId,
+          input.contractId,
+          authority.repositoryIdentity,
+        ),
+      );
+    } catch (error) {
+      const failure = repositoryLeaseFailure(error);
+      return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+    }
+  }
+
+  async approveContractAbandonment(input: {
+    projectId: ULID;
+    contractId: ULID;
+    request: ApproveWorktreeAbandonmentRequest;
+  }): Promise<WorktreeAbandonmentApprovalResult> {
+    if (!this.ctx || this.shuttingDown) {
+      return { ok: false, message: 'dispatch service not ready', httpStatus: 503 };
+    }
+    const initial = this.contracts.get(input.contractId);
+    if (!initial || initial.projectId !== input.projectId) {
+      return { ok: false, message: 'contract not found', httpStatus: 404 };
+    }
+    const authority = this.abandonmentQueueAuthority(initial);
+    if (!authority) {
+      return { ok: false, message: 'repository authority is unavailable', httpStatus: 503 };
+    }
+    try {
+      return await this.enqueueRepositoryMutation(
+        authority.projectDir,
+        authority.repositoryIdentity,
+        async () => {
+          let current = this.contracts.get(input.contractId);
+          if (!current || current.projectId !== input.projectId) {
+            return { ok: false, message: 'contract not found', httpStatus: 404 } as const;
+          }
+
+          if (current.abandonmentReceipt) {
+            if (current.abandonmentReceipt.requestId !== input.request.requestId) {
+              return {
+                ok: false,
+                message: 'a different abandonment approval already owns this contract',
+                httpStatus: 409,
+              } as const;
+            }
+            if (
+              current.abandonmentReceipt.approvedContractVersion !== input.request.expectedContractVersion ||
+              current.abandonmentReceipt.previewDigest !== input.request.previewDigest ||
+              current.abandonmentReceipt.branch !== input.request.confirmation ||
+              current.abandonmentReceipt.reason !== (input.request.reason ?? null)
+            ) {
+              return {
+                ok: false,
+                message: 'request does not match the durable abandonment approval',
+                httpStatus: 409,
+              } as const;
+            }
+            return this.driveApprovedAbandonmentLocked(current);
+          }
+
+          const inspected = await this.inspectContractAbandonmentLocked(
+            input.projectId,
+            input.contractId,
+            authority.repositoryIdentity,
+          );
+          if (!inspected.ok) return inspected;
+          const preview = inspected.preview;
+          if (
+            preview.contractVersion !== input.request.expectedContractVersion ||
+            preview.previewDigest !== input.request.previewDigest
+          ) {
+            return {
+              ok: false,
+              message: 'abandonment preview is stale — reload current worktree evidence',
+              httpStatus: 409,
+            } as const;
+          }
+          if (preview.branch !== input.request.confirmation) {
+            return {
+              ok: false,
+              message: 'confirmation must exactly match the current branch name',
+              httpStatus: 409,
+            } as const;
+          }
+          if (preview.worktreeState.directory !== 'present') {
+            return {
+              ok: false,
+              message: 'fresh abandonment approval requires a present registered worktree',
+              httpStatus: 409,
+            } as const;
+          }
+
+          const receipt: WorktreeAbandonmentReceipt = {
+            protocol: 'worktree-abandonment-v1',
+            requestId: input.request.requestId,
+            approvedBy: 'user',
+            approvalSurface: 'browser',
+            approvalReason: 'explicit-browser-confirmation',
+            approvedAt: Date.now(),
+            reason: input.request.reason ?? null,
+            approvedContractVersion: preview.contractVersion,
+            projectId: preview.projectId,
+            contractId: preview.contractId,
+            producerRunId: preview.producerRunId,
+            worktreeId: preview.worktreeId,
+            worktreeStatus: preview.worktreeStatus,
+            repositoryIdentity: preview.repositoryIdentity,
+            worktreePath: preview.worktreePath,
+            branch: preview.branch,
+            branchTip: preview.branchTip,
+            baseBranch: preview.baseBranch,
+            validatedBaseSha: preview.validatedBaseSha,
+            targetTip: preview.targetTip,
+            integrationState: preview.integrationState,
+            worktreeState: preview.worktreeState,
+            previewDigest: preview.previewDigest,
+          };
+          if (!isWorktreeAbandonmentReceipt(receipt)) {
+            return { ok: false, message: 'server-derived abandonment receipt is invalid', httpStatus: 409 } as const;
+          }
+          const reserved = this.contracts.authorizeAbandonment({
+            id: current.id,
+            receipt,
+          });
+          if (!reserved) {
+            current = this.contracts.get(current.id);
+            if (
+              current?.abandonmentReceipt?.requestId === receipt.requestId &&
+              current.landingStatus === 'abandoning'
+            ) return this.driveApprovedAbandonmentLocked(current);
+            return {
+              ok: false,
+              message: 'contract changed before abandonment approval could reserve it',
+              httpStatus: 409,
+            } as const;
+          }
+          return this.driveApprovedAbandonmentLocked(reserved);
+        },
+      );
+    } catch (error) {
+      const latest = this.contracts.get(input.contractId);
+      if (latest?.abandonmentReceipt?.requestId === input.request.requestId) {
+        return { ok: true, settlement: 'pending', contract: latest };
+      }
+      const failure = repositoryLeaseFailure(error);
+      return { ok: false, message: failure.message, httpStatus: failure.httpStatus };
+    }
+  }
+
+  private abandonmentQueueAuthority(contract: Contract): {
+    projectDir: string;
+    repositoryIdentity: RepositoryIdentityReceipt;
+  } | null {
+    const project = getProjectById(contract.projectId as ULID);
+    const producer = contract.agentRunId
+      ? getAgentRunRow(contract.agentRunId as ULID)
+      : null;
+    const repositoryIdentity = contract.abandonmentReceipt?.repositoryIdentity ??
+      producer?.gitReceipt?.repositoryIdentity ??
+      null;
+    if (!project?.folderPath || !repositoryIdentity) return null;
+    return { projectDir: project.folderPath, repositoryIdentity };
+  }
+
+  private async inspectContractAbandonmentLocked(
+    projectId: ULID,
+    contractId: ULID,
+    queuedIdentity: RepositoryIdentityReceipt,
+  ): Promise<WorktreeAbandonmentPreviewResult> {
+    const contract = this.contracts.get(contractId);
+    if (!contract || contract.projectId !== projectId) {
+      return { ok: false, message: 'contract not found', httpStatus: 404 };
+    }
+    if (contract.expectedOutput?.kind !== 'repo' || !contract.agentRunId) {
+      return { ok: false, message: 'only repository contracts can be abandoned', httpStatus: 409 };
+    }
+    const legacyAbandoned = contract.landingStatus === 'abandoned' &&
+      contract.abandonmentReceipt === null &&
+      contract.abandonmentTeardownReceipt === null;
+    if (
+      contract.landingStatus !== null &&
+      contract.landingStatus !== 'conflict' &&
+      contract.landingStatus !== 'failed' &&
+      contract.landingStatus !== 'stale-base' &&
+      !legacyAbandoned
+    ) {
+      return {
+        ok: false,
+        message: `contract landing is '${contract.landingStatus}' and cannot enter fresh abandonment`,
+        httpStatus: 409,
+      };
+    }
+    if (contract.reviewRunId !== null) {
+      return { ok: false, message: 'independent review is still reserved', httpStatus: 409 };
+    }
+    const producer = getAgentRunRow(contract.agentRunId as ULID);
+    if (!producer || !['completed', 'failed', 'cancelled'].includes(producer.status)) {
+      return { ok: false, message: 'contract producer is still active or unavailable', httpStatus: 409 };
+    }
+    const activeRun = listAgentRunsForContract(contractId).find(
+      (run) => !['completed', 'failed', 'cancelled'].includes(run.status),
+    );
+    if (activeRun) {
+      return { ok: false, message: `run ${activeRun.id} is still active for this contract`, httpStatus: 409 };
+    }
+    const quiescenceIssue = this.contractRuntimeQuiescenceIssue(contractId);
+    if (quiescenceIssue) return { ok: false, message: quiescenceIssue, httpStatus: 409 };
+    const repositoryIdentity = producer.gitReceipt?.repositoryIdentity ?? null;
+    if (
+      !repositoryIdentity ||
+      repositoryIdentity.protocol !== queuedIdentity.protocol ||
+      repositoryIdentity.gitCommonDir !== queuedIdentity.gitCommonDir ||
+      repositoryIdentity.leaseKey !== queuedIdentity.leaseKey
+    ) {
+      return { ok: false, message: 'repository identity changed while abandonment awaited', httpStatus: 409 };
+    }
+    const project = getProjectById(projectId);
+    const worktree = getWorktreeForContract(contractId);
+    const validatedBaseSha = contract.verifiedBaseSha ?? contract.worktreeBaseSha;
+    if (
+      !project?.folderPath ||
+      !worktree ||
+      !contract.worktreeBaseBranch ||
+      !contract.worktreeBaseSha ||
+      !validatedBaseSha
+    ) {
+      return { ok: false, message: 'exact project/worktree/base evidence is unavailable', httpStatus: 409 };
+    }
+    const inspected = await inspectWorktreeAbandonment({
+      projectDir: project.folderPath,
+      projectId,
+      contractId,
+      contractVersion: contract.version,
+      producerRunId: contract.agentRunId as ULID,
+      worktree,
+      expectedBaseBranch: contract.worktreeBaseBranch,
+      provisionedBaseSha: contract.worktreeBaseSha,
+      validatedBaseSha,
+      repositoryIdentity,
+    });
+    if (!inspected.ok) {
+      return {
+        ok: false,
+        message: inspected.error,
+        httpStatus: inspected.code === 'repository-unavailable' ? 503 : 409,
+      };
+    }
+    return { ok: true, preview: inspected.preview };
+  }
+
+  private async driveApprovedAbandonmentLocked(
+    input: Contract,
+  ): Promise<WorktreeAbandonmentApprovalResult> {
+    let contract = this.contracts.get(input.id) ?? input;
+    const authority = contract.abandonmentReceipt;
+    if (
+      contract.landingStatus === 'abandoned' &&
+      authority &&
+      contract.abandonmentTeardownReceipt
+    ) return { ok: true, settlement: 'completed', contract };
+    if (
+      contract.landingStatus !== 'abandoning' ||
+      !authority ||
+      !isWorktreeAbandonmentReceipt(authority)
+    ) {
+      return { ok: false, message: 'durable abandonment authority is unavailable', httpStatus: 409 };
+    }
+    const quiescenceIssue = this.contractRuntimeQuiescenceIssue(contract.id);
+    if (quiescenceIssue) {
+      contract = this.recordAbandonmentError(contract, authority.requestId, quiescenceIssue);
+      return { ok: true, settlement: 'pending', contract };
+    }
+    const project = getProjectById(contract.projectId as ULID);
+    if (!project?.folderPath) {
+      contract = this.recordAbandonmentError(contract, authority.requestId, 'project folder unavailable');
+      return { ok: true, settlement: 'pending', contract };
+    }
+    const tornDown = await settleAbandonedWorktree({
+      projectDir: project.folderPath,
+      authority,
+    });
+    if (!tornDown.ok) {
+      contract = this.recordAbandonmentError(contract, authority.requestId, tornDown.error);
+      return { ok: true, settlement: 'pending', contract };
+    }
+
+    contract = this.contracts.get(contract.id) ?? contract;
+    const settled = this.contracts.settleAbandonment({
+      id: contract.id,
+      expectedVersion: contract.version,
+      receipt: tornDown.receipt,
+    });
+    if (!settled) {
+      const latest = this.contracts.get(contract.id);
+      if (
+        latest?.landingStatus === 'abandoned' &&
+        latest.abandonmentReceipt?.requestId === authority.requestId &&
+        latest.abandonmentTeardownReceipt
+      ) return { ok: true, settlement: 'completed', contract: latest };
+      contract = latest ?? contract;
+      contract = this.recordAbandonmentError(
+        contract,
+        authority.requestId,
+        'abandonment settlement CAS became stale',
+      );
+      return { ok: true, settlement: 'pending', contract };
+    }
+    return { ok: true, settlement: 'completed', contract: settled };
+  }
+
+  private recordAbandonmentError(
+    contract: Contract,
+    authorityRequestId: string,
+    error: string,
+  ): Contract {
+    const bounded = error.length > 2000 ? `${error.slice(0, 1999)}…` : error;
+    if (contract.abandonmentError === bounded) return contract;
+    return this.contracts.setAbandonmentError({
+      id: contract.id,
+      expectedVersion: contract.version,
+      authorityRequestId,
+      error: bounded,
+    }) ?? this.contracts.get(contract.id) ?? contract;
+  }
+
+  /** Boot re-drive of durable authority. Runs before stranded/orphan
+   * reconciliation and does not depend on an active worktree row. */
+  async recoverApprovedAbandonments(): Promise<void> {
+    for (const row of listContractsNeedingAbandonmentRecovery()) {
+      const contract = this.contracts.get(row.id);
+      if (!contract?.abandonmentReceipt) continue;
+      const authority = this.abandonmentQueueAuthority(contract);
+      if (!authority) {
+        this.recordAbandonmentError(
+          contract,
+          contract.abandonmentReceipt.requestId,
+          'repository authority unavailable during abandonment recovery',
+        );
+        continue;
+      }
+      try {
+        await this.enqueueRepositoryMutation(
+          authority.projectDir,
+          authority.repositoryIdentity,
+          () => this.driveApprovedAbandonmentLocked(contract),
+        );
+      } catch (error) {
+        const latest = this.contracts.get(contract.id) ?? contract;
+        this.recordAbandonmentError(
+          latest,
+          contract.abandonmentReceipt.requestId,
+          error instanceof Error ? error.message : 'abandonment recovery failed',
+        );
+      }
+    }
+  }
+
   /** The one landing path (accept/auto ⇒ land). Serialized per repository,
    *  record-then-teardown; the branch is always preserved. Also the boot
    *  re-drive door for `landing_status='pending'`. */
@@ -3083,7 +3913,11 @@ export class DispatchService {
   ): Promise<Contract | null> {
     const latest = this.contracts.get(contract.id);
     if (!latest) return null;
-    if (latest.landingStatus === 'landed' || latest.landingStatus === 'abandoned') {
+    if (
+      latest.landingStatus === 'landed' ||
+      latest.landingStatus === 'abandoning' ||
+      latest.landingStatus === 'abandoned'
+    ) {
       return latest;
     }
     const project = getProjectById(contract.projectId as ULID);
@@ -3101,16 +3935,28 @@ export class DispatchService {
         'MISSING_REPOSITORY_IDENTITY_RECEIPT',
       );
     }
+    return this.enqueueRepositoryMutation(
+      authorityPath,
+      repositoryIdentity,
+      () => this.landAcceptedContractLocked(contract, authorizer, repositoryIdentity),
+    );
+  }
+
+  /** One same-engine FIFO for every repository landing/abandonment mutation.
+   * The engine-lifetime lease supplies the canonical physical-repository key;
+   * each queued callback re-resolves mutable state under that authority. */
+  private async enqueueRepositoryMutation<T>(
+    authorityPath: string,
+    repositoryIdentity: RepositoryIdentityReceipt,
+    mutation: () => Promise<T>,
+  ): Promise<T> {
     const repositoryLease = await this.repositoryLeases.acquire(
       authorityPath,
       repositoryIdentity,
     );
     const key = repositoryLease.identity.leaseKey;
     const prior = this.landingLocks.get(key) ?? Promise.resolve();
-    const turn = prior.then(
-      () => this.landAcceptedContractLocked(contract, authorizer, repositoryIdentity),
-      () => this.landAcceptedContractLocked(contract, authorizer, repositoryIdentity),
-    );
+    const turn = prior.then(mutation, mutation);
     this.landingLocks.set(key, turn.catch(() => {}));
     return turn;
   }
@@ -3150,6 +3996,7 @@ export class DispatchService {
     const current = this.contracts.get(authorized.id);
     if (!current) return null;
     if (current.landingStatus === 'landed') return current;
+    if (current.landingStatus === 'abandoning') return current;
     if (current.landingStatus === 'abandoned') return current;
 
     // The caller's accepted contract is the authorization receipt. Re-check
@@ -3181,11 +4028,11 @@ export class DispatchService {
     // while merge/teardown is in flight. A boot re-drive already owns pending.
     let contract = current;
     if (contract.landingStatus !== 'pending') {
-      const reserved = this.contracts.setLanding({
+      const reserved = this.contracts.reserveLanding({
         id: contract.id,
-        landingStatus: 'pending',
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingAuthorizer: authorizer,
-        landingError: null,
       });
       if (!reserved) return this.contracts.get(contract.id);
       contract = reserved;
@@ -3198,8 +4045,10 @@ export class DispatchService {
     const project = getProjectById(contract.projectId as ULID);
     if (!project?.folderPath || !contract.worktreePath || !contract.worktreeBaseBranch) {
       stamp('failed');
-      return this.contracts.setLanding({
+      return this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'failed',
         landingError: 'missing landing inputs (project folder / worktree path / base branch)',
       });
@@ -3211,8 +4060,10 @@ export class DispatchService {
     const deliveredBranch = (contract.deliverable as { branch?: string } | null)?.branch;
     if (deliveredBranch && deliveredBranch !== branch) {
       stamp('failed');
-      return this.contracts.setLanding({
+      return this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'failed',
         landingError: `deliverable branch '${deliveredBranch}' does not match the provisioned worktree branch '${branch}' — only the recorded agent branch can land`,
       });
@@ -3226,8 +4077,10 @@ export class DispatchService {
       const tip = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], authorizedProjectDir);
       if (tip.ok && tip.stdout !== sealedCommit) {
         stamp('failed');
-        return this.contracts.setLanding({
+        return this.contracts.settleLanding({
           id: contract.id,
+          expectedVersion: contract.version,
+          expectedAgentRunId: contract.agentRunId as ULID,
           landingStatus: 'failed',
           landingError: `agent branch '${branch}' tip ${tip.stdout.slice(0, 12)} is not the sealed deliverable commit ${sealedCommit.slice(0, 12)} — the branch moved after submission; only the verified commit can land`,
         });
@@ -3241,8 +4094,10 @@ export class DispatchService {
     // landed receipt; never re-run `git merge`.
     const probe = await probeAlreadyLanded(authorizedProjectDir, branch, contract.worktreeBaseBranch, validatedBase);
     if (probe.landed) {
-      const updated = this.contracts.setLanding({
+      const updated = this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'landed',
         landedBranch: branch,
         landedSha: probe.branchSha,
@@ -3254,6 +4109,12 @@ export class DispatchService {
         landedAt: contract.landedAt ?? Date.now(),
         landingError: null,
       });
+      if (!updated) {
+        console.warn(
+          `[pc-sdk][dispatch] landing convergence receipt for contract ${contract.id} lost its exact CAS — preserving worktree and branch`,
+        );
+        return this.contracts.get(contract.id);
+      }
       // Probe convergence: positive ancestry proof, no new mutation — the
       // lifecycle jumps straight to merged, then teardown completes it.
       stamp('merged');
@@ -3283,8 +4144,10 @@ export class DispatchService {
     const targetHead = await git(['rev-parse', `refs/heads/${contract.worktreeBaseBranch}`], authorizedProjectDir);
     if (!targetHead.ok) {
       stamp('failed');
-      return this.contracts.setLanding({
+      return this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'failed',
         landingError: `cannot resolve target branch tip '${contract.worktreeBaseBranch}': ${targetHead.stderr}`,
       });
@@ -3293,8 +4156,10 @@ export class DispatchService {
       // Stale base is the lifecycle's 'conflict' gate: preserved worktree,
       // recovery via re-accept (revalidate) — never a silent land.
       stamp('conflict');
-      return this.contracts.setLanding({
+      return this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'stale-base',
         landingError: validatedBase
           ? `target '${contract.worktreeBaseBranch}' advanced to ${targetHead.stdout.slice(0, 12)} past the verified base ${validatedBase.slice(0, 12)} — review the diff and re-land via pc_review_contract accept, which revalidates against the current tip (no auto-rebase)`
@@ -3313,8 +4178,10 @@ export class DispatchService {
     if (landed.outcome === 'landed') {
       // Durable full merge receipt BEFORE teardown. landedSha stays the
       // BRANCH TIP; the merge commit rides the new receipt columns.
-      const updated = this.contracts.setLanding({
+      const updated = this.contracts.settleLanding({
         id: contract.id,
+        expectedVersion: contract.version,
+        expectedAgentRunId: contract.agentRunId as ULID,
         landingStatus: 'landed',
         landedBranch: branch,
         landedSha: landed.branchSha,
@@ -3326,6 +4193,12 @@ export class DispatchService {
         landedAt: Date.now(),
         landingError: null,
       });
+      if (!updated) {
+        console.warn(
+          `[pc-sdk][dispatch] landing receipt for contract ${contract.id} lost its exact CAS — preserving worktree and branch`,
+        );
+        return this.contracts.get(contract.id);
+      }
       stamp('merged');
       stamp('tearing-down');
       // Failed reclaim = stranded isolation, never a false 'completed' receipt.
@@ -3347,8 +4220,10 @@ export class DispatchService {
     // conflict + stale-base both land on the lifecycle 'conflict' gate;
     // a mechanical failure is 'failed'. Branch + worktree preserved either way.
     stamp(landed.outcome === 'failed' ? 'failed' : 'conflict');
-    return this.contracts.setLanding({
+    return this.contracts.settleLanding({
       id: contract.id,
+      expectedVersion: contract.version,
+      expectedAgentRunId: contract.agentRunId as ULID,
       landingStatus: landed.outcome, // 'conflict' | 'failed' | 'stale-base' — durable gate; re-land via pc_review_contract accept
       landingError: landed.error,
     });
@@ -3495,7 +4370,10 @@ export class DispatchService {
         console.warn(
           `[pc-sdk][boot-recovery] agent run ${run.id} (${run.podName}) died with a sealed deliverable — settled completed; re-firing verification from durable evidence.`,
         );
-        await this.verifyAndLand(run.id, 'completed');
+        await this.trackPostTerminalTask(
+          run.id,
+          () => this.verifyAndLand(run.id, 'completed'),
+        );
         const now = Date.now();
         for (const ask of listOpenPendingAsksForProject(run.projectId)) {
           if (ask.agentRunId === run.id) markPendingAskCancelled(ask.id, now);
@@ -3515,7 +4393,11 @@ export class DispatchService {
     const { listContractsSealedUnverified } = await import('@pc/db');
     for (const contract of listContractsSealedUnverified()) {
       try {
-        if (contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned') continue;
+        if (
+          contract.landingStatus === 'landed' ||
+          contract.landingStatus === 'abandoning' ||
+          contract.landingStatus === 'abandoned'
+        ) continue;
         const runId = contract.agentRunId;
         if (!runId) continue;
         const run = getAgentRunRow(runId);
@@ -3524,7 +4406,10 @@ export class DispatchService {
         console.warn(
           `[pc-sdk][boot-recovery] contract ${contract.id} holds a sealed deliverable with no verification outcome (crash between settlement and verification) — re-firing verification for run ${runId}.`,
         );
-        await this.verifyAndLand(runId, run.status);
+        await this.trackPostTerminalTask(
+          runId,
+          () => this.verifyAndLand(runId, run.status as 'completed' | 'failed'),
+        );
         const now = Date.now();
         for (const ask of listOpenPendingAsksForProject(run.projectId)) {
           if (ask.agentRunId === runId) markPendingAskCancelled(ask.id, now);
@@ -3652,7 +4537,7 @@ export class DispatchService {
    *  deterministic `review-<id8>` dir name, so a builder worktree can never
    *  match. Best-effort: an orphan (crash window, Windows file lock) is inert
    *  (detached HEAD, no branch, no landing state). */
-  private reclaimReviewCheckout(row: AgentRunRow): void {
+  private async reclaimReviewCheckout(row: AgentRunRow): Promise<void> {
     const dir = row.worktreeDir;
     if (!dir || basename(dir) !== reviewCheckoutName(row.id)) return;
     const project = getProjectById(row.projectId);
@@ -3664,25 +4549,51 @@ export class DispatchService {
       );
       return;
     }
-    void removeReviewCheckout(
+    await removeReviewCheckout(
       project.folderPath,
       dir,
       repositoryIdentity,
-    ).catch(() => {});
+    ).catch(() => false);
   }
 
   async disposeAll(): Promise<void> {
     this.shuttingDown = true;
-    const disposals: Promise<void>[] = [];
     for (const [runId, liveRun] of this.live) {
       clearTimeout(liveRun.wallClock);
-      disposals.push(Promise.resolve().then(() => liveRun.session.dispose()));
       this.live.delete(runId);
+      this.retireRuntime(runId as ULID, liveRun.session);
     }
-    const settled = await Promise.allSettled(disposals);
-    const failures = settled
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason);
+    // Drain to a fixed point: a tracked producer can synchronously register a
+    // later generation (terminal verification -> reviewer cleanup, or a run
+    // task -> terminal settlement) as it resolves. Shutdown rechecks prevent
+    // new external continuation admission; this loop closes the internal task
+    // graph rather than assuming two generations are enough.
+    for (;;) {
+      const pendingWork = [
+        ...this.reviewAdmissionTasks.values(),
+        ...this.pendingReviewCleanupTasks.values(),
+        ...[...this.postTerminalTasks.values()]
+          .filter((task) => task.status === 'pending')
+          .map((task) => task.promise),
+        ...this.runTasks.values(),
+        ...this.liveRevivals.values(),
+        ...[...this.retiringRuns.values()]
+          .filter((retirement) => retirement.status === 'pending')
+          .map((retirement) => retirement.promise),
+      ];
+      if (pendingWork.length === 0) break;
+      await Promise.allSettled(pendingWork);
+    }
+    const failures = [
+      ...[...this.retiringRuns.values()]
+        .filter((retirement) => retirement.status === 'failed')
+        .map((retirement) => retirement.error),
+      ...[...this.postTerminalTasks.values()]
+        .filter((task) => task.status === 'failed')
+        .map((task) => task.error),
+      ...this.reviewCleanupFailures.values(),
+      ...this.runtimeRetirementFailures.values(),
+    ];
     if (failures.length > 0) {
       throw new AggregateError(failures, 'one or more specialist runtimes failed to dispose');
     }

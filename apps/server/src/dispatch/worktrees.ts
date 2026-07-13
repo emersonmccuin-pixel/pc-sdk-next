@@ -13,16 +13,22 @@
 // a successful land. The worktree directory is always reclaimed on teardown.
 
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve } from 'node:path';
 import {
   getAgentRunRow,
   getContract,
+  getWorktreeById,
   listAbandonedContractBranches,
   listActiveWorktrees,
   listNonTerminalAgentRuns,
+  listProjects,
+  listProtectedAbandonmentWorktreePaths,
   listStrandedWorktrees,
   markWorktreeDestroyed,
+  markExactWorktreeDestroyed,
+  markExactUnpublishedWorktreeDestroyed,
   markWorktreeStranded,
   reviveStrandedWorktree,
   updateAgentRunStatus,
@@ -30,8 +36,19 @@ import {
 } from '@pc/db';
 import {
   canTransition,
+  isMatchingWorktreeAbandonmentTeardown,
+  isWorktreeAbandonmentReceipt,
+  WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX,
+  WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL,
+  WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL,
   type RepositoryIdentityReceipt,
   type ULID,
+  type Worktree,
+  type WorktreeAbandonmentPresentState,
+  type WorktreeAbandonmentPreview,
+  type WorktreeAbandonmentReceipt,
+  type WorktreeAbandonmentState,
+  type WorktreeAbandonmentTeardownReceipt,
   type WorktreeCommandStep,
   type WorktreeStrandedReason,
 } from '@pc/domain';
@@ -86,6 +103,136 @@ export function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Pr
   });
 }
 
+interface RawGitResult {
+  ok: boolean;
+  stdout: Buffer;
+  stderr: string;
+  code: number;
+}
+
+const RAW_GIT_MAX_BYTES = 64 * 1024 * 1024;
+const RAW_GIT_STDERR_MAX_BYTES = 64 * 1024;
+
+/** NUL-safe Git capture for machine-readable porcelain. The ordinary `git`
+ * helper intentionally returns trimmed text; abandonment evidence instead
+ * preserves exact bytes and fails closed when a pathological status listing
+ * exceeds the bounded capture. */
+function gitRaw(
+  args: readonly string[],
+  cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<RawGitResult> {
+  return new Promise((resolveResult) => {
+    const child = spawn('git', [...args], {
+      cwd,
+      env: buildChildEnvironment(),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let timedOut = false;
+    let oversized = false;
+    let finished = false;
+    const finish = (code: number, extra = '') => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      const captured = Buffer.concat(stderr, stderrBytes).toString('utf8');
+      resolveResult({
+        ok: code === 0 && !timedOut && !oversized,
+        stdout: Buffer.concat(stdout, stdoutBytes),
+        stderr: [captured, extra].filter(Boolean).join('; '),
+        code,
+      });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > RAW_GIT_MAX_BYTES) {
+        oversized = true;
+        child.kill();
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderrBytes >= RAW_GIT_STDERR_MAX_BYTES) return;
+      const keep = chunk.subarray(0, RAW_GIT_STDERR_MAX_BYTES - stderrBytes);
+      stderr.push(keep);
+      stderrBytes += keep.length;
+    });
+    child.once('error', (error) => finish(1, error.message));
+    child.once('close', (code) => finish(code ?? 1, timedOut ? 'git command timed out' : oversized ? 'git output exceeded evidence bound' : ''));
+  });
+}
+
+interface GitOutputDigestResult {
+  ok: boolean;
+  digest: string;
+  bytes: number;
+  error: string;
+}
+
+/** Stream arbitrary Git output directly into SHA-256. Binary patches never
+ * become JS strings and have no output-size truncation; only stderr is
+ * retained, bounded, for an actionable refusal. */
+function hashGitOutput(
+  args: readonly string[],
+  cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<GitOutputDigestResult> {
+  return new Promise((resolveResult) => {
+    const child = spawn('git', [...args], {
+      cwd,
+      env: buildChildEnvironment(),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const hash = createHash('sha256');
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    let stderrBytes = 0;
+    let timedOut = false;
+    let finished = false;
+    const finish = (code: number, extra = '') => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      const detail = [Buffer.concat(stderr, stderrBytes).toString('utf8'), extra]
+        .filter(Boolean)
+        .join('; ');
+      resolveResult({
+        ok: code === 0 && !timedOut,
+        digest: `sha256:${hash.digest('hex')}`,
+        bytes,
+        error: detail,
+      });
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    child.stdout.on('data', (chunk: Buffer) => {
+      hash.update(chunk);
+      bytes += chunk.length;
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderrBytes >= RAW_GIT_STDERR_MAX_BYTES) return;
+      const keep = chunk.subarray(0, RAW_GIT_STDERR_MAX_BYTES - stderrBytes);
+      stderr.push(keep);
+      stderrBytes += keep.length;
+    });
+    child.once('error', (error) => finish(1, error.message));
+    child.once('close', (code) => finish(code ?? 1, timedOut ? 'git command timed out' : ''));
+  });
+}
+
 /** Derived diff statistics between two commits (`git diff --numstat`). Null
  *  when git can't produce them — callers keep whatever they already had.
  *  Binary files count toward `files` but contribute no line counts. */
@@ -110,6 +257,9 @@ export async function deriveDiffStat(
 }
 
 export interface ProvisionedWorktree {
+  worktreeId: ULID;
+  projectId: ULID | null;
+  agentRunId: ULID;
   dir: string;
   branch: string;
   baseBranch: string;
@@ -231,7 +381,7 @@ export async function provisionWorktree(
   // Row first — a dirty refusal below preserves the dir, and the stranded scan
   // must still see it. Binding fields stamp here; contractId follows at
   // contract creation (setWorktreeContractId).
-  upsertWorktree({
+  const worktreeRow = upsertWorktree({
     name: branch,
     path: dir,
     projectId: opts.projectId ?? null,
@@ -254,6 +404,9 @@ export async function provisionWorktree(
   }
   return {
     ok: true,
+    worktreeId: worktreeRow.id,
+    projectId: worktreeRow.projectId,
+    agentRunId: runId as ULID,
     dir,
     branch,
     baseBranch: base,
@@ -652,6 +805,537 @@ export async function probeAlreadyLanded(
   };
 }
 
+/** Roll back a fresh worktree that lost service admission before any contract
+ * or run was published. Unlike normal teardown, this exact pristine branch has
+ * no durable owner and must not leak. Any dirty state, tip/branch drift,
+ * removal uncertainty, or branch-delete uncertainty preserves the active row
+ * for recovery instead of claiming rollback. */
+export async function rollbackUnpublishedWorktree(
+  projectDir: string,
+  provisioned: ProvisionedWorktree,
+): Promise<boolean> {
+  if (!provisioned.projectId) return false;
+  try {
+    await repositoryLeaseManager.acquire(projectDir, provisioned.repositoryIdentity);
+    await repositoryLeaseManager.acquire(provisioned.dir, provisioned.repositoryIdentity);
+  } catch (error) {
+    console.warn(
+      `[pc-sdk][worktree] unpublished rollback authority unavailable for ${provisioned.dir}: ${repositoryLeaseMessage(error)}`,
+    );
+    return false;
+  }
+  const [branch, tip, status] = await Promise.all([
+    git(['rev-parse', '--abbrev-ref', 'HEAD'], provisioned.dir),
+    git(['rev-parse', 'HEAD'], provisioned.dir),
+    git(['status', '--porcelain=v1', '--untracked-files=all'], provisioned.dir),
+  ]);
+  if (
+    !branch.ok ||
+    !tip.ok ||
+    !status.ok ||
+    branch.stdout !== provisioned.branch ||
+    tip.stdout !== provisioned.baseSha ||
+    status.stdout !== ''
+  ) {
+    console.warn(
+      `[pc-sdk][worktree] unpublished rollback preserved ${provisioned.dir}: checkout is no longer the exact pristine provision`,
+    );
+    return false;
+  }
+  // Deliberately non-force: Git rechecks dirty/untracked state at the mutation
+  // door, closing the gap after the diagnostic pristine snapshot above.
+  const removed = await git(['worktree', 'remove', provisioned.dir], projectDir);
+  if (
+    !removed.ok ||
+    existsSync(provisioned.dir) ||
+    await isRegisteredWorktree(projectDir, provisioned.dir)
+  ) {
+    console.warn(
+      `[pc-sdk][worktree] unpublished rollback could not positively remove ${provisioned.dir}: ${removed.stderr}`,
+    );
+    return false;
+  }
+  const branchRef = `refs/heads/${provisioned.branch}`;
+  // Atomic compare-and-delete: a manual/nonparticipant ref advance wins and is
+  // preserved rather than being erased after an earlier tip observation.
+  const deleted = await git(
+    ['update-ref', '-d', branchRef, provisioned.baseSha],
+    projectDir,
+  );
+  const branchAbsence = await git(
+    ['for-each-ref', '--format=%(refname)', branchRef],
+    projectDir,
+  );
+  if (!deleted.ok || !branchAbsence.ok || branchAbsence.stdout !== '') {
+    console.warn(
+      `[pc-sdk][worktree] unpublished rollback branch delete failed for ${provisioned.branch}: ${deleted.stderr}`,
+    );
+    return false;
+  }
+  return markExactUnpublishedWorktreeDestroyed({
+    id: provisioned.worktreeId,
+    projectId: provisioned.projectId,
+    agentRunId: provisioned.agentRunId,
+    path: provisioned.dir,
+    name: provisioned.branch,
+    branch: provisioned.branch,
+    baseBranch: provisioned.baseBranch,
+    baseSha: provisioned.baseSha,
+    destroyedAt: Date.now(),
+  });
+}
+
+// ── Browser-approved abandonment evidence (DL-002) ─────────────────────────
+
+const ABANDONMENT_STATE_DIGEST_PROTOCOL = 'worktree-abandonment-state-v1';
+
+export interface InspectWorktreeAbandonmentInput {
+  projectDir: string;
+  projectId: ULID;
+  contractId: ULID;
+  contractVersion: number;
+  producerRunId: ULID;
+  /** Exact durable ownership row selected by the service/persistence door. */
+  worktree: Worktree;
+  expectedBaseBranch: string;
+  provisionedBaseSha: string;
+  /** Verification-covered target base, falling back to provision-time base. */
+  validatedBaseSha: string;
+  repositoryIdentity: RepositoryIdentityReceipt;
+}
+
+export type WorktreeAbandonmentInspectionCode =
+  | 'repository-unavailable'
+  | 'binding-mismatch'
+  | 'registration-mismatch'
+  | 'branch-unavailable'
+  | 'integration-inconclusive'
+  | 'already-merged'
+  | 'worktree-state-unavailable'
+  | 'worktree-state-changed';
+
+export type WorktreeAbandonmentInspectionResult =
+  | { ok: true; preview: WorktreeAbandonmentPreview }
+  | { ok: false; code: WorktreeAbandonmentInspectionCode; error: string };
+
+interface WorktreeRegistration {
+  path: string;
+  head: string | null;
+  branch: string | null;
+}
+
+type RegistrationRead =
+  | { ok: true; rows: WorktreeRegistration[] }
+  | { ok: false; error: string };
+
+function splitNul(input: Buffer): Buffer[] {
+  const out: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    if (input[i] !== 0) continue;
+    out.push(input.subarray(start, i));
+    start = i + 1;
+  }
+  if (start < input.length) out.push(input.subarray(start));
+  return out;
+}
+
+async function readWorktreeRegistrations(projectDir: string): Promise<RegistrationRead> {
+  const result = await gitRaw(['worktree', 'list', '--porcelain', '-z'], projectDir);
+  if (!result.ok) {
+    return { ok: false, error: result.stderr || 'git worktree list failed' };
+  }
+  const rows: WorktreeRegistration[] = [];
+  let fields: Buffer[] = [];
+  const flush = (): boolean => {
+    if (fields.length === 0) return true;
+    const pathField = fields.find((field) => field.subarray(0, 9).equals(Buffer.from('worktree ')));
+    if (!pathField) return false;
+    const headField = fields.find((field) => field.subarray(0, 5).equals(Buffer.from('HEAD ')));
+    const branchField = fields.find((field) => field.subarray(0, 7).equals(Buffer.from('branch ')));
+    const branchRef = branchField?.subarray(7).toString('utf8') ?? null;
+    rows.push({
+      path: pathField.subarray(9).toString('utf8'),
+      head: headField?.subarray(5).toString('ascii') ?? null,
+      branch: branchRef?.startsWith('refs/heads/') ? branchRef.slice('refs/heads/'.length) : null,
+    });
+    fields = [];
+    return true;
+  };
+  for (const field of splitNul(result.stdout)) {
+    if (field.length === 0) {
+      if (!flush()) return { ok: false, error: 'malformed git worktree registration evidence' };
+    } else {
+      fields.push(field);
+    }
+  }
+  if (!flush()) return { ok: false, error: 'malformed git worktree registration evidence' };
+  return { ok: true, rows };
+}
+
+function registrationForPath(
+  rows: readonly WorktreeRegistration[],
+  path: string,
+): WorktreeRegistration | null | 'duplicate' {
+  const target = normalizePathKey(path);
+  const matches = rows.filter((row) => normalizePathKey(row.path) === target);
+  if (matches.length > 1) return 'duplicate';
+  return matches[0] ?? null;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) throw new Error('canonical abandonment evidence requires safe integers');
+    return String(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value !== 'object') throw new Error('unsupported abandonment evidence value');
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+}
+
+function sha256Canonical(value: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex')}`;
+}
+
+function sha256Buffer(value: Buffer): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+/** Deterministic browser approval binding. Object key insertion order is not
+ * authority: canonical JSON sorts every record key and preserves array order. */
+export function computeWorktreeAbandonmentPreviewDigest(
+  preview: Omit<WorktreeAbandonmentPreview, 'previewDigest'>,
+): string {
+  return sha256Canonical(preview);
+}
+
+interface ParsedPorcelainStatus {
+  staged: number;
+  unstaged: number;
+  untracked: Buffer[];
+  changedPaths: Buffer[];
+}
+
+function parsePorcelainV1Z(raw: Buffer): ParsedPorcelainStatus | null {
+  const fields = splitNul(raw);
+  const untracked: Buffer[] = [];
+  const changedPaths: Buffer[] = [];
+  let staged = 0;
+  let unstaged = 0;
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i]!;
+    if (field.length === 0) continue;
+    if (field.length < 4 || field[2] !== 0x20) return null;
+    const x = String.fromCharCode(field[0]!);
+    const y = String.fromCharCode(field[1]!);
+    const path = Buffer.from(field.subarray(3));
+    if (x === '?' && y === '?') {
+      untracked.push(path);
+      changedPaths.push(path);
+      continue;
+    }
+    if (x === '!' && y === '!') return null; // ignored entries were not requested
+    if (x !== ' ') staged += 1;
+    if (y !== ' ') unstaged += 1;
+    changedPaths.push(path);
+    if (x === 'R' || x === 'C') {
+      const original = fields[i + 1];
+      if (!original || original.length === 0) return null;
+      changedPaths.push(Buffer.from(original));
+      i += 1;
+    }
+  }
+  return { staged, unstaged, untracked, changedPaths };
+}
+
+async function hashUntrackedPath(dir: string, path: Buffer): Promise<string | null> {
+  // Windows worktree paths are UTF-8 representable. `--` prevents a hostile
+  // leading dash in a filename from becoming an option.
+  const name = path.toString('utf8');
+  const result = await gitRaw(['hash-object', '--no-filters', '--', name], dir);
+  if (!result.ok) return null;
+  const oid = result.stdout.toString('ascii').trim();
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(oid) ? oid : null;
+}
+
+async function capturePresentAbandonmentState(
+  dir: string,
+): Promise<WorktreeAbandonmentPresentState | null> {
+  const statusResult = await gitRaw(
+    ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'],
+    dir,
+  );
+  if (!statusResult.ok) return null;
+  const parsed = parsePorcelainV1Z(statusResult.stdout);
+  if (!parsed) return null;
+
+  const diffArgs = ['diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames'];
+  const [stagedDiff, unstagedDiff] = await Promise.all([
+    hashGitOutput([...diffArgs, '--cached', '--'], dir),
+    hashGitOutput([...diffArgs, '--'], dir),
+  ]);
+  if (!stagedDiff.ok || !unstagedDiff.ok) return null;
+
+  const sortedUntracked = [...parsed.untracked].sort(Buffer.compare);
+  const untrackedEvidence: Array<{ pathBase64: string; objectId: string }> = [];
+  for (const path of sortedUntracked) {
+    const objectId = await hashUntrackedPath(dir, path);
+    if (!objectId) return null;
+    untrackedEvidence.push({ pathBase64: path.toString('base64'), objectId });
+  }
+
+  const worktreeStateDigest = sha256Canonical({
+    protocol: ABANDONMENT_STATE_DIGEST_PROTOCOL,
+    porcelainV1Z: sha256Buffer(statusResult.stdout),
+    stagedDiff: { bytes: stagedDiff.bytes, digest: stagedDiff.digest },
+    unstagedDiff: { bytes: unstagedDiff.bytes, digest: unstagedDiff.digest },
+    untracked: untrackedEvidence,
+  });
+  const summary = [...parsed.changedPaths]
+    .sort(Buffer.compare)
+    .filter((path, index, all) => index === 0 || !path.equals(all[index - 1]!))
+    .slice(0, WORKTREE_ABANDONMENT_CHANGED_PATHS_MAX)
+    .map((path) => path.toString('utf8'));
+  const dirty = parsed.staged > 0 || parsed.unstaged > 0 || parsed.untracked.length > 0;
+  return {
+    directory: 'present',
+    registration: 'registered',
+    status: dirty ? 'dirty' : 'clean',
+    staged: parsed.staged,
+    unstaged: parsed.unstaged,
+    untracked: parsed.untracked.length,
+    worktreeStateDigest,
+    changedPaths: summary,
+    ignoredContents: 'uninspected',
+  };
+}
+
+interface IntegrationEvidence {
+  branchTip: string;
+  targetTip: string;
+  integrationState: WorktreeAbandonmentPreview['integrationState'];
+}
+
+type IntegrationResult =
+  | { ok: true; evidence: IntegrationEvidence }
+  | { ok: false; code: 'branch-unavailable' | 'integration-inconclusive' | 'already-merged'; error: string };
+
+async function inspectBranchIntegration(input: {
+  projectDir: string;
+  branch: string;
+  baseBranch: string;
+  provisionedBaseSha: string;
+  validatedBaseSha: string;
+}): Promise<IntegrationResult> {
+  const branchTip = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${input.branch}`], input.projectDir);
+  if (!branchTip.ok || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(branchTip.stdout)) {
+    return { ok: false, code: 'branch-unavailable', error: `approved branch '${input.branch}' is unavailable` };
+  }
+  const targetTip = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${input.baseBranch}`], input.projectDir);
+  if (!targetTip.ok || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(targetTip.stdout)) {
+    return { ok: false, code: 'integration-inconclusive', error: `target branch '${input.baseBranch}' is unavailable` };
+  }
+
+  // The provision receipt must still be in the feature branch history; a
+  // force-reset onto unrelated history is not the work PC-SDK provisioned.
+  const provisionAncestor = await git(
+    ['merge-base', '--is-ancestor', input.provisionedBaseSha, branchTip.stdout],
+    input.projectDir,
+  );
+  if (!provisionAncestor.ok) {
+    return {
+      ok: false,
+      code: 'integration-inconclusive',
+      error: `branch '${input.branch}' no longer descends from its provisioned base`,
+    };
+  }
+  // The verification-covered target must remain on the target branch's
+  // current lineage. Exit 1 is drift/rewriting, not positive non-integration.
+  const validatedAncestor = await git(
+    ['merge-base', '--is-ancestor', input.validatedBaseSha, targetTip.stdout],
+    input.projectDir,
+  );
+  if (!validatedAncestor.ok) {
+    return {
+      ok: false,
+      code: 'integration-inconclusive',
+      error: `target '${input.baseBranch}' no longer descends from the validated base`,
+    };
+  }
+  const validatedBranchAncestor = await git(
+    ['merge-base', '--is-ancestor', input.validatedBaseSha, branchTip.stdout],
+    input.projectDir,
+  );
+  if (!validatedBranchAncestor.ok) {
+    return {
+      ok: false,
+      code: 'integration-inconclusive',
+      error: `branch '${input.branch}' does not descend from the validated base`,
+    };
+  }
+  const ahead = await git(
+    ['rev-list', '--count', `${input.validatedBaseSha}..${branchTip.stdout}`],
+    input.projectDir,
+  );
+  const exclusiveCommits = Number(ahead.stdout);
+  if (!ahead.ok || !Number.isSafeInteger(exclusiveCommits) || exclusiveCommits < 0) {
+    return { ok: false, code: 'integration-inconclusive', error: 'cannot count branch-exclusive commits' };
+  }
+  if (exclusiveCommits === 0) {
+    return {
+      ok: true,
+      evidence: { branchTip: branchTip.stdout, targetTip: targetTip.stdout, integrationState: 'no-exclusive-commits' },
+    };
+  }
+  const integrated = await git(
+    ['merge-base', '--is-ancestor', branchTip.stdout, targetTip.stdout],
+    input.projectDir,
+  );
+  if (integrated.ok) {
+    return {
+      ok: false,
+      code: 'already-merged',
+      error: `branch '${input.branch}' tip is already integrated into '${input.baseBranch}'`,
+    };
+  }
+  if (integrated.code !== 1) {
+    return { ok: false, code: 'integration-inconclusive', error: 'branch integration probe was inconclusive' };
+  }
+  return {
+    ok: true,
+    evidence: { branchTip: branchTip.stdout, targetTip: targetTip.stdout, integrationState: 'unmerged' },
+  };
+}
+
+function bindingError(input: InspectWorktreeAbandonmentInput): string | null {
+  const row = input.worktree;
+  if (row.status !== 'active' && row.status !== 'stranded') return 'worktree row is not active or stranded';
+  if (row.projectId !== input.projectId) return 'worktree project binding does not match the contract';
+  if (row.contractId !== input.contractId) return 'worktree contract binding does not match';
+  if (row.agentRunId !== input.producerRunId) return 'worktree producer binding does not match';
+  if (!row.branch || row.name !== row.branch || basename(row.path) !== row.branch) return 'worktree branch/path binding is invalid';
+  if (!row.baseBranch || !row.baseSha) return 'worktree base evidence is unavailable';
+  if (row.baseBranch !== input.expectedBaseBranch) return 'worktree base branch does not match the contract';
+  if (row.baseSha !== input.provisionedBaseSha) return 'worktree provisioned base does not match the contract';
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(row.baseSha)) return 'worktree provisioned base is invalid';
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.validatedBaseSha)) return 'validated base is invalid';
+  if (!Number.isSafeInteger(input.contractVersion) || input.contractVersion < 1) return 'contract version is invalid';
+  if (!isOwnedWorktreePath(input.projectDir, row.path)) return 'worktree path is outside the app-owned root';
+  return null;
+}
+
+/** Read-only, content-binding abandonment preview. The caller owns contract
+ * eligibility/liveness; this function owns repository/path/row/Git evidence.
+ * Every inconclusive Git result refuses rather than being interpreted as
+ * "not merged". */
+export async function inspectWorktreeAbandonment(
+  input: InspectWorktreeAbandonmentInput,
+): Promise<WorktreeAbandonmentInspectionResult> {
+  const invalid = bindingError(input);
+  if (invalid) return { ok: false, code: 'binding-mismatch', error: invalid };
+  try {
+    const lease = await repositoryLeaseManager.acquire(input.projectDir, input.repositoryIdentity);
+    const root = await requireRepositoryWorktreeRoot(input.projectDir);
+    await repositoryLeaseManager.assertHeld(lease, root, input.repositoryIdentity);
+    if (existsSync(input.worktree.path)) {
+      await repositoryLeaseManager.acquire(input.worktree.path, input.repositoryIdentity);
+    }
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+
+  const registrations = await readWorktreeRegistrations(input.projectDir);
+  if (!registrations.ok) {
+    return { ok: false, code: 'registration-mismatch', error: registrations.error };
+  }
+  const registration = registrationForPath(registrations.rows, input.worktree.path);
+  if (registration === 'duplicate') {
+    return { ok: false, code: 'registration-mismatch', error: 'duplicate worktree registrations exist for the approved path' };
+  }
+
+  const branch = input.worktree.branch!;
+  const baseBranch = input.worktree.baseBranch!;
+  const integration = await inspectBranchIntegration({
+    projectDir: input.projectDir,
+    branch,
+    baseBranch,
+    provisionedBaseSha: input.worktree.baseSha!,
+    validatedBaseSha: input.validatedBaseSha,
+  });
+  if (!integration.ok) return integration;
+
+  if (registration && (registration.branch !== branch || registration.head !== integration.evidence.branchTip)) {
+    return {
+      ok: false,
+      code: 'registration-mismatch',
+      error: 'worktree registration does not bind the exact approved path, branch, and tip',
+    };
+  }
+
+  const present = existsSync(input.worktree.path);
+  let worktreeState: WorktreeAbandonmentState;
+  if (!present) {
+    worktreeState = {
+      directory: 'missing',
+      registration: registration ? 'registered' : 'absent',
+      status: 'unavailable',
+      worktreeStateDigest: sha256Canonical({
+        protocol: ABANDONMENT_STATE_DIGEST_PROTOCOL,
+        directory: 'missing',
+        registration: registration ? 'registered' : 'absent',
+      }),
+      changedPaths: [],
+      ignoredContents: 'uninspected',
+    };
+  } else {
+    if (!registration) {
+      return {
+        ok: false,
+        code: 'registration-mismatch',
+        error: 'present worktree path has no exact Git registration',
+      };
+    }
+    // Capture twice so a mutation concurrent with inspection cannot produce a
+    // receipt assembled from different filesystem moments.
+    const first = await capturePresentAbandonmentState(input.worktree.path);
+    const second = await capturePresentAbandonmentState(input.worktree.path);
+    if (!first || !second) {
+      return { ok: false, code: 'worktree-state-unavailable', error: 'cannot read exact worktree status/diff/content evidence' };
+    }
+    if (first.worktreeStateDigest !== second.worktreeStateDigest) {
+      return { ok: false, code: 'worktree-state-changed', error: 'worktree contents changed during abandonment inspection' };
+    }
+    worktreeState = second;
+  }
+
+  const material: Omit<WorktreeAbandonmentPreview, 'previewDigest'> = {
+    protocol: WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL,
+    projectId: input.projectId,
+    contractId: input.contractId,
+    contractVersion: input.contractVersion,
+    producerRunId: input.producerRunId,
+    worktreeId: input.worktree.id,
+    worktreeStatus: input.worktree.status as 'active' | 'stranded',
+    worktreePath: input.worktree.path,
+    branch,
+    branchTip: integration.evidence.branchTip,
+    baseBranch,
+    validatedBaseSha: input.validatedBaseSha,
+    targetTip: integration.evidence.targetTip,
+    integrationState: integration.evidence.integrationState,
+    repositoryIdentity: input.repositoryIdentity,
+    worktreeState,
+  };
+  return {
+    ok: true,
+    preview: { ...material, previewDigest: computeWorktreeAbandonmentPreviewDigest(material) },
+  };
+}
+
 /** Force-delete a worktree directory on the filesystem — the fallback for
  *  when `git worktree remove --force` unregisters the worktree but can't
  *  actually delete it (Windows holds locked binaries inside node_modules
@@ -662,6 +1346,203 @@ function forceRemoveDir(dir: string): void {
   } catch (err) {
     console.warn(`[pc-sdk][worktree] filesystem force-delete failed for ${dir}:`, err);
   }
+}
+
+export type WorktreeAbandonmentTeardownCode =
+  | 'invalid-authority'
+  | 'repository-unavailable'
+  | 'binding-mismatch'
+  | 'branch-drifted'
+  | 'registration-mismatch'
+  | 'removal-incomplete';
+
+export type WorktreeAbandonmentTeardownResult =
+  | { ok: true; receipt: WorktreeAbandonmentTeardownReceipt }
+  | { ok: false; code: WorktreeAbandonmentTeardownCode; error: string };
+
+export interface SettleAbandonedWorktreeInput {
+  projectDir: string;
+  authority: WorktreeAbandonmentReceipt;
+}
+
+/** Receipt-backed destructive settlement. This is deliberately separate from
+ * ordinary landed teardown: it runs no profile cleanup, never deletes/moves a
+ * branch, accepts partial prior removal only after durable authority, and
+ * returns success solely from three positive observations (directory absent,
+ * registration absent, branch still at the approved tip). */
+export async function settleAbandonedWorktree(
+  input: SettleAbandonedWorktreeInput,
+): Promise<WorktreeAbandonmentTeardownResult> {
+  const { authority } = input;
+  if (!isWorktreeAbandonmentReceipt(authority)) {
+    return { ok: false, code: 'invalid-authority', error: 'abandonment authority receipt is invalid' };
+  }
+  if (
+    basename(authority.worktreePath) !== authority.branch ||
+    !isOwnedWorktreePath(input.projectDir, authority.worktreePath)
+  ) {
+    return { ok: false, code: 'binding-mismatch', error: 'approved worktree path is outside the app-owned root or no longer matches its branch' };
+  }
+
+  const startedAt = Date.now();
+  try {
+    const lease = await repositoryLeaseManager.acquire(input.projectDir, authority.repositoryIdentity);
+    const root = await requireRepositoryWorktreeRoot(input.projectDir);
+    await repositoryLeaseManager.assertHeld(lease, root, authority.repositoryIdentity);
+    if (existsSync(authority.worktreePath)) {
+      await repositoryLeaseManager.acquire(authority.worktreePath, authority.repositoryIdentity);
+    }
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+
+  const beforeTip = await git(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${authority.branch}`],
+    input.projectDir,
+  );
+  if (!beforeTip.ok || beforeTip.stdout !== authority.branchTip) {
+    return {
+      ok: false,
+      code: 'branch-drifted',
+      error: `approved branch '${authority.branch}' is missing or no longer at ${authority.branchTip}`,
+    };
+  }
+
+  const beforeList = await readWorktreeRegistrations(input.projectDir);
+  if (!beforeList.ok) {
+    return { ok: false, code: 'registration-mismatch', error: beforeList.error };
+  }
+  const beforeRegistration = registrationForPath(beforeList.rows, authority.worktreePath);
+  if (beforeRegistration === 'duplicate') {
+    return { ok: false, code: 'registration-mismatch', error: 'duplicate worktree registrations exist for the approved path' };
+  }
+  if (
+    beforeRegistration &&
+    (beforeRegistration.branch !== authority.branch || beforeRegistration.head !== authority.branchTip)
+  ) {
+    return {
+      ok: false,
+      code: 'registration-mismatch',
+      error: 'worktree registration no longer binds the approved branch and tip',
+    };
+  }
+  // Re-check immediately before the first recursive/remove mutation. Git and
+  // branch evidence above awaited child processes; an owned root/path that
+  // became a symlink or junction in that interval must fail closed.
+  if (!isOwnedWorktreePath(input.projectDir, authority.worktreePath)) {
+    return { ok: false, code: 'binding-mismatch', error: 'approved worktree root/path became unsafe before removal' };
+  }
+
+  if (beforeRegistration) {
+    const removed = await git(['worktree', 'remove', '--force', authority.worktreePath], input.projectDir);
+    if (!removed.ok && existsSync(authority.worktreePath)) {
+      // Authority is already durable and exact. A Windows lock can let Git
+      // unregister yet leave files behind; remove only this positively owned
+      // direct child and prove the result below.
+      if (!isOwnedWorktreePath(input.projectDir, authority.worktreePath)) {
+        return { ok: false, code: 'binding-mismatch', error: 'approved worktree root/path became unsafe after Git removal failed' };
+      }
+      forceRemoveDir(authority.worktreePath);
+    }
+    await git(['worktree', 'prune'], input.projectDir);
+  } else if (existsSync(authority.worktreePath)) {
+    // Crash recovery after Git unregistered but before filesystem removal.
+    forceRemoveDir(authority.worktreePath);
+    await git(['worktree', 'prune'], input.projectDir);
+  }
+
+  if (existsSync(authority.worktreePath)) {
+    return { ok: false, code: 'removal-incomplete', error: 'approved worktree directory still exists after removal' };
+  }
+  const afterList = await readWorktreeRegistrations(input.projectDir);
+  if (!afterList.ok) {
+    return { ok: false, code: 'registration-mismatch', error: afterList.error };
+  }
+  if (registrationForPath(afterList.rows, authority.worktreePath) !== null) {
+    return { ok: false, code: 'removal-incomplete', error: 'Git still registers the approved worktree path' };
+  }
+  const observed = await git(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${authority.branch}`],
+    input.projectDir,
+  );
+  if (!observed.ok || observed.stdout !== authority.branchTip) {
+    return {
+      ok: false,
+      code: 'branch-drifted',
+      error: `branch preservation proof failed for '${authority.branch}'`,
+    };
+  }
+  let receiptStartedAt = startedAt;
+  let finishedAt: number;
+  const existingRow = getWorktreeById(authority.worktreeId);
+  const alreadyExact = existingRow !== null &&
+    existingRow.destroyedAt !== null &&
+    existingRow.status === 'destroyed' &&
+    existingRow.projectId === authority.projectId &&
+    existingRow.contractId === authority.contractId &&
+    existingRow.agentRunId === authority.producerRunId &&
+    existingRow.path === authority.worktreePath &&
+    existingRow.name === authority.branch &&
+    existingRow.branch === authority.branch &&
+    existingRow.baseBranch === authority.baseBranch;
+  if (alreadyExact) {
+    // Crash convergence: persistence requires the teardown receipt's finish
+    // stamp to equal the row's already-durable destroyedAt. The original
+    // start was not durable, so recovery truthfully records a zero-duration
+    // proof observation at that existing finish stamp.
+    finishedAt = existingRow.destroyedAt!;
+    receiptStartedAt = finishedAt;
+  } else {
+    finishedAt = Date.now();
+    const destroyed = markExactWorktreeDestroyed({
+      id: authority.worktreeId,
+      projectId: authority.projectId,
+      agentRunId: authority.producerRunId,
+      contractId: authority.contractId,
+      path: authority.worktreePath,
+      name: authority.branch,
+      branch: authority.branch,
+      baseBranch: authority.baseBranch,
+      destroyedAt: finishedAt,
+    });
+    if (!destroyed) {
+      const row = getWorktreeById(authority.worktreeId);
+      const racedExact = row !== null &&
+        row.destroyedAt === finishedAt &&
+        row.status === 'destroyed' &&
+        row.projectId === authority.projectId &&
+        row.contractId === authority.contractId &&
+        row.agentRunId === authority.producerRunId &&
+        row.path === authority.worktreePath &&
+        row.name === authority.branch &&
+        row.branch === authority.branch &&
+        row.baseBranch === authority.baseBranch;
+      if (!racedExact) {
+        return {
+          ok: false,
+          code: 'binding-mismatch',
+          error: 'durable worktree row no longer matches the approved ownership receipt',
+        };
+      }
+    }
+  }
+  return {
+    ok: true,
+    receipt: {
+      protocol: WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL,
+      authorityRequestId: authority.requestId,
+      startedAt: receiptStartedAt,
+      finishedAt,
+      repositoryIdentity: authority.repositoryIdentity,
+      worktreePath: authority.worktreePath,
+      branch: authority.branch,
+      approvedBranchTip: authority.branchTip,
+      observedBranchTip: observed.stdout,
+      directoryAbsent: true,
+      registrationAbsent: true,
+      branchPreserved: true,
+    },
+  };
 }
 
 /** Reclaim the worktree DIRECTORY. The branch is preserved on purpose —
@@ -873,10 +1754,11 @@ export function reconcileStrandedWorktrees(
       if (reviveStrandedWorktree(row.id)) revived.push(row.name);
       continue;
     }
-    // Resolve to terminal: the contract already landed/abandoned and the dir
+    // Resolve to terminal: the contract already landed or has a positively
+    // settled abandonment receipt and the dir
     // is gone — there is no live run to revive and nothing left to reclaim,
     // so this is a finished dispatch's leftover row, not a genuine stranding.
-    // A dir-gone row whose contract is NOT landed/abandoned (or has none)
+    // A dir-gone row whose contract is NOT positively settled (or has none)
     // stays surfaced as 'stranded' — that is the real, actionable case.
     if (!existsSync(row.path) && isLandedOrAbandoned(row.contractId)) {
       markWorktreeDestroyed(row.name);
@@ -886,16 +1768,23 @@ export function reconcileStrandedWorktrees(
   return { stranded, revived, resolved };
 }
 
-/** True when the worktree's contract already reached a terminal landing
- *  outcome ('landed' or 'abandoned'). Used to resolve a stranded row whose
+/** True when the worktree's contract already reached a positively proven
+ *  terminal outcome. Used to resolve a stranded row whose
  *  directory is gone into terminal 'destroyed' instead of leaving it stranded
  *  forever — the contract's own record proves the work is done, so there is
- *  nothing left for a human to reclaim. */
+ *  nothing left for a human to reclaim. A legacy raw `abandoned` status is
+ *  deliberately inconclusive and therefore never authorizes resolution. */
 function isLandedOrAbandoned(contractId: ULID | null): boolean {
   if (!contractId) return false;
   const contract = getContract(contractId);
   if (!contract) return false;
-  return contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned';
+  return contract.landingStatus === 'landed' || (
+    contract.landingStatus === 'abandoned' &&
+    isMatchingWorktreeAbandonmentTeardown(
+      contract.abandonmentReceipt,
+      contract.abandonmentTeardownReceipt,
+    )
+  );
 }
 
 /** True when the worktree's contract is parked for review/landing: verification
@@ -985,6 +1874,19 @@ export async function sweepOrphanedWorktreeDirs(
   }
   for (const run of listNonTerminalAgentRuns()) {
     if (run.worktreeDir) keep.add(normalizePathKey(run.worktreeDir));
+  }
+  const projectKey = normalizePathKey(projectDir);
+  const projectIds = listProjects()
+    .filter((project) => project.folderPath && normalizePathKey(project.folderPath) === projectKey)
+    .map((project) => project.id);
+  if (projectIds.length !== 1) {
+    console.warn(
+      `[pc-sdk][worktree] orphan sweep skipped: expected one persisted project for ${projectDir}, found ${projectIds.length}`,
+    );
+    return [];
+  }
+  for (const path of listProtectedAbandonmentWorktreePaths(projectIds[0]!)) {
+    keep.add(normalizePathKey(path));
   }
 
   const removed: string[] = [];

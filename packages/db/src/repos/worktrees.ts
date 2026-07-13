@@ -1,6 +1,6 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { ULID, Worktree, WorktreeStrandedReason } from '@pc/domain';
-import { getDb } from '../connection.ts';
+import { getDb, type DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
 import { worktrees } from '../schema.ts';
 
@@ -22,6 +22,26 @@ export function getActiveWorktreeByName(name: string): WorktreeRow | null {
     .where(and(eq(worktrees.name, name), eq(worktrees.status, 'active')))
     .get();
   return row ?? null;
+}
+
+export function getWorktreeById(
+  id: ULID,
+  db: DbExecutor = getDb(),
+): WorktreeRow | null {
+  return db.select().from(worktrees).where(eq(worktrees.id, id)).get() ?? null;
+}
+
+/** Exact contract-owned candidate. Ambiguity is unavailable: duplicate
+ * active/stranded bindings prove no destructive authority. */
+export function getWorktreeForContract(
+  contractId: ULID,
+  db: DbExecutor = getDb(),
+): WorktreeRow | null {
+  const rows = db.select().from(worktrees).where(and(
+    eq(worktrees.contractId, contractId),
+    inArray(worktrees.status, ['active', 'stranded']),
+  )).limit(2).all();
+  return rows.length === 1 ? rows[0]! : null;
 }
 
 export interface UpsertWorktreeInput {
@@ -86,6 +106,80 @@ export function markWorktreeDestroyed(name: string): void {
     .set({ status: 'destroyed', destroyedAt: Date.now() })
     .where(and(eq(worktrees.name, name), inArray(worktrees.status, ['active', 'stranded'])))
     .run();
+}
+
+export interface MarkExactWorktreeDestroyedInput {
+  id: ULID;
+  projectId: ULID;
+  agentRunId: ULID;
+  contractId: ULID;
+  path: string;
+  name: string;
+  branch: string;
+  baseBranch: string;
+  destroyedAt: number;
+}
+
+/** Receipt-backed abandonment settlement may destroy only the exact row the
+ * authority named. Name/path inference and a differently rebound row fail. */
+export function markExactWorktreeDestroyed(
+  input: MarkExactWorktreeDestroyedInput,
+  db: DbExecutor = getDb(),
+): boolean {
+  return db.update(worktrees).set({
+    status: 'destroyed',
+    destroyedAt: input.destroyedAt,
+    strandedReason: null,
+    strandedAt: null,
+  }).where(and(
+    eq(worktrees.id, input.id),
+    eq(worktrees.projectId, input.projectId),
+    eq(worktrees.agentRunId, input.agentRunId),
+    eq(worktrees.contractId, input.contractId),
+    eq(worktrees.path, input.path),
+    eq(worktrees.name, input.name),
+    eq(worktrees.branch, input.branch),
+    eq(worktrees.baseBranch, input.baseBranch),
+    inArray(worktrees.status, ['active', 'stranded']),
+  )).run().changes === 1;
+}
+
+export interface MarkExactUnpublishedWorktreeDestroyedInput {
+  id: ULID;
+  projectId: ULID;
+  agentRunId: ULID;
+  path: string;
+  name: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  destroyedAt: number;
+}
+
+/** Fresh-provision rollback may settle only its exact still-unpublished active
+ * row. A historical stranded row with the same name, a contract binding, or
+ * any ownership/base drift remains untouched and makes this CAS fail. */
+export function markExactUnpublishedWorktreeDestroyed(
+  input: MarkExactUnpublishedWorktreeDestroyedInput,
+  db: DbExecutor = getDb(),
+): boolean {
+  return db.update(worktrees).set({
+    status: 'destroyed',
+    destroyedAt: input.destroyedAt,
+    strandedReason: null,
+    strandedAt: null,
+  }).where(and(
+    eq(worktrees.id, input.id),
+    eq(worktrees.projectId, input.projectId),
+    eq(worktrees.agentRunId, input.agentRunId),
+    isNull(worktrees.contractId),
+    eq(worktrees.path, input.path),
+    eq(worktrees.name, input.name),
+    eq(worktrees.branch, input.branch),
+    eq(worktrees.baseBranch, input.baseBranch),
+    eq(worktrees.baseSha, input.baseSha),
+    eq(worktrees.status, 'active'),
+  )).run().changes === 1;
 }
 
 // ── Durable stranded state (docs/worktree-lifecycle.md 'Recovery') ───────────

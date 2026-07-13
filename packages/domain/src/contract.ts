@@ -33,7 +33,15 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 // verification covered; parked for orchestrator revalidation, worktree +
 // branch preserved, never auto-rebased).
 // NULL = not applicable (non-repo kinds and pre-415 history).
-export const CONTRACT_LANDING_STATUSES = ['pending', 'landed', 'conflict', 'failed', 'abandoned', 'stale-base'] as const;
+export const CONTRACT_LANDING_STATUSES = [
+  'pending',
+  'landed',
+  'conflict',
+  'failed',
+  'abandoning',
+  'abandoned',
+  'stale-base',
+] as const;
 export type ContractLandingStatus = (typeof CONTRACT_LANDING_STATUSES)[number];
 
 // docs/worktree-lifecycle.md 'Merge receipt' — who authorized the landing.

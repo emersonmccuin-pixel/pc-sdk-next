@@ -33,7 +33,7 @@ import {
   setContractRun,
   setContractVerification,
 } from '@pc/db';
-import type { ULID } from '@pc/domain';
+import type { RepositoryIdentityReceipt, ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
 import { CLAUDE_RUNTIME_ID } from '../src/runner/claude-adapter.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
@@ -114,15 +114,19 @@ class QueueAdapter implements AgentRuntimeAdapter {
   ): Promise<RuntimeSession> {
     const idx = this.created.length;
     this.created.push(input);
-    const gate = this.gate(idx).promise;
+    const turnGate = this.gate(idx);
+    let disposed = false;
     const runtime: RuntimeSession = {
       sendTurn: (message: string) => {
         this.turnInputs[idx] = message;
-        return turnStream(gate);
+        return turnStream(turnGate.promise, () => disposed);
       },
       observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
       interrupt: async () => {},
-      dispose: async () => {},
+      dispose: async () => {
+        disposed = true;
+        turnGate.resolve();
+      },
     };
     return withRuntimeReceipt(() => runtime)({
       projectId: input.projectId,
@@ -142,9 +146,13 @@ class QueueAdapter implements AgentRuntimeAdapter {
   }
 }
 
-async function* turnStream(gate: Promise<void>): AsyncGenerator<RuntimeEvent> {
+async function* turnStream(
+  gate: Promise<void>,
+  isDisposed: () => boolean = () => false,
+): AsyncGenerator<RuntimeEvent> {
   yield { type: 'system', subtype: 'x', level: 'info', message: 'working…' };
   await gate;
+  if (isDisposed()) return;
   yield OK_RESULT;
 }
 
@@ -277,12 +285,26 @@ async function fixAndReseal(
   worktreeDir: string,
   sessionIdx: number,
 ): Promise<{ fixRunId: ULID; newCommit: string }> {
-  const cont = await dispatch.dispatchContinue({
+  let cont = await dispatch.dispatchContinue({
     projectId,
     runId: parentRunId,
     input: 'fix the findings',
     dispatcherSessionId: 'S1',
   });
+  const deadline = Date.now() + 20_000;
+  while (
+    !cont.ok &&
+    cont.message.includes('cleanup has not positively settled') &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    cont = await dispatch.dispatchContinue({
+      projectId,
+      runId: parentRunId,
+      input: 'fix the findings',
+      dispatcherSessionId: 'S1',
+    });
+  }
   assert.equal(cont.ok, true, JSON.stringify(cont));
   const fixRunId = (cont as { run: { runId: string } }).run.runId as ULID;
   await until(() => getAgentRunRow(fixRunId)?.lifecycleState === 'building', 20000);
@@ -358,6 +380,64 @@ test('concurrent review re-entry shares the active reservation and mints exactly
     await until(() => adapter.created.length === 1, 20000);
     await dispatch.disposeAll();
   } finally {
+    await gp.cleanup();
+  }
+});
+
+test('orchestrator override waits for a marker-cleared reviewer admission to quiesce', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  const selectionGate = deferred();
+  try {
+    const adapter = new QueueAdapter();
+    let selectionCalls = 0;
+    const dispatch = rig(adapter, (base) => ({
+      ...base,
+      resolveNewSpecialistSelection: async (input) => {
+        selectionCalls += 1;
+        await selectionGate.promise;
+        return base.resolveNewSpecialistSelection(input);
+      },
+    }));
+    const { contractId } = await readyReviewTarget(gp);
+    const admission = driveIndependentReview(dispatch, contractId);
+    await until(() => selectionCalls === 1, 20000);
+    const reviewRunId = getContract(contractId)?.reviewRunId as ULID;
+    assert.ok(reviewRunId);
+
+    let overrideSettled = false;
+    const override = dispatch.reviewContract({
+      projectId: gp.project.id,
+      contractId,
+      verdict: 'reject',
+      notes: 'orchestrator superseded the pending reviewer',
+    }).then((result) => {
+      overrideSettled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(overrideSettled, false, 'override cannot outrun a marker-cleared review admission');
+
+    selectionGate.resolve();
+    await admission;
+    const rejected = await override;
+    assert.equal(rejected.ok, true, JSON.stringify(rejected));
+    const supersededRun = getAgentRunRow(reviewRunId);
+    if (supersededRun) {
+      assert.ok(
+        ['completed', 'failed', 'cancelled'].includes(supersededRun.status),
+        'an admission that won publication is terminal before override settlement',
+      );
+      assert.equal(dispatch.hasLiveRun(reviewRunId), false);
+    }
+    assert.equal(
+      (dispatch as unknown as { reviewTargetsByRun: Map<string, string> }).reviewTargetsByRun.has(reviewRunId),
+      false,
+      'target association clears only after admission quiescence',
+    );
+  } finally {
+    selectionGate.resolve();
     await gp.cleanup();
   }
 });
@@ -859,12 +939,30 @@ test('orchestrator override kills the live reviewer: no verdict race, no burned 
     const reviewRunId = getContract(contractId)!.reviewRunId as ULID;
     const reviewCheckout = getAgentRunRow(reviewRunId)!.worktreeDir!;
 
-    const accepted = await dispatch.reviewContract({
+    const override = dispatch.reviewContract({
       projectId: gp.project.id,
       contractId,
       verdict: 'accept',
       notes: 'human override during the live review',
     });
+    const cleanupInternals = dispatch as unknown as {
+      reviewCleanupTasks: Map<string, Promise<void>>;
+      ensureReviewCleanup(runId: ULID, row: NonNullable<ReturnType<typeof getAgentRunRow>>, targetId: ULID): Promise<void>;
+    };
+    await until(() => cleanupInternals.reviewCleanupTasks.has(reviewRunId), 20000);
+    const ownedCleanup = cleanupInternals.reviewCleanupTasks.get(reviewRunId)!;
+    const duplicateObserver = cleanupInternals.ensureReviewCleanup(
+      reviewRunId,
+      getAgentRunRow(reviewRunId)!,
+      contractId,
+    );
+    assert.equal(
+      duplicateObserver,
+      ownedCleanup,
+      'kill, terminal, and override observers share one reviewer cleanup owner',
+    );
+    const accepted = await override;
+    await duplicateObserver;
     assert.equal(accepted.ok, true, JSON.stringify(accepted));
     const c = getContract(contractId)!;
     assert.equal(c.landingStatus, 'landed');
@@ -881,6 +979,81 @@ test('orchestrator override kills the live reviewer: no verdict race, no burned 
     await until(() => !existsSync(reviewCheckout), 20000);
     await until(() => getAgentRunRow(builderRunId)?.lifecycleState === 'completed', 20000);
   } finally {
+    await gp.cleanup();
+  }
+});
+
+test('orchestrator override cannot clear a newer reviewer reservation after an awaited lease', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  const adapter = new QueueAdapter();
+  const dispatch = rig(adapter);
+  const leaseHeld = deferred();
+  const releaseLease = deferred();
+  let observedReviewRunId: ULID | null = null;
+  let newerReviewRunId: ULID | null = null;
+  try {
+    const { builderRunId, contractId, sealedCommit } = await buildAndSeal(
+      dispatch,
+      adapter,
+      gp.project.id,
+      0,
+    );
+    await until(() => (
+      dispatch as unknown as { postTerminalTasks: Map<string, { status: string }> }
+    ).postTerminalTasks.get(builderRunId)?.status === 'completed', 20000);
+    observedReviewRunId = getContract(contractId)!.reviewRunId as ULID;
+
+    const leases = (
+      dispatch as unknown as {
+        repositoryLeases: {
+          acquire(path: string, identity: RepositoryIdentityReceipt): Promise<unknown>;
+        };
+      }
+    ).repositoryLeases;
+    const originalAcquire = leases.acquire.bind(leases);
+    let blockNextAcquire = true;
+    leases.acquire = async (path, identity) => {
+      const guard = await originalAcquire(path, identity);
+      if (blockNextAcquire) {
+        blockNextAcquire = false;
+        leaseHeld.resolve();
+        await releaseLease.promise;
+      }
+      return guard;
+    };
+
+    const override = dispatch.reviewContract({
+      projectId: gp.project.id,
+      contractId,
+      verdict: 'reject',
+      notes: 'stale reviewer must not be cleared',
+    });
+    await leaseHeld.promise;
+    newerReviewRunId = newId() as ULID;
+    assert.ok(setContractReviewState(contractId, {
+      reviewRunId: newerReviewRunId,
+      reviewSealedCommit: sealedCommit,
+    }));
+    releaseLease.resolve();
+
+    const refused = await override;
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.match(refused.message, /reviewer changed/);
+    assert.equal(getContract(contractId)?.reviewRunId, newerReviewRunId);
+    assert.equal(dispatch.hasLiveRun(observedReviewRunId), true, 'stale reviewer A was not killed');
+  } finally {
+    releaseLease.resolve();
+    if (newerReviewRunId) {
+      const current = listContractsForProject(gp.project.id)
+        .find((contract) => contract.reviewRunId === newerReviewRunId);
+      if (current) setContractReviewState(current.id, { reviewRunId: null, reviewSealedCommit: null });
+    }
+    if (observedReviewRunId && dispatch.hasLiveRun(observedReviewRunId)) {
+      await dispatch.killRun(gp.project.id, observedReviewRunId);
+    }
+    await dispatch.disposeAll().catch(() => {});
     await gp.cleanup();
   }
 });

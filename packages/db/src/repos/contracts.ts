@@ -6,7 +6,7 @@
 // Optionally carries an external PM item ref (`pmRef`). The deliverable lives
 // here. Keyed by contract id / agent_run_id.
 
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, notExists, notInArray, or, sql } from 'drizzle-orm';
 import type {
   AcceptanceCriteria,
   ContractLandingAuthorizer,
@@ -18,11 +18,18 @@ import type {
   ULID,
   VerificationStatus,
   VerificationTier,
+  WorktreeAbandonmentReceipt,
+  WorktreeAbandonmentTeardownReceipt,
+} from '@pc/domain';
+import {
+  isMatchingWorktreeAbandonmentTeardown,
+  isWorktreeAbandonmentReceipt,
+  isWorktreeAbandonmentTeardownReceipt,
 } from '@pc/domain';
 import { getDb } from '../connection.ts';
 import type { DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
-import { agentContracts, worktrees } from '../schema.ts';
+import { agentContracts, agentRuns, worktrees } from '../schema.ts';
 
 export interface ContractRow {
   id: ULID;
@@ -63,6 +70,10 @@ export interface ContractRow {
    *  was briefed on; approve settlement re-checks it so a mid-review reseal
    *  voids the verdict. Cleared together with reviewRunId. */
   reviewSealedCommit: string | null;
+  /** DL-002: immutable browser approval + positive teardown settlement. */
+  abandonmentReceipt: WorktreeAbandonmentReceipt | null;
+  abandonmentTeardownReceipt: WorktreeAbandonmentTeardownReceipt | null;
+  abandonmentError: string | null;
   status: ContractStatus;
   version: number;
   createdAt: number;
@@ -168,6 +179,9 @@ export function createContractInDb(db: DbExecutor, input: CreateContractInput): 
     reviewRound: null,
     reviewRunId: null,
     reviewSealedCommit: null,
+    abandonmentReceipt: null,
+    abandonmentTeardownReceipt: null,
+    abandonmentError: null,
     status: input.status ?? 'issued',
     version: 1,
     createdAt: now,
@@ -182,19 +196,67 @@ export function createContractInDb(db: DbExecutor, input: CreateContractInput): 
 export function setContractRun(
   id: ULID,
   agentRunId: ULID,
-  db: DbExecutor = getDb(),
+  db?: DbExecutor,
 ): ContractRow | null {
+  if (!db) {
+    return getDb().transaction((tx) => setContractRun(id, agentRunId, tx));
+  }
   const existing = getContractInDb(db, id);
   if (!existing) return null;
-  db.update(agentContracts)
+  const priorWorktree = existing.agentRunId &&
+    existing.agentRunId !== agentRunId &&
+    existing.worktreePath
+    ? db.select({
+        id: worktrees.id,
+        agentRunId: worktrees.agentRunId,
+      }).from(worktrees).where(and(
+        eq(worktrees.projectId, existing.projectId),
+        eq(worktrees.contractId, id),
+        eq(worktrees.path, existing.worktreePath),
+        existing.worktreeBaseBranch
+          ? eq(worktrees.baseBranch, existing.worktreeBaseBranch)
+          : undefined,
+        inArray(worktrees.status, ['active', 'stranded']),
+      )).limit(2).all()
+    : null;
+  if (
+    priorWorktree &&
+    (priorWorktree.length !== 1 || priorWorktree[0]?.agentRunId !== existing.agentRunId)
+  ) return null;
+  const changed = db.update(agentContracts)
     .set({
       agentRunId,
       status: 'dispatched',
       version: existing.version + 1,
       updatedAt: Date.now(),
     })
-    .where(eq(agentContracts.id, id))
+    .where(and(
+      eq(agentContracts.id, id),
+      eq(agentContracts.version, existing.version),
+      isNull(agentContracts.abandonmentReceipt),
+      or(
+        isNull(agentContracts.landingStatus),
+        inArray(agentContracts.landingStatus, ['conflict', 'failed', 'stale-base']),
+      ),
+    ))
     .run();
+  if (changed.changes !== 1) return null;
+  if (priorWorktree) {
+    const rebound = db.update(worktrees).set({ agentRunId }).where(and(
+      eq(worktrees.id, priorWorktree[0]!.id),
+      eq(worktrees.projectId, existing.projectId),
+      eq(worktrees.contractId, id),
+      eq(worktrees.agentRunId, existing.agentRunId!),
+      eq(worktrees.path, existing.worktreePath!),
+      existing.worktreeBaseBranch
+        ? eq(worktrees.baseBranch, existing.worktreeBaseBranch)
+        : undefined,
+      inArray(worktrees.status, ['active', 'stranded']),
+    )).run();
+    if (rebound.changes !== 1) {
+      throw new Error('contract producer advanced without exact worktree ownership transfer');
+    }
+  }
   return getContractInDb(db, id);
 }
 
@@ -221,8 +283,13 @@ export function setContractDeliverable(
     updatedAt: Date.now(),
   };
   if (input.report !== undefined) patch.report = input.report;
-  db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
-  return getContractInDb(db, id);
+  const changed = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, existing.version),
+    isNull(agentContracts.abandonmentReceipt),
+    or(isNull(agentContracts.landingStatus), notInArray(agentContracts.landingStatus, ['abandoning', 'abandoned'])),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
 
 export interface SetVerificationInput {
@@ -256,6 +323,9 @@ export function setContractLanding(
   input: SetLandingInput,
   db: DbExecutor = getDb(),
 ): ContractRow | null {
+  // Abandonment has dedicated receipt-bearing CAS doors below. A generic
+  // landing patch can never manufacture destructive cleanup authority.
+  if (input.landingStatus === 'abandoning' || input.landingStatus === 'abandoned') return null;
   const existing = getContractInDb(db, id);
   if (!existing) return null;
   const patch: Partial<ContractRow> = {
@@ -272,20 +342,305 @@ export function setContractLanding(
   if (input.mergeSha !== undefined) patch.mergeSha = input.mergeSha;
   if (input.landingAuthorizer !== undefined) patch.landingAuthorizer = input.landingAuthorizer;
   if (input.verifiedBaseSha !== undefined) patch.verifiedBaseSha = input.verifiedBaseSha;
-  db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
-  return getContractInDb(db, id);
+  const changed = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, existing.version),
+    isNull(agentContracts.abandonmentReceipt),
+    or(
+      isNull(agentContracts.landingStatus),
+      inArray(agentContracts.landingStatus, ['pending', 'conflict', 'failed', 'stale-base']),
+    ),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
 
-/** pc-pty-chat-415 (R14) — branches whose work was explicitly abandoned for a
- *  project. The stranded report excludes them: their preservation record is
- *  on the contract; the branch ref intentionally remains. */
+const noNonTerminalContractRun = (contractId: ULID, db: DbExecutor) => notExists(
+  db.select({ id: agentRuns.id }).from(agentRuns).where(and(
+    eq(agentRuns.contractId, contractId),
+    inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
+  )),
+);
+
+export interface ReserveContractLandingInput {
+  expectedVersion: number;
+  expectedAgentRunId: ULID;
+  landingAuthorizer: ContractLandingAuthorizer;
+}
+
+/** Exact landing reservation. Landing and abandonment race on the same
+ * contract version; only one can reserve it. */
+export function reserveContractLanding(
+  id: ULID,
+  input: ReserveContractLandingInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const changed = db.update(agentContracts).set({
+    landingStatus: 'pending',
+    landingAuthorizer: input.landingAuthorizer,
+    landingError: null,
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, input.expectedVersion),
+    eq(agentContracts.agentRunId, input.expectedAgentRunId),
+    eq(agentContracts.verificationStatus, 'passed'),
+    isNull(agentContracts.reviewRunId),
+    isNull(agentContracts.abandonmentReceipt),
+    isNull(agentContracts.abandonmentTeardownReceipt),
+    or(
+      isNull(agentContracts.landingStatus),
+      inArray(agentContracts.landingStatus, ['conflict', 'failed', 'stale-base']),
+    ),
+    noNonTerminalContractRun(id, db),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+export interface SettleContractLandingInput extends SetLandingInput {
+  expectedVersion: number;
+  expectedAgentRunId: ULID;
+  landingStatus: 'landed' | 'conflict' | 'failed' | 'stale-base';
+}
+
+/** Settle only the exact pending landing reservation. */
+export function settleContractLanding(
+  id: ULID,
+  input: SettleContractLandingInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const patch: Partial<ContractRow> = {
+    landingStatus: input.landingStatus,
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  };
+  if (input.landedBranch !== undefined) patch.landedBranch = input.landedBranch;
+  if (input.landedSha !== undefined) patch.landedSha = input.landedSha;
+  if (input.landingError !== undefined) patch.landingError = input.landingError;
+  if (input.landedAt !== undefined) patch.landedAt = input.landedAt;
+  if (input.targetShaBefore !== undefined) patch.targetShaBefore = input.targetShaBefore;
+  if (input.targetShaAfter !== undefined) patch.targetShaAfter = input.targetShaAfter;
+  if (input.mergeSha !== undefined) patch.mergeSha = input.mergeSha;
+  // The reservation owns authorizer identity. Settlement may assert that same
+  // identity, but can never replace it after Git work has begun.
+  if (input.verifiedBaseSha !== undefined) patch.verifiedBaseSha = input.verifiedBaseSha;
+  const changed = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, input.expectedVersion),
+    eq(agentContracts.agentRunId, input.expectedAgentRunId),
+    eq(agentContracts.landingStatus, 'pending'),
+    input.landingAuthorizer === undefined
+      ? sql`1 = 1`
+      : eq(agentContracts.landingAuthorizer, input.landingAuthorizer),
+    isNull(agentContracts.abandonmentReceipt),
+    isNull(agentContracts.abandonmentTeardownReceipt),
+    noNonTerminalContractRun(id, db),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+export interface AuthorizeContractAbandonmentInput {
+  receipt: WorktreeAbandonmentReceipt;
+}
+
+/** First-write immutable browser authority. The worktree binding, producer,
+ * version, review state, and absence of live runs are one SQL admission. */
+export function authorizeContractAbandonment(
+  id: ULID,
+  input: AuthorizeContractAbandonmentInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  const receipt = input.receipt;
+  if (!isWorktreeAbandonmentReceipt(receipt) || receipt.contractId !== id) return null;
+  const boundWorktree = db.select({ id: worktrees.id }).from(worktrees).where(and(
+    eq(worktrees.id, receipt.worktreeId),
+    eq(worktrees.projectId, receipt.projectId),
+    eq(worktrees.agentRunId, receipt.producerRunId),
+    eq(worktrees.contractId, receipt.contractId),
+    eq(worktrees.path, receipt.worktreePath),
+    eq(worktrees.name, receipt.branch),
+    eq(worktrees.branch, receipt.branch),
+    eq(worktrees.baseBranch, receipt.baseBranch),
+    eq(worktrees.status, receipt.worktreeStatus),
+  ));
+  const changed = db.update(agentContracts).set({
+    landingStatus: 'abandoning',
+    abandonmentReceipt: receipt,
+    abandonmentTeardownReceipt: null,
+    abandonmentError: null,
+    // Landing and abandonment evidence are disjoint contracts.
+    landedBranch: null,
+    landedSha: null,
+    landedAt: null,
+    landingError: null,
+    targetShaBefore: null,
+    targetShaAfter: null,
+    mergeSha: null,
+    landingAuthorizer: null,
+    version: receipt.approvedContractVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.projectId, receipt.projectId),
+    eq(agentContracts.agentRunId, receipt.producerRunId),
+    eq(agentContracts.version, receipt.approvedContractVersion),
+    eq(agentContracts.worktreePath, receipt.worktreePath),
+    eq(agentContracts.worktreeBaseBranch, receipt.baseBranch),
+    isNull(agentContracts.reviewRunId),
+    isNull(agentContracts.abandonmentReceipt),
+    isNull(agentContracts.abandonmentTeardownReceipt),
+    isNull(agentContracts.mergeSha),
+    isNull(agentContracts.landedAt),
+    or(
+      isNull(agentContracts.landingStatus),
+      inArray(agentContracts.landingStatus, ['conflict', 'failed', 'stale-base', 'abandoned']),
+    ),
+    exists(boundWorktree),
+    noNonTerminalContractRun(id, db),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+export interface SetContractAbandonmentErrorInput {
+  expectedVersion: number;
+  authorityRequestId: string;
+  error: string;
+}
+
+export function setContractAbandonmentError(
+  id: ULID,
+  input: SetContractAbandonmentErrorInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  if (!input.error.trim() || input.error !== input.error.trim()) return null;
+  const changed = db.update(agentContracts).set({
+    abandonmentError: input.error,
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, input.expectedVersion),
+    eq(agentContracts.landingStatus, 'abandoning'),
+    sql`json_extract(${agentContracts.abandonmentReceipt}, '$.requestId') = ${input.authorityRequestId}`,
+    isNull(agentContracts.abandonmentTeardownReceipt),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+export interface SettleContractAbandonmentInput {
+  expectedVersion: number;
+  receipt: WorktreeAbandonmentTeardownReceipt;
+}
+
+export function settleContractAbandonment(
+  id: ULID,
+  input: SettleContractAbandonmentInput,
+  db: DbExecutor = getDb(),
+): ContractRow | null {
+  if (!isWorktreeAbandonmentTeardownReceipt(input.receipt)) return null;
+  const current = getContractInDb(db, id);
+  const authority = current?.abandonmentReceipt;
+  if (
+    !current ||
+    current.version !== input.expectedVersion ||
+    !isWorktreeAbandonmentReceipt(authority) ||
+    !isMatchingWorktreeAbandonmentTeardown(authority, input.receipt)
+  ) return null;
+  const destroyedWorktree = db.select({ id: worktrees.id }).from(worktrees).where(and(
+    eq(worktrees.id, authority.worktreeId),
+    eq(worktrees.projectId, authority.projectId),
+    eq(worktrees.agentRunId, authority.producerRunId),
+    eq(worktrees.contractId, authority.contractId),
+    eq(worktrees.path, authority.worktreePath),
+    eq(worktrees.name, authority.branch),
+    eq(worktrees.branch, authority.branch),
+    eq(worktrees.baseBranch, authority.baseBranch),
+    eq(worktrees.status, 'destroyed'),
+    eq(worktrees.destroyedAt, input.receipt.finishedAt),
+  ));
+  const changed = db.update(agentContracts).set({
+    landingStatus: 'abandoned',
+    abandonmentTeardownReceipt: input.receipt,
+    abandonmentError: null,
+    version: input.expectedVersion + 1,
+    updatedAt: Date.now(),
+  }).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, input.expectedVersion),
+    eq(agentContracts.landingStatus, 'abandoning'),
+    sql`json_extract(${agentContracts.abandonmentReceipt}, '$.requestId') = ${input.receipt.authorityRequestId}`,
+    isNull(agentContracts.abandonmentTeardownReceipt),
+    isNull(agentContracts.reviewRunId),
+    exists(destroyedWorktree),
+    noNonTerminalContractRun(id, db),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+/** Legacy compatibility name. Returns only branches that must remain
+ * protected: authorized teardown in progress or legacy `abandoned` rows with
+ * no positive settlement. A settled abandonment has no worktree directory to
+ * hide and is deliberately absent. */
 export function listAbandonedContractBranches(projectId: ULID, db: DbExecutor = getDb()): string[] {
   const rows = db
-    .select({ landedBranch: agentContracts.landedBranch })
+    .select({
+      landedBranch: agentContracts.landedBranch,
+      worktreePath: agentContracts.worktreePath,
+      abandonmentReceipt: agentContracts.abandonmentReceipt,
+    })
     .from(agentContracts)
-    .where(and(eq(agentContracts.projectId, projectId), eq(agentContracts.landingStatus, 'abandoned')))
-    .all() as { landedBranch: string | null }[];
-  return rows.map((r) => r.landedBranch).filter((b): b is string => !!b);
+    .where(and(
+      eq(agentContracts.projectId, projectId),
+      or(
+        eq(agentContracts.landingStatus, 'abandoning'),
+        and(
+          eq(agentContracts.landingStatus, 'abandoned'),
+          isNull(agentContracts.abandonmentTeardownReceipt),
+        ),
+      ),
+    ))
+    .all();
+  return rows.map((row) => {
+    if (isWorktreeAbandonmentReceipt(row.abandonmentReceipt)) {
+      return row.abandonmentReceipt.branch;
+    }
+    return row.landedBranch ?? row.worktreePath?.split(/[\\/]/).pop() ?? null;
+  }).filter((branch): branch is string => !!branch);
+}
+
+/** Paths protected from stranded/orphan deletion while browser authority is
+ * in progress, plus legacy `abandoned` rows that carry no cleanup authority. */
+export function listProtectedAbandonmentWorktreePaths(
+  projectId: ULID,
+  db: DbExecutor = getDb(),
+): string[] {
+  const rows = db.select({ worktreePath: agentContracts.worktreePath })
+    .from(agentContracts)
+    .where(and(
+      eq(agentContracts.projectId, projectId),
+      isNotNull(agentContracts.worktreePath),
+      or(
+        eq(agentContracts.landingStatus, 'abandoning'),
+        and(
+          eq(agentContracts.landingStatus, 'abandoned'),
+          isNull(agentContracts.abandonmentTeardownReceipt),
+        ),
+      ),
+    )).all();
+  return rows.map((row) => row.worktreePath).filter((path): path is string => !!path);
+}
+
+/** Exact recovery feeder. Malformed/legacy rows never become cleanup
+ * authority; only a canonical first-write receipt re-drives. */
+export function listContractsNeedingAbandonmentRecovery(
+  db: DbExecutor = getDb(),
+): ContractRow[] {
+  return db.select().from(agentContracts).where(and(
+    eq(agentContracts.landingStatus, 'abandoning'),
+    isNotNull(agentContracts.abandonmentReceipt),
+    isNull(agentContracts.abandonmentTeardownReceipt),
+  )).orderBy(asc(agentContracts.updatedAt)).all()
+    .filter((row) => isWorktreeAbandonmentReceipt(row.abandonmentReceipt)) as ContractRow[];
 }
 
 /** pc-pty-chat-415 (R5) — landings interrupted mid-flight (status 'pending'),
@@ -360,8 +715,13 @@ export function setContractReviewState(
   if (input.reviewRound !== undefined) patch.reviewRound = input.reviewRound;
   if (input.reviewRunId !== undefined) patch.reviewRunId = input.reviewRunId;
   if (input.reviewSealedCommit !== undefined) patch.reviewSealedCommit = input.reviewSealedCommit;
-  db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
-  return getContractInDb(db, id);
+  const changed = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, existing.version),
+    isNull(agentContracts.abandonmentReceipt),
+    or(isNull(agentContracts.landingStatus), notInArray(agentContracts.landingStatus, ['abandoning', 'abandoned'])),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
 
 export interface SetRunRecoveryVerificationInput {
@@ -409,6 +769,7 @@ export function reserveContractReview(
     producer,
     eq(agentContracts.verificationStatus, 'passed'),
     isNull(agentContracts.landingStatus),
+    isNull(agentContracts.abandonmentReceipt),
   )).run();
   return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
@@ -428,6 +789,7 @@ export function clearContractReviewReservation(
   }).where(and(
     eq(agentContracts.id, id),
     eq(agentContracts.reviewRunId, reviewRunId),
+    isNull(agentContracts.abandonmentReceipt),
   )).run();
   return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
@@ -488,8 +850,13 @@ export function setContractVerification(
       : input.verificationStatus === 'failed'
         ? 'rejected'
         : 'verifying');
-  db.update(agentContracts).set(patch).where(eq(agentContracts.id, id)).run();
-  return getContractInDb(db, id);
+  const changed = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, id),
+    eq(agentContracts.version, existing.version),
+    isNull(agentContracts.abandonmentReceipt),
+    or(isNull(agentContracts.landingStatus), notInArray(agentContracts.landingStatus, ['abandoning', 'abandoned'])),
+  )).run();
+  return changed.changes === 1 ? getContractInDb(db, id) : null;
 }
 
 /** Park verification after boot terminalizes a live run. The producer link,
@@ -520,6 +887,7 @@ export function setContractRunRecoveryVerification(
     eq(agentContracts.version, input.expectedVersion),
     producer,
     isNull(agentContracts.landingStatus),
+    isNull(agentContracts.abandonmentReceipt),
   )).run();
   return changed.changes === 1 ? getContractInDb(db, id) : null;
 }

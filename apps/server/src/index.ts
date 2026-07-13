@@ -276,11 +276,12 @@ async function main(): Promise<void> {
   //    with step 2;
   // 2. pending-landing re-drive (idempotent — ancestry probe first, full
   //    guard stack incl. base advancement when not yet merged);
-  // 3. teardown resume — landed contracts whose worktree survived the crash;
-  // 4. stranded scan — must see 1-3's FINAL state (a landed worktree awaiting
+  // 3. approved-abandonment re-drive — authority is durable before removal;
+  // 4. teardown resume — landed contracts whose worktree survived the crash;
+  // 5. stranded scan — must see 1-4's FINAL state (a landed worktree awaiting
   //    teardown must never classify stranded; re-driven landings finish
   //    tearing down first);
-  // 5. attach — only now can a dispatch start. A dispatch mid-flight during
+  // 6. attach — only now can a dispatch start. A dispatch mid-flight during
   //    the scan has an async window between its worktree row (active) and its
   //    run row (live) that the scan would misclassify 'no-live-run' — until
   //    attach, dispatch verbs refuse 503 'server still booting'; chat itself
@@ -292,6 +293,9 @@ async function main(): Promise<void> {
     .recoverPendingLandings()
     .catch((err) => console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err));
   await dispatch
+    .recoverApprovedAbandonments()
+    .catch((err) => console.warn('[pc-sdk][dispatch] approved-abandonment re-drive failed:', err));
+  await dispatch
     .recoverIncompleteTeardowns()
     .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
   await reconcileStrandedWorktreesAtBoot();
@@ -301,19 +305,19 @@ async function main(): Promise<void> {
     conversationRelay: server.conversationRelay,
     serverPort: server.port,
   });
-  // 6. review re-entry — AFTER attach (a review dispatch needs the live
+  // 7. review re-entry — AFTER attach (a review dispatch needs the live
   //    context): full-review contracts whose reviewer died (or was never
   //    dispatched pre-attach) re-enter the review gate re-dispatchable.
   await dispatch
     .recoverPendingReviews()
     .catch((err) => console.warn('[pc-sdk][dispatch] review re-entry failed:', err));
-  // 7. auto-continue re-entry — AFTER attach, same reason as review re-entry:
+  // 8. auto-continue re-entry — AFTER attach, same reason as review re-entry:
   //    a run that settled 'failed'/'turn-budget-exhausted' but never got its
   //    auto-continuation fired (crash in that window) resumes here.
   await dispatch
     .recoverPendingAutoContinues()
     .catch((err) => console.warn('[pc-sdk][dispatch] auto-continue re-entry failed:', err));
-  // 8. paused-ask revival (F1, comms-hardening) — AFTER attach, same reason:
+  // 9. paused-ask revival (F1, comms-hardening) — AFTER attach, same reason:
   //    re-mints a live session for every run the boot sweep left 'paused'
   //    (its ask survives with it) so answering it doesn't 410 on a dead
   //    in-process handle.

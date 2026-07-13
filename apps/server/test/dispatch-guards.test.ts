@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import {
   addAgentToProject,
   commitConversationEvent,
@@ -54,7 +55,7 @@ import { DispatchService } from '../src/dispatch/service.ts';
 import { SessionRegistry } from '../src/chat/registry.ts';
 import { ProjectWebSocketHub } from '../src/ws/hub.ts';
 import { runBootRecovery } from '../src/boot-recovery.ts';
-import { git } from '../src/dispatch/worktrees.ts';
+import { git, provisionWorktree } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
   freshDb,
@@ -461,6 +462,64 @@ test('repo kind with no repository folder ⇒ typed repository-unavailable termi
   assert.equal(rows[0]!.gitReceipt, null);
   assert.equal(listNonTerminalAgentRuns().length, 0);
   assert.equal(listContractsForProject(project.id).length, 0);
+});
+
+test('fresh dispatch reclaims an unpublished worktree when shutdown wins after provisioning', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  let markProvisioned!: () => void;
+  let releaseProvision!: () => void;
+  const provisioned = new Promise<void>((resolve) => { markProvisioned = resolve; });
+  const provisionGate = new Promise<void>((resolve) => { releaseProvision = resolve; });
+  let unpublishedDir: string | null = null;
+  let unpublishedBranch: string | null = null;
+  const dispatch = rig(new FakeAdapter([]), {
+    provisionWorktree: async (...args) => {
+      const result = await provisionWorktree(...args);
+      if (result.ok) {
+        unpublishedDir = result.dir;
+        unpublishedBranch = result.branch;
+      }
+      markProvisioned();
+      await provisionGate;
+      return result;
+    },
+  });
+  try {
+    const attempt = dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer',
+      input: 'must not publish after shutdown',
+      dispatcherSessionId: 'fresh-shutdown-race',
+    });
+    await provisioned;
+    assert.ok(unpublishedDir);
+    const disposal = dispatch.disposeAll();
+    releaseProvision();
+    const refused = await attempt;
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.equal(refused.cause, 'not-attached');
+      assert.match(refused.message, /unpublished checkout was reclaimed/);
+    }
+    assert.equal(existsSync(unpublishedDir), false);
+    assert.ok(unpublishedBranch);
+    assert.equal(
+      (await git(['rev-parse', '--verify', '--quiet', `refs/heads/${unpublishedBranch}`], gp.dir)).ok,
+      false,
+      'the exact pristine unpublished branch is removed with its checkout',
+    );
+    assert.equal(
+      listAgentRunsForSession(gp.project.id, 'fresh-shutdown-race', { podName: 'code-writer', limit: 10 }).length,
+      0,
+    );
+    assert.equal(listContractsForProject(gp.project.id).length, 0);
+    await disposal;
+  } finally {
+    releaseProvision();
+    await gp.cleanup();
+  }
 });
 
 test('provider session-create exceptions settle with fixed app-authored failure evidence', async () => {
@@ -1264,9 +1323,10 @@ test('shutdown prevents an in-flight paused revival from installing a live runti
 
   const recovery = dispatch.recoverPausedAsks();
   await adapter.started;
-  await dispatch.disposeAll();
+  const disposing = dispatch.disposeAll();
   const runtime = new TrackingRuntime();
   adapter.resolve(runtime);
+  await disposing;
   await recovery;
 
   assert.equal(runtime.disposeCalls, 1);

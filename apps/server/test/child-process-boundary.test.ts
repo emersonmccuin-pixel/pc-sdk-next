@@ -86,8 +86,9 @@ test('every direct production child-process importer is classified and policy-bu
   assert.match(worktrees, /import\s*\{\s*execFile\s*,\s*spawn\s*\}\s*from\s*['"]node:child_process['"]/);
   assert.equal(count(worktrees, /(?:node:)?child_process/g), 1);
   assert.equal(count(worktrees, /\bexecFile\(/g), 2, 'Git and fixed taskkill helper');
-  assert.equal(count(worktrees, /\bspawn\(/g), 1, 'one shared profile/verification shell');
-  assert.equal(count(worktrees, /env:\s*buildChildEnvironment\(\)/g), 2);
+  assert.equal(count(worktrees, /\bspawn\(/g), 3, 'two binary-safe Git readers and one shared profile/verification shell');
+  assert.equal(count(worktrees, /env:\s*buildChildEnvironment\(\)/g), 4);
+  assert.equal(count(worktrees, /spawn\('git',\s*\[\.\.\.args\],\s*\{/g), 2);
   assert.equal(count(worktrees, /const env = sanitizedShellEnv\(opts\.env\)/g), 1);
   assert.match(worktrees, /spawn\(command,\s*\{[\s\S]{0,300}?shell,[\s\S]{0,300}?env,/);
   assert.doesNotMatch(worktrees, /shell:\s*true/);

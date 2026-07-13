@@ -287,12 +287,12 @@ function isOptionalGitReceipt(value: unknown): boolean {
     (
       value.repositoryIdentity === undefined ||
       value.repositoryIdentity === null ||
-      isRepositoryIdentityReceipt(value.repositoryIdentity)
+      isRepositoryIdentityReceiptDto(value.repositoryIdentity)
     )
   );
 }
 
-function isRepositoryIdentityReceipt(
+export function isRepositoryIdentityReceiptDto(
   value: unknown,
 ): value is RepositoryIdentityReceiptDto {
   return isRecord(value) &&
