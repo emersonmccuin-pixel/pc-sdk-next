@@ -1,7 +1,8 @@
 # Current state
 
-Last updated: 2026-07-13 after CX-001 sealed implementation, full verification,
-and the bounded no-turn Codex admission observation. Guarded landing remains.
+Last updated: 2026-07-13 after CX-001 guarded code landing, post-merge
+verification, exact push/re-fetch, and guarded feature-worktree cleanup.
+Documentation closeout is the only remaining CX-001 operation.
 
 ## Preserved baseline
 
@@ -148,12 +149,19 @@ only in PC-SDK Next.
 - DL-004 documentation closeout worktree: removed after exact
   path/ancestry/remote/zero-process proof; closeout branch preserved
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
-- CX-001 branch: `codex/cx-001-codex-subscription-spike`
+- CX-001 branch: `codex/cx-001-codex-subscription-spike` (preserved)
 - CX-001 contract commits: `02135481`, `27d5ea54`, and `8c15023e`
 - CX-001 sealed implementation:
   `648b7d971c34ccf36985d84c0d20155e5eacf7d3`
 - CX-001 sealed tree: `2e10894429d4a99cce91b3665b45585240c52bde`
-- CX-001 feature record/landing/cleanup: pending guarded completion
+- CX-001 feature record: `b9fce8df104570d383c392c506f67200ba001336`
+- CX-001 code landing merge: `11365f1cf5802075d55b6506ebf5785a4e1ded5c`
+- CX-001 exact feature/code-merge tree:
+  `14bd4f9c93ab481dbd5c2443a76c1d1fb7a556ec`
+- CX-001 feature worktree: deregistered; exact residual directory removed
+  after parent/name/deregistration/no-`.git`/ancestry/remote/zero-process guards
+- CX-001 documentation closeout: `codex/cx-001-closeout` from the exact pushed
+  code landing; guarded closeout landing/push/cleanup pending
 
 Isolation defaults in the planning slice:
 
@@ -686,6 +694,14 @@ The exact observation matched across two distinct directly disposed app-server
 processes; temporary cleanup and the zero repository-owned-process guard passed.
 No raw account identity, plan, home path, native ID, frame, config/origin payload,
 quota, provider prose, token, or reasoning was retained.
+
+Feature record `b9fce8df104570d383c392c506f67200ba001336` guarded-landed as
+code merge `11365f1cf5802075d55b6506ebf5785a4e1ded5c`. Feature and code
+merge resolve to exact tree `14bd4f9c93ab481dbd5c2443a76c1d1fb7a556ec`.
+Post-merge `pnpm ci:check` remains green with 597/597 server tests and the
+dead-import guard; production web build and focused schema/static checks pass.
+The merge was pushed and re-fetched exactly before guarded feature-worktree
+deregistration and residual-directory removal. The feature branch is preserved.
 
 Credential freshness, entitlement, subscription usability, billing route,
 model usability/inference, production adapter registration/composition/session

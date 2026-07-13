@@ -1,7 +1,8 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after sealing and fully verifying the bounded CX-001 Codex
-admission spike. Guarded landing, push, and closeout remain active.
+Updated: 2026-07-13 after CX-001 guarded code landing, post-merge verification,
+exact push/re-fetch, and guarded feature-worktree cleanup. The documentation
+closeout/final-receipt sequence is the only remaining CX-001 operation.
 
 ## Repository
 
@@ -203,16 +204,24 @@ admission spike. Guarded landing, push, and closeout remain active.
   `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
 - DL-004 documentation closeout: pushed and re-fetched exactly; worktree
   removed after positive path, ancestry, remote, and zero-process proof
-- Active slice: `docs/execution/slices/CX-001.md`
+- Completed slice: `docs/execution/slices/CX-001.md`
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
 - CX-001 branch: `codex/cx-001-codex-subscription-spike`
-- CX-001 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001`
+- CX-001 worktree: removed after positive landing/push proof and guarded
+  residual-directory cleanup
 - CX-001 contract commits: `02135481`, `27d5ea54`, and `8c15023e`
 - CX-001 sealed implementation:
   `648b7d971c34ccf36985d84c0d20155e5eacf7d3`
 - CX-001 sealed tree: `2e10894429d4a99cce91b3665b45585240c52bde`
 - CX-001 receipt: `docs/execution/receipts/CX-001.md`
+- CX-001 feature record: `b9fce8df104570d383c392c506f67200ba001336`
+- CX-001 code landing: `11365f1cf5802075d55b6506ebf5785a4e1ded5c`
+- CX-001 exact feature/code-merge tree:
+  `14bd4f9c93ab481dbd5c2443a76c1d1fb7a556ec`
+- CX-001 feature branch: preserved
+- CX-001 documentation closeout branch: `codex/cx-001-closeout`
+- CX-001 documentation closeout worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001-closeout`
 
 ## Status
 
@@ -379,31 +388,51 @@ does not establish freshness, entitlement, subscription usability, billing,
 model usability, a production adapter, or escaped-descendant containment. No
 requirement is promoted.
 
+Feature record `b9fce8df` guarded-landed as code merge `11365f1c`, with exact
+feature/code-merge tree `14bd4f9c`. Post-merge `pnpm ci:check` passes with
+597/597 server tests and the dead-import guard; production web build, focused
+schema/static checks, exact push/re-fetch, feature-worktree deregistration, and
+guarded residual-directory removal pass. The feature branch is preserved.
+
 ## Active action
 
-CX-001 remains the one active slice only for guarded landing and documentation
-closeout. Commit this verification record, prove the contract-to-seal ancestry
-chain and clean feature tip, revalidate unchanged clean `main`/`origin/main`,
-guarded-merge the feature record, prove exact feature/merge tree equality, run
-post-merge CI/build/focused checks, push/re-fetch exactly, then remove the
-feature worktree only after landing/remote/zero-process proof. Record those
-facts through documentation-only closeout and final-receipt worktrees.
+CX-001 is complete in code. Sealed implementation `648b7d97`, feature record
+`b9fce8df`, guarded code landing `11365f1c`, and exact feature/code-merge tree
+`14bd4f9c` are positive. Pre- and post-merge `pnpm ci:check`, production web
+builds, focused schema/static checks, exact push/re-fetch, and guarded feature-
+worktree cleanup pass. The branch is preserved.
 
-Do not start CX-002, register a production Codex adapter, expose selectors or
-handoff UI, or run a live thread/turn during closeout. The next contract may
-define provider-local `CodexRuntimeAdapter` and provider-free conformance only;
-live turns remain blocked on pre-execution tool/MCP/approval enforcement and
-escaped-descendant containment.
+No implementation slice is active during closeout. First, commit and guarded-
+land this documentation closeout from `codex/cx-001-closeout`, push/re-fetch it
+exactly, and remove its worktree after positive ancestry/path/process proof.
+Then use a separate documentation-only final-receipt worktree to record the
+closeout commit/merge/tree, exact push/re-fetch, cleanup, and main-only worktree
+state; guarded-land and push that receipt, then remove its worktree under the
+same positive guards.
+
+Only after that final receipt, define CX-002 as the next bounded slice: a
+provider-local `CodexRuntimeAdapter` behind the existing `AgentRuntimeAdapter`
+contract using
+pinned app-server 0.144.1 and its checked-in stable schema, with provider-free
+canonical conformance first. Do not register Codex, expose selectors or handoff
+UI, start a live turn, or run the real-fix gate until pre-execution tool/MCP/
+approval enforcement and escaped-descendant containment have positive receipts.
+No experimental protocol or API-billing fallback.
 
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
 - CX-001 branch: `codex/cx-001-codex-subscription-spike`
-- CX-001 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001`
+- CX-001 worktree: removed after guarded landing/push/residue proof
 - CX-001 contract: `docs/execution/slices/CX-001.md`
 - CX-001 sealed implementation:
   `648b7d971c34ccf36985d84c0d20155e5eacf7d3`
 - CX-001 sealed tree: `2e10894429d4a99cce91b3665b45585240c52bde`
-- CX-001 feature record/landing/cleanup: pending
+- CX-001 feature record: `b9fce8df104570d383c392c506f67200ba001336`
+- CX-001 code landing: `11365f1cf5802075d55b6506ebf5785a4e1ded5c`
+- CX-001 exact feature/code-merge tree:
+  `14bd4f9c93ab481dbd5c2443a76c1d1fb7a556ec`
+- CX-001 closeout branch: `codex/cx-001-closeout`
+- CX-001 closeout worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001-closeout`
 
 - DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
 - DL-004 branch: `codex/dl-004-review-workspace`
@@ -437,9 +466,10 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed feature and closeout worktrees are removed. The main checkout and
-the sealed isolated CX-001 feature worktree are registered. Keep the PC-SDK Next
-main checkout read-only except for the deterministic guarded landing mutation.
+All completed feature worktrees are removed. Only the main checkout and the
+recorded CX-001 documentation-closeout worktree are registered. Keep the PC-SDK
+Next main checkout read-only except for the deterministic guarded landing
+mutation.
 
 ## Known blockers
 
@@ -448,10 +478,10 @@ remote-state uncertainty is retained in the completion receipt rather than
 repaired through private-data inspection.
 No DL-002 blocker remains.
 No DL-004 implementation, closeout, cleanup, or product-direction blocker
-remains. No CX-001 implementation, verification, hostile-review, live-gate, or
-product-direction blocker remains. Only guarded landing and durable closeout
-receipts remain. Experimental/API-billed/weaker alternatives are still not
-authorized.
+remains. No CX-001 implementation, verification, hostile-review, live-gate,
+code-landing, feature-cleanup, or product-direction blocker remains. Only this
+documentation closeout/final-receipt sequence is pending.
+Experimental/API-billed/weaker alternatives are still not authorized.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.
