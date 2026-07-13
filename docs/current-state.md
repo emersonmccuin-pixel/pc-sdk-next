@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-13 after CX-002 guarded code landing, post-merge
-verification, exact push/re-fetch, and guarded feature-worktree/residue cleanup.
-Documentation closeout remains active in its isolated worktree.
+Last updated: 2026-07-13 after CX-002 guarded code and documentation landings,
+post-merge verification, exact push/re-fetch, and guarded feature/closeout
+worktree cleanup.
 
 ## Preserved baseline
 
@@ -181,7 +181,15 @@ only in PC-SDK Next.
   `ce1c31e8ba38095a6e7571f2fe2705939436e645`
 - CX-002 feature worktree: deregistered; exact residual directory removed after
   parent/name/no-`.git`/ancestry/remote/branch-tip/zero-process guards
-- CX-002 documentation closeout branch: `codex/cx-002-closeout` (active)
+- CX-002 documentation closeout branch: `codex/cx-002-closeout` (preserved)
+- CX-002 documentation closeout commit:
+  `30fe8bb5604d68eb924f73bf2b40d0f4d4a71e3c`
+- CX-002 documentation closeout merge:
+  `a48db361026fc999bd4226797f329a85c0e795d7`
+- CX-002 documentation closeout tree:
+  `2bb0d86efee8316711985edb88a1022b6ad52cad`
+- CX-002 documentation closeout worktree: removed after exact path, clean-tip,
+  scope, ancestry, remote, branch-tip, and zero-process guards
 
 Isolation defaults in the planning slice:
 
@@ -773,6 +781,13 @@ Post-merge `pnpm ci:check` remains green with 660/660 server tests and the
 dead-import guard; the production build and exact push/re-fetch pass. Guarded
 feature-worktree deregistration and residual removal pass, and the feature
 branch is preserved.
+
+Documentation closeout commit
+`30fe8bb5604d68eb924f73bf2b40d0f4d4a71e3c` guarded-landed as
+`a48db361026fc999bd4226797f329a85c0e795d7`, exact tree
+`2bb0d86efee8316711985edb88a1022b6ad52cad`. Its six-path
+documentation-only scope, exact parents, ancestry, push/re-fetch, and guarded
+worktree removal pass. The closeout branch is preserved.
 
 This implementation starts no native process, thread, turn, or inference and
 promotes no requirement. Native continuation support is true only for the
