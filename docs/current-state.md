@@ -1,10 +1,10 @@
 # Current state
 
-Last updated: 2026-07-13 during the CX-003 native-execution safety decision.
-The stable-0.144.1 policy and Windows containment proposal passed three independent
-exact-hash hostile reviews, and the product owner explicitly accepted ADR-0002 as
-proposed. Guarded decision closeout is in progress. No native Codex process, thread,
-turn, or credential access occurred.
+Last updated: 2026-07-13 during the CX-003 final-receipt closeout. The accepted
+ADR-0002 decision feature guarded-landed, passed its post-merge gate, was pushed and
+re-fetched exactly, and its feature worktree was removed under positive guards. This
+transient final-receipt worktree records that proof before fake-only CX-004 begins. No
+native Codex process, thread, turn, or credential access occurred.
 
 ## Preserved baseline
 
@@ -193,13 +193,25 @@ only in PC-SDK Next.
 - CX-002 documentation closeout worktree: removed after exact path, clean-tip,
   scope, ancestry, remote, branch-tip, and zero-process guards
 - CX-003 base: `7259645dfaa9bb4c071843819119dda319d4cea8`
-- CX-003 branch: `codex/cx-003-native-execution-decision`
-- CX-003 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003`
+- CX-003 feature branch: `codex/cx-003-native-execution-decision` (preserved)
+- CX-003 feature worktree: deregistered; exact residual directory removed only
+  after parent/name, non-reparse-root, absent-`.git`, ancestry, remote,
+  branch-tip, and zero-process guards
 - CX-003 proposal checkpoint:
   `4fbbdf0f77b447e78f4218816e90d553ed93145a`
-- CX-003 status: ADR-0002 explicitly accepted by the product owner; guarded decision
-  closeout is in progress and CX-004 remains blocked until both closeouts finish
+- CX-003 proposal tree: `781cd1ff8beae1ef046687661d336049496b0acc`
+- CX-003 accepted decision:
+  `6061ad5b817af13077cf4f9358b3f351c83699dd`
+- CX-003 decision landing merge:
+  `e8a1c6d0aa13520b1ab0037af02006cb9a283b91`
+- CX-003 exact decision/merge tree:
+  `5b926bbf73ecfc1819386c16a287125d74669c69`
+- CX-003 final-receipt branch: `codex/cx-003-final-receipt`
+- CX-003 final-receipt worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003-final-receipt`
+- CX-003 status: accepted decision feature closeout complete; the transient final-
+  receipt closeout must itself be guarded-landed, post-merge verified,
+  pushed/re-fetched, and removed before fake-only CX-004 begins
 
 Isolation defaults in the planning slice:
 
@@ -918,8 +930,10 @@ origin empty external-action inventory, approval requests disabled, unknown acti
 always denied, and exact sandbox/filesystem/network evidence.
 
 This acceptance authorizes only fake-process/fake-principal CX-004 after the feature and
-separate final-receipt closeouts. Before any provider process, login-home access, or
-CX-005 invocation, a separately approved fresh production receipt and explicit
+separate final-receipt closeouts. The feature closeout is positive; the transient
+final-receipt closeout is the only remaining CX-003 lifecycle gate. Before any
+provider process, login-home access, or CX-005 invocation, a separately approved
+fresh production receipt and explicit
 provider-root TCB-versus-opaque-broker choice must positively qualify every root-
 applicable invariant/canary, including bootstrap/load/process closure, SF-001,
 restart/outbox/power-loss recovery, full-spawn/UI/job/token/IPC/access, protected

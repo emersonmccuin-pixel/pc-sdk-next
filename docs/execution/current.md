@@ -1,10 +1,11 @@
 # Current execution handoff
 
-Updated: 2026-07-13 during CX-003's docs-only native-execution safety decision.
-CX-002 is complete and main remains clean. After the CX-003 proposal checkpoint passed
-three independent exact-hash hostile reviews with no P0/P1/P2, the product owner
-explicitly approved ADR-0002 as proposed. Guarded decision closeout is in progress.
-No native Codex process, thread, turn, or credential access occurred.
+Updated: 2026-07-13 during CX-003's docs-only final-receipt closeout. CX-002 is
+complete and main remains clean. The accepted ADR-0002 decision guarded-landed,
+passed the post-merge gate, was pushed/re-fetched exactly, and its feature worktree
+was removed under positive guards. This transient final-receipt worktree records
+that proof before fake-only CX-004 begins. No native Codex process, thread, turn,
+or credential access occurred.
 
 ## Repository
 
@@ -408,9 +409,10 @@ branch is preserved.
 
 ## Active action
 
-CX-003 is closing in its isolated docs-only worktree. The stable-0.144.1 policy audit
-and Windows containment/toolchain design are complete. The product owner explicitly
-accepted ADR-0002's two
+CX-003's accepted-decision feature closeout is complete, and its isolated docs-only
+final-receipt worktree is active. The stable-0.144.1 policy audit and Windows
+containment/toolchain design are complete. The product owner explicitly accepted
+ADR-0002's two
 repository-owned native artifacts—the transient cold-start/controlled-restart PE and
 C++ Node-API full-spawn addon—plus explicit admission of pinned
 `better_sqlite3.node`. A live future N7 launcher must retain non-authoritative same-PE
@@ -481,12 +483,18 @@ external-action inventory, approvals disabled, unknown actions denied, and exact
 sandbox/filesystem/network evidence.
 
 Exact-snapshot hostile/source/link/path/scope/diff verification is positive, including
-three independent no-P0/P1/P2 reviews; the full no-source-change `pnpm ci:check` is
-already positive. Seal the accepted decision; revalidate its clean tip against current
-clean main; guarded-land it; prove ancestry; run the post-merge gate; push and re-fetch
-the exact merge; then guarded-remove the feature worktree.
-Then use a separate docs-only final-receipt closeout worktree to record the
-feature landing/teardown proof, guarded-land/push that closeout, and clean it.
+three independent no-P0/P1/P2 reviews. Accepted decision
+`6061ad5b817af13077cf4f9358b3f351c83699dd` guarded-landed as
+`e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; exact parent vector, ancestry,
+decision/merge tree, six-document scope, post-merge `pnpm ci:check`, push/re-fetch,
+preserved feature-branch tip, and guarded feature-worktree removal are positive. Record
+those facts in this final receipt; verify its exact five-path scope and clean diff; run
+the full gate; seal its clean tip; revalidate unchanged clean main/remote at
+`e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; guarded-land it with ordered
+parents exactly `[e8a1c6d0aa13520b1ab0037af02006cb9a283b91, final-receipt-tip]`;
+prove ancestry, final-tip/merge tree equality, exact five-path scope, and the preserved
+final branch tip; run the post-merge gate; push and re-fetch exact local/tracking/remote
+equality; then guarded-remove the final-receipt worktree.
 The acceptance authorizes CX-004; actual provider-neutral fake-process containment
 work begins only after both feature and final-receipt closeouts have positive
 landing/push/re-fetch/teardown proof. CX-004
@@ -524,9 +532,8 @@ production receipts. No experimental protocol, raw API billing, or weaker
 fallback is authorized.
 
 - CX-003 base: `7259645dfaa9bb4c071843819119dda319d4cea8`
-- CX-003 branch: `codex/cx-003-native-execution-decision`
-- CX-003 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003`
+- CX-003 feature branch: `codex/cx-003-native-execution-decision` (preserved)
+- CX-003 feature worktree: removed after guarded landing and guarded residual cleanup
 - CX-003 contract: `docs/execution/slices/CX-003.md`
 - CX-003 evidence: `docs/research/codex-native-execution-safety.md`
 - CX-003 accepted ADR:
@@ -534,7 +541,18 @@ fallback is authorized.
 - CX-003 decision receipt: `docs/execution/receipts/CX-003.md`
 - CX-003 proposal checkpoint:
   `4fbbdf0f77b447e78f4218816e90d553ed93145a`
-- CX-003 status: ADR-0002 accepted; guarded feature and final-receipt closeouts pending
+- CX-003 proposal tree: `781cd1ff8beae1ef046687661d336049496b0acc`
+- CX-003 accepted decision:
+  `6061ad5b817af13077cf4f9358b3f351c83699dd`
+- CX-003 decision landing:
+  `e8a1c6d0aa13520b1ab0037af02006cb9a283b91`
+- CX-003 exact decision/merge tree:
+  `5b926bbf73ecfc1819386c16a287125d74669c69`
+- CX-003 final-receipt branch: `codex/cx-003-final-receipt`
+- CX-003 final-receipt worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003-final-receipt`
+- CX-003 status: accepted-decision feature closeout complete; transient final-receipt
+  landing/post-merge-gate/push/re-fetch/teardown remains before fake-only CX-004
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -608,12 +626,11 @@ git log --oneline --decorate -8
 ```
 
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are
-removed. Main and the isolated CX-003 worktree are registered now. The accepted
-CX-003 feature branch must be guarded-landed, pushed, re-fetched, and its worktree
-torn down; abandonment is not an alternative after the decision. A separate docs-only final-receipt
-worktree then records that feature proof and must itself be guarded-landed,
-pushed, re-fetched, and torn down before closeout is complete and main alone
-remains.
+removed. The CX-003 accepted-decision feature is guarded-landed and its worktree and
+residual are removed; its branch remains preserved. Main and the isolated CX-003
+final-receipt worktree are registered now. That transient docs-only worktree must be
+guarded-landed, pushed, re-fetched, and torn down before closeout is complete and main
+alone remains.
 
 ## Known blockers
 
@@ -625,15 +642,15 @@ No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
-documentation-closeout blocker. CX-003's evidence phase has no blocker and the
-native-code/platform decision is accepted; only its two auditable closeouts remain
-before fake-only CX-004. Stable app-server 0.144.1 has a
+documentation-closeout blocker. CX-003's evidence, decision, feature landing, push,
+re-fetch, and feature teardown have no blocker; only its transient final-receipt
+closeout remains before fake-only CX-004. Stable app-server 0.144.1 has a
 confirmed effective-policy receipt blocker, so it cannot start a native thread
 or turn. Waiting for/upgrading to a qualifying stable release is recommended;
 experimental, forked, alternate-wire, API-billed, or weaker routes cannot
 bypass the same gates. Future governing-doc-authorized wire evaluation remains
 separate. Acceptance authorizes CX-004 provider-neutral containment, but actual
-work begins only after positive feature and final-receipt closeouts and never
+work begins only after the positive final-receipt closeout and never
 authorizes a Codex process. Process-capable parity and the real-fix gate stay
 blocked through the separate CX-006-through-CX-010 receipts.
 The Next shortcut code is isolated but has not been installed; regular daily
