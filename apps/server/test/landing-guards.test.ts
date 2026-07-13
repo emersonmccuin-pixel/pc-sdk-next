@@ -31,11 +31,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import type { Contract, Deliverable } from '@pc/contracts';
-import { createContract, createPendingAsk, getActiveWorktreeByName, getAgentRunRow, getContract, getRawDb, insertAgentRunRow, listAgentRunsForContract, listProjects, markAgentRunDelivered, markPendingAskAnswered, newId, setContractReviewState, setWorktreeContractId, updateAgentRunStatus } from '@pc/db';
+import { bindProjectRepositoryIdentity, createContract, createPendingAsk, createProject, getActiveWorktreeByName, getAgentRunRow, getContract, getRawDb, getWorktreeById, getWorktreeForLandedContract, insertAgentRunRow, listAgentRunsForContract, listProjects, listStrandedWorktrees, markAgentRunDelivered, markPendingAskAnswered, markWorktreeStranded, newId, setContractReviewState, setWorktreeContractId, updateAgentRunStatus } from '@pc/db';
 import type {
   AcceptanceCriteria,
   ExpectedOutput,
@@ -46,7 +46,7 @@ import { AccountRegistry } from '../src/runner/account-env.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
 import { DispatchService, type DispatchServiceDeps } from '../src/dispatch/service.ts';
-import { git, landBranch, provisionWorktree } from '../src/dispatch/worktrees.ts';
+import { git, landBranch, provisionWorktree, settleLandedWorktree } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
   commitFile,
@@ -402,6 +402,187 @@ test('guard 9: teardown failure cannot lose the landing receipt', async () => {
     assert.equal(existsSync(wt.dir), false, 'the FS fallback reclaimed the directory despite the git-level lock');
     // Durable, not just the in-memory return value.
     assert.equal(getContract(landed.id as ULID)?.landingStatus, 'landed');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('landed cleanup retries an active-to-stranded locked registration on the next boot', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const dispatch = rig();
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'locked.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    assert.equal((await git(['worktree', 'lock', wt.dir], gp.dir)).ok, true);
+
+    const landed = await dispatch.landAcceptedContract(contract);
+    assert.equal(landed?.landingStatus, 'landed');
+    assert.equal(existsSync(wt.dir), false, 'owned filesystem fallback removes the directory');
+    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip, 'branch remains while registration is locked');
+    const active = getActiveWorktreeByName(wt.branch);
+    assert.ok(active, 'positive cleanup did not destroy the row');
+
+    markWorktreeStranded(wt.branch, 'no-live-run', Date.now());
+    assert.equal(listStrandedWorktrees(gp.project.id).some((row) => row.id === active.id), true);
+    assert.equal((await git(['worktree', 'unlock', wt.dir], gp.dir)).ok, true);
+
+    const restarted = rig();
+    await restarted.recoverIncompleteTeardowns();
+    assert.equal(getWorktreeById(active.id)?.status, 'destroyed');
+    assert.equal((await git(['for-each-ref', '--format=%(refname)', `refs/heads/${wt.branch}`], gp.dir)).stdout, '');
+    assert.equal(listStrandedWorktrees(gp.project.id).some((row) => row.id === active.id), false);
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('landed cleanup requires the project identity to match the producer receipt', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const dispatch = rig();
+    const contracts = new ContractService();
+    const unboundProject = createProject({
+      name: 'Unbound recovery project',
+      slug: `unbound-${newId().toLowerCase()}`,
+      folderPath: gp.dir,
+    });
+    const provisioned = await provisionWorktree(gp.dir, newId(), { projectId: unboundProject.id });
+    if (!provisioned.ok) throw new Error(`provision failed: ${provisioned.error}`);
+    const wt = provisioned;
+    const tip = await commitFile(wt.dir, 'identity-gate.txt', 'work\n');
+    const contract = deliveredContract(contracts, { ...gp, project: unboundProject }, wt, tip);
+
+    const landed = await dispatch.landAcceptedContract(contract);
+    assert.equal(landed?.landingStatus, 'landed', 'merge receipt remains durable');
+    assert.equal(existsSync(wt.dir), true, 'missing project identity grants no teardown authority');
+    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip);
+    const row = getWorktreeForLandedContract(contract.id as ULID)!;
+    assert.notEqual(row.status, 'destroyed');
+
+    assert.ok(bindProjectRepositoryIdentity(unboundProject.id, wt.repositoryIdentity));
+    await rig().recoverIncompleteTeardowns();
+    assert.equal(getWorktreeById(row.id)?.status, 'destroyed');
+    assert.equal(existsSync(wt.dir), false);
+    assert.equal((await git(['for-each-ref', '--format=%(refname)', `refs/heads/${wt.branch}`], gp.dir)).stdout, '');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('destroyed exact row re-enters cleanup to finish the lifecycle crash window', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const dispatch = rig();
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'lifecycle-crash.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    const landed = await dispatch.landAcceptedContract(contract);
+    assert.equal(landed?.landingStatus, 'landed');
+    const row = getWorktreeForLandedContract(contract.id as ULID)!;
+    assert.equal(row.status, 'destroyed');
+    assert.equal(updateAgentRunStatus({
+      id: contract.agentRunId as ULID,
+      status: 'completed',
+      lifecycleState: 'tearing-down',
+    }), true, 'fixture models crash after row settlement before lifecycle completion');
+
+    const restarted = rig();
+    await restarted.recoverIncompleteTeardowns();
+    assert.equal(getAgentRunRow(contract.agentRunId as ULID)?.lifecycleState, 'completed');
+    assert.equal(getWorktreeById(row.id)?.status, 'destroyed');
+    assert.equal(existsSync(wt.dir), false);
+    assert.equal((await git(['for-each-ref', '--format=%(refname)', `refs/heads/${wt.branch}`], gp.dir)).stdout, '');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('landed cleanup refuses registration drift before removal', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'drift.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    const merged = await landBranch({
+      projectDir: gp.dir,
+      branch: wt.branch,
+      baseBranch: wt.baseBranch,
+      podName: 'tester',
+      expectedHeadSha: wt.baseSha,
+      repositoryIdentity: wt.repositoryIdentity,
+    });
+    assert.equal(merged.outcome, 'landed');
+    const advanced = await commitFile(gp.dir, 'after.txt', 'after\n');
+    assert.equal((await git(['reset', '--hard', advanced], wt.dir)).ok, true);
+    const worktree = getWorktreeForLandedContract(contract.id as ULID)!;
+    const result = await settleLandedWorktree({
+      projectDir: gp.dir,
+      projectId: gp.project.id,
+      contractId: contract.id as ULID,
+      producerRunId: contract.agentRunId as ULID,
+      worktree,
+      branch: wt.branch,
+      branchTip: tip,
+      repositoryIdentity: wt.repositoryIdentity,
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.code, 'invalid-binding');
+    assert.equal(existsSync(wt.dir), true, 'retargeted checkout is preserved');
+    assert.equal(getWorktreeById(worktree.id)?.status, 'active');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('landed cleanup keeps row retryable when exact branch ref deletion cannot lock', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const contracts = new ContractService();
+    const wt = await provisionOk(gp.dir, newId());
+    const tip = await commitFile(wt.dir, 'ref-lock.txt', 'work\n');
+    const contract = deliveredContract(contracts, gp, wt, tip);
+    const merged = await landBranch({
+      projectDir: gp.dir,
+      branch: wt.branch,
+      baseBranch: wt.baseBranch,
+      podName: 'tester',
+      expectedHeadSha: wt.baseSha,
+      repositoryIdentity: wt.repositoryIdentity,
+    });
+    assert.equal(merged.outcome, 'landed');
+    const worktree = getWorktreeForLandedContract(contract.id as ULID)!;
+    const lockPath = join(wt.repositoryIdentity.gitCommonDir, 'refs', 'heads', `${wt.branch}.lock`);
+    writeFileSync(lockPath, 'held');
+    const input = {
+      projectDir: gp.dir,
+      projectId: gp.project.id,
+      contractId: contract.id as ULID,
+      producerRunId: contract.agentRunId as ULID,
+      worktree,
+      branch: wt.branch,
+      branchTip: tip,
+      repositoryIdentity: wt.repositoryIdentity,
+    };
+    const blocked = await settleLandedWorktree(input);
+    assert.equal(blocked.ok, false);
+    if (!blocked.ok) assert.equal(blocked.code, 'branch-delete-failed');
+    assert.equal(getWorktreeById(worktree.id)?.status, 'active');
+    assert.equal(existsSync(wt.dir), false, 'directory proof alone does not settle the row');
+    assert.equal((await git(['rev-parse', wt.branch], gp.dir)).stdout, tip);
+
+    rmSync(lockPath, { force: true });
+    assert.deepEqual(await settleLandedWorktree(input), { ok: true });
+    assert.equal(getWorktreeById(worktree.id)?.status, 'destroyed');
+    assert.equal((await git(['for-each-ref', '--format=%(refname)', `refs/heads/${wt.branch}`], gp.dir)).stdout, '');
   } finally {
     await gp.cleanup();
   }

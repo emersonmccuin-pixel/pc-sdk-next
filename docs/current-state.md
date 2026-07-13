@@ -546,6 +546,48 @@ Feature and merge share exact tree
 exact push/re-fetch, and guarded feature-worktree/residue cleanup passed. The
 feature branch is preserved.
 
+## Completed N4 positive recovery feature
+
+`DL-003` closes the app-owned `OPS-003` recovery gate from clean pushed base
+`bbce281c4022a9389ff42a9c992b37d0630f7303`. Landed cleanup now has one
+positive retryable door shared by fresh landing and boot re-drive. It requires
+the project's immutable repository identity to match the producer receipt,
+the exact project/contract/run/path/branch/base worktree snapshot, positive
+directory and Git-registration absence, expected-tip deletion of the exact
+merged branch, a successful exact ref-absence query, and only then exact row
+destruction and lifecycle completion. Active and stranded rows retry; an
+already-destroyed exact row closes only the crash window before the producer's
+completion stamp. Reconciliation cannot infer cleanup from a missing path or
+landing receipt.
+
+Terminal unresolved worktree owners now outlive the recent window through the
+existing run/contract/worktree truth. The Activity rail separately counts
+running and recovery state, deduplicates stronger landing/run/worktree
+evidence, exposes typed transcript evidence, and shows explicit unavailable
+reads with Retry. Preservation copy requires a current exact stranded binding;
+loading or failed reads never reuse stale evidence as current truth. HTTP seed
+omission converges against live resources with a server-authored outbox high-
+water and resource cursors, never browser/server clock comparison. Browser
+actions remain Inspect and DL-002's current-eligibility Abandon only.
+
+Production and the provider-free OS-kill test share the same ordered pre-
+attach repository recovery composition. The test hard-kills an engine holding
+two isolated worktrees: the sealed peer verifies, lands once, proves ancestry,
+and tears down positively; the unsealed peer fails once with `server-restart`
+and retains exact branch, directory, content, and durable recovery rows. A
+second boot writes no duplicate merge, terminal, stranding, outbox, or cleanup
+effect. Three independent hostile review lanes drove identity, snapshot-CAS,
+path revalidation, production-composition, stale-resource, read-evidence, and
+action-eligibility fixes; the final re-review reports no P0/P1/P2 blocker.
+
+The implementation sealed as
+`eef661d7e97e6a9ce66568afff88a081129896aa`, tree
+`d0351abbd2349c1ca739bc1ed16c804667943b65`. Full feature-tree
+`pnpm ci:check` passes with 419/419 server tests and the dead-import guard; the
+production web build also passes. No provider, PM/MCP-network, stable-data,
+original-app, or external-repository action was required. Guarded landing and
+post-merge closeout remain the active action.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -563,9 +605,10 @@ feature branch is preserved.
   lease is guarded-landed and pushed. Nonparticipating stable/manual
   tools and escaped repository children remain outside that proof. The listener
   is not yet explicitly loopback-bound.
-- Approved abandonment is guarded-landed and verified, but the broader N4
-  process-failure/recovery experience and general recovery-center UI remain
-  incomplete.
+- The bounded app-owned process-failure/recovery rail is implemented and
+  verified by DL-003. A general recovery center is deliberately not a product
+  surface. Nonparticipant/escaped-child containment and exact detached-review
+  checkout authority remain separate gaps.
 - Worktree profiles do not yet have an explicit local-input/environment/secret
   injection policy. Arbitrary ambient variables are now deliberately absent;
   private setup dependencies that require credentials must wait for an

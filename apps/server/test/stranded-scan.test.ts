@@ -154,7 +154,7 @@ test('reconcile: a false positive self-heals — dir back + live run flips the r
   }
 });
 
-test('reconcile: a stranded row whose contract landed (dir gone) resolves to destroyed, not left stranded forever', async () => {
+test('reconcile: landed + missing directory never bypasses registration and branch cleanup proof', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
@@ -176,11 +176,14 @@ test('reconcile: a stranded row whose contract landed (dir gone) resolves to des
     const second = reconcileStrandedWorktrees();
     assert.deepEqual(second.stranded, []);
     assert.deepEqual(second.revived, []);
-    assert.deepEqual(second.resolved, [wt.branch]);
-    assert.equal(listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch), false, 'no longer surfaced as stranded');
+    assert.deepEqual(second.resolved, []);
+    assert.equal(
+      listStrandedWorktrees(gp.project.id).some((w) => w.name === wt.branch),
+      true,
+      'landed receipt proves merge history only; exact teardown owns cleanup',
+    );
 
-    // Boot-time reconcile must heal pre-existing stuck rows the same way —
-    // re-scanning a row already resolved to destroyed is a no-op, not an error.
+    // Re-scanning cannot reinterpret missing filesystem state as cleanup.
     const third = reconcileStrandedWorktrees();
     assert.deepEqual(third.resolved, []);
   } finally {

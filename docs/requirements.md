@@ -22,7 +22,7 @@ Status values: `accepted`, `implemented`, `verified`, `deferred`, `rejected`.
 | BASE-001 | verified | The known-working PC-SDK baseline is preserved in the original private repository at tag `working-v1-2026-07-11`. |
 | OPS-001 | verified | PC-SDK Next runs from a separate checkout, GitHub repository, port, data directory, logs, launcher identity, and worktree root. |
 | OPS-002 | accepted | The original PC-SDK remains the dependable daily driver until an explicit migration gate is passed. |
-| OPS-003 | accepted | Boot recovery reconciles durable state with runtime, Git, and filesystem evidence and fails uncertain work loudly. |
+| OPS-003 | verified | Boot recovery reconciles durable state with runtime, Git, and filesystem evidence and fails uncertain work loudly. |
 | OPS-004 | verified | The original repository is configured as fetch-only `upstream`; ordinary and explicit fork pushes target `origin`. |
 | OPS-005 | accepted | A data-directory single-instance lock and cross-process repository lease prevent two engines from mutating the same app state or target repository concurrently. |
 | OPS-006 | accepted | The local HTTP/WS listener binds only to loopback unless a separately approved remote-access design replaces it. |
@@ -72,6 +72,19 @@ repository remains in force. The feature worktree and guarded residue are
 removed, two handoff-recorded stale temp roots are removed, and the feature
 branch is preserved; these landing receipts do not change the accepted global
 status.
+
+DL-003 feature verification completes `OPS-003` for the app-owned recovery
+boundary. Production and the OS hard-kill gate execute one shared ordered
+pre-attach recovery composition. A real killed engine with two isolated
+worktrees re-drives the sealed peer through verification, one merge, positive
+directory/registration/branch teardown, and lifecycle completion while the
+unsealed peer fails once with `server-restart` and retains its exact branch,
+directory, content, run, contract, and stranded row. A second boot emits no
+duplicate merge, terminal, or cleanup effect. Missing identity, registration,
+branch, row, run, or read evidence stays explicit and retryable. Sealed
+implementation `eef661d7e97e6a9ce66568afff88a081129896aa`, tree
+`d0351abbd2349c1ca739bc1ed16c804667943b65`; final feature-tree
+`pnpm ci:check` is green with 419/419 server tests and the dead-import guard.
 
 ## Runtime sessions and selection
 
@@ -188,9 +201,9 @@ existing process-local FIFO serializes landing and stale-base revalidation.
 Same-engine worktrees remain parallel and an occupied repository is preserved
 without blocking unrelated repositories. Boot and landing require the exact
 durable identity, and project creation cannot silently reinterpret init as
-attach. `WT-004` stays `accepted` because the broader N4 process-failure gate
-and nonparticipant/escaped-child boundaries remain incomplete; SF-002 seal and
-landing are complete.
+attach. `WT-004` stays `accepted` because nonparticipant and escaped-child
+boundaries remain incomplete; SF-002 admission and DL-003's cooperative
+process-failure gate are complete.
 
 DL-001 feature verification strengthens `WT-002`: every fresh repository
 builder and continuation now persists exact contextual preparation and
@@ -209,8 +222,17 @@ and non-destructive. Feature record `7b194a94` guarded-landed as `02231ece`
 with exact feature/merge tree `20994454`; pre/post-merge 413/413 server gates,
 exact push/re-fetch, and guarded worktree cleanup passed. The requirements
 remain `accepted`: positive merge proof was already present, while the broader
-N4 process-failure/recovery UI and nonparticipant/escaped-child boundaries
-remain incomplete.
+N4 process-failure/recovery UI was assigned to DL-003 and nonparticipant/
+escaped-child boundaries remain separate.
+
+DL-003 strengthens `WT-004`, `WT-005`, and `WT-006` with an exact landed-
+cleanup proof chain, full-snapshot worktree settlement, active/stranded and
+post-row crash-window retry feeders, state-based unresolved-owner retention,
+an honest deduplicated Activity recovery rail, server-cursor reconnect
+convergence, and the composed two-worktree OS hard-kill gate. All three stay
+`accepted` rather than globally verified because nonparticipating Git tools,
+escaped children, and exact detached-review checkout authority remain outside
+this slice.
 
 ## Integrations, security, and product boundaries
 

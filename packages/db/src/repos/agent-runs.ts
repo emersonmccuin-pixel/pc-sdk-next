@@ -8,7 +8,7 @@
 // Continuation lineage via `continues` self-FK. `findActiveContinuation`
 // guards `pc_continue_agent` against double-continuation of the same parent.
 
-import { and, count, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import {
   isRuntimeSelection,
@@ -41,6 +41,7 @@ import {
 import { getDb, type DbExecutor } from '../connection.ts';
 import { newId } from '../id.ts';
 import { agentContracts, agentRuns } from '../schema-agent-system.ts';
+import { worktrees } from '../schema.ts';
 
 export interface InsertAgentRunRowInput {
   /** PC-minted ULID. Matches the AgentRun wrapper's `agentRunId`. */
@@ -778,13 +779,22 @@ export function listRecentTerminalAgentRuns(since: number): AgentRunRow[] {
     .all();
 }
 
-/** State-based retention (docs/worktree-lifecycle.md 'Teardown and
- *  retention'): terminal rows parked in a preserved lifecycle state
- *  (merge-ready, conflict, stranded, review-rejected, failed) stay listed
- *  until resolved — no age window. Non-repo rows (lifecycleState NULL) never
- *  match; they keep the recent-terminal window. Newest first. */
+/** State-based recovery retention. In addition to the established preserved
+ * lifecycle parks, a terminal run remains visible while it is the exact
+ * current owner of an active/stranded worktree. That covers cancellation and
+ * preparation failure without making those lifecycle sinks globally immortal.
+ * Ownership transfer removes the prior attempt; positive cleanup removes the
+ * worktree feeder. */
 export function listPreservedTerminalAgentRuns(projectId: ULID): AgentRunRow[] {
   const db = getDb();
+  const exactUnresolvedOwner = db
+    .select({ runId: worktrees.agentRunId })
+    .from(worktrees)
+    .where(and(
+      eq(worktrees.projectId, projectId),
+      inArray(worktrees.status, ['active', 'stranded']),
+      isNotNull(worktrees.agentRunId),
+    ));
   const rows = db
     .select()
     .from(agentRuns)
@@ -792,13 +802,48 @@ export function listPreservedTerminalAgentRuns(projectId: ULID): AgentRunRow[] {
       and(
         eq(agentRuns.projectId, projectId),
         inArray(agentRuns.status, ['completed', 'failed', 'cancelled']),
-        inArray(agentRuns.lifecycleState, PRESERVED_LIFECYCLE_STATES as unknown as RunLifecycleState[]),
+        or(
+          inArray(agentRuns.lifecycleState, PRESERVED_LIFECYCLE_STATES as unknown as RunLifecycleState[]),
+          inArray(agentRuns.id, exactUnresolvedOwner),
+        ),
       ),
     )
     .orderBy(desc(agentRuns.completedAt))
     .all();
   return rows.filter((run) => {
-    if (run.contractId === null) return true;
+    const ownedRows = db.select({
+      contractId: worktrees.contractId,
+      path: worktrees.path,
+    }).from(worktrees).where(and(
+      eq(worktrees.projectId, projectId),
+      eq(worktrees.agentRunId, run.id),
+      inArray(worktrees.status, ['active', 'stranded']),
+    )).limit(2).all();
+    const exactOwned = ownedRows.length === 1 &&
+      ownedRows[0]!.contractId === run.contractId &&
+      ownedRows[0]!.path === run.worktreeDir;
+    const lifecyclePreserved = run.lifecycleState !== null &&
+      (PRESERVED_LIFECYCLE_STATES as readonly string[]).includes(run.lifecycleState);
+    if (!exactOwned && !lifecyclePreserved) return false;
+    const currentWorktree = run.contractId === null
+      ? null
+      : db.select({
+          agentRunId: worktrees.agentRunId,
+          path: worktrees.path,
+          status: worktrees.status,
+        }).from(worktrees).where(and(
+          eq(worktrees.contractId, run.contractId),
+          inArray(worktrees.status, ['active', 'stranded']),
+        )).limit(2).all();
+    if (currentWorktree && currentWorktree.length > 1) return false;
+    if (
+      currentWorktree?.length === 1 &&
+      (
+        currentWorktree[0]!.agentRunId !== run.id ||
+        currentWorktree[0]!.path !== run.worktreeDir
+      )
+    ) return false;
+    if (run.contractId === null) return exactOwned || lifecyclePreserved;
     const contract = db.select({
       landingStatus: agentContracts.landingStatus,
       abandonmentReceipt: agentContracts.abandonmentReceipt,

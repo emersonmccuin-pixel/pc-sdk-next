@@ -42,7 +42,7 @@ import {
 } from './dispatch/repository-lease.ts';
 import { McpManager } from './mcp/manager.ts';
 import { SubscriptionQuotaPoller } from './subscription-quota/poller.ts';
-import { reconcileStrandedWorktreesAtBoot } from './boot-recovery.ts';
+import { runPreAttachRepositoryRecovery } from './boot-recovery.ts';
 import { startServer, type RunningServer } from './server.ts';
 import {
   acquireDataDirectoryAdmission,
@@ -286,19 +286,7 @@ async function main(): Promise<void> {
   //    run row (live) that the scan would misclassify 'no-live-run' — until
   //    attach, dispatch verbs refuse 503 'server still booting'; chat itself
   //    is unaffected.
-  await dispatch
-    .recoverSealedRuns()
-    .catch((err) => console.warn('[pc-sdk][dispatch] sealed-run recovery failed:', err));
-  await dispatch
-    .recoverPendingLandings()
-    .catch((err) => console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err));
-  await dispatch
-    .recoverApprovedAbandonments()
-    .catch((err) => console.warn('[pc-sdk][dispatch] approved-abandonment re-drive failed:', err));
-  await dispatch
-    .recoverIncompleteTeardowns()
-    .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
-  await reconcileStrandedWorktreesAtBoot();
+  await runPreAttachRepositoryRecovery(dispatch);
   dispatch.attach({
     registry: server.registry,
     hub: server.hub,

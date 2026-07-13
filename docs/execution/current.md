@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after DL-002 guarded landing, post-merge verification,
-exact push/re-fetch, and feature-worktree cleanup.
+Updated: 2026-07-12 after DL-003 implementation sealing, exact feature-tree
+verification, and three independent hostile re-reviews.
 
 ## Repository
 
@@ -179,6 +179,10 @@ exact push/re-fetch, and feature-worktree cleanup.
   dependency/build residue removed after parent/name/process guards
 - DL-002 feature branch: preserved
 - DL-002 receipt: `docs/execution/receipts/DL-002.md`
+- Active slice: `docs/execution/slices/DL-003.md`
+- DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
+- DL-003 branch: `codex/dl-003-recovery-gate`
+- DL-003 worktree: `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
 
 ## Status
 
@@ -330,17 +334,28 @@ teardown all passed.
 
 ## Active action
 
-DL-002 is complete. Sealed implementation `367f208b`, feature record
-`7b194a94`, guarded landing `02231ece`, exact feature/merge tree `20994454`,
-pre/post-merge 413/413 gates, three clean hostile re-reviews, exact push/re-
-fetch, and guarded feature-worktree cleanup all passed. `WT-005` and `WT-006`
-remain accepted because their broader process-failure/recovery and
-nonparticipant/escaped-child boundaries are incomplete.
+DL-003 implementation is sealed as
+`eef661d7e97e6a9ce66568afff88a081129896aa`, exact tree
+`d0351abbd2349c1ca739bc1ed16c804667943b65`. Positive retryable landed
+teardown, exact unresolved-owner retention, the honest Activity recovery rail,
+server-cursor reconnect convergence, shared production recovery composition,
+and the provider-free two-worktree OS hard-kill gate are complete. Three final
+hostile re-reviews report no P0/P1/P2 blocker. Exact feature-tree
+`pnpm ci:check` is green with 419/419 server tests and the dead-import guard;
+the production web build is green.
 
-Define the remaining N4 process-failure/recovery UI slice. Keep it bounded to
-evidence-backed failure/recovery behavior and do not silently turn it into a
-general recovery center or workflow engine, `OPS-006`, PM/MCP integration,
-Codex, or N7.
+Guard-land the sealed feature record onto the exact clean pushed base, prove
+feature/merge tree equality and ancestry, rerun the full gate on `main`, push
+and re-fetch the exact merge, then remove only the proven landed feature
+worktree/residue. Keep general recovery-center/workflow behavior, arbitrary
+Git repair, `OPS-006`, nonparticipant/escaped-child containment, PM/MCP,
+Codex, and N7 out of scope.
+
+- DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
+- DL-003 branch: `codex/dl-003-recovery-gate`
+- DL-003 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
+- DL-003 contract: `docs/execution/slices/DL-003.md`
 
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
 - DL-002 branch: `codex/dl-002-approved-abandonment`

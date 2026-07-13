@@ -656,19 +656,44 @@ export function listContractsPendingLanding(db: DbExecutor = getDb()): ContractR
 }
 
 /** docs/worktree-lifecycle.md Recovery — 'merge positively complete but
- *  teardown incomplete → resume teardown': landed contracts whose bound
- *  worktree row is still ACTIVE. The landing receipt is durable BEFORE
- *  teardown (guard 9), so a crash in between leaves exactly this shape. Boot
- *  resumes their teardown BEFORE the stranded scan. */
+ * teardown incomplete → resume teardown'. Active and stranded exact bindings
+ * are both retry feeders. A destroyed exact binding also feeds recovery only
+ * while its current producer is still in a pre-completion cleanup lifecycle;
+ * that is the crash window after row settlement but before `completed`. */
 export function listContractsLandedTeardownIncomplete(db: DbExecutor = getDb()): ContractRow[] {
-  const activeBoundContracts = db
+  const unresolvedBoundContracts = db
     .select({ contractId: worktrees.contractId })
     .from(worktrees)
-    .where(and(eq(worktrees.status, 'active'), isNotNull(worktrees.contractId)));
+    .where(and(
+      inArray(worktrees.status, ['active', 'stranded']),
+      isNotNull(worktrees.contractId),
+    ));
+  const lifecycleCrashWindowContracts = db
+    .select({ contractId: agentRuns.contractId })
+    .from(agentRuns)
+    .where(and(
+      isNotNull(agentRuns.contractId),
+      inArray(agentRuns.lifecycleState, [
+        'merging',
+        'merged',
+        'tearing-down',
+        'merge-ready',
+        'conflict',
+        'review-rejected',
+        'failed',
+        'stranded',
+      ]),
+    ));
   return db
     .select()
     .from(agentContracts)
-    .where(and(eq(agentContracts.landingStatus, 'landed'), inArray(agentContracts.id, activeBoundContracts)))
+    .where(and(
+      eq(agentContracts.landingStatus, 'landed'),
+      or(
+        inArray(agentContracts.id, unresolvedBoundContracts),
+        inArray(agentContracts.id, lifecycleCrashWindowContracts),
+      ),
+    ))
     .orderBy(asc(agentContracts.updatedAt))
     .all() as ContractRow[];
 }

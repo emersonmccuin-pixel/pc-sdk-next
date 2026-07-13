@@ -4,12 +4,11 @@
 // compares revisions because a retained pre-reconnect live frame may be older
 // than the newly fetched durable row.
 //
-// Terminal rows drop out EXCEPT preserved lifecycle states (merge-ready,
-// conflict, stranded, review-rejected, failed — docs/worktree-lifecycle.md
-// 'Teardown and retention'): those stay in `preserved` until resolved, so the
-// ActivityPanel sections and transcript click-through can reach them.
+// Terminal success rows drop out. Server-retained unresolved rows and bounded
+// recent failed/cancelled outcomes stay in `preserved`, so Activity can render
+// recovery truth and contract sections can still open their transcript.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   isAgentRunChangedLivePayload,
   isPreservedLifecycleState,
@@ -30,14 +29,37 @@ export interface AgentRunView extends AgentRunDto {
   stalled: boolean;
 }
 
-/** True when the run should stay in the feed despite a terminal status. */
-function keepRun(run: AgentRunDto): boolean {
-  return !TERMINAL.has(run.status) || isPreservedLifecycleState(run.lifecycleState);
+/** True when a terminal row is actionable recovery truth. The server bounds
+ * ordinary recent rows and retains exact unresolved worktree owners; the
+ * browser must preserve every failed/cancelled row it is given without trying
+ * to reproduce that retention query. */
+function isRetainedTerminalRun(run: AgentRunDto): boolean {
+  return TERMINAL.has(run.status) && (
+    run.status === 'failed' ||
+    run.status === 'cancelled' ||
+    isPreservedLifecycleState(run.lifecycleState) ||
+    run.lifecycleState === 'merging' ||
+    run.lifecycleState === 'merged' ||
+    run.lifecycleState === 'tearing-down' ||
+    run.lifecycleState === 'provisioning-failed' ||
+    run.lifecycleState === 'verification-failed' ||
+    run.lifecycleState === 'cancelled'
+  );
+}
+
+export function isRecoveryTerminalRun(
+  run: AgentRunDto,
+  contractLandingStatus: string | null = null,
+): boolean {
+  return isRetainedTerminalRun(run) && (
+    run.lifecycleState !== 'merge-ready' || contractLandingStatus === 'landed'
+  );
 }
 
 export function overlayAgentRunPayloads(
   seeded: Iterable<AgentRunDto>,
-  payloads: Iterable<AgentRunChangedLivePayload>,
+  payloads: Iterable<AgentRunChangedLivePayload & { resourceCursor?: string }>,
+  authoritativeCursor: string | null = null,
 ): { runs: AgentRunView[]; preserved: AgentRunView[] } {
   const map = new Map<string, AgentRunDto>();
   // Keep every HTTP row as revision evidence, including non-preserved terminal
@@ -46,70 +68,132 @@ export function overlayAgentRunPayloads(
   // already proved terminal.
   for (const run of seeded) map.set(run.runId, run);
   const stalledIds = new Set<string>();
-  for (const { run, reason } of payloads) {
+  for (const { run, reason, resourceCursor } of payloads) {
     const current = map.get(run.runId);
+    if (
+      !current &&
+      authoritativeCursor !== null &&
+      resourceCursor !== undefined &&
+      cursorAtOrBefore(resourceCursor, authoritativeCursor)
+    ) {
+      // A successful HTTP seed is authoritative for active and terminal
+      // retention as of its server outbox high-water. Any older resource it
+      // omitted was positively resolved or aged out and cannot resurrect.
+      continue;
+    }
     if (current && current.rev > run.rev) continue;
-    if (!keepRun(run)) {
-      // Retain the terminal revision as a tombstone for any later stale payload
-      // in this overlay pass. Presentation filtering happens below.
-      map.set(run.runId, run);
-      stalledIds.delete(run.runId);
+    if (
+      current &&
+      current.rev === run.rev &&
+      TERMINAL.has(current.status) &&
+      !TERMINAL.has(run.status)
+    ) {
+      // Same-revision activity can legitimately refine presentation (for
+      // example `stalled`) while a run is live, but can never resurrect a
+      // terminal durable seed after reconnect.
       continue;
     }
     map.set(run.runId, run);
-    if (reason === 'stalled') stalledIds.add(run.runId);
+    if (TERMINAL.has(run.status)) stalledIds.delete(run.runId);
+    else if (reason === 'stalled') stalledIds.add(run.runId);
     else stalledIds.delete(run.runId);
   }
   const all: AgentRunView[] = [...map.values()]
-    .filter(keepRun)
     .map((run) => ({ ...run, stalled: stalledIds.has(run.runId) }))
     .sort((a, b) => a.startedAt - b.startedAt);
   return {
     runs: all.filter((run) => !TERMINAL.has(run.status)),
-    preserved: all.filter((run) => TERMINAL.has(run.status)),
+    preserved: all.filter(isRetainedTerminalRun),
   };
+}
+
+function cursorAtOrBefore(cursor: string, highWater: string): boolean {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(cursor) || !/^(?:0|[1-9][0-9]*)$/u.test(highWater)) {
+    return false;
+  }
+  return BigInt(cursor) <= BigInt(highWater);
+}
+
+export type AgentRunReadStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+interface AgentRunSeedState {
+  projectId: string | null;
+  runs: Map<string, AgentRunDto>;
+  authoritativeCursor: string | null;
+  status: AgentRunReadStatus;
+  error: string | null;
 }
 
 export function useProjectAgentRuns(project: Project | null): {
   /** Non-terminal (running/queued/paused) runs. */
   runs: AgentRunView[];
-  /** Terminal runs parked in a preserved lifecycle state — visible until resolved. */
+  /** Server-retained unresolved rows plus bounded recent failed/cancelled rows. */
   preserved: AgentRunView[];
+  readStatus: AgentRunReadStatus;
+  readError: string | null;
+  retry: () => void;
 } {
-  const [seeded, setSeeded] = useState<Map<string, AgentRunDto>>(new Map());
+  const [seed, setSeed] = useState<AgentRunSeedState>({
+    projectId: null,
+    runs: new Map(),
+    authoritativeCursor: null,
+    status: 'idle',
+    error: null,
+  });
+  const [retryNonce, setRetryNonce] = useState(0);
   const connectionEpoch = useConnectionStore((state) => state.epoch);
+  const retry = useCallback(() => setRetryNonce((value) => value + 1), []);
 
   useEffect(() => {
     if (!project) {
-      setSeeded(new Map());
+      setSeed({ projectId: null, runs: new Map(), authoritativeCursor: null, status: 'idle', error: null });
       return;
     }
+    const projectId = project.id;
     let cancelled = false;
+    setSeed((current) => ({
+      projectId,
+      runs: current.projectId === projectId ? current.runs : new Map(),
+      authoritativeCursor: current.projectId === projectId ? current.authoritativeCursor : null,
+      status: 'loading',
+      error: null,
+    }));
     agentRunsApi
-      .listAgentRuns(project.id)
-      .then((runs) => {
+      .listAgentRuns(projectId)
+      .then(({ runs, asOfCursor }) => {
         if (cancelled) return;
         const map = new Map<string, AgentRunDto>();
         for (const r of runs) map.set(r.runId, r);
-        setSeeded(map);
+        setSeed({ projectId, runs: map, authoritativeCursor: asOfCursor, status: 'ready', error: null });
       })
-      .catch(() => {
-        // Degrade, never block — no backend route yet, or a transient error.
-        if (!cancelled) setSeeded(new Map());
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSeed((current) => ({
+          projectId,
+          runs: current.projectId === projectId ? current.runs : new Map(),
+          authoritativeCursor: current.projectId === projectId ? current.authoritativeCursor : null,
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        }));
       });
     return () => {
       cancelled = true;
     };
-  }, [project?.id, connectionEpoch]);
+  }, [project?.id, connectionEpoch, retryNonce]);
 
   const liveEvents = useResourceEvents('agent-run', project?.id ?? null);
 
   return useMemo(() => {
-    const payloads: AgentRunChangedLivePayload[] = [];
+    const payloads: Array<AgentRunChangedLivePayload & { resourceCursor: string }> = [];
     for (const ev of liveEvents) {
       if (!isAgentRunChangedLivePayload(ev.payload)) continue;
-      payloads.push(ev.payload);
+      payloads.push({ ...ev.payload, resourceCursor: ev.cursor });
     }
-    return overlayAgentRunPayloads(seeded.values(), payloads);
-  }, [seeded, liveEvents]);
+    return {
+      ...overlayAgentRunPayloads(seed.runs.values(), payloads, seed.authoritativeCursor),
+      readStatus: seed.status,
+      readError: seed.error,
+      retry,
+    };
+  }, [seed, liveEvents, retry]);
 }

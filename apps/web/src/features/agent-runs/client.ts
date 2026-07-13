@@ -35,6 +35,12 @@ export interface AgentRunEventsResponse {
   status: AgentRunDto['status'];
 }
 
+export interface AgentRunListResponse {
+  runs: AgentRunDto[];
+  /** Global server outbox high-water captured with the durable list read. */
+  asOfCursor: string | null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -69,17 +75,21 @@ export function parseAgentRunEventsResponse(value: unknown): AgentRunEventsRespo
   };
 }
 
-export function parseAgentRunListResponse(value: unknown): AgentRunDto[] {
+export function parseAgentRunListResponse(value: unknown): AgentRunListResponse {
   if (
     !isRecord(value) ||
-    Object.keys(value).some((key) => key !== 'ok' && key !== 'runs') ||
+    Object.keys(value).some((key) => key !== 'ok' && key !== 'runs' && key !== 'asOfCursor') ||
     value.ok !== true ||
     !Array.isArray(value.runs) ||
-    !value.runs.every(isAgentRunDto)
+    !value.runs.every(isAgentRunDto) ||
+    !(
+      value.asOfCursor === null ||
+      (typeof value.asOfCursor === 'string' && /^(?:0|[1-9][0-9]*)$/u.test(value.asOfCursor))
+    )
   ) {
     throw new Error('invalid agent run list response');
   }
-  return value.runs;
+  return { runs: value.runs, asOfCursor: value.asOfCursor };
 }
 
 export const agentRunsApi = {

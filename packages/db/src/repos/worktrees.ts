@@ -44,6 +44,21 @@ export function getWorktreeForContract(
   return rows.length === 1 ? rows[0]! : null;
 }
 
+/** Exact landed-cleanup binding. Unlike the ordinary mutation candidate this
+ * also admits an already-destroyed row so recovery can finish the crash window
+ * between exact row settlement and the producer lifecycle `completed` stamp.
+ * More than one historical binding is ambiguous and grants no authority. */
+export function getWorktreeForLandedContract(
+  contractId: ULID,
+  db: DbExecutor = getDb(),
+): WorktreeRow | null {
+  const rows = db.select().from(worktrees).where(and(
+    eq(worktrees.contractId, contractId),
+    inArray(worktrees.status, ['active', 'stranded', 'destroyed']),
+  )).limit(2).all();
+  return rows.length === 1 ? rows[0]! : null;
+}
+
 export interface UpsertWorktreeInput {
   name: string;
   path: string;
@@ -118,6 +133,40 @@ export interface MarkExactWorktreeDestroyedInput {
   branch: string;
   baseBranch: string;
   destroyedAt: number;
+}
+
+export interface MarkExactWorktreeSnapshotDestroyedInput {
+  worktree: WorktreeRow;
+  destroyedAt: number;
+}
+
+/** Generic teardown has no contract receipt, so it settles only the exact row
+ * snapshot observed before filesystem mutation. Nullable legacy bindings are
+ * compared as NULL, never widened into basename authority. */
+export function markExactWorktreeSnapshotDestroyed(
+  input: MarkExactWorktreeSnapshotDestroyedInput,
+  db: DbExecutor = getDb(),
+): boolean {
+  const row = input.worktree;
+  if (row.status !== 'active' && row.status !== 'stranded') return false;
+  return db.update(worktrees).set({
+    status: 'destroyed',
+    destroyedAt: input.destroyedAt,
+    strandedReason: null,
+    strandedAt: null,
+  }).where(and(
+    eq(worktrees.id, row.id),
+    eq(worktrees.path, row.path),
+    eq(worktrees.name, row.name),
+    eq(worktrees.createdAt, row.createdAt),
+    row.projectId === null ? isNull(worktrees.projectId) : eq(worktrees.projectId, row.projectId),
+    row.agentRunId === null ? isNull(worktrees.agentRunId) : eq(worktrees.agentRunId, row.agentRunId),
+    row.contractId === null ? isNull(worktrees.contractId) : eq(worktrees.contractId, row.contractId),
+    row.branch === null ? isNull(worktrees.branch) : eq(worktrees.branch, row.branch),
+    row.baseBranch === null ? isNull(worktrees.baseBranch) : eq(worktrees.baseBranch, row.baseBranch),
+    row.baseSha === null ? isNull(worktrees.baseSha) : eq(worktrees.baseSha, row.baseSha),
+    eq(worktrees.status, row.status),
+  )).run().changes === 1;
 }
 
 /** Receipt-backed abandonment settlement may destroy only the exact row the

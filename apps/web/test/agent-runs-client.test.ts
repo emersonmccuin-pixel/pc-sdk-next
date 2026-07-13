@@ -6,7 +6,10 @@ import {
   parseAgentRunEventsResponse,
   parseAgentRunListResponse,
 } from '../src/features/agent-runs/client.ts';
-import { overlayAgentRunPayloads } from '../src/features/agent-runs/use-project-agent-runs.ts';
+import {
+  isRecoveryTerminalRun,
+  overlayAgentRunPayloads,
+} from '../src/features/agent-runs/use-project-agent-runs.ts';
 
 function run(overrides: Partial<AgentRunDto> = {}): AgentRunDto {
   return {
@@ -45,22 +48,26 @@ test('agent-run list accepts exact stamped and quarantined legacy projections', 
     continuationState: 'legacy-unavailable',
   });
 
-  assert.deepEqual(parseAgentRunListResponse({ ok: true, runs: [modern, legacy] }), [modern, legacy]);
+  assert.deepEqual(
+    parseAgentRunListResponse({ ok: true, runs: [modern, legacy], asOfCursor: '42' }),
+    { runs: [modern, legacy], asOfCursor: '42' },
+  );
 });
 
 test('agent-run list rejects native identity leaks and inconsistent provenance', () => {
   assert.throws(
-    () => parseAgentRunListResponse({ ok: true, runs: [{ ...run(), nativeSessionId: 'native-secret' }] }),
+    () => parseAgentRunListResponse({ ok: true, runs: [{ ...run(), nativeSessionId: 'native-secret' }], asOfCursor: '1' }),
     /invalid agent run list response/,
   );
   assert.throws(
-    () => parseAgentRunListResponse({ ok: true, runs: [run()], nativeSessionId: 'native-secret' }),
+    () => parseAgentRunListResponse({ ok: true, runs: [run()], asOfCursor: '1', nativeSessionId: 'native-secret' }),
     /invalid agent run list response/,
   );
   assert.throws(
     () => parseAgentRunListResponse({
       ok: true,
       runs: [run({ nativeSessionIdPresent: false, continuationState: 'native-resumed' })],
+      asOfCursor: '1',
     }),
     /invalid agent run list response/,
   );
@@ -68,6 +75,7 @@ test('agent-run list rejects native identity leaks and inconsistent provenance',
     () => parseAgentRunListResponse({
       ok: true,
       runs: [run({ selection: null, specialistRevision: null, continuationState: 'clean-pending' })],
+      asOfCursor: '1',
     }),
     /invalid agent run list response/,
   );
@@ -153,4 +161,133 @@ test('newer terminal live payload remains a tombstone against later stale active
   );
 
   assert.deepEqual(projected, { runs: [], preserved: [] });
+});
+
+test('bounded recent failures and cancellations remain visible recovery truth', () => {
+  const failed = run({
+    runId: 'failed-run',
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'provisioning-failed',
+    failureCause: 'worktree-provision-failed',
+    failureReason: 'preparation command failed',
+  });
+  const cancelled = run({
+    runId: 'cancelled-run',
+    status: 'cancelled',
+    endedAt: 6,
+    lifecycleState: 'cancelled',
+    failureCause: 'cancelled',
+    failureReason: 'cancelled by user',
+  });
+  const projected = overlayAgentRunPayloads([failed, cancelled], []);
+
+  assert.deepEqual(projected.runs, []);
+  assert.deepEqual(projected.preserved.map((item) => item.runId), ['failed-run', 'cancelled-run']);
+});
+
+test('a failed terminal stays visible while tombstoning stale running resource frames', () => {
+  const terminal = run({
+    rev: 5,
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'failed',
+    failureCause: 'server-restart',
+    failureReason: 'server restarted while the run was live',
+  });
+  const staleActive = run({ rev: 3, status: 'running', endedAt: null });
+  const projected = overlayAgentRunPayloads(
+    [terminal],
+    [{ reason: 'running', run: staleActive }],
+  );
+
+  assert.deepEqual(projected.runs, []);
+  assert.equal(projected.preserved[0]?.status, 'failed');
+  assert.equal(projected.preserved[0]?.failureCause, 'server-restart');
+});
+
+test('equal-revision activity cannot resurrect a terminal HTTP seed', () => {
+  const terminal = run({
+    rev: 5,
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'failed',
+    failureCause: 'server-restart',
+  });
+  const contradictoryActive = run({ rev: 5, status: 'running', endedAt: null });
+  const projected = overlayAgentRunPayloads(
+    [terminal],
+    [{ reason: 'running', run: contradictoryActive }],
+  );
+  assert.deepEqual(projected.runs, []);
+  assert.equal(projected.preserved[0]?.status, 'failed');
+});
+
+test('merge-ready retention supports transcript lookup but is not recovery failure truth', () => {
+  const mergeReady = run({
+    status: 'completed',
+    endedAt: 5,
+    lifecycleState: 'merge-ready',
+  });
+  assert.equal(isRecoveryTerminalRun(mergeReady), false);
+  assert.equal(isRecoveryTerminalRun(mergeReady, 'landed'), true, 'landed cleanup crash state remains recovery truth');
+  assert.equal(overlayAgentRunPayloads([mergeReady], []).preserved.length, 1);
+});
+
+test('authoritative HTTP omission prevents an old terminal live frame from resurrecting', () => {
+  const resolved = run({
+    status: 'failed',
+    endedAt: 10,
+    lifecycleState: 'failed',
+    failureCause: 'server-restart',
+  });
+  assert.deepEqual(
+    overlayAgentRunPayloads([], [{ reason: 'failed', run: resolved, resourceCursor: '20' }], '20'),
+    { runs: [], preserved: [] },
+  );
+
+  const completedDuringRead = run({ ...resolved, runId: 'new-terminal', endedAt: 21 });
+  assert.equal(
+    overlayAgentRunPayloads(
+      [],
+      [{ reason: 'failed', run: completedDuringRead, resourceCursor: '21' }],
+      '20',
+    ).preserved[0]?.runId,
+    'new-terminal',
+  );
+});
+
+test('authoritative HTTP omission also tombstones an old active live frame', () => {
+  const staleRunning = run({ status: 'running', endedAt: null, rev: 1 });
+  assert.deepEqual(
+    overlayAgentRunPayloads(
+      [],
+      [{ reason: 'running', run: staleRunning, resourceCursor: '19' }],
+      '20',
+    ),
+    { runs: [], preserved: [] },
+  );
+});
+
+test('agent-run list requires the server outbox high-water', () => {
+  assert.throws(
+    () => parseAgentRunListResponse({ ok: true, runs: [run()] }),
+    /invalid agent run list response/,
+  );
+  assert.throws(
+    () => parseAgentRunListResponse({ ok: true, runs: [run()], asOfCursor: 'not-a-cursor' }),
+    /invalid agent run list response/,
+  );
+  assert.deepEqual(
+    parseAgentRunListResponse({ ok: true, runs: [], asOfCursor: null }),
+    { runs: [], asOfCursor: null },
+  );
+});
+
+test('terminal landed-cleanup lifecycle windows remain visible', () => {
+  for (const lifecycleState of ['merging', 'merged', 'tearing-down'] as const) {
+    const cleanup = run({ status: 'completed', endedAt: 5, lifecycleState });
+    assert.equal(overlayAgentRunPayloads([cleanup], []).preserved.length, 1, lifecycleState);
+    assert.equal(isRecoveryTerminalRun(cleanup), true, lifecycleState);
+  }
 });

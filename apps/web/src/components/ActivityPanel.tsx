@@ -1,9 +1,8 @@
 // Right-rail activity panel — running agents + worktree-lifecycle surfacing
 // (docs/worktree-lifecycle.md): merge-ready contracts awaiting review,
-// conflicted/failed landings, and stranded worktrees. The old ActivityPanel's
-// workflow-runs, inbox, and failed-recently regions all depended on dead
-// entities (workflow-run, mailbox) or routes this phase doesn't build; they
-// are not carried (see docs/phase-2-plan.md web port ledger).
+// conflicted/failed landings, and recovery-required runs/worktrees. The old
+// workflow-run/inbox entities remain intentionally absent; recovery composes
+// current agent-run, contract, and worktree read models instead.
 //
 // 36px collapsed gutter is owned by the Shell (panel sizing); this renders
 // the gutter's contents and the expanded body.
@@ -12,7 +11,10 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { Contract, ULID } from '@pc/contracts';
 import type { Project } from '@/features/projects/client';
-import type { AgentRunView } from '@/features/agent-runs/use-project-agent-runs';
+import type {
+  AgentRunReadStatus,
+  AgentRunView,
+} from '@/features/agent-runs/use-project-agent-runs';
 import { useProjectContracts } from '@/features/contracts/use-project-contracts';
 import {
   canRequestAbandonment,
@@ -22,7 +24,18 @@ import {
   landingIssueContracts,
   mergeReadyContracts,
 } from '@/features/contracts/view';
-import { worktreesApi, type StrandedWorktreeDto } from '@/features/worktrees/client';
+import {
+  buildRecoveryProjection,
+  preservationEvidenceMessage,
+  recoveryRunGuidance,
+  recoveryRunLabel,
+  sealedEvidenceMessage,
+  type RecoveryProjection,
+} from '@/features/recovery/view';
+import {
+  useRecoveryWorktrees,
+  type RecoveryWorktreeReadStatus,
+} from '@/features/recovery/use-recovery-worktrees';
 import { useProjectActivity } from '@/state/activity-store';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { AbandonWorktreeModal } from './AbandonWorktreeModal';
@@ -41,13 +54,37 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
     return () => clearInterval(id);
   }, []);
 
-  const { runningCount, runs, preserved } = useProjectActivity(project);
+  const {
+    runningCount,
+    runs,
+    preserved,
+    runReadStatus,
+    runReadError,
+    retryRunRead,
+  } = useProjectActivity(project);
   const { contracts } = useProjectContracts(project?.id ?? null);
-  const stranded = useStrandedWorktrees(project?.id ?? null, expanded);
+  const strandedRead = useRecoveryWorktrees(project?.id ?? null, project !== null);
   const openTranscript = useAgentTranscript((s) => s.open);
 
   const mergeReady = useMemo(() => mergeReadyContracts(contracts), [contracts]);
   const landingIssues = useMemo(() => landingIssueContracts(contracts), [contracts]);
+  const recovery = useMemo(() => buildRecoveryProjection({
+    runs: preserved,
+    contracts,
+    strongerContractIds: new Set([
+      ...mergeReady.map((contract) => contract.id),
+      ...landingIssues.map((contract) => contract.id),
+    ]),
+    worktrees: strandedRead.status === 'ready' ? strandedRead.worktrees : [],
+  }), [preserved, contracts, mergeReady, landingIssues, strandedRead.status, strandedRead.worktrees]);
+  const recoveryCount = landingIssues.length +
+    recovery.runCards.length +
+    recovery.strandedWorktrees.length +
+    (runReadStatus === 'error' ? 1 : 0) +
+    (strandedRead.status === 'error' ? 1 : 0);
+  const recoveryLoading = recoveryCount === 0 && (
+    runReadStatus === 'loading' || strandedRead.status === 'loading'
+  );
   const contractById = useMemo(
     () => new Map(contracts.map((contract) => [contract.id, contract])),
     [contracts],
@@ -61,6 +98,16 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
     const run = agentRunId ? runById.get(agentRunId) : undefined;
     if (run) openTranscript(run.runId, run);
   };
+  const runningStatusLabel = runReadStatus === 'error'
+    ? 'Running agent status unavailable'
+    : runReadStatus === 'loading' && runningCount === 0
+      ? 'Running agent status loading'
+      : `Running agents · ${runningCount}`;
+  const runningStatusValue = runReadStatus === 'error'
+    ? '?'
+    : runReadStatus === 'loading' && runningCount === 0
+      ? '…'
+      : String(runningCount);
 
   if (!expanded) {
     return (
@@ -77,10 +124,23 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
           activity
         </span>
         <span
-          title={`Running agents · ${runningCount}`}
-          className="inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-full border border-border px-1 text-[11px] text-[var(--fg-dim)]"
+          title={runningStatusLabel}
+          aria-label={runningStatusLabel}
+          className="inline-flex min-h-[22px] min-w-[24px] items-center justify-center border border-border px-1 text-[10px] text-[var(--fg-dim)]"
         >
-          {runningCount}
+          ▶ {runningStatusValue}
+        </span>
+        <span
+          title={recoveryLoading ? 'Recovery status loading' : `Recovery required · ${recoveryCount}`}
+          aria-label={recoveryLoading ? 'Recovery status loading' : `${recoveryCount} recovery issues`}
+          className={
+            'inline-flex min-h-[22px] min-w-[24px] items-center justify-center border px-1 text-[10px] ' +
+            (recoveryCount > 0
+              ? 'border-destructive/50 bg-destructive/10 text-destructive'
+              : 'border-border text-[var(--fg-dim)]')
+          }
+        >
+          ! {recoveryLoading ? '…' : recoveryCount}
         </span>
         <span className="mt-auto text-xs text-[var(--fg-dim)]">«</span>
       </button>
@@ -97,7 +157,14 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
           <div className="flex-1 px-3 py-2 text-xs text-muted-foreground">No project selected.</div>
         ) : (
           <div className="flex flex-1 flex-col overflow-y-auto">
-            <RunningAgentsRegion runs={runs} nowMs={nowMs} onOpenTranscript={(r) => openTranscript(r.runId, r)} />
+            <RunningAgentsRegion
+              runs={runs}
+              nowMs={nowMs}
+              onOpenTranscript={(r) => openTranscript(r.runId, r)}
+              readStatus={runReadStatus}
+              readError={runReadError}
+              onRetry={retryRunRead}
+            />
             <MergeReadyRegion
               contracts={mergeReady}
               onOpenRun={openRun}
@@ -108,14 +175,21 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
               onOpenRun={openRun}
               onAbandon={setAbandonContractId}
             />
-            <StrandedWorktreesRegion
-              worktrees={stranded}
+            <RecoveryRequiredRegion
+              projection={recovery}
               nowMs={nowMs}
               onOpenRun={openRun}
               onAbandon={setAbandonContractId}
+              runReadStatus={runReadStatus}
+              runReadError={runReadError}
+              onRetryRunRead={retryRunRead}
+              worktreeReadStatus={strandedRead.status}
+              worktreeReadError={strandedRead.error}
+              onRetryWorktreeRead={strandedRead.retry}
+              canInspectRun={(runId) => runById.has(runId)}
               canAbandon={(contractId) => {
                 const contract = contractById.get(contractId);
-                return contract ? canRequestAbandonment(contract) : true;
+                return contract ? canRequestAbandonment(contract) : false;
               }}
             />
           </div>
@@ -133,36 +207,6 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
   );
 }
 
-/** Poll the stranded read while the panel is expanded — worktrees have no
- *  resource-entity flow (stranding is a boot-scan durable), so the Wave-E GET
- *  endpoint is the cheap path. Degrade, never block. */
-function useStrandedWorktrees(projectId: string | null, enabled: boolean): StrandedWorktreeDto[] {
-  const [items, setItems] = useState<StrandedWorktreeDto[]>([]);
-  useEffect(() => {
-    if (!projectId || !enabled) {
-      setItems([]);
-      return;
-    }
-    let cancelled = false;
-    const load = () =>
-      worktreesApi
-        .listStranded(projectId)
-        .then((w) => {
-          if (!cancelled) setItems(w);
-        })
-        .catch(() => {
-          if (!cancelled) setItems([]);
-        });
-    void load();
-    const id = setInterval(load, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [projectId, enabled]);
-  return items;
-}
-
 function RegionHeader({ label, count }: { label: string; count: number }) {
   return (
     <div className="flex items-center justify-between px-3 py-1.5">
@@ -178,23 +222,34 @@ function RunningAgentsRegion({
   runs,
   nowMs,
   onOpenTranscript,
+  readStatus,
+  readError,
+  onRetry,
 }: {
   runs: AgentRunView[];
   nowMs: number;
   onOpenTranscript: (run: AgentRunView) => void;
+  readStatus: AgentRunReadStatus;
+  readError: string | null;
+  onRetry: () => void;
 }) {
   return (
     <section className="border-b border-border">
       <RegionHeader label="Running agents" count={runs.length} />
-      {runs.length === 0 ? (
+      {readStatus === 'error' && (
+        <RecoveryUnavailable source="Run status" error={readError} onRetry={onRetry} />
+      )}
+      {runs.length === 0 && readStatus === 'loading' ? (
+        <div className="px-3 pb-2 text-[11px] text-muted-foreground">Loading running agents…</div>
+      ) : runs.length === 0 && readStatus === 'ready' ? (
         <div className="px-3 pb-2 text-[11px] italic text-muted-foreground/70">No agents running.</div>
-      ) : (
+      ) : runs.length > 0 ? (
         <ul className="divide-y divide-border/50">
           {runs.map((run) => (
             <RunningAgentCard key={run.runId} run={run} nowMs={nowMs} onOpenTranscript={onOpenTranscript} />
           ))}
         </ul>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -295,49 +350,129 @@ function LandingIssuesRegion({
   );
 }
 
-/** Boot-scan durables: worktrees with no live run/lease. Preserved — never
- *  auto-torn-down (docs/worktree-lifecycle.md 'Recovery'). */
-function StrandedWorktreesRegion({
-  worktrees,
+/** Terminal recovery outcomes plus otherwise-unrepresented stranded rows.
+ * Landing issues stay in their stronger existing region above. */
+function RecoveryRequiredRegion({
+  projection,
   nowMs,
   onOpenRun,
   onAbandon,
   canAbandon,
+  runReadStatus,
+  runReadError,
+  onRetryRunRead,
+  worktreeReadStatus,
+  worktreeReadError,
+  onRetryWorktreeRead,
+  canInspectRun,
 }: {
-  worktrees: StrandedWorktreeDto[];
+  projection: RecoveryProjection;
   nowMs: number;
   onOpenRun: (agentRunId: string | null) => void;
   onAbandon: (contractId: ULID) => void;
   canAbandon: (contractId: ULID) => boolean;
+  runReadStatus: AgentRunReadStatus;
+  runReadError: string | null;
+  onRetryRunRead: () => void;
+  worktreeReadStatus: RecoveryWorktreeReadStatus;
+  worktreeReadError: string | null;
+  onRetryWorktreeRead: () => void;
+  canInspectRun: (runId: string) => boolean;
 }) {
-  if (worktrees.length === 0) return null;
+  const unavailableCount = (runReadStatus === 'error' ? 1 : 0) +
+    (worktreeReadStatus === 'error' ? 1 : 0);
+  const count = projection.runCards.length + projection.strandedWorktrees.length + unavailableCount;
+  if (count === 0 && runReadStatus !== 'loading' && worktreeReadStatus !== 'loading') return null;
   return (
     <section className="border-b border-border">
-      <RegionHeader label="Stranded worktrees" count={worktrees.length} />
+      <RegionHeader label="Recovery required" count={count} />
+      {runReadStatus === 'error' && (
+        <RecoveryUnavailable
+          source="Run recovery"
+          error={runReadError}
+          onRetry={onRetryRunRead}
+        />
+      )}
+      {worktreeReadStatus === 'error' && (
+        <RecoveryUnavailable
+          source="Worktree recovery"
+          error={worktreeReadError}
+          onRetry={onRetryWorktreeRead}
+        />
+      )}
+      {count === 0 && (runReadStatus === 'loading' || worktreeReadStatus === 'loading') && (
+        <div className="px-3 pb-2 text-[11px] text-muted-foreground">Loading recovery status…</div>
+      )}
       <ul className="divide-y divide-border/50">
-        {worktrees.map((w) => (
+        {projection.runCards.map(({ run, contract, worktree }) => (
+          <li key={`run:${run.runId}`} className="flex items-stretch">
+            <button
+              type="button"
+              onClick={() => onOpenRun(run.runId)}
+              className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left hover:bg-muted/40"
+              aria-label={`Inspect recovery run ${run.runId}`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                  {run.agentName}
+                </div>
+                <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
+                  {recoveryRunLabel(run)}
+                </span>
+              </div>
+              {run.failureReason && (
+                <div className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground" title={run.failureReason}>
+                  {run.failureReason}
+                </div>
+              )}
+              {sealedEvidenceMessage(contract) && (
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {sealedEvidenceMessage(contract)}
+                </div>
+              )}
+              <div className="mt-0.5 text-[11px] text-muted-foreground">
+                {preservationEvidenceMessage(worktree)}
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
+                <span className="line-clamp-2 text-muted-foreground">{recoveryRunGuidance(run)}</span>
+                <span className="shrink-0 font-medium text-foreground">Inspect</span>
+              </div>
+            </button>
+            {contract && canRequestAbandonment(contract) && (
+              <AbandonButton contract={contract} onAbandon={onAbandon} />
+            )}
+          </li>
+        ))}
+        {projection.strandedWorktrees.map((w) => {
+          const inspectable = w.agentRunId !== null && canInspectRun(w.agentRunId);
+          return (
           <li key={w.id} className="flex items-stretch">
             <button
               type="button"
               onClick={() => onOpenRun(w.agentRunId)}
+              disabled={!inspectable}
               className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left hover:bg-muted/40"
-              aria-label={`Stranded worktree ${w.name}`}
+              aria-label={inspectable ? `Inspect stranded worktree ${w.name}` : `Stranded worktree ${w.name} has no retained transcript`}
             >
               <div className="flex items-baseline justify-between gap-2">
                 <div className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={w.path}>
                   {w.branch ?? w.name}
                 </div>
-                {w.strandedAt !== null && (
-                  <div className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                    {formatElapsed(nowMs - w.strandedAt)}
-                  </div>
-                )}
+                <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
+                  stranded
+                </span>
               </div>
               {w.strandedReason && (
                 <div className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground" title={w.strandedReason}>
-                  {w.strandedReason}
+                  {w.strandedReason === 'dir-missing'
+                    ? 'The recorded worktree directory is missing; cleanup and branch state are not proven.'
+                    : 'No live run owns this retained worktree.'}
                 </div>
               )}
+              <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>{w.strandedAt === null ? 'age unavailable' : formatElapsed(nowMs - w.strandedAt)}</span>
+                <span className="font-medium text-foreground">{inspectable ? 'Inspect' : 'No transcript'}</span>
+              </div>
             </button>
             {w.contractId && canAbandon(w.contractId) && (
               <button
@@ -351,9 +486,36 @@ function StrandedWorktreesRegion({
               </button>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
     </section>
+  );
+}
+
+function RecoveryUnavailable({
+  source,
+  error,
+  onRetry,
+}: {
+  source: string;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="flex items-start gap-2 border-t border-destructive/20 bg-destructive/5 px-3 py-2 text-[11px]">
+      <div className="min-w-0 flex-1 text-destructive">
+        <div className="font-medium">{source} status unavailable.</div>
+        {error && <div className="truncate text-[10px] text-muted-foreground" title={error}>{error}</div>}
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="shrink-0 border border-border bg-card px-2 py-1 text-[10px] font-medium text-foreground hover:bg-muted"
+      >
+        Retry
+      </button>
+    </div>
   );
 }
 

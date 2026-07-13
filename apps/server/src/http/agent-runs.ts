@@ -9,6 +9,7 @@
 import { Hono } from 'hono';
 import {
   getAgentRunRow,
+  getLiveEventHighWater,
   getPendingAsk,
   getProjectById,
   listActiveAgentRunsForProject,
@@ -114,7 +115,12 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const rows = [...active, ...preserved, ...recent].filter((r) =>
       seen.has(r.id) ? false : (seen.add(r.id), true),
     );
-    return c.json({ ok: true, runs: rows.map((r) => toAgentRunDto(r)) });
+    // Synchronous DB reads make this a consistent outbox boundary: any live
+    // resource at-or-before this cursor was reflected in the retention query.
+    // The browser uses it to reject an omitted stale terminal resource without
+    // comparing clocks.
+    const asOfCursor = getLiveEventHighWater();
+    return c.json({ ok: true, runs: rows.map((r) => toAgentRunDto(r)), asOfCursor });
   });
 
   /** pc_list_my_runs — scoped to the dispatcher session. */
