@@ -160,10 +160,15 @@ settlement receipts, boot re-drive, and legacy non-authority preservation;
 pre/post-merge 413/413 gates, exact push/re-fetch, and guarded feature-worktree
 cleanup passed.
 
-DL-003 now owns the remaining bounded N4 recovery gate: landed teardown must
-prove worktree-directory, Git-registration, and merged-branch absence while
-remaining retryable across crashes, and unresolved process-failure truth must
-stay visible in the existing Activity rail. `OPS-006` remains in N7.
+DL-003 implements the bounded N4 recovery gate. Sealed implementation
+`eef661d7e97e6a9ce66568afff88a081129896aa` makes landed teardown retryable
+until exact worktree-directory, Git-registration, merged-branch, durable-row,
+and producer-lifecycle settlement are positive. Exact unresolved owners stay
+visible in the existing Activity rail; server outbox cursors make reconnect
+omission authoritative without clock inference. The composed two-worktree OS
+hard-kill gate proves sealed recovery, one landing, positive cleanup,
+preservation of unsealed work, and idempotent second boot. `OPS-006` remains in
+N7.
 
 ## Lifecycle states
 
@@ -412,6 +417,16 @@ legacy repository identity never authorizes mutation.
 
 Recovery never reruns a non-idempotent Git mutation based only on a stale DB
 status.
+
+For a landed contract, the merge receipt proves history but not cleanup.
+Recovery may destroy the exact active/stranded row only after the project
+identity matches the producer receipt, the directory is absent, a successful
+worktree-list read proves the exact path unregistered, expected-tip ref
+deletion succeeds or the ref was already absent, and a successful exact ref
+query proves absence. A destroyed exact row may re-enter solely to finish the
+later lifecycle-stamp crash window after re-proving external absence. Missing,
+locked, drifted, ambiguous, or unreadable evidence remains retryable and
+visible.
 
 ## Guard tests
 
