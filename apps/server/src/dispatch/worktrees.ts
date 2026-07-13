@@ -35,6 +35,8 @@ import {
   upsertWorktree,
 } from '@pc/db';
 import {
+  REVIEW_CHECKOUT_PROVISION_PROTOCOL,
+  REVIEW_CHECKOUT_TEARDOWN_PROTOCOL,
   canTransition,
   isMatchingWorktreeAbandonmentTeardown,
   isWorktreeAbandonmentReceipt,
@@ -42,6 +44,9 @@ import {
   WORKTREE_ABANDONMENT_PREVIEW_PROTOCOL,
   WORKTREE_ABANDONMENT_TEARDOWN_PROTOCOL,
   type RepositoryIdentityReceipt,
+  type ReviewCheckoutAuthority,
+  type ReviewCheckoutProvisionReceipt,
+  type ReviewCheckoutTeardownReceipt,
   type ULID,
   type Worktree,
   type WorktreeAbandonmentPresentState,
@@ -425,67 +430,421 @@ export function reviewCheckoutName(reviewRunId: string): string {
   return `review-${reviewRunId.slice(-8).toLowerCase()}`;
 }
 
-/** Detached checkout of the SEALED commit for a review specialist:
- *  `git worktree add --detach <dir> <commit>`. The reviewer never gets the
- *  builder's live worktree as cwd — a stray reviewer commit would move the
- *  agent branch tip (hard-failing the landing tip==seal guard) and untracked
- *  test/build artifacts would dirty the tree the Fix door resubmits from.
- *  Deliberately NOT registered in the worktrees table: no branch, no landing
- *  state, nothing for the stranded scan — reclaimed at the reviewer's
- *  terminal (an orphan from a crash window is inert). Never throws. */
-export async function provisionReviewCheckout(
-  projectDir: string,
-  reviewRunId: string,
-  commit: string,
-  expectedIdentity: RepositoryIdentityReceipt,
-): Promise<{ ok: true; dir: string } | { ok: false; error: string }> {
-  if (!projectDir || !existsSync(projectDir)) {
-    return { ok: false, error: `project folder missing: ${projectDir || '(unset)'}` };
-  }
-  try {
-    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
-  } catch (error) {
-    return { ok: false, error: repositoryLeaseMessage(error) };
-  }
-  const root = worktreesRoot(projectDir);
-  if (!isSafeWorktreeRoot(projectDir)) {
-    return { ok: false, error: `worktree root is not a real owned directory: ${root}` };
-  }
-  mkdirSync(root, { recursive: true });
-  if (!isSafeWorktreeRoot(projectDir)) {
-    return { ok: false, error: `worktree root became unsafe during review provisioning: ${root}` };
-  }
-  const dir = join(root, reviewCheckoutName(reviewRunId));
-  const add = await git(['worktree', 'add', '--detach', dir, commit], projectDir);
-  if (!add.ok) {
-    return { ok: false, error: `git worktree add --detach failed: ${add.stderr || add.stdout}` };
-  }
-  return { ok: true, dir };
+/** Mechanics-only composition input. Every other field is the canonical full
+ * durable authority; projectDir is a current lookup re-proved against it. */
+export type ReviewCheckoutMechanicsAuthority = ReviewCheckoutAuthority & {
+  readonly projectDir: string;
+};
+
+export type ReviewCheckoutMechanicsCode =
+  | 'invalid-binding'
+  | 'repository-unavailable'
+  | 'registration-inconclusive'
+  | 'registration-mismatch'
+  | 'head-unavailable'
+  | 'head-mismatch'
+  | 'attached-head'
+  | 'status-unavailable'
+  | 'dirty'
+  | 'removal-incomplete'
+  | 'add-failed';
+
+export type ReviewCheckoutInspectionResult =
+  | { ok: true; receipt: ReviewCheckoutProvisionReceipt }
+  | { ok: false; code: ReviewCheckoutMechanicsCode; error: string };
+
+export type ReviewCheckoutTeardownResult =
+  | { ok: true; receipt: ReviewCheckoutTeardownReceipt }
+  | { ok: false; code: ReviewCheckoutMechanicsCode; error: string };
+
+export type ReviewCheckoutOwnedRootResult =
+  | { ok: true; ownedRootRealPath: string }
+  | { ok: false; code: 'repository-unavailable' | 'invalid-binding'; error: string };
+
+/** Absolute spelling comparison without realpath alias convergence. Review
+ * authority persists the real native path, so an alias is drift, not another
+ * spelling of the same destructive-cleanup target. */
+function exactReviewPathKey(path: string): string {
+  return resolve(path.trim()).replace(/[\\/]+/g, '/');
 }
 
-/** Reclaim a review checkout. Best-effort (a leftover is inert — detached
- *  HEAD, no branch); converges to success when the dir is already gone and
- *  unregistered (same idempotency as teardownWorktree). Never throws. */
-export async function removeReviewCheckout(
+/** Establish the one real app-owned sibling root before durable review
+ * reservation. This may create the empty root, but never creates a checkout;
+ * the caller must persist exact authority before `provisionReviewCheckout`. */
+export async function requireReviewCheckoutOwnedRoot(
   projectDir: string,
-  dir: string,
   expectedIdentity: RepositoryIdentityReceipt,
-): Promise<boolean> {
-  if (!isOwnedWorktreePath(projectDir, dir)) {
-    console.warn(`[pc-sdk][worktree] review checkout path is outside the owned worktree root: ${dir}`);
-    return false;
+): Promise<ReviewCheckoutOwnedRootResult> {
+  if (!projectDir || !existsSync(projectDir)) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: `project folder missing: ${projectDir || '(unset)'}`,
+    };
+  }
+  let guard: Awaited<ReturnType<typeof repositoryLeaseManager.acquire>>;
+  let authorizedProjectDir: string;
+  try {
+    guard = await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+    authorizedProjectDir = await repositoryLeaseManager.resolveHeldRuntimeCwd(
+      guard,
+      projectDir,
+      expectedIdentity,
+    );
+    authorizedProjectDir = await requireRepositoryWorktreeRoot(authorizedProjectDir);
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  const root = worktreesRoot(authorizedProjectDir);
+  if (!isSafeWorktreeRoot(authorizedProjectDir)) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: `worktree root is not a real owned directory: ${root}`,
+    };
   }
   try {
-    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+    mkdirSync(root, { recursive: true });
   } catch (error) {
-    console.warn(`[pc-sdk][worktree] review checkout authority unavailable for ${dir}: ${repositoryLeaseMessage(error)}`);
-    return false;
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: `worktree root could not be created: ${nodeErrorCode(error)}`,
+    };
   }
-  const removed = await git(['worktree', 'remove', '--force', dir], projectDir);
-  if (removed.ok) return true;
-  if (!existsSync(dir) && !(await isRegisteredWorktree(projectDir, dir))) return true;
-  console.warn(`[pc-sdk][worktree] review checkout remove failed for ${dir}: ${removed.stderr}`);
-  return false;
+  if (!isSafeWorktreeRoot(authorizedProjectDir)) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: `worktree root became unsafe while establishing review authority: ${root}`,
+    };
+  }
+  try {
+    const ownedRootRealPath = realpathSync.native(root);
+    await repositoryLeaseManager.assertHeld(guard, authorizedProjectDir, expectedIdentity);
+    if (normalizePathKey(ownedRootRealPath) !== normalizePathKey(root)) {
+      return { ok: false, code: 'invalid-binding', error: 'owned review root resolved to another path' };
+    }
+    return { ok: true, ownedRootRealPath };
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+}
+
+async function authorizeReviewCheckout(
+  authority: ReviewCheckoutMechanicsAuthority,
+): Promise<
+  | {
+      ok: true;
+      guard: Awaited<ReturnType<typeof repositoryLeaseManager.acquire>>;
+      projectDir: string;
+    }
+  | { ok: false; code: 'invalid-binding' | 'repository-unavailable'; error: string }
+> {
+  if (!authority.projectDir || !authority.ownedRootRealPath || !authority.worktreePath) {
+    return { ok: false, code: 'invalid-binding', error: 'review checkout authority is incomplete' };
+  }
+  let guard: Awaited<ReturnType<typeof repositoryLeaseManager.acquire>>;
+  let projectDir: string;
+  try {
+    guard = await repositoryLeaseManager.acquire(authority.projectDir, authority.repositoryIdentity);
+    projectDir = await repositoryLeaseManager.resolveHeldRuntimeCwd(
+      guard,
+      authority.projectDir,
+      authority.repositoryIdentity,
+    );
+    projectDir = await requireRepositoryWorktreeRoot(projectDir);
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  const expectedRoot = worktreesRoot(projectDir);
+  let expectedRootRealPath: string | null = null;
+  try {
+    expectedRootRealPath = realpathSync.native(expectedRoot);
+  } catch (error) {
+    if (nodeErrorCode(error) !== 'ENOENT') {
+      return { ok: false, code: 'invalid-binding', error: 'owned review root identity is unreadable' };
+    }
+  }
+  if (
+    exactReviewPathKey(authority.ownedRootRealPath) !== exactReviewPathKey(expectedRoot) ||
+    (expectedRootRealPath !== null &&
+      exactReviewPathKey(authority.ownedRootRealPath) !== exactReviewPathKey(expectedRootRealPath)) ||
+    !isSafeWorktreeRoot(projectDir) ||
+    !isOwnedWorktreePath(projectDir, authority.worktreePath) ||
+    exactReviewPathKey(dirname(authority.worktreePath)) !== exactReviewPathKey(authority.ownedRootRealPath)
+  ) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: 'review checkout path/root is outside the exact real app-owned worktree root',
+    };
+  }
+  return { ok: true, guard, projectDir };
+}
+
+/** Positively inspect a review checkout. Registration, direct cwd evidence,
+ * repository identity, detached HEAD, seal, and tracked/staged cleanliness
+ * must all agree; no one observation substitutes for another. */
+export async function inspectReviewCheckout(
+  authority: ReviewCheckoutMechanicsAuthority,
+): Promise<ReviewCheckoutInspectionResult> {
+  const authorized = await authorizeReviewCheckout(authority);
+  if (!authorized.ok) return authorized;
+  if (!existsSync(authority.worktreePath)) {
+    return { ok: false, code: 'invalid-binding', error: 'review checkout directory is absent' };
+  }
+  let realWorktreePath: string;
+  try {
+    const worktreeGuard = await repositoryLeaseManager.acquire(
+      authority.worktreePath,
+      authority.repositoryIdentity,
+    );
+    realWorktreePath = await repositoryLeaseManager.resolveHeldRuntimeCwd(
+      worktreeGuard,
+      authority.worktreePath,
+      authority.repositoryIdentity,
+    );
+    realWorktreePath = await requireRepositoryWorktreeRoot(realWorktreePath);
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  if (
+    exactReviewPathKey(realWorktreePath) !== exactReviewPathKey(authority.worktreePath) ||
+    exactReviewPathKey(dirname(realWorktreePath)) !== exactReviewPathKey(authority.ownedRootRealPath)
+  ) {
+    return { ok: false, code: 'invalid-binding', error: 'review checkout resolved outside its exact durable path' };
+  }
+
+  const registrations = await readWorktreeRegistrations(authorized.projectDir);
+  if (!registrations.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: registrations.error };
+  }
+  const registration = registrationForPath(registrations.rows, realWorktreePath);
+  if (registration === 'duplicate') {
+    return { ok: false, code: 'registration-mismatch', error: 'duplicate review checkout registrations exist' };
+  }
+  if (!registration) {
+    return { ok: false, code: 'registration-mismatch', error: 'review checkout has no exact Git registration' };
+  }
+  if (
+    registration.branch !== null ||
+    !registration.detached ||
+    registration.head !== authority.sealedCommit
+  ) {
+    return {
+      ok: false,
+      code: 'registration-mismatch',
+      error: 'review checkout registration is attached or no longer binds the sealed commit',
+    };
+  }
+
+  const head = await git(['rev-parse', '--verify', 'HEAD'], realWorktreePath);
+  if (!head.ok) {
+    return { ok: false, code: 'head-unavailable', error: head.stderr || 'review HEAD is unreadable' };
+  }
+  if (head.stdout !== authority.sealedCommit) {
+    return { ok: false, code: 'head-mismatch', error: 'review HEAD no longer equals the sealed commit' };
+  }
+  const symbolic = await git(['symbolic-ref', '--quiet', 'HEAD'], realWorktreePath);
+  if (symbolic.ok) {
+    return { ok: false, code: 'attached-head', error: `review HEAD is attached to ${symbolic.stdout}` };
+  }
+  if (symbolic.code !== 1 || symbolic.stderr.length > 0) {
+    return {
+      ok: false,
+      code: 'head-unavailable',
+      error: symbolic.stderr || 'detached HEAD evidence is unavailable',
+    };
+  }
+  const status = await git(
+    ['status', '--porcelain=v1', '--untracked-files=no'],
+    realWorktreePath,
+  );
+  if (!status.ok) {
+    return { ok: false, code: 'status-unavailable', error: status.stderr || 'review status is unreadable' };
+  }
+  if (status.stdout.length > 0) {
+    return {
+      ok: false,
+      code: 'dirty',
+      error: `review checkout has tracked/staged changes:\n${receiptTail(status.stdout)}`,
+    };
+  }
+  try {
+    await repositoryLeaseManager.assertHeld(
+      authorized.guard,
+      authorized.projectDir,
+      authority.repositoryIdentity,
+    );
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  return {
+    ok: true,
+    receipt: {
+      protocol: REVIEW_CHECKOUT_PROVISION_PROTOCOL,
+      id: authority.id,
+      projectId: authority.projectId,
+      contractId: authority.contractId,
+      contractVersion: authority.contractVersion,
+      producerRunId: authority.producerRunId,
+      reviewerRunId: authority.reviewerRunId,
+      repositoryIdentity: authority.repositoryIdentity,
+      ownedRootRealPath: authority.ownedRootRealPath,
+      worktreePath: authority.worktreePath,
+      sealedCommit: authority.sealedCommit,
+      registrationCount: 1,
+      registrationPath: authority.worktreePath,
+      headSha: head.stdout,
+      detachedHead: true,
+      trackedChanges: 0,
+      stagedChanges: 0,
+      observedAt: Date.now(),
+    },
+  };
+}
+
+/** Create or positively adopt the exact detached review checkout named by a
+ * pre-existing durable reservation. A failed/ambiguous add is inspected; only
+ * a complete exact inspection can convert it to success. */
+export async function provisionReviewCheckout(
+  authority: ReviewCheckoutMechanicsAuthority,
+): Promise<
+  | { ok: true; receipt: ReviewCheckoutProvisionReceipt; adopted: boolean }
+  | { ok: false; code: ReviewCheckoutMechanicsCode; error: string }
+> {
+  const authorized = await authorizeReviewCheckout(authority);
+  if (!authorized.ok) return authorized;
+  const registrations = await readWorktreeRegistrations(authorized.projectDir);
+  if (!registrations.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: registrations.error };
+  }
+  const existing = registrationForPath(registrations.rows, authority.worktreePath);
+  if (existing === 'duplicate') {
+    return { ok: false, code: 'registration-mismatch', error: 'duplicate review checkout registrations exist' };
+  }
+  if (existsSync(authority.worktreePath) || existing !== null) {
+    const adopted = await inspectReviewCheckout(authority);
+    return adopted.ok ? { ok: true, receipt: adopted.receipt, adopted: true } : adopted;
+  }
+  const seal = await git(
+    ['rev-parse', '--verify', `${authority.sealedCommit}^{commit}`],
+    authorized.projectDir,
+  );
+  if (!seal.ok || seal.stdout !== authority.sealedCommit) {
+    return {
+      ok: false,
+      code: 'head-unavailable',
+      error: 'sealed review commit is unavailable or does not resolve exactly',
+    };
+  }
+  try {
+    await repositoryLeaseManager.assertHeld(
+      authorized.guard,
+      authorized.projectDir,
+      authority.repositoryIdentity,
+    );
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  const add = await git(
+    ['worktree', 'add', '--detach', authority.worktreePath, authority.sealedCommit],
+    authorized.projectDir,
+  );
+  const inspected = await inspectReviewCheckout(authority);
+  if (inspected.ok) return { ok: true, receipt: inspected.receipt, adopted: false };
+  return {
+    ok: false,
+    code: add.ok ? inspected.code : 'add-failed',
+    error: add.ok
+      ? inspected.error
+      : `git worktree add --detach failed: ${add.stderr || add.stdout}; ${inspected.error}`,
+  };
+}
+
+/** Remove only the exact detached checkout named by durable authority and
+ * prove both directory and Git-registration absence. Missing-before-add and
+ * removed-before-settlement crash windows converge through the same result. */
+export async function removeReviewCheckout(
+  authority: ReviewCheckoutMechanicsAuthority,
+): Promise<ReviewCheckoutTeardownResult> {
+  const startedAt = Date.now();
+  const authorized = await authorizeReviewCheckout(authority);
+  if (!authorized.ok) return authorized;
+  const before = await readWorktreeRegistrations(authorized.projectDir);
+  if (!before.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: before.error };
+  }
+  const registration = registrationForPath(before.rows, authority.worktreePath);
+  if (registration === 'duplicate') {
+    return { ok: false, code: 'registration-mismatch', error: 'duplicate review checkout registrations exist' };
+  }
+  const directoryPresent = existsSync(authority.worktreePath);
+  if (directoryPresent) {
+    const inspected = await inspectReviewCheckout(authority);
+    if (!inspected.ok) return inspected;
+  } else if (
+    registration !== null &&
+    (registration.branch !== null || !registration.detached || registration.head !== authority.sealedCommit)
+  ) {
+    return {
+      ok: false,
+      code: 'registration-mismatch',
+      error: 'stale review registration no longer binds the exact detached seal',
+    };
+  }
+
+  if (directoryPresent || registration !== null) {
+    const removed = await git(
+      ['worktree', 'remove', '--force', authority.worktreePath],
+      authorized.projectDir,
+    );
+    if (!removed.ok && existsSync(authority.worktreePath)) {
+      forceRemoveDir(authority.worktreePath);
+    }
+    await git(['worktree', 'prune'], authorized.projectDir);
+  }
+  try {
+    await repositoryLeaseManager.assertHeld(
+      authorized.guard,
+      authorized.projectDir,
+      authority.repositoryIdentity,
+    );
+  } catch (error) {
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+  }
+  if (!isSafeWorktreeRoot(authorized.projectDir) || existsSync(authority.worktreePath)) {
+    return { ok: false, code: 'removal-incomplete', error: 'review checkout directory removal is incomplete' };
+  }
+  const after = await readWorktreeRegistrations(authorized.projectDir);
+  if (!after.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: after.error };
+  }
+  if (registrationForPath(after.rows, authority.worktreePath) !== null) {
+    return { ok: false, code: 'removal-incomplete', error: 'review checkout registration removal is incomplete' };
+  }
+  return {
+    ok: true,
+    receipt: {
+      protocol: REVIEW_CHECKOUT_TEARDOWN_PROTOCOL,
+      id: authority.id,
+      projectId: authority.projectId,
+      contractId: authority.contractId,
+      contractVersion: authority.contractVersion,
+      producerRunId: authority.producerRunId,
+      reviewerRunId: authority.reviewerRunId,
+      repositoryIdentity: authority.repositoryIdentity,
+      ownedRootRealPath: authority.ownedRootRealPath,
+      worktreePath: authority.worktreePath,
+      sealedCommit: authority.sealedCommit,
+      startedAt,
+      directoryAbsent: true,
+      registrationAbsent: true,
+      branchDeletion: 'not-applicable-detached',
+      finishedAt: Date.now(),
+    },
+  };
 }
 
 // ── Profile command runner (Prepare/Readiness/Cleanup phases) ────────────────
@@ -922,6 +1281,7 @@ interface WorktreeRegistration {
   path: string;
   head: string | null;
   branch: string | null;
+  detached: boolean;
 }
 
 type RegistrationRead =
@@ -953,11 +1313,13 @@ async function readWorktreeRegistrations(projectDir: string): Promise<Registrati
     if (!pathField) return false;
     const headField = fields.find((field) => field.subarray(0, 5).equals(Buffer.from('HEAD ')));
     const branchField = fields.find((field) => field.subarray(0, 7).equals(Buffer.from('branch ')));
+    const detached = fields.some((field) => field.equals(Buffer.from('detached')));
     const branchRef = branchField?.subarray(7).toString('utf8') ?? null;
     rows.push({
       path: pathField.subarray(9).toString('utf8'),
       head: headField?.subarray(5).toString('ascii') ?? null,
       branch: branchRef?.startsWith('refs/heads/') ? branchRef.slice('refs/heads/'.length) : null,
+      detached,
     });
     fields = [];
     return true;

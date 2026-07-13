@@ -24,10 +24,16 @@ import { join } from 'node:path';
 import { getActiveWorktreeByName, newId } from '@pc/db';
 import {
   git,
+  inspectReviewCheckout,
   landBranch,
   provisionWorktree,
+  provisionReviewCheckout,
+  removeReviewCheckout,
+  requireReviewCheckoutOwnedRoot,
+  reviewCheckoutName,
   teardownWorktree,
   worktreesRoot,
+  type ReviewCheckoutMechanicsAuthority,
 } from '../src/dispatch/worktrees.ts';
 import { commitFile, freshDb, newGitProject } from './helpers.ts';
 
@@ -35,6 +41,32 @@ async function provisionOk(projectDir: string) {
   const out = await provisionWorktree(projectDir, newId());
   if (!out.ok) throw new Error(`provision failed: ${out.error}`);
   return out;
+}
+
+async function reviewAuthority(
+  gp: Awaited<ReturnType<typeof newGitProject>>,
+  sealedCommit: string,
+): Promise<ReviewCheckoutMechanicsAuthority> {
+  assert.ok(gp.project.repositoryIdentity, 'git fixture has repository identity');
+  const root = await requireReviewCheckoutOwnedRoot(
+    gp.dir,
+    gp.project.repositoryIdentity,
+  );
+  if (!root.ok) assert.fail(root.error);
+  const reviewerRunId = newId();
+  return {
+    id: newId(),
+    projectId: gp.project.id,
+    contractId: newId(),
+    contractVersion: 1,
+    producerRunId: newId(),
+    reviewerRunId,
+    repositoryIdentity: gp.project.repositoryIdentity,
+    ownedRootRealPath: root.ownedRootRealPath,
+    worktreePath: join(root.ownedRootRealPath, reviewCheckoutName(reviewerRunId)),
+    sealedCommit,
+    projectDir: gp.dir,
+  };
 }
 
 test('provision refuses a missing project folder', async () => {
@@ -243,6 +275,124 @@ test('repository hooks started by app-owned Git cannot observe ambient variables
   } finally {
     if (priorCanary === undefined) delete process.env[canaryName];
     else process.env[canaryName] = priorCanary;
+    await gp.cleanup();
+  }
+});
+
+test('review checkout provision positively proves the exact real detached clean seal and adopts it idempotently', async () => {
+  freshDb();
+  const gp = await newGitProject('review-mechanics-provision');
+  try {
+    const seal = await commitFile(gp.dir, 'review-target.txt', 'sealed\n');
+    const authority = await reviewAuthority(gp, seal);
+
+    const provisioned = await provisionReviewCheckout(authority);
+    assert.equal(provisioned.ok, true, provisioned.ok ? '' : provisioned.error);
+    if (!provisioned.ok) return;
+    assert.equal(provisioned.adopted, false);
+    assert.deepEqual(provisioned.receipt, {
+      protocol: 'review-checkout-provision-v1',
+      id: authority.id,
+      projectId: authority.projectId,
+      contractId: authority.contractId,
+      contractVersion: authority.contractVersion,
+      producerRunId: authority.producerRunId,
+      reviewerRunId: authority.reviewerRunId,
+      repositoryIdentity: authority.repositoryIdentity,
+      worktreePath: authority.worktreePath,
+      ownedRootRealPath: authority.ownedRootRealPath,
+      sealedCommit: seal,
+      registrationCount: 1,
+      registrationPath: authority.worktreePath,
+      headSha: seal,
+      detachedHead: true,
+      trackedChanges: 0,
+      stagedChanges: 0,
+      observedAt: provisioned.receipt.observedAt,
+    });
+    assert.equal(
+      (await git(['rev-parse', '--show-toplevel'], authority.worktreePath)).stdout.replaceAll('\\', '/'),
+      authority.worktreePath.replaceAll('\\', '/'),
+    );
+    assert.equal((await git(['symbolic-ref', '--quiet', 'HEAD'], authority.worktreePath)).ok, false);
+
+    const adopted = await provisionReviewCheckout(authority);
+    assert.equal(adopted.ok, true, adopted.ok ? '' : adopted.error);
+    if (adopted.ok) {
+      assert.equal(adopted.adopted, true);
+      assert.equal(adopted.receipt.headSha, seal);
+    }
+
+    const removed = await removeReviewCheckout(authority);
+    assert.equal(removed.ok, true, removed.ok ? '' : removed.error);
+    if (removed.ok) {
+      assert.equal(removed.receipt.directoryAbsent, true);
+      assert.equal(removed.receipt.registrationAbsent, true);
+      assert.equal(removed.receipt.branchDeletion, 'not-applicable-detached');
+    }
+    assert.equal(existsSync(authority.worktreePath), false);
+    const removedAgain = await removeReviewCheckout(authority);
+    assert.equal(removedAgain.ok, true, removedAgain.ok ? '' : removedAgain.error);
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('review checkout inspection and removal fail closed on tracked or Git registration drift', async () => {
+  freshDb();
+  const gp = await newGitProject('review-mechanics-drift');
+  try {
+    const seal = await commitFile(gp.dir, 'review-target.txt', 'sealed\n');
+    const authority = await reviewAuthority(gp, seal);
+    const provisioned = await provisionReviewCheckout(authority);
+    assert.equal(provisioned.ok, true, provisioned.ok ? '' : provisioned.error);
+
+    writeFileSync(join(authority.worktreePath, 'README.md'), 'reviewer mutation\n');
+    assert.equal((await git(['add', 'README.md'], authority.worktreePath)).ok, true);
+    const dirty = await inspectReviewCheckout(authority);
+    assert.equal(dirty.ok, false);
+    if (!dirty.ok) assert.equal(dirty.code, 'dirty');
+    assert.equal((await git(['reset', '--hard', seal], authority.worktreePath)).ok, true);
+
+    assert.equal((await git(['checkout', '-b', 'reviewer-drift'], authority.worktreePath)).ok, true);
+    const attached = await inspectReviewCheckout(authority);
+    assert.equal(attached.ok, false);
+    if (!attached.ok) assert.equal(attached.code, 'registration-mismatch');
+    const removal = await removeReviewCheckout(authority);
+    assert.equal(removal.ok, false, 'drifted checkout is preserved, never cross-cleaned');
+    assert.equal(existsSync(authority.worktreePath), true);
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('review checkout teardown converges pre-add and post-remove windows but never settles a locked registration', async () => {
+  freshDb();
+  const gp = await newGitProject('review-mechanics-teardown');
+  try {
+    const seal = await commitFile(gp.dir, 'review-target.txt', 'sealed\n');
+    const preAdd = await reviewAuthority(gp, seal);
+    const preAddRemoval = await removeReviewCheckout(preAdd);
+    assert.equal(preAddRemoval.ok, true, preAddRemoval.ok ? '' : preAddRemoval.error);
+
+    const authority = await reviewAuthority(gp, seal);
+    const provisioned = await provisionReviewCheckout(authority);
+    assert.equal(provisioned.ok, true, provisioned.ok ? '' : provisioned.error);
+    assert.equal((await git(['worktree', 'lock', authority.worktreePath], gp.dir)).ok, true);
+
+    const locked = await removeReviewCheckout(authority);
+    assert.equal(locked.ok, false, 'successful directory deletion is not registration settlement');
+    if (!locked.ok) assert.equal(locked.code, 'removal-incomplete');
+    assert.equal(existsSync(authority.worktreePath), false, 'filesystem fallback may remove the directory');
+    assert.equal((await git(['worktree', 'unlock', authority.worktreePath], gp.dir)).ok, true);
+
+    const retry = await removeReviewCheckout(authority);
+    assert.equal(retry.ok, true, retry.ok ? '' : retry.error);
+    if (retry.ok) {
+      assert.equal(retry.receipt.directoryAbsent, true);
+      assert.equal(retry.receipt.registrationAbsent, true);
+    }
+  } finally {
     await gp.cleanup();
   }
 });
