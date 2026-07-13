@@ -1,8 +1,8 @@
 # Current execution handoff
 
 Updated: 2026-07-13 after DL-004 guarded code landing, post-merge verification,
-exact push/re-fetch, and guarded feature-worktree cleanup. Documentation
-closeout landing is the only remaining DL-004 operation.
+documentation closeout landing, exact push/re-fetch, and guarded feature and
+closeout-worktree cleanup. No implementation slice is active.
 
 ## Repository
 
@@ -195,8 +195,15 @@ closeout landing is the only remaining DL-004 operation.
 - DL-004 exact feature/code-merge tree:
   `1d53ce1fdbea686e370d12594f6af7ceee0216a2`
 - DL-004 feature branch: preserved
-- DL-004 documentation closeout: `codex/dl-004-closeout` from the exact pushed
-  code landing; guarded closeout landing/push/cleanup pending
+- DL-004 documentation closeout branch: `codex/dl-004-closeout` (preserved)
+- DL-004 documentation closeout commit:
+  `01aad6c1f12f2a9237d309f65695c21ea31474dc`
+- DL-004 documentation closeout merge:
+  `fba54487fc3e98426ada436bf12515118967b893`
+- DL-004 documentation closeout tree:
+  `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
+- DL-004 documentation closeout: pushed and re-fetched exactly; worktree
+  removed after positive path, ancestry, remote, and zero-process proof
 
 ## Status
 
@@ -348,19 +355,17 @@ teardown all passed.
 
 ## Active action
 
-DL-004 is complete in code. Sealed implementation `41370a51`, feature record
+DL-004 is fully closed. Sealed implementation `41370a51`, feature record
 `1e59c052`, guarded code landing `2ea345a4`, and exact feature/code-merge tree
 `1d53ce1f` are positive. Pre- and post-merge `pnpm ci:check` are green with
 452/452 server tests and the dead-import guard; production web builds, exact
-push/re-fetch, feature-worktree deregistration, and guarded residue removal
-pass. The branch is preserved. `WT-002` is verified.
+push/re-fetch, and guarded feature-worktree cleanup pass. Documentation
+closeout commit `01aad6c1` guarded-landed as `fba54487`, with exact tree
+`c92f78bc`; it was pushed/re-fetched exactly and its worktree was removed. Both
+branches are preserved. `WT-002` is verified.
 
-No implementation slice is active. The current bounded operation is only to
-commit and guarded-land this documentation closeout from
-`codex/dl-004-closeout`, push/re-fetch it exactly, and remove its worktree after
-positive ancestry/path/process proof.
-
-After closeout, the next product action is to define the first N5 Codex
+No implementation slice or cleanup operation is active. The next product
+action is to define the first N5 Codex
 subscription-path spike as a new slice contract. Do not start broad parity,
 selector UI, permission-mode redesign, nonparticipant/escaped-child
 containment, a workflow/recovery center, `OPS-006`, PM/MCP, or N7 without that
@@ -379,8 +384,10 @@ contract and any genuinely required product direction.
 - DL-004 exact feature/code-merge tree:
   `1d53ce1fdbea686e370d12594f6af7ceee0216a2`
 - DL-004 closeout branch: `codex/dl-004-closeout`
-- DL-004 closeout worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-004-closeout`
+- DL-004 closeout commit: `01aad6c1f12f2a9237d309f65695c21ea31474dc`
+- DL-004 closeout landing: `fba54487fc3e98426ada436bf12515118967b893`
+- DL-004 closeout tree: `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
+- DL-004 closeout worktree: removed after guarded landing/push proof
 
 - DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
 - DL-003 branch: `codex/dl-003-recovery-gate`
@@ -396,9 +403,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed feature worktrees are removed. Only the main checkout and the
-recorded DL-004 documentation-closeout worktree are registered.
-Keep the PC-SDK Next main checkout read-only.
+All completed feature and closeout worktrees are removed. Only the main
+checkout is registered. Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
 
@@ -406,8 +412,8 @@ No SEC-003 blocker remains. No PM-001 blocker remains. Its `get_started`
 remote-state uncertainty is retained in the completion receipt rather than
 repaired through private-data inspection.
 No DL-002 blocker remains.
-No DL-004 implementation or product-direction blocker remains. Only this
-documentation closeout's guarded landing/push/cleanup is pending.
+No DL-004 implementation, closeout, cleanup, or product-direction blocker
+remains.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.

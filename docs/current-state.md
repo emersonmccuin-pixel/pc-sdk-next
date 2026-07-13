@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-13 after DL-004 guarded code landing, post-merge
-verification, exact push/re-fetch, and guarded feature-worktree cleanup.
+Last updated: 2026-07-13 after DL-004 guarded code and documentation closeout
+landings, exact push/re-fetch, and guarded feature/closeout-worktree cleanup.
 
 ## Preserved baseline
 
@@ -139,6 +139,14 @@ only in PC-SDK Next.
   `1d53ce1fdbea686e370d12594f6af7ceee0216a2`
 - DL-004 feature worktree: deregistered; exact dependency/build residue removed
   after parent/name/ancestry/remote/zero-process guards
+- DL-004 documentation closeout commit:
+  `01aad6c1f12f2a9237d309f65695c21ea31474dc`
+- DL-004 documentation closeout merge:
+  `fba54487fc3e98426ada436bf12515118967b893`
+- DL-004 documentation closeout tree:
+  `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
+- DL-004 documentation closeout worktree: removed after exact
+  path/ancestry/remote/zero-process proof; closeout branch preserved
 
 Isolation defaults in the planning slice:
 
@@ -651,7 +659,10 @@ cleanup pass. Feature record
 merge tree `1d53ce1fdbea686e370d12594f6af7ceee0216a2`. Post-merge
 `pnpm ci:check` remains green with 452/452 server tests; production build,
 exact push/re-fetch, and guarded feature-worktree/residue cleanup pass. The
-feature branch is preserved.
+feature branch is preserved. Documentation closeout commit `01aad6c1` then
+guarded-landed as `fba54487` with exact tree `c92f78bc`; its documentation-only
+scope, ancestry, exact push/re-fetch, and guarded worktree removal pass. The
+closeout branch is preserved, and only the main checkout remains registered.
 
 ## Known architectural gaps
 
