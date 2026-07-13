@@ -187,7 +187,11 @@ marker, revisions, and outbox facts settle atomically. Full feature-tree
 `2ea345a4807a49b05a55024cd4053fe81ac25ecd` with exact feature/code-
 merge tree `1d53ce1fdbea686e370d12594f6af7ceee0216a2`; post-merge
 452/452, production build, exact push/re-fetch, and guarded feature-worktree/
-residue cleanup pass.
+residue cleanup pass. Documentation closeout commit
+`01aad6c1f12f2a9237d309f65695c21ea31474dc` guarded-landed as
+`fba54487fc3e98426ada436bf12515118967b893` with exact tree
+`c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`; its documentation-only scope,
+exact push/re-fetch, and guarded closeout-worktree cleanup pass.
 
 ## Lifecycle states
 
