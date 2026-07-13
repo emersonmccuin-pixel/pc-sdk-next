@@ -168,7 +168,11 @@ visible in the existing Activity rail; server outbox cursors make reconnect
 omission authoritative without clock inference. The composed two-worktree OS
 hard-kill gate proves sealed recovery, one landing, positive cleanup,
 preservation of unsealed work, and idempotent second boot. `OPS-006` remains in
-N7.
+N7. Feature record `f15d6d0f76687e37ce1a81fe823812360ec70655`
+guarded-landed as `23872f15b1a9da749cc9efb5d7336b17470ed33e`
+with exact feature/merge tree
+`4c66313c084543ca7684cbe11a93c52468f77289`; post-merge 419/419, exact push/
+re-fetch, and guarded feature-worktree cleanup passed.
 
 ## Lifecycle states
 
