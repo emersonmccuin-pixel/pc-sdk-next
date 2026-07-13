@@ -17,20 +17,32 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createContract,
+  createReviewCheckoutReservation,
   getActiveWorktreeByName,
   getAgentRunRow,
   getRawDb,
   insertAgentRunRow,
   listStrandedWorktrees,
   markWorktreeStranded,
+  markReviewCheckoutTeardownPending,
   newId,
+  reserveContractReview,
+  setContractRun,
   setContractDeliverable,
   setContractLanding,
   setContractVerification,
+  setReviewCheckoutProvisionReceipt,
   setWorktreeContractId,
+  settleReviewCheckoutTeardown,
   upsertWorktree,
 } from '@pc/db';
-import type { AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
+import type {
+  AgentRunStatus,
+  ReviewCheckout,
+  ReviewCheckoutAuthority,
+  RunLifecycleState,
+  ULID,
+} from '@pc/domain';
 import { provisionWorktree, reconcileStrandedWorktrees, sweepOrphanedWorktreeDirs, worktreesRoot } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
@@ -78,6 +90,108 @@ function stampLegacyAbandoned(contractId: ULID, branch: string): void {
   raw.prepare(
     "UPDATE agent_contracts SET landing_status = 'abandoned', landed_branch = ? WHERE id = ?",
   ).run(branch, contractId);
+}
+
+function reserveReviewCheckoutForSweep(
+  gp: GitProject,
+  name: string,
+  status: ReviewCheckout['status'],
+): ReviewCheckout {
+  const producerRunId = newId() as ULID;
+  insertRun({
+    id: producerRunId,
+    projectId: gp.project.id,
+    status: 'completed',
+    worktreeDir: null,
+  });
+  const target = createContract({
+    projectId: gp.project.id,
+    podName: 'builder',
+    expectedOutput: { kind: 'repo' },
+  });
+  assert.ok(setContractRun(target.id, producerRunId));
+  const sealedCommit = '0'.repeat(40);
+  assert.ok(setContractDeliverable(target.id, {
+    deliverable: { kind: 'repo', branch: name, commit: sealedCommit },
+  }));
+  const verified = setContractVerification(target.id, { verificationStatus: 'passed' });
+  assert.ok(verified);
+  const reviewerRunId = newId() as ULID;
+  const reservedTarget = reserveContractReview(target.id, {
+    expectedVersion: verified.version,
+    expectedReviewRunId: null,
+    expectedAgentRunId: producerRunId,
+    reviewRound: 1,
+    reviewRunId: reviewerRunId,
+    reviewSealedCommit: sealedCommit,
+  });
+  assert.ok(reservedTarget);
+  assert.ok(gp.project.repositoryIdentity);
+  const root = worktreesRoot(gp.dir);
+  const authority: ReviewCheckoutAuthority = {
+    id: newId() as ULID,
+    projectId: gp.project.id,
+    contractId: target.id,
+    contractVersion: reservedTarget.version,
+    producerRunId,
+    reviewerRunId,
+    repositoryIdentity: gp.project.repositoryIdentity,
+    worktreePath: join(root, name),
+    ownedRootRealPath: root,
+    sealedCommit,
+  };
+  let checkout = createReviewCheckoutReservation({
+    ...authority,
+    createdAt: Date.now(),
+  });
+  assert.ok(checkout);
+  if (status === 'provisioned') {
+    checkout = setReviewCheckoutProvisionReceipt({
+      authority,
+      expectedUpdatedAt: checkout.updatedAt,
+      receipt: {
+        ...authority,
+        protocol: 'review-checkout-provision-v1',
+        registrationCount: 1,
+        registrationPath: authority.worktreePath,
+        headSha: sealedCommit,
+        detachedHead: true,
+        trackedChanges: 0,
+        stagedChanges: 0,
+        observedAt: Date.now(),
+      },
+    });
+    assert.ok(checkout);
+  } else if (status === 'teardown-pending' || status === 'destroyed') {
+    checkout = markReviewCheckoutTeardownPending({
+      authority,
+      expectedUpdatedAt: checkout.updatedAt,
+      fromStatus: 'reserved',
+      at: Date.now(),
+      error: status === 'teardown-pending' ? 'registration unavailable' : null,
+    });
+    assert.ok(checkout);
+    if (status === 'destroyed') {
+      const startedAt = Date.now();
+      checkout = settleReviewCheckoutTeardown({
+        authority,
+        expectedUpdatedAt: checkout.updatedAt,
+        receipt: {
+          ...authority,
+          protocol: 'review-checkout-teardown-v1',
+          startedAt,
+          finishedAt: startedAt,
+          directoryAbsent: true,
+          registrationAbsent: true,
+          branchDeletion: 'not-applicable-detached',
+        },
+        destroyedAt: startedAt,
+      });
+      assert.ok(checkout);
+    }
+  }
+  assert.equal(checkout.status, status);
+  return checkout;
 }
 
 test('reconcile: live run excluded, dead/dir-missing stranded, legacy abandoned remains protected', async () => {
@@ -288,6 +402,33 @@ test('sweepOrphanedWorktreeDirs: registered/active-row/awaiting-review dirs are 
     assert.equal(existsSync(dirC), true, 'stranded-but-awaiting-review directory kept');
     assert.equal(existsSync(dirD), true, 'legacy abandoned contract path kept without a worktree row');
     assert.equal(existsSync(dirE), false, 'true orphan removed');
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+test('sweepOrphanedWorktreeDirs: unresolved review authority is kept without registration; destroyed authority is sweepable', async () => {
+  freshDb();
+  const gp = await newGitProject();
+  try {
+    const root = worktreesRoot(gp.dir);
+    mkdirSync(root, { recursive: true });
+    const reserved = reserveReviewCheckoutForSweep(gp, 'review-reserved', 'reserved');
+    const provisioned = reserveReviewCheckoutForSweep(gp, 'review-provisioned', 'provisioned');
+    const teardownPending = reserveReviewCheckoutForSweep(gp, 'review-teardown-pending', 'teardown-pending');
+    const destroyed = reserveReviewCheckoutForSweep(gp, 'review-destroyed', 'destroyed');
+    for (const checkout of [reserved, provisioned, teardownPending, destroyed]) {
+      mkdirSync(checkout.worktreePath, { recursive: true });
+      writeFileSync(join(checkout.worktreePath, 'evidence.txt'), checkout.status);
+    }
+
+    const removed = await sweepOrphanedWorktreeDirs(gp.dir);
+
+    assert.deepEqual(removed, ['review-destroyed']);
+    assert.equal(existsSync(reserved.worktreePath), true, 'reserved review authority owns its unregistered path');
+    assert.equal(existsSync(provisioned.worktreePath), true, 'provisioned review authority owns its unregistered path');
+    assert.equal(existsSync(teardownPending.worktreePath), true, 'retryable teardown owns its unregistered path');
+    assert.equal(existsSync(destroyed.worktreePath), false, 'settled review authority no longer protects the path');
   } finally {
     await gp.cleanup();
   }

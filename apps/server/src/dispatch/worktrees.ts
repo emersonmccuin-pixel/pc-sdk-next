@@ -25,6 +25,7 @@ import {
   listNonTerminalAgentRuns,
   listProjects,
   listProtectedAbandonmentWorktreePaths,
+  listReviewCheckoutsNeedingRecovery,
   listStrandedWorktrees,
   markExactWorktreeDestroyed,
   markExactWorktreeSnapshotDestroyed,
@@ -2381,6 +2382,9 @@ function awaitingReviewOrLanding(contractId: ULID | null): boolean {
  *     contract is awaiting review/landing (the same runless-park guard the
  *     stranded scan uses — such a row can be 'stranded' from an earlier pass
  *     that predates the contract entering that state);
+ *   - not an unresolved durable review-checkout path. A reserved, provisioned,
+ *     or teardown-pending checkout remains owned even when Git registration is
+ *     absent or inconclusive; only its exact teardown owner may remove it;
  *   - not a live (non-terminal) run's worktreeDir.
  *
  *  Force-deletes survivors with the same filesystem fallback as teardown,
@@ -2441,6 +2445,11 @@ export async function sweepOrphanedWorktreeDirs(
   }
   for (const path of listProtectedAbandonmentWorktreePaths(projectIds[0]!)) {
     keep.add(normalizePathKey(path));
+  }
+  for (const checkout of listReviewCheckoutsNeedingRecovery()) {
+    if (checkout.projectId === projectIds[0]) {
+      keep.add(normalizePathKey(checkout.worktreePath));
+    }
   }
 
   const removed: string[] = [];
