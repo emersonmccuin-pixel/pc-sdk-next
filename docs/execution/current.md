@@ -363,7 +363,10 @@ CX-001 is the one active slice. Its exact clean pushed base is `dea2df76`; its
 contract is `docs/execution/slices/CX-001.md`. Implement only the pinned
 non-experimental app-server schema, hardened adapter-local JSONL/process/env
 boundary, provider-free fake coverage, and one explicit ChatGPT subscription
-create/restart/resume/archive proof. Do not register a production Codex
+admission/model-discovery proof repeated across a positive native-process
+restart. Do not start a live thread or turn: stable 0.144.1 has no proven
+pre-execution built-in-tool denial, and read-only still permits reads. Do not
+register a production Codex
 adapter, change defaults or selector UI, claim canonical parity, add live
 tools/MCP/approvals/interruption, or widen into PM, N6, N7, `OPS-006`, stable
 data, the original app, or an external repository.
