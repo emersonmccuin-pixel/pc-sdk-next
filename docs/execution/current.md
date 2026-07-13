@@ -1,8 +1,10 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after CX-002 guarded code and documentation landings,
-post-merge verification, exact push/re-fetch, and guarded feature/closeout
-worktree cleanup. CX-002 is complete; main is clean.
+Updated: 2026-07-13 during CX-003's docs-only native-execution safety decision.
+CX-002 is complete and main remains clean. The CX-003 proposal checkpoint passed
+three independent exact-hash hostile reviews with no P0/P1/P2; the explicit product-
+owner decision remains pending. No native Codex process, thread, turn, or credential
+access occurred.
 
 ## Repository
 
@@ -406,19 +408,133 @@ branch is preserved.
 
 ## Active action
 
-Define the next bounded Codex slice before any native execution. It must produce
-an explicit technical/product decision for positive effective tool/MCP/approval
-policy and escaped-descendant containment, including the Windows in-process Job
-Object spawn-binding and CI/toolchain implications. It may inspect and test
-provider-free/toolchain seams, but it must not register Codex, start a native
-thread or turn, run the real-fix gate, or introduce an experimental/API-billed
-fallback.
+CX-003 is active in its isolated docs-only worktree. The stable-0.144.1 policy audit
+and Windows containment/toolchain design are complete. ADR-0002 proposes two
+repository-owned native artifacts—the transient cold-start/controlled-restart PE and
+C++ Node-API full-spawn addon—plus explicit admission of pinned
+`better_sqlite3.node`. A live future N7 launcher must retain non-authoritative same-PE
+`entry-scrub` through exact success or terminate/wait, but its process handle does not
+cover N7 death/hard kill before scrub's watcher arms. That create→arm race remains a
+separate production blocker requiring a crash-safe kernel anchor and topology receipt;
+CX-004 neither qualifies nor freezes it. On a provably unjobbed internal fixture, scrub
+arms its independent watcher, then its main path creates/configures/queries/publishes
+the process-sole permanent outer job with watcher ack before atomic same-PE cold create.
+The exact two-phase event orders ready, least job-target return, cold protect/query/
+publication, and ack without signal collapse. Every watcher-visible handle is retired/
+quiesced; protected transient sources are cleared and queried clear before source close
+and exact scrub-success. From positive watcher arm, hard
+deadlines terminate the exact transient/job. Cold requires parent success plus exact
+sole outer-job/unjobbed-parent proof before SF-001. Direct, replayed, inherited-handle, dead,
+hung, malformed, wrong-job, or uncertain paths fail. Pre-existing same-user malware
+racing scrub's brief child-handle window remains explicitly outside the descendant-
+origin threat.
+
+Cold bootstrap creates and immediately protects/queries/publishes the no-client SF-001
+witness, then launches exact
+protected `node.exe` against deterministic precompiled JavaScript through implicit
+inheritance of the already-held outer job. Shell/package-manager/`tsx`/esbuild/source-loader/preload paths are non-
+admitted. Cold bootstrap exits before SQLite opens. In controlled restart, only the
+new owner may acquire the dedicated admission-SQLite lease while bootstrap lives; it
+binds the exact committed nonce/generation/digest, acknowledges, then bootstrap exits
+before product DB open. One component-owned row-plus-outbox state machine supplies
+power-loss proof and the exact completion CAS. The full-lifetime native-load gate
+allows the exact sealed Node/system closure and, among optional non-host/non-system/
+application-native mappings, only owner addon then exact SQLite through one verified binding factory;
+extension loading and optional `ws` native accelerators are excluded.
+
+All process-spawn edges reachable from the admitted bootstrap/Node owner—including the
+current source/dev-only Codex edge—are eliminated or routed through a no-fallback full-
+spawn family covering same-token `CreateProcessW`; a future production Codex binary is
+separately supplied and qualified. The family also covers
+restricted-token `CreateProcessAsUserW`. It seals ordered job vectors, handle lists, restrictive
+process/thread descriptors, mitigation/child/security-capabilities attributes,
+protected noninteractive station/desktop policy, pre-resume proof, bounded I/O, and
+external hard-kill receipts. A generated typed-wrapper/static-guard/PE-digest manifest
+covers every raw OS/native resource site in the exact artifacts—including owner,
+borrower, and no-release/pseudo classes—with exact
+live/released/quarantined state and type-specific fault/ABA proof. The process-creation
+coordinator remains held from pre-leaf/baseline state through exact resume, positive
+derived resume-thread-handle close, and atomic success or failure publication. Ordinary addon launches
+own one new leaf, borrow rather than close session/outer parents, prove every retained-
+job baseline, and set zero nested-job UI restrictions. Provider session alone retains
+the exact lifecycle-plus-assign-only handle pair and closes assign after action quiescence,
+lifecycle last. A hostile resumed root may self-create an unnamed inner job; that
+unobservable total-chain change is an accepted contained denial-of-service residual,
+not an escape or exact topology claim. The Git delivery boundary remains restricted Git
+candidate creation followed by an owner memory-safe verifier, owner verified-byte
+promotion, and files-backend ref CAS.
+The external one-click UI launcher/browser remains N7 operations work. Routine entry-
+scrub invocation/lifecycle wait/terminate/close is constrained, but that process handle
+is not the required crash-safe anchor; the browser is never placed in the owner job.
+
+The proposed platform is one exact Windows 11 25H2 x64 client full-revision/UBR/
+identity tuple within base build `10.0.26200`, with pinned native/image-provenance CI,
+typed unsupported on any delta until full requalification, and independently
+observed non-admitted `windows-latest`. CX-004 is fake-only in a pinned disposable VM;
+production stays unavailable pending a separate protected-install/OS-policy/
+packaging/N7-launcher-lifecycle decision. ADR-0002 also requires waiting for a later stable Codex release
+with a complete independently verifiable effective-policy receipt, quiescent two-step
+barrier, and immutable epoch. Fork, experimental, alternate-wire, raw-API, and weaker
+detection cannot bypass the gates. The first live policy requires an all-origin empty
+external-action inventory, approvals disabled, unknown actions denied, and exact
+sandbox/filesystem/network evidence.
+
+Exact-snapshot hostile/source/link/path/scope/diff verification is positive, including
+three independent no-P0/P1/P2 reviews; the full no-source-change `pnpm ci:check` is
+already positive. Stage, cached-check, and commit the six-document proposal checkpoint,
+then ask the exact explicit product-owner decision
+on that bundle. Record either acceptance or rejection, close/land the decision
+documents and receipt, and teardown only after positive guarded landing, push, and
+re-fetch proof.
+Then use a separate docs-only final-receipt closeout worktree to record the
+feature landing/teardown proof, guarded-land/push that closeout, and clean it.
+Acceptance authorizes CX-004; actual provider-neutral fake-process containment
+work begins only after both feature and final-receipt closeouts have positive
+landing/push/re-fetch/teardown proof. Rejection leaves native execution blocked
+and requires the next product decision; it does not authorize CX-004. CX-004
+must not start Codex. Stable 0.144.1 remains unable to mint the complete effective-
+policy receipt. Before a later stable CX-005 provider process, shared-login-home
+access, or invocation, a separately approved fresh production bootstrap/install/
+postmortem receipt, explicit provider-root TCB-versus-opaque-broker choice, and a
+positive receipt for every root-applicable active-contract invariant/canary are
+mandatory, without deferral to CX-008. That includes attester provenance; raw/effective
+token, removed-privilege, and self-access facts; non-DACL self-relaxation; child/UI/job/
+IPC access; executable/load/process/restart closure; shared-home/capability export; the
+1:1 root/PC-SDK-session-job receipt in which the PC-SDK owner is the sole process holding
+the exact lifecycle-plus-assign-only session handle pair; retained membership/limits;
+recovery; preventive resources; and the exact composed job-template matrix. CX-005 then reruns
+the CX-001/CX-002 binary/schema/no-turn gates; CX-006 proves subscription/session/
+dispatch/context/usage under the empty policy; CX-007 compiles inert provider-free
+non-process policy only. CX-008 revalidates every root guarantee and adds the
+independently attested lower/sibling/cross-tier boundary with exact raw token/
+child/UI/self-DACL, executable/parser/Git,
+capability-export, durable-recovery, resource-budget, IPC/lifecycle, nested-job,
+and CX-007-template proofs. Its initial lower template is leaf-only with empty raw
+network capability; process-spawning parity needs a separate mediated-child or
+stronger-isolation decision and every process independently receipted. Differential
+or ambient-inaccessibility evidence plus the full composed CX-004 matrix must pass.
+CX-009 then requires matching fresh provider/OS receipts and a challenge-bound PC-
+SDK composite CAS verifying every current/equality fact, zero unresolved leases,
+and no oversubscription before disposable parity. CX-010 repeats that complete
+fresh join before the real fix.
 
 Do not compose or register Codex, broaden the CX-001 admission allowlist, expose
 selectors or handoff UI, start a native thread/turn, or run the real-fix gate.
-Native execution remains blocked until effective tool/MCP/approval enforcement
-and escaped-descendant containment have positive production receipts. No
-experimental protocol, raw API billing, or weaker fallback is authorized.
+Native execution remains blocked until all-origin external-action/sandbox/
+approval enforcement and escaped-descendant containment have positive
+production receipts. No experimental protocol, raw API billing, or weaker
+fallback is authorized.
+
+- CX-003 base: `7259645dfaa9bb4c071843819119dda319d4cea8`
+- CX-003 branch: `codex/cx-003-native-execution-decision`
+- CX-003 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003`
+- CX-003 contract: `docs/execution/slices/CX-003.md`
+- CX-003 evidence: `docs/research/codex-native-execution-safety.md`
+- CX-003 proposed ADR:
+  `docs/decisions/0002-codex-native-execution-safety.md`
+- CX-003 active proposal receipt: `docs/execution/receipts/CX-003.md`
+- CX-003 status: proposal checkpoint verified; explicit product-owner decision pending
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -492,8 +608,13 @@ git log --oneline --decorate -8
 ```
 
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are
-removed. After this final receipt is guarded-landed and its transient worktree
-removed, only the clean main checkout is registered.
+removed. Main and the isolated CX-003 worktree are registered now. After the
+CX-003 acceptance or rejection is recorded, the feature branch must be guarded-
+landed, pushed, re-fetched, and its worktree torn down; abandonment is not an
+alternative after an accept/reject outcome. A separate docs-only final-receipt
+worktree then records that feature proof and must itself be guarded-landed,
+pushed, re-fetched, and torn down before closeout is complete and main alone
+remains.
 
 ## Known blockers
 
@@ -505,10 +626,17 @@ No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
-documentation-closeout blocker. Native process containment and real tool/MCP/
-approval enforcement require the next explicit decision slice; they do not
-authorize a live turn, production registration, or weaker fallback.
-Experimental/API-billed/weaker alternatives are still not authorized.
+documentation-closeout blocker. CX-003's evidence phase has no blocker; its
+proposal checkpoint requires the explicit product-owner native-code/platform
+decision before acceptance and implementation. Stable app-server 0.144.1 has a
+confirmed effective-policy receipt blocker, so it cannot start a native thread
+or turn. Waiting for/upgrading to a qualifying stable release is recommended;
+experimental, forked, alternate-wire, API-billed, or weaker routes cannot
+bypass the same gates. Future governing-doc-authorized wire evaluation remains
+separate. Acceptance authorizes CX-004 provider-neutral containment, but actual
+work begins only after positive feature and final-receipt closeouts and never
+authorizes a Codex process. Process-capable parity and the real-fix gate stay
+blocked through the separate CX-006-through-CX-010 receipts.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.
