@@ -200,6 +200,15 @@ lease admission, strict migration/replay quarantine, and honest browser
 projection are guarded-landed. `WT-002` stays `accepted` because detached
 write-capable reviewers still lack receipts for their exact review checkout.
 
+DL-002 implementation verification strengthens `WT-005` and `WT-006` with a
+browser-only explicit approval boundary, immutable authority and teardown
+receipts, exact repository/worktree/branch/content evidence, branch-preserving
+teardown, landing/continuation/reviewer exclusion, and boot re-drive from the
+durable `abandoning` state. Legacy receipt-free `abandoned` rows remain visible
+and non-destructive. The requirements remain `accepted`: positive merge proof
+was already present, while the broader N4 process-failure/recovery UI and
+nonparticipant/escaped-child boundaries remain incomplete.
+
 ## Integrations, security, and product boundaries
 
 | ID | Status | Requirement |

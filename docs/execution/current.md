@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after SEC-003 guarded landing, post-merge verification,
-exact push, and feature-worktree cleanup.
+Updated: 2026-07-12 after DL-002 implementation seal and full feature gate;
+guarded landing is the active closeout action.
 
 ## Repository
 
@@ -161,6 +161,15 @@ exact push, and feature-worktree cleanup.
 - BC-002 landing merge: `9278a6f9e9769b73601c58399554468328b314a1`
 - BC-002 landed tree: `75c83dd3024d47fe73a655a41e46fae604b824ed`
 - BC-002 worktree: removed; feature branch preserved
+- Active slice: `docs/execution/slices/DL-002.md`
+- DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
+- DL-002 branch: `codex/dl-002-approved-abandonment`
+- DL-002 contract commit: `03cf153dbc48e7b569a385ccebd62a38adbd5253`
+- DL-002 sealed implementation:
+  `367f208b976d554ed58703a172e18045b045fe30`
+- DL-002 sealed implementation tree:
+  `1d5367a4a2c2a93033e0b1c2c8a5f505de416616`
+- DL-002 receipt: `docs/execution/receipts/DL-002.md`
 
 ## Status
 
@@ -312,19 +321,17 @@ teardown all passed.
 
 ## Active action
 
-DL-001 is complete. Its sealed implementation `f5b32a67`, feature record
-`b2629c44`, guarded landing `ae02c182`, exact tree `a7f255ef`, pre/post-merge
-392/392 gates, exact push/re-fetch, and feature-worktree teardown all passed.
-`WT-002` remains accepted because detached write-capable reviewers still lack
-exact review-checkout authority.
+Guard-land and close `DL-002`. The implementation is sealed at `367f208b`
+with tree `1d5367a4`; the full feature gate passes with 413/413 server tests,
+`git diff --check` passes, and three independent hostile re-reviews report no
+P0/P1/P2 blocker. Complete exact feature/merge-tree and ancestry proof,
+post-merge `pnpm ci:check`, exact push/re-fetch, receipt closeout, and guarded
+feature-worktree cleanup.
 
-Implement `DL-002`: a browser-only explicit user approval preview, immutable
-abandonment authority receipt, serialized teardown settlement, and boot
-re-drive for abandoned repository work. Preserve the branch at the approved
-tip, make landing and abandonment mutually exclusive, and keep legacy
-`abandoned` rows without authority non-destructive. Do not expose an MCP/chat
-abandon tool or bundle the broader process-failure gate, recovery-center UI,
-`OPS-006`, or N7.
+After closeout, the next bounded planning action is to define the remaining N4
+process-failure/recovery UI slice. Do not silently widen DL-002 into a general
+recovery center, `OPS-006`, nonparticipant/escaped-child containment, PM/MCP
+integration, Codex, or N7.
 
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
 - DL-002 branch: `codex/dl-002-approved-abandonment`
@@ -342,7 +349,7 @@ git log --oneline --decorate -8
 ```
 
 The PM-001, BC-002, SF-001, SF-002, SEC-003, and DL-001 feature worktrees are
-removed.
+removed. DL-002 remains registered only for guarded landing and closeout.
 Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
