@@ -1,8 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after DL-004 guarded code landing, post-merge verification,
-documentation closeout landing, exact push/re-fetch, and guarded feature and
-closeout-worktree cleanup. No implementation slice is active.
+Updated: 2026-07-13 after defining CX-001 as the active bounded N5 Codex
+subscription-path spike from the clean pushed DL-004 closeout base.
 
 ## Repository
 
@@ -204,6 +203,11 @@ closeout-worktree cleanup. No implementation slice is active.
   `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
 - DL-004 documentation closeout: pushed and re-fetched exactly; worktree
   removed after positive path, ancestry, remote, and zero-process proof
+- Active slice: `docs/execution/slices/CX-001.md`
+- CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
+- CX-001 branch: `codex/cx-001-codex-subscription-spike`
+- CX-001 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001`
 
 ## Status
 
@@ -355,21 +359,20 @@ teardown all passed.
 
 ## Active action
 
-DL-004 is fully closed. Sealed implementation `41370a51`, feature record
-`1e59c052`, guarded code landing `2ea345a4`, and exact feature/code-merge tree
-`1d53ce1f` are positive. Pre- and post-merge `pnpm ci:check` are green with
-452/452 server tests and the dead-import guard; production web builds, exact
-push/re-fetch, and guarded feature-worktree cleanup pass. Documentation
-closeout commit `01aad6c1` guarded-landed as `fba54487`, with exact tree
-`c92f78bc`; it was pushed/re-fetched exactly and its worktree was removed. Both
-branches are preserved. `WT-002` is verified.
+CX-001 is the one active slice. Its exact clean pushed base is `dea2df76`; its
+contract is `docs/execution/slices/CX-001.md`. Implement only the pinned
+non-experimental app-server schema, hardened adapter-local JSONL/process/env
+boundary, provider-free fake coverage, and one explicit ChatGPT subscription
+create/restart/resume/archive proof. Do not register a production Codex
+adapter, change defaults or selector UI, claim canonical parity, add live
+tools/MCP/approvals/interruption, or widen into PM, N6, N7, `OPS-006`, stable
+data, the original app, or an external repository.
 
-No implementation slice or cleanup operation is active. The next product
-action is to define the first N5 Codex
-subscription-path spike as a new slice contract. Do not start broad parity,
-selector UI, permission-mode redesign, nonparticipant/escaped-child
-containment, a workflow/recovery center, `OPS-006`, PM/MCP, or N7 without that
-contract and any genuinely required product direction.
+- CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
+- CX-001 branch: `codex/cx-001-codex-subscription-spike`
+- CX-001 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001`
+- CX-001 contract: `docs/execution/slices/CX-001.md`
 
 - DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
 - DL-004 branch: `codex/dl-004-review-workspace`
@@ -413,7 +416,11 @@ remote-state uncertainty is retained in the completion receipt rather than
 repaired through private-data inspection.
 No DL-002 blocker remains.
 No DL-004 implementation, closeout, cleanup, or product-direction blocker
-remains.
+remains. No CX-001 product-direction blocker exists; stable app-server,
+ChatGPT subscription auth, no billing fallback, and selector-after-parity are
+accepted decisions. Stop for product direction only if stable 0.144.1 cannot
+satisfy the boundary and an experimental/API-billed/weaker alternative is
+proposed.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.
