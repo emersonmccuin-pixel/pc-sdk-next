@@ -186,6 +186,23 @@ test('bounded recent failures and cancellations remain visible recovery truth', 
   assert.deepEqual(projected.preserved.map((item) => item.runId), ['failed-run', 'cancelled-run']);
 });
 
+test('bounded successful reviewer stays available for settled checkout inspection only', () => {
+  const reviewer = run({
+    agentName: 'contract-reviewer',
+    status: 'completed',
+    endedAt: 5,
+  });
+  const ordinary = run({
+    runId: 'ordinary-success',
+    status: 'completed',
+    endedAt: 5,
+  });
+  const projected = overlayAgentRunPayloads([reviewer, ordinary], []);
+  assert.deepEqual(projected.runs, []);
+  assert.deepEqual(projected.preserved.map((item) => item.runId), [reviewer.runId]);
+  assert.equal(isRecoveryTerminalRun(reviewer), false, 'settled review evidence is not a recovery failure');
+});
+
 test('a failed terminal stays visible while tombstoning stale running resource frames', () => {
   const terminal = run({
     rev: 5,

@@ -20,6 +20,9 @@ import type {
 import { isContract } from '@pc/contracts';
 import {
   authorizeContractAbandonment as authorizeContractAbandonmentInDb,
+  applyReviewCheckoutVerdictEvidenceInDb,
+  applyReviewVerdictToContractInDb,
+  validateReviewVerdictAgentRunFrameInDb,
   createContractInDb,
   getContractInDb,
   getDb,
@@ -38,6 +41,7 @@ import {
   setContractRunRecoveryVerification as setContractRunRecoveryVerificationInDb,
   setContractRun as setContractRunInDb,
   setContractVerification as setContractVerificationInDb,
+  transitionAgentRunLifecycleInDb,
   type ContractRow,
   type DbExecutor,
   type InsertLiveEventDraft,
@@ -51,9 +55,18 @@ import {
 import type {
   AcceptanceCriteria,
   ContractV2,
+  ReviewCheckoutVerdictReceipt,
   ULID as DomainULID,
   WorktreeAbandonmentReceipt,
 } from '@pc/domain';
+import { toAgentRunDto } from '../agent-runs/adapters.ts';
+import { buildAgentRunChangedDraft } from '../agent-runs/run-gateway.ts';
+
+export interface ApplyReviewCheckoutVerdictInput {
+  receipt: ReviewCheckoutVerdictReceipt;
+  expectedCheckoutUpdatedAt: number;
+  appliedAt: number;
+}
 
 export function toContractDto(row: ContractRow): Contract {
   const contract: Contract = {
@@ -265,6 +278,47 @@ export class ContractService {
       if (!row) return null;
       const contract = toContractDto(row);
       this.insert(tx, buildContractChangedDraft({ reason: 'landing-set', contract }));
+      return contract;
+    });
+  }
+
+  /** Exact checkout teardown + verdict effect + contract event commit as one
+   * durable transaction. Approval reserves landing before the marker clears. */
+  applyReviewCheckoutVerdict(input: ApplyReviewCheckoutVerdictInput): Contract | null {
+    return this.tx((tx) => {
+      const stableOutcome = input.receipt.outcome !== 'void' &&
+        input.receipt.outcome !== 'overridden';
+      if (stableOutcome && !validateReviewVerdictAgentRunFrameInDb({
+        contractId: input.receipt.contractId,
+        producerRunId: input.receipt.producerRunId,
+      }, tx)) return null;
+      const row = applyReviewVerdictToContractInDb({
+        receipt: input.receipt,
+        appliedAt: input.appliedAt,
+      }, tx);
+      if (!row) return null;
+      if (input.receipt.outcome === 'approve' || input.receipt.outcome === 'reject') {
+        const producer = transitionAgentRunLifecycleInDb({
+          id: input.receipt.producerRunId,
+          expectedFrom: 'reviewing',
+          to: input.receipt.outcome === 'approve' ? 'merge-ready' : 'review-rejected',
+        }, tx);
+        if (!producer) {
+          throw new Error('review verdict producer lifecycle CAS failed after contract transition');
+        }
+        const run = toAgentRunDto(producer);
+        this.insert(tx, buildAgentRunChangedDraft({ reason: 'reconciled', run }));
+      }
+      const checkout = applyReviewCheckoutVerdictEvidenceInDb({
+        receipt: input.receipt,
+        expectedUpdatedAt: input.expectedCheckoutUpdatedAt,
+        appliedAt: input.appliedAt,
+      }, tx);
+      if (!checkout) {
+        throw new Error('review checkout verdict evidence CAS failed after contract transition');
+      }
+      const contract = toContractDto(row);
+      this.insert(tx, buildContractChangedDraft({ reason: 'patched', contract }));
       return contract;
     });
   }

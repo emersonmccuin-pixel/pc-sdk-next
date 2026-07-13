@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after DL-003 guarded landing, post-merge verification,
-exact push/re-fetch, and guarded feature-worktree cleanup.
+Updated: 2026-07-13 after DL-004 implementation sealing and full feature-tree
+verification; guarded landing, push, and cleanup are pending.
 
 ## Repository
 
@@ -179,10 +179,16 @@ exact push/re-fetch, and guarded feature-worktree cleanup.
   dependency/build residue removed after parent/name/process guards
 - DL-002 feature branch: preserved
 - DL-002 receipt: `docs/execution/receipts/DL-002.md`
-- Active slice: `docs/execution/slices/DL-003.md`
-- DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
-- DL-003 branch: `codex/dl-003-recovery-gate`
-- DL-003 worktree: `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
+- Active slice: `docs/execution/slices/DL-004.md`
+- DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
+- DL-004 branch: `codex/dl-004-review-workspace`
+- DL-004 worktree: `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-004`
+- DL-004 contract commit: `07cec4d8aa69e8c0177e6204c04690acf034447f`
+- DL-004 sealed implementation:
+  `41370a51f83275719239feff85ea5f493892b0cd`
+- DL-004 sealed tree: `6c53ad49167a3879938dc9c5bf753ca0618a5c21`
+- DL-004 receipt: `docs/execution/receipts/DL-004.md`
+- DL-004 feature record/landing/push/cleanup: pending
 
 ## Status
 
@@ -334,31 +340,43 @@ teardown all passed.
 
 ## Active action
 
-DL-003 is complete. Sealed implementation `eef661d7`, feature record
-`f15d6d0f`, guarded landing `23872f15`, and exact feature/merge tree
-`4c66313c` are positive. Three final hostile re-reviews report no P0/P1/P2
-blocker. Feature and post-merge `pnpm ci:check` are green with 419/419 server
-tests and the dead-import guard; production web build, exact push/re-fetch, and
-guarded feature-worktree/residue cleanup passed. `OPS-003` is verified.
+DL-004 implementation is sealed at `41370a51`, tree `6c53ad49`, from contract
+`07cec4d8`. Workspace-owned detached-review authority now precedes Git
+mutation; exact provision, reviewer Git, preparation, and readiness receipts
+gate mint/revival; immutable typed verdict evidence precedes positive teardown;
+and contract, producer lifecycle, workspace application marker, revisions, and
+outbox facts settle atomically before landing/Fix/override/re-dispatch.
 
-Define `DL-004` around the remaining exact detached-review checkout authority
-and receipts that keep `WT-002` accepted. Audit the existing independent-
-review provision/cleanup path first, then choose the smallest contract that
-proves repository identity, checkout commit/path, readiness, review evidence,
-and positive teardown without widening into a general review/workflow engine.
-Keep nonparticipant/escaped-child containment, general recovery-center
-behavior, arbitrary Git repair, `OPS-006`, PM/MCP, Codex, and N7 out of scope.
+Full feature-tree `pnpm ci:check` is green with 452/452 server tests and the
+dead-import guard. Production web build, 23/23 recovery, 19/19 full review,
+8/8 final migration/guard checks, exact 45-path audit, `git diff --check`, and
+final semantic/migration hostile reviews pass with no remaining P0/P1/P2.
+`WT-002` is verified. No provider, PM/MCP-network, stable-data, original-app,
+or external-repository action occurred.
+
+Next safe action: commit the DL-004 feature record, prove clean ancestry and
+current-main admission, guarded-merge it into `main`, run the full post-merge
+gate and production build, push/re-fetch exactly, then remove the feature
+worktree only after positive landing/push/process/residue proof. Finish the
+actual cleanup hashes in a separate documentation closeout worktree. Keep
+permission-mode redesign, nonparticipant/escaped-child containment, general
+recovery/workflow behavior, arbitrary Git repair, `OPS-006`, PM/MCP, Codex,
+and N7 out of scope.
+
+- DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
+- DL-004 branch: `codex/dl-004-review-workspace`
+- DL-004 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-004`
+- DL-004 contract: `docs/execution/slices/DL-004.md`
+- DL-004 sealed implementation:
+  `41370a51f83275719239feff85ea5f493892b0cd`
+- DL-004 sealed tree: `6c53ad49167a3879938dc9c5bf753ca0618a5c21`
+- DL-004 receipt: `docs/execution/receipts/DL-004.md`
 
 - DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
 - DL-003 branch: `codex/dl-003-recovery-gate`
 - DL-003 worktree: removed after guarded landing/push proof
 - DL-003 contract: `docs/execution/slices/DL-003.md`
-
-- DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
-- DL-002 branch: `codex/dl-002-approved-abandonment`
-- DL-002 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-002`
-- DL-002 contract: `docs/execution/slices/DL-002.md`
 
 ## Startup checks
 
@@ -369,9 +387,8 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001, BC-002, SF-001, SF-002, SEC-003, DL-001, and DL-002 feature
-worktrees are removed. The DL-002 closeout worktree exists only for this
-documentation receipt and must be removed after guarded landing.
+All completed feature/closeout worktrees are removed. Only the main checkout
+and recorded DL-004 feature worktree are registered.
 Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
@@ -380,6 +397,8 @@ No SEC-003 blocker remains. No PM-001 blocker remains. Its `get_started`
 remote-state uncertainty is retained in the completion receipt rather than
 repaired through private-data inspection.
 No DL-002 blocker remains.
+No DL-004 implementation or product-direction blocker remains. Its guarded
+landing, post-merge gate, exact push/re-fetch, and cleanup receipts are pending.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.

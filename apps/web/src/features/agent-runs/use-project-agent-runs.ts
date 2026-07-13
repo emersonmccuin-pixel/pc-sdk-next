@@ -35,6 +35,10 @@ export interface AgentRunView extends AgentRunDto {
  * to reproduce that retention query. */
 function isRetainedTerminalRun(run: AgentRunDto): boolean {
   return TERMINAL.has(run.status) && (
+    // Successful independent reviewers remain a bounded recent transcript
+    // door for their append-only review-checkout settlement evidence. The
+    // server still owns the 24h bound; ordinary successful runs stay hidden.
+    (run.agentName === 'contract-reviewer' && run.status === 'completed') ||
     run.status === 'failed' ||
     run.status === 'cancelled' ||
     isPreservedLifecycleState(run.lifecycleState) ||
@@ -51,6 +55,7 @@ export function isRecoveryTerminalRun(
   run: AgentRunDto,
   contractLandingStatus: string | null = null,
 ): boolean {
+  if (run.agentName === 'contract-reviewer' && run.status === 'completed') return false;
   return isRetainedTerminalRun(run) && (
     run.lifecycleState !== 'merge-ready' || contractLandingStatus === 'landed'
   );

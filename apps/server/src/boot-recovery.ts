@@ -95,6 +95,7 @@ export interface PreAttachRepositoryRecoveryDispatch {
   recoverPendingLandings(): Promise<void>;
   recoverApprovedAbandonments(): Promise<void>;
   recoverIncompleteTeardowns(): Promise<void>;
+  recoverReviewWorkspaces(): Promise<void>;
 }
 
 /** Production-owned repository recovery composition. Both the server root and
@@ -117,6 +118,9 @@ export async function runPreAttachRepositoryRecovery(
   await dispatch
     .recoverIncompleteTeardowns()
     .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
+  await dispatch
+    .recoverReviewWorkspaces()
+    .catch((err) => console.warn('[pc-sdk][dispatch] review-workspace recovery failed:', err));
   await reconcileStrandedWorktreesAtBoot();
 }
 

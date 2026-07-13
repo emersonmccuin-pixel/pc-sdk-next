@@ -7,6 +7,7 @@ import { TranscriptRow } from '../src/components/TranscriptRow.tsx';
 import {
   AbandonmentReceiptDetails,
   PhaseReceiptDetails,
+  ReviewCheckoutDetails,
   RunRecoveryDetails,
 } from '../src/components/AgentTranscriptModal.tsx';
 import {
@@ -14,7 +15,12 @@ import {
   type AgentRunEventEntry,
 } from '../src/features/agent-runs/client.ts';
 import { mergeAgentTranscriptEvents } from '../src/features/agent-runs/transcript.ts';
-import type { AgentEventFrame, AgentRunDto, Contract } from '@pc/contracts';
+import type {
+  AgentEventFrame,
+  AgentRunDto,
+  Contract,
+  ReviewCheckoutDto,
+} from '@pc/contracts';
 
 const ENTRY = {
   dedupId: 'event-1',
@@ -267,5 +273,110 @@ test('recovery evidence distinguishes typed cause, sealed evidence, preservation
   }));
   assert.match(unavailable, /worktree recovery status unavailable/i);
   assert.match(unavailable, /preservation is not proven/i);
+  assert.match(unavailable, /Retry/);
+});
+
+test('review checkout evidence distinguishes cleanup blocking, settlement, and unavailable reads', () => {
+  const run = {
+    runId: '01J00000000000000000000005',
+    agentName: 'contract-reviewer',
+    status: 'completed',
+  } as AgentRunDto;
+  const authority = {
+    id: '01J00000000000000000000001',
+    projectId: '01J00000000000000000000002',
+    contractId: '01J00000000000000000000003',
+    contractVersion: 4,
+    producerRunId: '01J00000000000000000000004',
+    reviewerRunId: run.runId,
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1' as const,
+      gitCommonDir: 'C:\\repo\\.git',
+      leaseKey: `sha256:${'b'.repeat(64)}`,
+    },
+    worktreePath: 'C:\\repo-worktrees\\review-00000005',
+    ownedRootRealPath: 'C:\\repo-worktrees',
+    sealedCommit: 'a'.repeat(40),
+  };
+  const reviewerContract = {
+    expectedOutput: { kind: 'payload', semantic: 'verdict', schema: { type: 'object' } },
+    verificationStatus: 'passed',
+    deliverable: { kind: 'payload', data: { verdict: 'approve', findings: [] } },
+  } as Contract;
+  const pending = {
+    ...authority,
+    status: 'teardown-pending',
+    provisionReceipt: null,
+    preparationReceipt: null,
+    readinessReceipt: null,
+    verdictReceipt: null,
+    verdictAppliedAt: null,
+    teardownReceipt: null,
+    cleanupError: 'registration locked',
+    createdAt: 10,
+    updatedAt: 11,
+    destroyedAt: null,
+  } as ReviewCheckoutDto;
+  const blocked = renderToStaticMarkup(createElement(ReviewCheckoutDetails, {
+    run,
+    checkout: pending,
+    readStatus: 'ready',
+    readError: null,
+    reviewerContract,
+  }));
+  assert.match(blocked, /cleanup pending/i);
+  assert.match(blocked, /submitted approve · 0 findings · not yet recorded/i);
+  assert.match(blocked, /blocked until positive cleanup settlement/i);
+  assert.match(blocked, /registration locked/i);
+
+  const teardownReceipt = {
+    protocol: 'review-checkout-teardown-v1' as const,
+    ...authority,
+    startedAt: 12,
+    finishedAt: 13,
+    directoryAbsent: true as const,
+    registrationAbsent: true as const,
+    branchDeletion: 'not-applicable-detached' as const,
+  };
+  const verdictReceipt = {
+    protocol: 'review-checkout-verdict-v1' as const,
+    ...authority,
+    reviewerContractId: '01J00000000000000000000006',
+    terminalStatus: 'completed' as const,
+    outcome: 'overridden' as const,
+    findings: [],
+    recordedAt: 12,
+  };
+  const settled = renderToStaticMarkup(createElement(ReviewCheckoutDetails, {
+    run,
+    checkout: {
+      ...pending,
+      status: 'destroyed',
+      cleanupError: null,
+      verdictReceipt,
+      verdictAppliedAt: 14,
+      teardownReceipt,
+      updatedAt: 13,
+      destroyedAt: 13,
+    },
+    readStatus: 'ready',
+    readError: null,
+    reviewerContract,
+  }));
+  assert.match(settled, /cleanup settled/i);
+  assert.match(settled, /overridden · 0 findings · effect applied/i);
+  assert.doesNotMatch(settled, /submitted approve/i);
+  assert.match(settled, /contract effect applied/i);
+  assert.match(settled, /directory absent · registration absent/i);
+
+  const unavailable = renderToStaticMarkup(createElement(ReviewCheckoutDetails, {
+    run,
+    checkout: null,
+    readStatus: 'error',
+    readError: 'offline',
+    onRetry: () => {},
+    reviewerContract: null,
+  }));
+  assert.match(unavailable, /evidence unavailable/i);
   assert.match(unavailable, /Retry/);
 });

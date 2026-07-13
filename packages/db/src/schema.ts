@@ -361,7 +361,7 @@ export const agentAudit = sqliteTable(
 // Agent system tables (agent_runs, agent_contracts, pending_asks). Defined in
 // schema-agent-system.ts (kept separate so the concern stays grep-able).
 // Re-exported here so drizzle-kit's single-file config picks them up.
-export { agentRuns, agentContracts, pendingAsks } from './schema-agent-system.ts';
+export { agentRuns, agentContracts, pendingAsks, reviewCheckouts } from './schema-agent-system.ts';
 
 /**
  * MCP Server Registry. One row per registered server, scoped to `'global'` or

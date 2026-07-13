@@ -89,6 +89,7 @@ export {
   reserveContractLanding,
   settleContractLanding,
   authorizeContractAbandonment,
+  applyReviewVerdictToContractInDb,
   setContractAbandonmentError,
   settleContractAbandonment,
   setContractReviewState,
@@ -97,6 +98,9 @@ export {
   setContractRunRecoveryVerification,
   setContractRun,
   setContractVerification,
+} from './repos/contracts.ts';
+export type {
+  ApplyReviewVerdictToContractInput,
 } from './repos/contracts.ts';
 export type {
   ContractRow,
@@ -115,25 +119,47 @@ export type {
 } from './repos/contracts.ts';
 
 export {
+  createReviewCheckoutReservation,
+  applyReviewCheckoutVerdictEvidenceInDb,
+  getCurrentReviewCheckoutForContract,
+  getReviewCheckoutById,
+  getReviewCheckoutForReviewer,
   getActiveWorktreeByName,
   getWorktreeById,
   getWorktreeForContract,
   getWorktreeForLandedContract,
   listActiveWorktrees,
+  listReviewCheckoutBlockingCandidates,
+  listReviewCheckoutsNeedingRecovery,
   listStrandedWorktrees,
   markWorktreeDestroyed,
+  markReviewCheckoutTeardownPending,
   markExactWorktreeDestroyed,
   markExactWorktreeSnapshotDestroyed,
   markExactUnpublishedWorktreeDestroyed,
   markWorktreeStranded,
   reviveStrandedWorktree,
+  setReviewCheckoutCleanupError,
+  setReviewCheckoutPhaseReceiptInDb,
+  setReviewCheckoutVerdictReceipt,
+  setReviewCheckoutProvisionReceipt,
   setWorktreeContractId,
+  settleReviewCheckoutTeardown,
   upsertWorktree,
 } from './repos/worktrees.ts';
 export type {
+  CreateReviewCheckoutReservationInput,
+  ApplyReviewCheckoutVerdictEvidenceInput,
   MarkExactWorktreeDestroyedInput,
   MarkExactWorktreeSnapshotDestroyedInput,
   MarkExactUnpublishedWorktreeDestroyedInput,
+  MarkReviewCheckoutTeardownPendingInput,
+  ReviewCheckoutMutationInput,
+  ReviewCheckoutRow,
+  SetReviewCheckoutCleanupErrorInput,
+  SetReviewCheckoutPhaseReceiptInput,
+  SetReviewCheckoutProvisionReceiptInput,
+  SettleReviewCheckoutTeardownInput,
   UpsertWorktreeInput,
   WorktreeRow,
 } from './repos/worktrees.ts';
@@ -292,11 +318,16 @@ export {
   specialistSnapshotForAgentRun,
   setAgentRunFailureReason,
   setAgentRunPhaseReceipt,
+  setAgentRunPhaseReceiptInDb,
+  setReviewAgentRunPhaseReceiptInDb,
   touchAgentRunActivity,
+  transitionAgentRunLifecycleInDb,
+  validateReviewVerdictAgentRunFrameInDb,
   updateAgentRunPid,
   updateAgentRunStatus,
 } from './repos/agent-runs.ts';
 export type {
+  TransitionAgentRunLifecycleInput,
   InsertAgentRunRowInput,
   ListAgentRunsForSessionOptions,
   MarkAgentRunTerminalInput,

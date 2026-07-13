@@ -383,41 +383,50 @@ test('production source keeps admission first and quiesces DB ownership before r
 });
 
 test('dispatch disposal waits for every runtime and propagates an uncertain close', async () => {
-  let acknowledgeDispose!: () => void;
-  const disposeGate = new Promise<void>((resolve) => { acknowledgeDispose = resolve; });
-  const dispatch = probeDispatch([
-    { dispose: () => disposeGate },
-  ]);
-  let settled = false;
-  const receipt = dispatch.disposeAll().then(() => { settled = true; });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(settled, false, 'ownership cannot release before runtime disposal settles');
-  acknowledgeDispose();
-  await receipt;
-  assert.equal(settled, true);
+  const previousDataDir = process.env.PC_DATA_DIR;
+  const dbDir = freshDb();
+  try {
+    let acknowledgeDispose!: () => void;
+    const disposeGate = new Promise<void>((resolve) => { acknowledgeDispose = resolve; });
+    const dispatch = probeDispatch([
+      { dispose: () => disposeGate },
+    ]);
+    let settled = false;
+    const receipt = dispatch.disposeAll().then(() => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, 'ownership cannot release before runtime disposal settles');
+    acknowledgeDispose();
+    await receipt;
+    assert.equal(settled, true);
 
-  const disposalFailure = new Error('provider close was not acknowledged');
-  const uncertain = probeDispatch([
-    { dispose: async () => { throw disposalFailure; } },
-  ]);
-  await assert.rejects(
-    uncertain.disposeAll(),
-    (error: unknown) =>
-      error instanceof AggregateError && error.errors.includes(disposalFailure),
-  );
+    const disposalFailure = new Error('provider close was not acknowledged');
+    const uncertain = probeDispatch([
+      { dispose: async () => { throw disposalFailure; } },
+    ]);
+    await assert.rejects(
+      uncertain.disposeAll(),
+      (error: unknown) =>
+        error instanceof AggregateError && error.errors.includes(disposalFailure),
+    );
 
-  let secondDisposeAttempted = false;
-  const synchronousFailure = new Error('synchronous provider close failure');
-  const allAttempted = probeDispatch([
-    { dispose: () => { throw synchronousFailure; } },
-    { dispose: async () => { secondDisposeAttempted = true; } },
-  ]);
-  await assert.rejects(
-    allAttempted.disposeAll(),
-    (error: unknown) =>
-      error instanceof AggregateError && error.errors.includes(synchronousFailure),
-  );
-  assert.equal(secondDisposeAttempted, true);
+    let secondDisposeAttempted = false;
+    const synchronousFailure = new Error('synchronous provider close failure');
+    const allAttempted = probeDispatch([
+      { dispose: () => { throw synchronousFailure; } },
+      { dispose: async () => { secondDisposeAttempted = true; } },
+    ]);
+    await assert.rejects(
+      allAttempted.disposeAll(),
+      (error: unknown) =>
+        error instanceof AggregateError && error.errors.includes(synchronousFailure),
+    );
+    assert.equal(secondDisposeAttempted, true);
+  } finally {
+    closeDb();
+    if (previousDataDir === undefined) delete process.env.PC_DATA_DIR;
+    else process.env.PC_DATA_DIR = previousDataDir;
+    rmSync(dbDir, { recursive: true, force: true });
+  }
 });
 
 test('active orchestrator disposal failure stays an explicit shutdown failure', async () => {

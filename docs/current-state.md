@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 after DL-002 guarded landing, post-merge verification,
-exact push/re-fetch, and feature-worktree cleanup.
+Last updated: 2026-07-13 after DL-004 implementation sealing and full feature-
+tree verification; guarded landing, push, and cleanup are pending.
 
 ## Preserved baseline
 
@@ -148,6 +148,9 @@ Isolation defaults in the planning slice:
 - Durable asks/mailbox and agent terminal envelopes
 - Mandatory worktree provisioning/readiness, sealed commits, guarded landing,
   teardown, recovery, and lifecycle tests
+- Workspace-owned detached-review authority with exact provision, reviewer Git,
+  preparation/readiness, immutable verdict, positive teardown, atomic effect,
+  restart, shutdown, and honest Activity/transcript evidence
 - Global MCP client/bridge foundation and durable provider-neutral subscription
   quota observations, with Claude pull/passive acquisition adapter-local
 - One-click hidden launcher and boot recovery
@@ -501,9 +504,9 @@ and feature record `b2629c4470aa6e8676b6ded774d2de3819ac79f3`
 guarded-landed as `ae02c1828987aa9c529865391ad2bd67551d49e7`.
 Feature and merge share exact tree
 `a7f255ef25d5cd0d5b08e275f00c5e071f3f0698`; exact push/re-fetch and guarded
-feature-worktree cleanup passed. `WT-002` remains accepted because exact
-detached-review-checkout authority is still separate. DL-002 approved
-abandonment is the next active slice.
+feature-worktree cleanup passed. At DL-001 close, `WT-002` remained accepted
+because exact detached-review-checkout authority was separate; DL-004 now
+implements and verifies that remaining reviewer boundary.
 
 ## Completed N4 approved worktree abandonment feature
 
@@ -592,6 +595,46 @@ re-fetch, and guarded feature-worktree/residue cleanup passed; the branch is
 preserved. No provider, PM/MCP-network, stable-data, original-app, or external-
 repository action was required.
 
+## Completed N4 exact independent-review workspace feature
+
+`DL-004` closes the bounded detached-review half of `WT-002` from clean pushed
+base `d82df6d89eebb8bbdb8d094a891298abdc855221`. A workspace-owned reservation
+now commits before `git worktree add` and binds the exact target version,
+producer/reviewer, repository identity, detached owned path, and sealed commit.
+Positive exact provision, checkout-specific Git, preparation, and readiness
+receipts gate fresh mint and paused revival. Every await boundary revalidates
+authority; copied, malformed, stale, dirty, attached, moved, aliased, or
+mismatched evidence fails closed.
+
+Terminal reviewer output becomes immutable checkout-bound verdict evidence
+before teardown. Stable outcomes require the still-current exact target and
+terminal reviewing producer with no competing live target run; drift can only
+retire through void or explicit override. Positive directory and registration
+absence plus exact teardown settlement gate the verdict effect. Contract state,
+producer lifecycle, workspace applied marker, revisions, and both outbox facts
+commit atomically. Failed admission, terminal review, kill, override, shutdown,
+restart, and reviewer-contract binding failure converge through one cleanup
+owner, while unresolved evidence remains visible and blocks successors.
+
+Migration `0019` quarantines generic legacy reviewer phases, synthesizes only
+safe typed legacy retirement, preserves gapless outbox cursors, advances the
+durable run revision, and appends a matching corrected frame so reconnect and
+replay cannot resurrect an equal-version stale projection. Raw SQL guards are
+closed over receipt/nested identity shape, safe integers, exact markers, target
+drift, and live-run admission. Existing Activity and transcript surfaces prefer
+immutable recorded verdict truth and expose cleanup/recovery without a new
+workflow or recovery-center surface.
+
+The implementation sealed as
+`41370a51f83275719239feff85ea5f493892b0cd`, tree
+`6c53ad49167a3879938dc9c5bf753ca0618a5c21`. Full feature-tree
+`pnpm ci:check` passes with 452/452 server tests and the dead-import guard; the
+production web build, 23/23 recovery matrix, 19/19 full-review matrix, exact
+45-path audit, and final hostile reviews also pass. No provider, PM/MCP-network,
+stable-data, original-app, or external-repository action was required. Guarded
+landing, post-merge verification, exact push/re-fetch, and feature-worktree
+cleanup remain pending and are not inferred from the seal.
+
 ## Known architectural gaps
 
 - Production composition remains fixed to Claude and existing orchestrator
@@ -611,8 +654,8 @@ repository action was required.
   is not yet explicitly loopback-bound.
 - The bounded app-owned process-failure/recovery rail is implemented and
   verified by DL-003. A general recovery center is deliberately not a product
-  surface. Nonparticipant/escaped-child containment and exact detached-review
-  checkout authority remain separate gaps.
+  surface. Nonparticipant/manual-Git and escaped-child containment remain
+  separate gaps; DL-004 now owns exact detached-review checkout authority.
 - Worktree profiles do not yet have an explicit local-input/environment/secret
   injection policy. Arbitrary ambient variables are now deliberately absent;
   private setup dependencies that require credentials must wait for an

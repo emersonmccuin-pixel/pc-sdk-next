@@ -23,15 +23,19 @@ import {
   PRESERVED_LIFECYCLE_STATES,
   RUN_LIFECYCLE_STATES,
   canTransition,
+  isMatchingReviewCheckoutPhase,
   isMatchingWorktreeAbandonmentTeardown,
   isPositivePreparationReceiptForRun,
   isPositiveWorktreePhaseReceipt,
+  isReviewCheckoutGitReceipt,
+  isReviewCheckoutPhaseReceipt,
   isWorktreePhaseReceipt,
   isSpecialistExecutionSnapshot,
   type AgentRunFailureCause,
   type AgentRunRow,
   type AgentRunStatus,
   type RunLifecycleState,
+  type ReviewCheckoutPhaseReceipt,
   type SpecialistExecutionSnapshot,
   type ULID,
   type WorktreeGitReceipt,
@@ -368,20 +372,37 @@ export function setAgentRunPhaseReceipt(
   id: ULID,
   receipt: WorktreePhaseReceipt,
 ): boolean {
-  if (!isWorktreePhaseReceipt(receipt)) return false;
-  const current = getAgentRunRow(id);
-  if (!current) return false;
+  return setAgentRunPhaseReceiptInDb(id, receipt, getDb()) !== null;
+}
+
+/** Agent-run-owned executor-aware phase command. Application services use
+ * this door when the versioned run mutation and its outbox fact must share a
+ * transaction. Detached review runs have a separate authority-aware command
+ * below; generic builder evidence cannot be copied onto them. */
+export function setAgentRunPhaseReceiptInDb(
+  id: ULID,
+  receipt: WorktreePhaseReceipt,
+  db: DbExecutor,
+): AgentRunRow | null {
+  if (!isWorktreePhaseReceipt(receipt)) return null;
+  const current = db.select().from(agentRuns).where(eq(agentRuns.id, id)).get();
+  if (!current) return null;
+  // Detached reviewers use the checkout-bound application-service
+  // coordinator. Letting the generic door accept a copied builder receipt
+  // would erase checkout provenance even if the payload happened to be
+  // byte-identical.
+  if (isReviewCheckoutGitReceipt(current.gitReceipt)) return null;
   if (receipt.phase === 'preparation') {
     if (receipt.ok && !isPositivePreparationReceiptForRun(receipt, current.continues)) {
-      return false;
+      return null;
     }
     // Failed command evidence is valid only for a fresh preparation phase;
     // continuations never re-run setup in an existing worktree.
-    if (current.continues !== null && receipt.outcome === 'executed') return false;
+    if (current.continues !== null && receipt.outcome === 'executed') return null;
   } else if (!isPositiveWorktreePhaseReceipt(current.preparationReceipt, 'preparation')) {
-    return false;
+    return null;
   } else if (!isPositivePreparationReceiptForRun(current.preparationReceipt, current.continues)) {
-    return false;
+    return null;
   }
   const receiptColumn = receipt.phase === 'preparation'
     ? agentRuns.preparationReceipt
@@ -389,12 +410,128 @@ export function setAgentRunPhaseReceipt(
   const patch: Partial<AgentRunRow> =
     receipt.phase === 'preparation' ? { preparationReceipt: receipt } : { readinessReceipt: receipt };
   patch.rev = REV_INC;
-  return getDb().update(agentRuns).set(patch).where(and(
+  const changed = db.update(agentRuns).set(patch).where(and(
     eq(agentRuns.id, id),
     eq(agentRuns.status, 'queued'),
     eq(agentRuns.lifecycleState, 'preparing'),
     isNull(receiptColumn),
-  )).run().changes === 1;
+  )).run();
+  return changed.changes === 1
+    ? db.select().from(agentRuns).where(eq(agentRuns.id, id)).get() ?? null
+    : null;
+}
+
+/** Agent-run-owned command for one detached reviewer phase. The bound receipt
+ * must match the immutable review Git receipt and the run's pre-runtime shape.
+ * Checkout state is deliberately not read here; the app-service coordinator
+ * invokes the workspace owner in the same transaction. */
+export function setReviewAgentRunPhaseReceiptInDb(
+  id: ULID,
+  receipt: ReviewCheckoutPhaseReceipt,
+  db: DbExecutor,
+): AgentRunRow | null {
+  if (!isReviewCheckoutPhaseReceipt(receipt) || receipt.reviewerRunId !== id) return null;
+  const current = db.select().from(agentRuns).where(eq(agentRuns.id, id)).get();
+  const gitReceipt = current?.gitReceipt;
+  if (!current ||
+      current.projectId !== receipt.projectId ||
+      current.status !== 'queued' ||
+      current.lifecycleState !== null ||
+      current.continues !== null ||
+      current.nativeSessionId !== null ||
+      current.nativeIdentityState !== 'unbound' ||
+      current.continuationState !== 'clean-pending' ||
+      current.spawnedAt !== null ||
+      current.pid !== null ||
+      current.worktreeDir !== receipt.worktreePath ||
+      current.worktreeBaseBranch !== '(detached)' ||
+      current.worktreeBaseSha !== receipt.sealedCommit ||
+      !isReviewCheckoutGitReceipt(gitReceipt) ||
+      !isMatchingReviewCheckoutPhase(gitReceipt, receipt)) return null;
+
+  const phase = receipt.evidence.phase;
+  if (phase === 'preparation') {
+    if (current.preparationReceipt !== null || current.readinessReceipt !== null) return null;
+  } else if (current.readinessReceipt !== null ||
+      !isPositiveWorktreePhaseReceipt(current.preparationReceipt, 'preparation')) {
+    return null;
+  }
+  const receiptColumn = phase === 'preparation'
+    ? agentRuns.preparationReceipt
+    : agentRuns.readinessReceipt;
+  const patch: Partial<AgentRunRow> = phase === 'preparation'
+    ? { preparationReceipt: receipt.evidence, rev: REV_INC }
+    : { readinessReceipt: receipt.evidence, rev: REV_INC };
+  const changed = db.update(agentRuns).set(patch).where(and(
+    eq(agentRuns.id, id),
+    eq(agentRuns.status, 'queued'),
+    isNull(agentRuns.lifecycleState),
+    isNull(agentRuns.continues),
+    isNull(agentRuns.nativeSessionId),
+    eq(agentRuns.nativeIdentityState, 'unbound'),
+    eq(agentRuns.continuationState, 'clean-pending'),
+    isNull(agentRuns.spawnedAt),
+    isNull(agentRuns.pid),
+    eq(agentRuns.gitReceipt, gitReceipt),
+    isNull(receiptColumn),
+  )).run();
+  return changed.changes === 1
+    ? db.select().from(agentRuns).where(eq(agentRuns.id, id)).get() ?? null
+    : null;
+}
+
+export interface TransitionAgentRunLifecycleInput {
+  id: ULID;
+  expectedFrom: RunLifecycleState;
+  to: RunLifecycleState;
+}
+
+/** Agent-run-owned exact lifecycle CAS for cross-component application-service
+ * coordinators. It never reads another component's state and returns the
+ * versioned post-write row for same-transaction outbox publication. */
+export function transitionAgentRunLifecycleInDb(
+  input: TransitionAgentRunLifecycleInput,
+  db: DbExecutor,
+): AgentRunRow | null {
+  if (input.expectedFrom === input.to || !canTransition(input.expectedFrom, input.to)) return null;
+  const changed = db.update(agentRuns).set({
+    lifecycleState: input.to,
+    rev: REV_INC,
+  }).where(and(
+    eq(agentRuns.id, input.id),
+    eq(agentRuns.lifecycleState, input.expectedFrom),
+    inArray(agentRuns.status, ['completed', 'failed', 'cancelled']),
+  )).run();
+  return changed.changes === 1
+    ? db.select().from(agentRuns).where(eq(agentRuns.id, input.id)).get() ?? null
+    : null;
+}
+
+export interface ValidateReviewVerdictAgentRunFrameInput {
+  contractId: ULID;
+  producerRunId: ULID;
+}
+
+/** Agent-run-owned stable-frame guard for review-verdict application. It is a
+ * read-only same-transaction precondition: the application-service coordinator
+ * performs the exact lifecycle CAS only after the contract owner succeeds, so
+ * every later refusal can still return without committing a partial run move. */
+export function validateReviewVerdictAgentRunFrameInDb(
+  input: ValidateReviewVerdictAgentRunFrameInput,
+  db: DbExecutor,
+): AgentRunRow | null {
+  const live = db.select({ id: agentRuns.id }).from(agentRuns).where(and(
+    eq(agentRuns.contractId, input.contractId),
+    inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
+  )).limit(1).get();
+  if (live) return null;
+  const producer = db.select().from(agentRuns).where(and(
+    eq(agentRuns.id, input.producerRunId),
+    eq(agentRuns.contractId, input.contractId),
+    inArray(agentRuns.status, ['completed', 'failed', 'cancelled']),
+    eq(agentRuns.lifecycleState, 'reviewing'),
+  )).get() as AgentRunRow | undefined;
+  return producer ?? null;
 }
 
 /** Point read by ULID. `pc_continue_agent` calls this to validate the

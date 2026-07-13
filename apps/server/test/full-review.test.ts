@@ -25,13 +25,16 @@ import {
   createContract,
   getAgentRunRow,
   getContract,
+  getReviewCheckoutForReviewer,
   insertAgentRunRow,
   listContractsForProject,
+  listReviewCheckoutsNeedingRecovery,
   newId,
   setContractDeliverable,
   setContractReviewState,
   setContractRun,
   setContractVerification,
+  updateProjectWorktreeProfile,
 } from '@pc/db';
 import type { RepositoryIdentityReceipt, ULID } from '@pc/domain';
 import { seedStockAgents } from '../src/agents/seed.ts';
@@ -156,16 +159,7 @@ async function* turnStream(
   yield OK_RESULT;
 }
 
-function rig(
-  adapter: AgentRuntimeAdapter,
-  configureDeps?: (base: DispatchServiceDeps) => DispatchServiceDeps,
-): DispatchService {
-  const runtimes = new RuntimeRegistry();
-  runtimes.register(adapter);
-  const baseDeps: DispatchServiceDeps = {
-    ...testDispatchRuntimeDeps(runtimes),
-  };
-  const dispatch = new DispatchService(configureDeps ? configureDeps(baseDeps) : baseDeps);
+function attachDispatch(dispatch: DispatchService): void {
   const hub = new ProjectWebSocketHub<ULID>();
   const registry = new SessionRegistry({
     hub,
@@ -173,6 +167,20 @@ function rig(
     mintSession: withRuntimeReceipt(() => new FakeRuntime()),
   });
   dispatch.attach({ registry, hub, serverPort: 1 });
+}
+
+function rig(
+  adapter: AgentRuntimeAdapter,
+  configureDeps?: (base: DispatchServiceDeps) => DispatchServiceDeps,
+  attach = true,
+): DispatchService {
+  const runtimes = new RuntimeRegistry();
+  runtimes.register(adapter);
+  const baseDeps: DispatchServiceDeps = {
+    ...testDispatchRuntimeDeps(runtimes),
+  };
+  const dispatch = new DispatchService(configureDeps ? configureDeps(baseDeps) : baseDeps);
+  if (attach) attachDispatch(dispatch);
   return dispatch;
 }
 
@@ -209,6 +217,10 @@ async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>):
     dispatcherSessionId: 'review-target',
     status: 'queued',
     input: 'produce review target',
+    // This fixture represents a producer whose repository verification has
+    // already passed and whose next durable pipeline owner is independent
+    // review. NULL is legacy/non-repository and cannot authorize admission.
+    lifecycleState: 'reviewing',
     contractId: created.id,
     worktreeDir: provisioned.dir,
     worktreeBaseBranch: provisioned.baseBranch,
@@ -231,6 +243,11 @@ async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>):
   }));
   assert.ok(setContractVerification(created.id, { verificationStatus: 'passed' }));
   return { contractId: created.id, sealedCommit };
+}
+
+async function requireGit(args: string[], cwd: string): Promise<void> {
+  const result = await git(args, cwd);
+  assert.equal(result.ok, true, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
 }
 
 /** Dispatch a full-review builder, do one in-scope commit, seal, end the turn
@@ -482,6 +499,268 @@ test('failed async admission cleanup cannot clear a newer review reservation', a
     assert.equal(getAgentRunRow(staleReservation), null);
     await dispatch.disposeAll();
   } finally {
+    await gp.cleanup();
+  }
+});
+
+test('review preparation failure records exact negative phase evidence and never mints a runtime', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  try {
+    const { contractId } = await readyReviewTarget(gp);
+    assert.ok(updateProjectWorktreeProfile(gp.project.id, {
+      setupCommands: ['node -e "process.exit(9)"'],
+      readinessCommands: ['node -e "process.exit(0)"'],
+      cleanupCommands: [],
+    }));
+    const adapter = new QueueAdapter();
+    const dispatch = rig(adapter);
+
+    await driveIndependentReview(dispatch, contractId);
+    await until(
+      () => /review rounds exhausted/.test(getContract(contractId)?.verificationNotes ?? ''),
+      20000,
+    );
+
+    const reviewerContracts = listContractsForProject(gp.project.id)
+      .filter((contract) => contract.podName === 'contract-reviewer');
+    assert.equal(reviewerContracts.length, 2, 'the bounded gate consumes exactly two failed review rounds');
+    for (const reviewerContract of reviewerContracts) {
+      const run = getAgentRunRow(reviewerContract.agentRunId as ULID);
+      assert.ok(run);
+      assert.equal(run.status, 'failed');
+      assert.equal(run.failureCause, 'worktree-provision-failed');
+      assert.match(run.failureReason ?? '', /preparation command failed \(exit 9\)/);
+      assert.equal(run.preparationReceipt?.outcome, 'executed');
+      assert.equal(run.preparationReceipt?.ok, false);
+      assert.equal(run.readinessReceipt, null, 'readiness never starts after failed preparation');
+      assert.equal(getReviewCheckoutForReviewer(run.id)?.status, 'destroyed');
+    }
+    assert.equal(adapter.created.length, 0, 'negative phase evidence never reaches native runtime mint');
+    assert.equal(getContract(contractId)?.landingStatus, null);
+    await dispatch.disposeAll();
+  } finally {
+    await gp.cleanup();
+  }
+});
+
+for (const drift of ['head', 'registration'] as const) {
+  test(`review ${drift} drift in the pre-mint await window fails closed before native create`, async () => {
+    freshDb();
+    seedStockAgents();
+    const gp = await newGitProject();
+    const preflightEntered = deferred();
+    const releasePreflight = deferred();
+    let preflightCalls = 0;
+    let dispatch: DispatchService | null = null;
+    let driftBranch: string | null = null;
+    try {
+      const { contractId, sealedCommit } = await readyReviewTarget(gp);
+      const laterCommit = await commitFile(gp.dir, 'later.txt', 'later\n');
+      const adapter = new QueueAdapter();
+      dispatch = rig(adapter, (base) => ({
+        ...base,
+        preflightRuntimeSession: async (selection, continuation) => {
+          preflightCalls += 1;
+          if (preflightCalls === 1) {
+            preflightEntered.resolve();
+            await releasePreflight.promise;
+          }
+          return base.preflightRuntimeSession(selection, continuation);
+        },
+      }));
+
+      const admission = driveIndependentReview(dispatch, contractId);
+      await preflightEntered.promise;
+      const reviewRunId = getContract(contractId)?.reviewRunId as ULID;
+      const reviewRun = getAgentRunRow(reviewRunId);
+      assert.ok(reviewRun?.worktreeDir);
+      assert.equal(reviewRun.preparationReceipt?.ok, true);
+      assert.equal(reviewRun.readinessReceipt?.ok, true);
+      const checkout = getReviewCheckoutForReviewer(reviewRunId);
+      assert.ok(checkout);
+      assert.equal(checkout.status, 'provisioned');
+
+      if (drift === 'head') {
+        await requireGit(['checkout', '--detach', laterCommit], reviewRun.worktreeDir);
+      } else {
+        driftBranch = `review-drift-${reviewRunId.slice(-8).toLowerCase()}`;
+        await requireGit(['switch', '-c', driftBranch], reviewRun.worktreeDir);
+      }
+      releasePreflight.resolve();
+      await admission;
+      await until(() => getAgentRunRow(reviewRunId)?.status === 'failed', 20000);
+      await until(
+        () => getReviewCheckoutForReviewer(reviewRunId)?.cleanupError !== null,
+        20000,
+      );
+
+      const refused = getAgentRunRow(reviewRunId)!;
+      assert.equal(refused.failureCause, 'worktree-provision-failed');
+      assert.match(
+        refused.failureReason ?? '',
+        drift === 'head' ? /HEAD|registration|seal/i : /registration|attached/i,
+      );
+      assert.equal(adapter.created.length, 0, 'drifted checkout never reaches native create');
+      assert.equal(getContract(contractId)?.reviewRunId, reviewRunId, 'cleanup uncertainty retains the exact marker');
+      assert.equal(getContract(contractId)?.reviewRound, 1, 'cleanup uncertainty cannot burn a successor round');
+      assert.equal(
+        listContractsForProject(gp.project.id).filter((contract) => contract.podName === 'contract-reviewer').length,
+        1,
+        'no successor reviewer is reserved while exact cleanup is unavailable',
+      );
+
+      await requireGit(['checkout', '--detach', sealedCommit], reviewRun.worktreeDir);
+      if (driftBranch) await requireGit(['branch', '-D', driftBranch], gp.dir);
+      await dispatch.disposeAll();
+      dispatch = null;
+      assert.equal(getReviewCheckoutForReviewer(reviewRunId)?.status, 'destroyed');
+      assert.equal(adapter.created.length, 0);
+    } finally {
+      releasePreflight.resolve();
+      if (dispatch) await dispatch.disposeAll().catch(() => {});
+      await gp.cleanup();
+    }
+  });
+}
+
+test('locked production removal cannot apply approval, clear its marker, land, or admit a successor', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  let lockedPath: string | null = null;
+  try {
+    const adapter = new QueueAdapter();
+    const dispatch = rig(adapter);
+    const { contractId, sealedCommit } = await buildAndSeal(dispatch, adapter, gp.project.id, 0);
+    const reviewRunId = getContract(contractId)?.reviewRunId as ULID;
+    lockedPath = getAgentRunRow(reviewRunId)?.worktreeDir ?? null;
+    assert.ok(lockedPath);
+    await requireGit(['worktree', 'lock', '--reason', 'dl-004-remove-refusal', lockedPath], gp.dir);
+
+    await deliverVerdict(dispatch, adapter, gp.project.id, reviewRunId, 1, {
+      verdict: 'approve',
+      findings: [],
+    });
+    await until(() => getReviewCheckoutForReviewer(reviewRunId)?.cleanupError !== null, 20000);
+
+    const blocked = getContract(contractId)!;
+    assert.equal(blocked.reviewRunId, reviewRunId, 'the cleanup owner remains the durable marker');
+    assert.equal(blocked.landingStatus, null, 'an approval is not verdict authority before teardown');
+    assert.equal(blocked.landingAuthorizer, null);
+    assert.equal(blocked.reviewRound, 1);
+    assert.equal(
+      listContractsForProject(gp.project.id).filter((contract) => contract.podName === 'contract-reviewer').length,
+      1,
+      'cleanup failure cannot admit a successor',
+    );
+    assert.equal(
+      (await git(['merge-base', '--is-ancestor', sealedCommit, 'main'], gp.dir)).ok,
+      false,
+      'the approved seal remains unlanded',
+    );
+    const cleanup = getReviewCheckoutForReviewer(reviewRunId)!;
+    assert.equal(cleanup.status, 'teardown-pending');
+    assert.match(cleanup.cleanupError ?? '', /removal-incomplete|registration/i);
+
+    await requireGit(['worktree', 'unlock', lockedPath], gp.dir);
+    lockedPath = null;
+    await dispatch.recoverReviewWorkspaces();
+    await until(() => getContract(contractId)?.landingStatus === 'landed', 20000);
+    assert.equal(getReviewCheckoutForReviewer(reviewRunId)?.status, 'destroyed');
+    assert.equal(getContract(contractId)?.reviewRunId, null, 'marker clears only after the positive retry');
+    await dispatch.disposeAll();
+  } finally {
+    if (lockedPath) await git(['worktree', 'unlock', lockedPath], gp.dir).catch(() => null);
+    await gp.cleanup();
+  }
+});
+
+test('boot retires the old review checkout before successor admission and retries idempotently', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  let lockedPath: string | null = null;
+  let crashedCheckoutPath: string | null = null;
+  let recovery1: DispatchService | null = null;
+  let recovery2: DispatchService | null = null;
+  try {
+    const crashedAdapter = new QueueAdapter();
+    const crashedDispatch = rig(crashedAdapter);
+    const { contractId } = await buildAndSeal(crashedDispatch, crashedAdapter, gp.project.id, 0);
+    const crashedReviewId = getContract(contractId)?.reviewRunId as ULID;
+    lockedPath = getAgentRunRow(crashedReviewId)?.worktreeDir ?? null;
+    assert.ok(lockedPath);
+    crashedCheckoutPath = lockedPath;
+    await requireGit(['worktree', 'lock', '--reason', 'dl-004-boot-retry', lockedPath], gp.dir);
+
+    runBootRecovery();
+    assert.equal(getAgentRunRow(crashedReviewId)?.failureCause, 'server-restart');
+    const crashedLive = (
+      crashedDispatch as unknown as {
+        live: Map<string, { wallClock: ReturnType<typeof setTimeout> }>;
+      }
+    ).live.get(crashedReviewId);
+    if (crashedLive) clearTimeout(crashedLive.wallClock);
+    (
+      crashedDispatch as unknown as { live: Map<string, unknown> }
+    ).live.delete(crashedReviewId);
+
+    const firstRecoveryAdapter = new QueueAdapter();
+    recovery1 = rig(firstRecoveryAdapter, undefined, false);
+    await recovery1.recoverReviewWorkspaces();
+    assert.equal(getReviewCheckoutForReviewer(crashedReviewId)?.status, 'teardown-pending');
+    assert.ok(getReviewCheckoutForReviewer(crashedReviewId)?.cleanupError);
+    assert.equal(getContract(contractId)?.reviewRunId, crashedReviewId);
+    assert.equal(firstRecoveryAdapter.created.length, 0, 'pre-attach cleanup never mints');
+
+    attachDispatch(recovery1);
+    await recovery1.recoverPendingReviews();
+    assert.equal(getContract(contractId)?.reviewRound, 1);
+    assert.equal(getContract(contractId)?.reviewRunId, crashedReviewId);
+    assert.equal(firstRecoveryAdapter.created.length, 0, 'locked old authority blocks the successor after attach too');
+
+    await requireGit(['worktree', 'unlock', lockedPath], gp.dir);
+    lockedPath = null;
+    const secondRecoveryAdapter = new QueueAdapter();
+    recovery2 = rig(secondRecoveryAdapter, undefined, false);
+    await recovery2.recoverReviewWorkspaces();
+    assert.equal(getReviewCheckoutForReviewer(crashedReviewId)?.status, 'destroyed');
+    assert.equal(getContract(contractId)?.reviewRunId, null);
+    assert.equal(getContract(contractId)?.reviewRound, 1);
+    assert.equal(secondRecoveryAdapter.created.length, 0, 'old checkout settles before a server context exists');
+
+    const settledSnapshot = {
+      marker: getContract(contractId)?.reviewRunId,
+      round: getContract(contractId)?.reviewRound,
+      recoverable: listReviewCheckoutsNeedingRecovery().map((checkout) => checkout.id),
+    };
+    await recovery2.recoverReviewWorkspaces();
+    assert.deepEqual({
+      marker: getContract(contractId)?.reviewRunId,
+      round: getContract(contractId)?.reviewRound,
+      recoverable: listReviewCheckoutsNeedingRecovery().map((checkout) => checkout.id),
+    }, settledSnapshot, 'a second pre-attach recovery pass is effect-idempotent');
+
+    attachDispatch(recovery2);
+    await recovery2.recoverPendingReviews();
+    await until(() => secondRecoveryAdapter.created.length === 1, 20000);
+    const successorId = getContract(contractId)?.reviewRunId as ULID;
+    assert.ok(successorId);
+    assert.notEqual(successorId, crashedReviewId);
+    assert.equal(getContract(contractId)?.reviewRound, 2);
+    assert.equal(getReviewCheckoutForReviewer(crashedReviewId)?.status, 'destroyed');
+    assert.notEqual(getAgentRunRow(successorId)?.worktreeDir, crashedCheckoutPath);
+
+    await recovery2.disposeAll();
+    recovery2 = null;
+    await recovery1.disposeAll();
+    recovery1 = null;
+  } finally {
+    if (lockedPath) await git(['worktree', 'unlock', lockedPath], gp.dir).catch(() => null);
+    if (recovery2) await recovery2.disposeAll().catch(() => {});
+    if (recovery1) await recovery1.disposeAll().catch(() => {});
     await gp.cleanup();
   }
 });

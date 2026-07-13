@@ -1,10 +1,11 @@
 # Git worktree lifecycle
 
 Status: **locked architecture with implemented v1 lifecycle** (updated
-2026-07-12). Isolation, readiness, sealed delivery, verification/review,
+2026-07-13). Isolation, readiness, sealed delivery, verification/review,
 guarded landing, teardown, and recovery have live evidence. SF-002 implements
 cooperative same-host repository exclusion and is sealed, guarded-landed,
-post-merge verified, pushed, and cleaned up.
+post-merge verified, pushed, and cleaned up. DL-004's exact detached-review
+authority is implementation-sealed; its guarded landing receipt is pending.
 
 ## Decision
 
@@ -173,6 +174,15 @@ guarded-landed as `23872f15b1a9da749cc9efb5d7336b17470ed33e`
 with exact feature/merge tree
 `4c66313c084543ca7684cbe11a93c52468f77289`; post-merge 419/419, exact push/
 re-fetch, and guarded feature-worktree cleanup passed.
+
+DL-004 implementation `41370a51f83275719239feff85ea5f493892b0cd`
+adds workspace-owned detached-review authority before Git mutation, exact
+checkout-specific Git/preparation/readiness evidence before runtime, immutable
+typed verdict evidence, and positive teardown before verdict effect or
+successor admission. Contract, producer lifecycle, workspace application
+marker, revisions, and outbox facts settle atomically. Full feature-tree
+`pnpm ci:check` passes with 452/452 server tests; guarded landing, post-merge
+verification, exact push/re-fetch, and feature-worktree cleanup are pending.
 
 ## Lifecycle states
 
@@ -422,6 +432,18 @@ legacy repository identity never authorizes mutation.
 Recovery never reruns a non-idempotent Git mutation based only on a stale DB
 status.
 
+DL-004 implements the detached-review workspace boundary. A reviewer remains
+write-capable from PC-SDK's perspective even when its charter says read-only,
+so prompt intent is never treated as a sandbox receipt. Workspace authority is
+persisted before Git mutation and binds the exact target/version/producer/
+reviewer/repository/path/seal frame. Positive checkout-specific provision,
+Git, preparation, and readiness evidence gates mint and revival. Immutable
+typed verdict evidence is recorded before teardown; only positive retryable
+teardown permits landing, Fix, override completion, or successor dispatch.
+Stable verdicts additionally require the current target frame and no competing
+live target run. Contract effect, producer lifecycle, workspace applied stamp,
+revisions, and outbox facts commit atomically.
+
 For a landed contract, the merge receipt proves history but not cleanup.
 Recovery may destroy the exact active/stranded row only after the project
 identity matches the producer receipt, the directory is absent, a successful
@@ -457,6 +479,12 @@ visible.
     import records the canonical identity and a clean initial commit.
 15. Repository test fixtures await lease release before removing repository or
     sibling-worktree paths; cleanup is a barrier, not fire-and-forget evidence.
+16. An independent reviewer cannot mint or revive without one exact durable
+    detached checkout plus matching provision, reviewer Git, preparation, and
+    readiness receipts; drift or copied evidence refuses before runtime.
+17. A review verdict is immutable and checkout-bound, but cannot affect the
+    contract or admit a successor until positive teardown; contract, producer,
+    workspace marker, revisions, and outbox facts settle atomically.
 
 ## Anti-patterns
 

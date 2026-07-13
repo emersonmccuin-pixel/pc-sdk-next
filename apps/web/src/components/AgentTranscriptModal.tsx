@@ -9,7 +9,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import type { AgentRunDto, Contract, WorktreePhaseReceiptDto } from '@pc/contracts';
+import type {
+  AgentRunDto,
+  Contract,
+  ReviewCheckoutDto,
+  WorktreePhaseReceiptDto,
+} from '@pc/contracts';
 import { agentRunsApi, type AgentRunEventEntry, type AgentRunTranscriptStatus } from '@/features/agent-runs/client';
 import { useProjectContracts } from '@/features/contracts/use-project-contracts';
 import {
@@ -29,10 +34,15 @@ import { useAgentTranscript } from '@/store/agent-transcript';
 import { isRecoveryTerminalRun } from '@/features/agent-runs/use-project-agent-runs';
 import {
   exactStrandedEvidenceForRun,
+  reviewVerdictPresentation,
   preservationEvidenceMessage,
   sealedEvidenceMessage,
 } from '@/features/recovery/view';
 import { useRecoveryWorktrees } from '@/features/recovery/use-recovery-worktrees';
+import {
+  useReviewCheckouts,
+  type ReviewCheckoutReadStatus,
+} from '@/features/recovery/use-review-checkouts';
 import type { StrandedWorktreeDto } from '@/features/worktrees/client';
 import { AbandonWorktreeModal } from './AbandonWorktreeModal';
 import { RichAgentTranscript } from './RichAgentTranscript';
@@ -93,13 +103,29 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
   // `agentRunId`, so the immutable worktree binding is the fallback when an
   // earlier retained run opens the same contract.
   const { contracts } = useProjectContracts(run.projectId);
-  const contract = useMemo(
+  const runContract = useMemo(
     () =>
       contracts.find((c) => c.agentRunId === run.runId) ??
       contracts.find((c) => run.worktreeDir.length > 0 && c.worktreePath === run.worktreeDir) ??
       null,
     [contracts, run.runId, run.worktreeDir],
   );
+  const reviewCheckoutRead = useReviewCheckouts(run.projectId, true);
+  const reviewCheckout = useMemo(
+    () => reviewCheckoutRead.reviewCheckouts.find(
+      (checkout) => checkout.reviewerRunId === run.runId,
+    ) ?? null,
+    [reviewCheckoutRead.reviewCheckouts, run.runId],
+  );
+  const targetContract = useMemo(
+    () => reviewCheckout
+      ? contracts.find((candidate) => candidate.id === reviewCheckout.contractId) ?? null
+      : null,
+    [contracts, reviewCheckout],
+  );
+  const reviewerContract = reviewCheckout ? runContract : null;
+  const contract = targetContract ?? runContract;
+  const isReviewRun = reviewCheckout !== null || run.agentName === 'contract-reviewer';
   const recoveryWorktrees = useRecoveryWorktrees(run.projectId, true);
   const recoveryWorktree = useMemo(
     () => exactStrandedEvidenceForRun(
@@ -183,7 +209,7 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
           {run.status === 'failed' && run.failureReason && (
             <div className="mt-1 text-[11px] text-destructive">{run.failureReason}</div>
           )}
-          {isRecoveryTerminalRun(run, contract?.landingStatus ?? null) && (
+          {isRecoveryTerminalRun(run, contract?.landingStatus ?? null) && !isReviewRun && (
             <RunRecoveryDetails
               run={run}
               contract={contract}
@@ -192,15 +218,29 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
               onRetryWorktreeRead={recoveryWorktrees.retry}
             />
           )}
+          {isReviewRun && (
+            <ReviewCheckoutDetails
+              run={run}
+              checkout={reviewCheckout}
+              readStatus={reviewCheckoutRead.status}
+              readError={reviewCheckoutRead.error}
+              onRetry={reviewCheckoutRead.retry}
+              reviewerContract={reviewerContract}
+            />
+          )}
           <PhaseReceiptDetails
             phase="preparation"
-            applicable={run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
-            receipt={run.preparationReceipt ?? null}
+            applicable={isReviewRun || run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
+            receipt={isReviewRun
+              ? reviewCheckout?.preparationReceipt?.evidence ?? null
+              : run.preparationReceipt ?? null}
           />
           <PhaseReceiptDetails
             phase="readiness"
-            applicable={run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
-            receipt={run.readinessReceipt ?? null}
+            applicable={isReviewRun || run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
+            receipt={isReviewRun
+              ? reviewCheckout?.readinessReceipt?.evidence ?? null
+              : run.readinessReceipt ?? null}
           />
           <LandingReceiptDetails contract={contract} />
           {!nonTerminal && contract && canRequestAbandonment(contract) && (
@@ -242,6 +282,132 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
         />
       )}
     </div>
+  );
+}
+
+export function ReviewCheckoutDetails({
+  run,
+  checkout,
+  readStatus,
+  readError,
+  onRetry,
+  reviewerContract,
+}: {
+  run: AgentRunDto;
+  checkout: ReviewCheckoutDto | null;
+  readStatus: ReviewCheckoutReadStatus;
+  readError: string | null;
+  onRetry?: () => void;
+  reviewerContract: Contract | null;
+}) {
+  if (readStatus === 'loading' && !checkout) {
+    return (
+      <div className="mt-1 border border-border/60 bg-card/40 px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+        review checkout evidence · loading
+      </div>
+    );
+  }
+  if (readStatus === 'error' && !checkout) {
+    return (
+      <div className="mt-1 flex items-center justify-between gap-2 border border-destructive/30 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+        <span title={readError ?? undefined}>Review checkout evidence unavailable.</span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="shrink-0 border border-border bg-card px-2 py-0.5 text-[10px] text-foreground hover:bg-muted"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (!checkout) {
+    return (
+      <div className="mt-1 border border-destructive/30 bg-destructive/5 px-2 py-1 text-[10px] uppercase tracking-wider text-destructive">
+        review checkout authority unavailable
+      </div>
+    );
+  }
+
+  const verdict = reviewVerdictPresentation(checkout, reviewerContract);
+  const summary = checkout.status === 'destroyed'
+    ? 'cleanup settled'
+    : checkout.status === 'teardown-pending'
+      ? 'cleanup pending'
+      : checkout.status === 'provisioned'
+        ? 'provisioned'
+        : 'authority reserved';
+  const summaryClass = checkout.status === 'destroyed'
+    ? 'text-primary'
+    : checkout.status === 'teardown-pending'
+      ? 'text-destructive'
+      : 'text-warning';
+  const provision = checkout.provisionReceipt;
+  const teardown = checkout.teardownReceipt;
+  const verdictLabel = verdict
+    ? `${verdict.authority === 'recorded' ? verdict.outcome : `submitted ${verdict.outcome}`} · ` +
+      `${verdict.findingCount} finding${verdict.findingCount === 1 ? '' : 's'} · ` +
+      `${verdict.authority === 'recorded' ? `effect ${verdict.effect}` : 'not yet recorded'}`
+    : NON_TERMINAL.has(run.status)
+      ? 'pending'
+      : 'typed verdict unavailable or void';
+
+  return (
+    <details className="mt-1 border border-border/60 bg-card/40 px-2 py-1" open>
+      <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
+        review checkout · <span className={summaryClass}>{summary}</span>
+      </summary>
+      <dl className="mt-1 space-y-0.5 font-mono text-[10px]">
+        <ReceiptRow label="workspace" value={checkout.id} />
+        <ReceiptRow label="target" value={`${checkout.contractId} · v${checkout.contractVersion}`} />
+        <ReceiptRow label="sealed commit" value={checkout.sealedCommit} />
+        <ReceiptRow label="path" value={checkout.worktreePath} />
+        <ReceiptRow
+          label="provision"
+          value={provision
+            ? `exact registration · detached HEAD ${provision.headSha} · clean`
+            : checkout.status === 'reserved' ? 'pending' : 'unavailable'}
+        />
+        <ReceiptRow label="verdict" value={verdictLabel} />
+        <ReceiptRow
+          label="decision gate"
+          value={checkout.status === 'destroyed'
+            ? checkout.verdictReceipt
+              ? checkout.verdictAppliedAt === null
+                ? 'positive cleanup settled · contract effect pending'
+                : 'positive cleanup settled · contract effect applied'
+              : 'positive cleanup settled · typed verdict unavailable'
+            : 'blocked until positive cleanup settlement'}
+        />
+        {teardown && (
+          <ReceiptRow
+            label="teardown"
+            value={`directory absent · registration absent · ${new Date(teardown.finishedAt).toLocaleString()}`}
+          />
+        )}
+      </dl>
+      {checkout.cleanupError && (
+        <div className="mt-1 whitespace-pre-wrap text-[11px] text-destructive">
+          Cleanup unavailable: {checkout.cleanupError}
+        </div>
+      )}
+      {readStatus === 'error' && (
+        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-destructive">
+          <span title={readError ?? undefined}>Refresh unavailable; showing the last positive workspace evidence.</span>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="shrink-0 border border-border bg-card px-2 py-0.5 text-[10px] text-foreground hover:bg-muted"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+    </details>
   );
 }
 

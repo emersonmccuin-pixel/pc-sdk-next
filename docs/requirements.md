@@ -194,7 +194,7 @@ tests passed.
 | ID | Status | Requirement |
 | --- | --- | --- |
 | WT-001 | implemented | Every repository mutation occurs in a recorded run-owned worktree, regardless of task size. |
-| WT-002 | accepted | Git, preparation, and readiness receipts exist before a write-capable agent starts. |
+| WT-002 | verified | Git, preparation, and readiness receipts exist before a write-capable agent starts. |
 | WT-003 | verified | Builders submit a clean sealed commit; PC-SDK independently derives changed paths and Git provenance. |
 | WT-004 | accepted | Parallel builds use isolated worktrees; landing is serialized per repository and revalidated against the current base. |
 | WT-005 | accepted | Merge success requires positive ancestry proof. Teardown requires proven landing or explicit approved abandonment. |
@@ -215,8 +215,9 @@ builder and continuation now persists exact contextual preparation and
 readiness receipts before runtime mint, and paused revival uses the same gate.
 Explicit no-op outcomes, first-write/order/parent guards, cancellation-aware
 lease admission, strict migration/replay quarantine, and honest browser
-projection are guarded-landed. `WT-002` stays `accepted` because detached
-write-capable reviewers still lack receipts for their exact review checkout.
+projection are guarded-landed. DL-004 completes the remaining detached-review
+half with workspace-owned exact provision, Git, preparation, and readiness
+authority before reviewer mint or revival; `WT-002` is now `verified`.
 
 DL-002 feature verification strengthens `WT-005` and `WT-006` with a
 browser-only explicit approval boundary, immutable authority and teardown
@@ -236,8 +237,20 @@ post-row crash-window retry feeders, state-based unresolved-owner retention,
 an honest deduplicated Activity recovery rail, server-cursor reconnect
 convergence, and the composed two-worktree OS hard-kill gate. All three stay
 `accepted` rather than globally verified because nonparticipating Git tools,
-escaped children, and exact detached-review checkout authority remain outside
-this slice.
+escaped children, and broader cross-process containment remain outside the
+verified app-owned recovery boundary.
+
+DL-004 verifies `WT-002` for independent reviewers. Workspace authority is
+durable before detached checkout mutation and binds exact project/target/
+version/producer/reviewer/repository/path/seal identity. Positive provision,
+checkout-specific Git, preparation, and readiness receipts gate mint/revival;
+typed terminal verdict evidence gates positive teardown; and the contract,
+producer lifecycle, workspace applied marker, revisions, and outbox facts
+settle atomically before landing, Fix, override completion, or successor
+admission. Restart, shutdown, admission-failure, drift, malformed receipt, and
+legacy replay guards are covered. Supporting `WT-004` through `WT-006`,
+`SEC-002`, `ARCH-002`, and `ARCH-004` are strengthened but retain their global
+statuses because nonparticipant/manual Git and escaped-child boundaries remain.
 
 ## Integrations, security, and product boundaries
 

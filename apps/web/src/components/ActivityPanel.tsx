@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import type { Contract, ULID } from '@pc/contracts';
+import type { Contract, ReviewCheckoutDto, ULID } from '@pc/contracts';
 import type { Project } from '@/features/projects/client';
 import type {
   AgentRunReadStatus,
@@ -26,7 +26,9 @@ import {
 } from '@/features/contracts/view';
 import {
   buildRecoveryProjection,
+  reviewVerdictPresentation,
   preservationEvidenceMessage,
+  reviewCheckoutsRequiringAttention,
   recoveryRunGuidance,
   recoveryRunLabel,
   sealedEvidenceMessage,
@@ -36,6 +38,10 @@ import {
   useRecoveryWorktrees,
   type RecoveryWorktreeReadStatus,
 } from '@/features/recovery/use-recovery-worktrees';
+import {
+  useReviewCheckouts,
+  type ReviewCheckoutReadStatus,
+} from '@/features/recovery/use-review-checkouts';
 import { useProjectActivity } from '@/state/activity-store';
 import { useAgentTranscript } from '@/store/agent-transcript';
 import { AbandonWorktreeModal } from './AbandonWorktreeModal';
@@ -64,26 +70,45 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
   } = useProjectActivity(project);
   const { contracts } = useProjectContracts(project?.id ?? null);
   const strandedRead = useRecoveryWorktrees(project?.id ?? null, project !== null);
+  const reviewCheckoutRead = useReviewCheckouts(project?.id ?? null, project !== null);
   const openTranscript = useAgentTranscript((s) => s.open);
 
   const mergeReady = useMemo(() => mergeReadyContracts(contracts), [contracts]);
   const landingIssues = useMemo(() => landingIssueContracts(contracts), [contracts]);
+  const reviewCleanup = useMemo(
+    () => reviewCheckoutsRequiringAttention(reviewCheckoutRead.reviewCheckouts),
+    [reviewCheckoutRead.reviewCheckouts],
+  );
+  const settledReviewCheckouts = useMemo(
+    () => reviewCheckoutRead.reviewCheckouts.filter((checkout) =>
+      checkout.status === 'destroyed' && checkout.verdictAppliedAt !== null,
+    ),
+    [reviewCheckoutRead.reviewCheckouts],
+  );
+  const knownReviewerRunIds = useMemo(
+    () => new Set(reviewCheckoutRead.reviewCheckouts.map((checkout) => checkout.reviewerRunId)),
+    [reviewCheckoutRead.reviewCheckouts],
+  );
   const recovery = useMemo(() => buildRecoveryProjection({
-    runs: preserved,
+    runs: preserved.filter((run) => !knownReviewerRunIds.has(run.runId)),
     contracts,
     strongerContractIds: new Set([
       ...mergeReady.map((contract) => contract.id),
       ...landingIssues.map((contract) => contract.id),
     ]),
     worktrees: strandedRead.status === 'ready' ? strandedRead.worktrees : [],
-  }), [preserved, contracts, mergeReady, landingIssues, strandedRead.status, strandedRead.worktrees]);
+  }), [preserved, knownReviewerRunIds, contracts, mergeReady, landingIssues, strandedRead.status, strandedRead.worktrees]);
   const recoveryCount = landingIssues.length +
+    reviewCleanup.length +
     recovery.runCards.length +
     recovery.strandedWorktrees.length +
     (runReadStatus === 'error' ? 1 : 0) +
-    (strandedRead.status === 'error' ? 1 : 0);
+    (strandedRead.status === 'error' ? 1 : 0) +
+    (reviewCheckoutRead.status === 'error' ? 1 : 0);
   const recoveryLoading = recoveryCount === 0 && (
-    runReadStatus === 'loading' || strandedRead.status === 'loading'
+    runReadStatus === 'loading' ||
+    strandedRead.status === 'loading' ||
+    reviewCheckoutRead.status === 'loading'
   );
   const contractById = useMemo(
     () => new Map(contracts.map((contract) => [contract.id, contract])),
@@ -165,6 +190,12 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
               readError={runReadError}
               onRetry={retryRunRead}
             />
+            <ReviewEvidenceRegion
+              reviewCheckouts={settledReviewCheckouts}
+              contracts={contracts}
+              onOpenRun={openRun}
+              canInspectRun={(runId) => runById.has(runId)}
+            />
             <MergeReadyRegion
               contracts={mergeReady}
               onOpenRun={openRun}
@@ -177,6 +208,8 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
             />
             <RecoveryRequiredRegion
               projection={recovery}
+              reviewCheckouts={reviewCleanup}
+              contracts={contracts}
               nowMs={nowMs}
               onOpenRun={openRun}
               onAbandon={setAbandonContractId}
@@ -186,6 +219,9 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
               worktreeReadStatus={strandedRead.status}
               worktreeReadError={strandedRead.error}
               onRetryWorktreeRead={strandedRead.retry}
+              reviewCheckoutReadStatus={reviewCheckoutRead.status}
+              reviewCheckoutReadError={reviewCheckoutRead.error}
+              onRetryReviewCheckoutRead={reviewCheckoutRead.retry}
               canInspectRun={(runId) => runById.has(runId)}
               canAbandon={(contractId) => {
                 const contract = contractById.get(contractId);
@@ -216,6 +252,91 @@ function RegionHeader({ label, count }: { label: string; count: number }) {
       <div className="bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">{count}</div>
     </div>
   );
+}
+
+function ReviewEvidenceRegion({
+  reviewCheckouts,
+  contracts,
+  onOpenRun,
+  canInspectRun,
+}: {
+  reviewCheckouts: ReviewCheckoutDto[];
+  contracts: Contract[];
+  onOpenRun: (agentRunId: string | null) => void;
+  canInspectRun: (runId: string) => boolean;
+}) {
+  if (reviewCheckouts.length === 0) return null;
+  return (
+    <section className="border-b border-border">
+      <RegionHeader label="Recent review evidence" count={reviewCheckouts.length} />
+      <ul className="divide-y divide-border/50">
+        {reviewCheckouts.map((checkout) => {
+          const inspectable = canInspectRun(checkout.reviewerRunId);
+          const reviewerContract = contracts.find(
+            (contract) => contract.agentRunId === checkout.reviewerRunId,
+          ) ?? null;
+          const verdict = reviewVerdictPresentation(checkout, reviewerContract);
+          return (
+            <li key={checkout.id}>
+              <button
+                type="button"
+                onClick={() => onOpenRun(checkout.reviewerRunId)}
+                disabled={!inspectable}
+                className="block w-full cursor-pointer px-3 py-2 text-left hover:bg-muted/40 disabled:cursor-default"
+                aria-label={inspectable
+                  ? `Inspect settled review checkout ${checkout.id}`
+                  : `Settled review checkout ${checkout.id} has no retained transcript`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                    Independent review
+                  </div>
+                  <span className="shrink-0 border border-primary/40 bg-primary/10 px-1 py-px text-[9px] uppercase tracking-wider text-primary">
+                    cleanup settled
+                  </span>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={checkout.worktreePath}>
+                  seal {checkout.sealedCommit.slice(0, 12)} · detached checkout
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {checkout.provisionReceipt
+                    ? 'Exact detached registration and clean HEAD were positively provisioned.'
+                    : 'Provision evidence unavailable.'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  preparation {phaseEvidenceLabel(checkout.preparationReceipt?.evidence ?? null)} · readiness{' '}
+                  {phaseEvidenceLabel(checkout.readinessReceipt?.evidence ?? null)} · verdict{' '}
+                  {verdictEvidenceLabel(verdict, 'typed verdict unavailable')}
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>Directory and Git registration absence positively settled.</span>
+                  <span className="font-medium text-foreground">{inspectable ? 'Inspect' : 'No transcript'}</span>
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function phaseEvidenceLabel(receipt: { ok: boolean } | null): string {
+  return receipt === null ? 'unavailable' : receipt.ok ? 'ok' : 'failed';
+}
+
+function verdictEvidenceLabel(
+  verdict: ReturnType<typeof reviewVerdictPresentation>,
+  unavailable: string,
+): string {
+  if (!verdict) return unavailable;
+  const prefix = verdict.authority === 'recorded'
+    ? verdict.outcome
+    : `submitted ${verdict.outcome}`;
+  const state = verdict.authority === 'recorded'
+    ? `effect ${verdict.effect}`
+    : 'not yet recorded';
+  return `${prefix} (${verdict.findingCount}) · ${state}`;
 }
 
 function RunningAgentsRegion({
@@ -354,6 +475,8 @@ function LandingIssuesRegion({
  * Landing issues stay in their stronger existing region above. */
 function RecoveryRequiredRegion({
   projection,
+  reviewCheckouts,
+  contracts,
   nowMs,
   onOpenRun,
   onAbandon,
@@ -364,9 +487,14 @@ function RecoveryRequiredRegion({
   worktreeReadStatus,
   worktreeReadError,
   onRetryWorktreeRead,
+  reviewCheckoutReadStatus,
+  reviewCheckoutReadError,
+  onRetryReviewCheckoutRead,
   canInspectRun,
 }: {
   projection: RecoveryProjection;
+  reviewCheckouts: ReviewCheckoutDto[];
+  contracts: Contract[];
   nowMs: number;
   onOpenRun: (agentRunId: string | null) => void;
   onAbandon: (contractId: ULID) => void;
@@ -377,12 +505,22 @@ function RecoveryRequiredRegion({
   worktreeReadStatus: RecoveryWorktreeReadStatus;
   worktreeReadError: string | null;
   onRetryWorktreeRead: () => void;
+  reviewCheckoutReadStatus: ReviewCheckoutReadStatus;
+  reviewCheckoutReadError: string | null;
+  onRetryReviewCheckoutRead: () => void;
   canInspectRun: (runId: string) => boolean;
 }) {
   const unavailableCount = (runReadStatus === 'error' ? 1 : 0) +
-    (worktreeReadStatus === 'error' ? 1 : 0);
-  const count = projection.runCards.length + projection.strandedWorktrees.length + unavailableCount;
-  if (count === 0 && runReadStatus !== 'loading' && worktreeReadStatus !== 'loading') return null;
+    (worktreeReadStatus === 'error' ? 1 : 0) +
+    (reviewCheckoutReadStatus === 'error' ? 1 : 0);
+  const count = reviewCheckouts.length + projection.runCards.length +
+    projection.strandedWorktrees.length + unavailableCount;
+  if (
+    count === 0 &&
+    runReadStatus !== 'loading' &&
+    worktreeReadStatus !== 'loading' &&
+    reviewCheckoutReadStatus !== 'loading'
+  ) return null;
   return (
     <section className="border-b border-border">
       <RegionHeader label="Recovery required" count={count} />
@@ -400,10 +538,77 @@ function RecoveryRequiredRegion({
           onRetry={onRetryWorktreeRead}
         />
       )}
-      {count === 0 && (runReadStatus === 'loading' || worktreeReadStatus === 'loading') && (
+      {reviewCheckoutReadStatus === 'error' && (
+        <RecoveryUnavailable
+          source="Review checkout"
+          error={reviewCheckoutReadError}
+          onRetry={onRetryReviewCheckoutRead}
+        />
+      )}
+      {count === 0 && (
+        runReadStatus === 'loading' ||
+        worktreeReadStatus === 'loading' ||
+        reviewCheckoutReadStatus === 'loading'
+      ) && (
         <div className="px-3 pb-2 text-[11px] text-muted-foreground">Loading recovery status…</div>
       )}
       <ul className="divide-y divide-border/50">
+        {reviewCheckouts.map((checkout) => {
+          const inspectable = canInspectRun(checkout.reviewerRunId);
+          const reviewerContract = contracts.find(
+            (contract) => contract.agentRunId === checkout.reviewerRunId,
+          ) ?? null;
+          const verdict = reviewVerdictPresentation(checkout, reviewerContract);
+          return (
+            <li key={`review:${checkout.id}`} className="flex items-stretch">
+              <button
+                type="button"
+                onClick={() => onOpenRun(checkout.reviewerRunId)}
+                disabled={!inspectable}
+                className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left hover:bg-muted/40 disabled:cursor-default"
+                aria-label={inspectable
+                  ? `Inspect review checkout ${checkout.id}`
+                  : `Review checkout ${checkout.id} has no retained transcript`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                    Independent review
+                  </div>
+                  <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
+                    {checkout.status === 'destroyed' ? 'effect pending' : 'cleanup pending'}
+                  </span>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={checkout.worktreePath}>
+                  seal {checkout.sealedCommit.slice(0, 12)} · checkout {checkout.id.slice(0, 8)}
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  {checkout.status === 'destroyed'
+                    ? 'Checkout cleanup is positively settled, but its typed contract effect is pending or unavailable.'
+                    : 'Detached review cleanup has not positively proved both directory and Git-registration absence.'}
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  provision {checkout.provisionReceipt ? 'exact detached clean HEAD' : 'unavailable'} · preparation{' '}
+                  {phaseEvidenceLabel(checkout.preparationReceipt?.evidence ?? null)} · readiness{' '}
+                  {phaseEvidenceLabel(checkout.readinessReceipt?.evidence ?? null)} · verdict{' '}
+                  {verdictEvidenceLabel(verdict, 'pending or unavailable')}
+                </div>
+                {checkout.cleanupError && (
+                  <div className="mt-0.5 line-clamp-2 text-[11px] text-destructive" title={checkout.cleanupError}>
+                    {checkout.cleanupError}
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                  <span>{checkout.status === 'destroyed'
+                    ? 'Landing, Fix, and successor review remain blocked until the exact verdict effect settles.'
+                    : 'Landing, Fix, override, and successor review remain blocked.'}</span>
+                  <span className="shrink-0 font-medium text-foreground">
+                    {inspectable ? 'Inspect' : 'No transcript'}
+                  </span>
+                </div>
+              </button>
+            </li>
+          );
+        })}
         {projection.runCards.map(({ run, contract, worktree }) => (
           <li key={`run:${run.runId}`} className="flex items-stretch">
             <button
