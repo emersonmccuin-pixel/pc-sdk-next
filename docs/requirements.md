@@ -135,6 +135,27 @@ unavailable. No context or quota method was called, so `CTX-002`, `CTX-003`,
 `USE-002`, and `USE-003` receive no Codex implementation evidence and all
 statuses remain unchanged.
 
+CX-002 evidence note (2026-07-13): this provider-free slice also promotes no
+requirement. It implements an unregistered provider-local
+`CodexRuntimeAdapter`, strict stable-0.144.1 discovery/thread/turn mapping,
+exact-resume and historical-identity fencing, typed context/quota degradation,
+and the shared public adapter/session conformance harness through an injected
+fake execution peer plus an independent fake-only authority. Transitive static
+guards prove production cannot import the adapter and the adapter cannot reach
+the native process owners or alternate process/transport modules. The sealed
+implementation is `bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`, tree
+`9de0007e4420849af4cf4b7f999856167f29c46f`; focused coverage passes 99/99 and
+feature-tree `pnpm ci:check` passes with 660/660 server tests. This strengthens
+implementation evidence for
+`ARCH-003` through `ARCH-005`, `RUN-002`, `RUN-004`, `RUN-007`, `SEC-001`, and
+`SEC-003`, while shared Claude/Codex/fake conformance strengthens `ARCH-004`.
+The native continuation capability is true only inside the explicitly injected
+provider-free conformance path; no production registry, app-session stamp,
+selector, handoff, native thread/turn, tool/MCP/approval enforcement,
+containment, context precision, quota acquisition, or billing-route evidence
+exists. `RUN-001` through `RUN-007`, `CTX-002`, `CTX-003`, `USE-002`, and
+`USE-003` therefore retain their prior global statuses.
+
 ## Context and usage
 
 | ID | Status | Requirement |

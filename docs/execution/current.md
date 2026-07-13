@@ -1,9 +1,9 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after CX-001 final-receipt landing and cleanup, and CX-002
-provider-free Codex adapter contract startup. CX-002 is the one active
-implementation slice in its recorded worktree; the main checkout remains
-read-only.
+Updated: 2026-07-13 after CX-002 implementation sealing, final feature-tree
+verification, and hostile re-review. CX-002 is ready for its deterministic
+guarded landing; the main checkout remains clean and read-only until that exact
+mutation.
 
 ## Repository
 
@@ -407,12 +407,11 @@ branch is preserved.
 
 ## Active action
 
-Implement CX-002 from `docs/execution/slices/CX-002.md`: an unregistered
-provider-local `CodexRuntimeAdapter`, stable protocol mapping, and shared public
-adapter/session conformance exercised only through an injected provider-free
-peer. The adapter must validate an explicitly fake-only execution-policy
-receipt, exact create/resume identity, ordered text turns, interruption versus
-terminal proof, typed unavailable context/quota, and idempotent disposal.
+Commit the CX-002 feature record, then guarded-land its exact tip from the
+recorded worktree into clean unchanged `main`. Prove contract/implementation/
+feature ancestry and exact feature/merge tree equality; run post-merge
+`pnpm ci:check` and the production web build; push and re-fetch the exact merge;
+then complete documentation closeout and guarded worktree teardown.
 
 Do not compose or register Codex, broaden the CX-001 admission allowlist, expose
 selectors or handoff UI, start a native thread/turn, or run the real-fix gate.
@@ -425,8 +424,13 @@ experimental protocol, raw API billing, or weaker fallback is authorized.
 - CX-002 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-002`
 - CX-002 contract: `docs/execution/slices/CX-002.md`
-- Main is read-only until a sealed, reviewed feature record is ready for the
-  deterministic guarded landing.
+- CX-002 contract commit: `23b2b90ca75b47daa7fca1ccf9f859e2b7c271ef`
+- CX-002 sealed implementation:
+  `bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`
+- CX-002 sealed tree: `9de0007e4420849af4cf4b7f999856167f29c46f`
+- CX-002 receipt: `docs/execution/receipts/CX-002.md`
+- Main is read-only until the reviewed feature record is committed and every
+  deterministic landing precondition is re-proved.
 
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
 - CX-001 branch: `codex/cx-001-codex-subscription-spike`
@@ -444,10 +448,8 @@ experimental protocol, raw API billing, or weaker fallback is authorized.
 - CX-001 closeout landing: `1168394a1f1d26ad5bf89110a34cb28dc64cfd52`
 - CX-001 closeout tree: `61c6848dd6a06e1598fdc8fd308792a8c41c9e3c`
 - CX-001 closeout worktree: removed after guarded landing/push proof
-- CX-001 final-receipt branch: `codex/cx-001-final-receipt`
-- CX-001 final-receipt worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-001-final-receipt`
-  registered at this checkpoint; remove only after guarded landing/push proof
+- CX-001 final-receipt branch: `codex/cx-001-final-receipt` (preserved)
+- CX-001 final-receipt worktree: removed after guarded landing/push proof
 
 - DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
 - DL-004 branch: `codex/dl-004-review-workspace`
@@ -495,7 +497,8 @@ No DL-002 blocker remains.
 No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
-product-direction blocker for its provider-free mapping/conformance scope.
+implementation, verification, review, or product-direction blocker; its
+guarded landing, closeout, push proof, and teardown are the active operations.
 Native process containment and real tool/MCP/approval enforcement remain later
 gates; they do not authorize a live turn in CX-002.
 Experimental/API-billed/weaker alternatives are still not authorized.
