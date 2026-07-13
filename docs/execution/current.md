@@ -341,13 +341,19 @@ blocker. Feature and post-merge `pnpm ci:check` are green with 419/419 server
 tests and the dead-import guard; production web build, exact push/re-fetch, and
 guarded feature-worktree/residue cleanup passed. `OPS-003` is verified.
 
-Define `DL-004` around the remaining exact detached-review checkout authority
-and receipts that keep `WT-002` accepted. Audit the existing independent-
-review provision/cleanup path first, then choose the smallest contract that
-proves repository identity, checkout commit/path, readiness, review evidence,
-and positive teardown without widening into a general review/workflow engine.
-Keep nonparticipant/escaped-child containment, general recovery-center
-behavior, arbitrary Git repair, `OPS-006`, PM/MCP, Codex, and N7 out of scope.
+Implement `DL-004`: persist workspace-owned detached-review authority before
+Git mutation; require exact provision, checkout-specific Git, preparation, and
+readiness receipts before mint; bind typed verdict evidence to that workspace;
+and block landing/Fix/override/re-dispatch until positive retryable teardown.
+Keep provider permission-mode redesign, nonparticipant/escaped-child
+containment, general recovery-center/workflow behavior, arbitrary Git repair,
+`OPS-006`, PM/MCP, Codex, and N7 out of scope.
+
+- DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
+- DL-004 branch: `codex/dl-004-review-workspace`
+- DL-004 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-004`
+- DL-004 contract: `docs/execution/slices/DL-004.md`
 
 - DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
 - DL-003 branch: `codex/dl-003-recovery-gate`

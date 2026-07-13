@@ -422,6 +422,14 @@ legacy repository identity never authorizes mutation.
 Recovery never reruns a non-idempotent Git mutation based only on a stale DB
 status.
 
+DL-004 owns the remaining detached-review workspace authority gap. A reviewer
+is write-capable from PC-SDK's perspective even when its charter says read-
+only. Its detached checkout therefore requires workspace-owned authority
+persisted before Git mutation, exact checkout-specific Git plus preparation/
+readiness receipts before mint, verdict binding to the exact seal/workspace,
+and positive retryable teardown before landing, Fix, override, or successor
+review dispatch. Prompt intent is not a sandbox or cleanup receipt.
+
 For a landed contract, the merge receipt proves history but not cleanup.
 Recovery may destroy the exact active/stranded row only after the project
 identity matches the producer receipt, the directory is absent, a successful
