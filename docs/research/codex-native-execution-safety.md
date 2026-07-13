@@ -2,10 +2,22 @@
 
 Date: 2026-07-13
 
-Status: accepted decision evidence — the product owner explicitly approved ADR-0002 as
-proposed after three independent exact-hash hostile reviews reported no P0/P1/P2.
-Guarded decision closeout remains in progress. No native Codex process, thread, turn,
-credential access, or provider call was made
+Status: accepted-decision feature complete — ADR-0002 guarded-landed, post-merge
+verified, pushed/re-fetched exactly, and the feature worktree removed. The transient
+final-receipt closeout is active. No native Codex process, thread, turn, credential
+access, or provider call was made
+
+## Decision closeout
+
+Proposal checkpoint `4fbbdf0f77b447e78f4218816e90d553ed93145a` and accepted
+decision `6061ad5b817af13077cf4f9358b3f351c83699dd` preserve direct
+base→proposal→decision ancestry. The decision guarded-landed as
+`e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; decision and merge resolve to
+exact tree `5b926bbf73ecfc1819386c16a287125d74669c69`. The exact parent vector,
+six-document scope, full post-merge gate, push/re-fetch, preserved feature branch,
+and guarded feature-worktree cleanup are positive. The transient five-document final
+receipt must itself be guarded-landed, post-merge verified, pushed/re-fetched exactly,
+and removed before fake-only CX-004 begins.
 
 ## Result
 
