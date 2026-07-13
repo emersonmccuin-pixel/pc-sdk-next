@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-12 after DL-002 implementation seal and full feature
-verification; guarded landing is in progress.
+Last updated: 2026-07-12 after DL-002 guarded landing, post-merge verification,
+exact push/re-fetch, and feature-worktree cleanup.
 
 ## Preserved baseline
 
@@ -505,7 +505,7 @@ feature-worktree cleanup passed. `WT-002` remains accepted because exact
 detached-review-checkout authority is still separate. DL-002 approved
 abandonment is the next active slice.
 
-## N4 approved worktree abandonment implementation
+## Completed N4 approved worktree abandonment feature
 
 `DL-002` implements the explicit-abandonment half of repository delivery from
 clean pushed base `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`.
@@ -539,8 +539,12 @@ The sealed implementation is
 `367f208b976d554ed58703a172e18045b045fe30`, tree
 `1d5367a4a2c2a93033e0b1c2c8a5f505de416616`. No provider, PM/MCP-network,
 stable-data, original-app, or external-repository action was required.
-Guarded landing, post-merge verification, exact push/re-fetch, and feature-
-worktree cleanup remain the current closeout action.
+Feature record `7b194a941ae6fa45056ffc2ab1a253518ed9faad`
+guarded-landed as `02231eceae4a5f26c6bd83cd5b486fd6752569a4`.
+Feature and merge share exact tree
+`20994454b05e2dfa3250e58ad11192844b2c99a2`; post-merge 413/413 server tests,
+exact push/re-fetch, and guarded feature-worktree/residue cleanup passed. The
+feature branch is preserved.
 
 ## Known architectural gaps
 
@@ -559,8 +563,8 @@ worktree cleanup remain the current closeout action.
   lease is guarded-landed and pushed. Nonparticipating stable/manual
   tools and escaped repository children remain outside that proof. The listener
   is not yet explicitly loopback-bound.
-- Approved abandonment is implemented and feature-verified, but the broader
-  N4 process-failure/recovery experience and general recovery-center UI remain
+- Approved abandonment is guarded-landed and verified, but the broader N4
+  process-failure/recovery experience and general recovery-center UI remain
   incomplete.
 - Worktree profiles do not yet have an explicit local-input/environment/secret
   injection policy. Arbitrary ambient variables are now deliberately absent;
