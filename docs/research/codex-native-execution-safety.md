@@ -2,9 +2,10 @@
 
 Date: 2026-07-13
 
-Status: proposal checkpoint verified — three independent exact-hash hostile reviews
-report no P0/P1/P2; explicit product-owner decision remains pending. No native Codex
-process, thread, turn, credential access, or provider call was made
+Status: accepted decision evidence — the product owner explicitly approved ADR-0002 as
+proposed after three independent exact-hash hostile reviews reported no P0/P1/P2.
+Guarded decision closeout remains in progress. No native Codex process, thread, turn,
+credential access, or provider call was made
 
 ## Result
 
@@ -1884,7 +1885,9 @@ receipt only when combined with the exact retained process handles, job
 membership, accounting, and empty-list proof, so PID reuse cannot counterfeit
 absence.
 
-## Proposed product decision
+## Accepted product decision
+
+The product owner accepted all three choices below together on 2026-07-13:
 
 1. Accept the exact repository-owned transient native cold-start/controlled-restart
     bootstrap plus C++ Node-API addon; internal scrub→cold and old-owner→restart pre-arm

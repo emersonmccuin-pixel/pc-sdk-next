@@ -1,6 +1,7 @@
 # ADR-0002: Codex native-execution safety boundary
 
-Status: proposed, 2026-07-13; awaiting explicit product-owner decision.
+Status: accepted, 2026-07-13; explicitly approved by the product owner after
+proposal checkpoint `4fbbdf0f77b447e78f4218816e90d553ed93145a`.
 
 ## Context
 
@@ -25,9 +26,9 @@ One acceptable future wire is a challenge-bound passive preflight/token;
 another is quarantined thread creation followed by PC-SDK's positive admission
 commit. A one-phase response is insufficient.
 
-## Proposed decision
+## Decision
 
-Adopt the following bundle:
+The accepted bundle is:
 
 1. PC-SDK owns a minimal transient native cold-start/controlled-restart bootstrap plus C++ Node-API full-
    spawn binding for one exact qualified Windows 11 25H2 x64 client tuple within
@@ -628,11 +629,10 @@ evidence and primary references are in
   process execution-read-token-security denial, process-capable parity, fresh
   real-fix admission, and one real specialist fix all pass.
 
-## Decision requested
+## Accepted decision
 
-The product owner must explicitly accept or reject all three product-level
-choices before ADR status leaves proposed. Acceptance records `accepted`;
-rejection records `rejected`:
+On 2026-07-13 the product owner explicitly approved ADR-0002 as proposed and
+accepted all three product-level choices together:
 
 1. the exact repository-owned transient native cold-start/controlled-restart
    bootstrap plus C++ Node-API addon and the separately admitted pinned
@@ -684,3 +684,9 @@ rejection records `rejected`:
 3. stable-upgrade/wait with full version requalification, quiescent two-step
    admission, immutable policy epochs, and an all-origin empty external-action
    first gate, rejecting fork/experimental/wire/API bypasses and weaker policy.
+
+Acceptance authorizes the auditable CX-003 decision closeout and, only after both
+CX-003 landings and teardowns are positively proved, provider-neutral fake-process/
+fake-principal CX-004. It does not authorize a Codex process, provider/login-home
+access, production native admission, or any separately blocked provisioning,
+packaging, OS-policy, or N7 launcher choice.

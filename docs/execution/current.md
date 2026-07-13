@@ -1,10 +1,10 @@
 # Current execution handoff
 
 Updated: 2026-07-13 during CX-003's docs-only native-execution safety decision.
-CX-002 is complete and main remains clean. The CX-003 proposal checkpoint passed
-three independent exact-hash hostile reviews with no P0/P1/P2; the explicit product-
-owner decision remains pending. No native Codex process, thread, turn, or credential
-access occurred.
+CX-002 is complete and main remains clean. After the CX-003 proposal checkpoint passed
+three independent exact-hash hostile reviews with no P0/P1/P2, the product owner
+explicitly approved ADR-0002 as proposed. Guarded decision closeout is in progress.
+No native Codex process, thread, turn, or credential access occurred.
 
 ## Repository
 
@@ -408,8 +408,9 @@ branch is preserved.
 
 ## Active action
 
-CX-003 is active in its isolated docs-only worktree. The stable-0.144.1 policy audit
-and Windows containment/toolchain design are complete. ADR-0002 proposes two
+CX-003 is closing in its isolated docs-only worktree. The stable-0.144.1 policy audit
+and Windows containment/toolchain design are complete. The product owner explicitly
+accepted ADR-0002's two
 repository-owned native artifacts—the transient cold-start/controlled-restart PE and
 C++ Node-API full-spawn addon—plus explicit admission of pinned
 `better_sqlite3.node`. A live future N7 launcher must retain non-authoritative same-PE
@@ -467,7 +468,7 @@ The external one-click UI launcher/browser remains N7 operations work. Routine e
 scrub invocation/lifecycle wait/terminate/close is constrained, but that process handle
 is not the required crash-safe anchor; the browser is never placed in the owner job.
 
-The proposed platform is one exact Windows 11 25H2 x64 client full-revision/UBR/
+The accepted platform is one exact Windows 11 25H2 x64 client full-revision/UBR/
 identity tuple within base build `10.0.26200`, with pinned native/image-provenance CI,
 typed unsupported on any delta until full requalification, and independently
 observed non-admitted `windows-latest`. CX-004 is fake-only in a pinned disposable VM;
@@ -481,17 +482,14 @@ sandbox/filesystem/network evidence.
 
 Exact-snapshot hostile/source/link/path/scope/diff verification is positive, including
 three independent no-P0/P1/P2 reviews; the full no-source-change `pnpm ci:check` is
-already positive. Stage, cached-check, and commit the six-document proposal checkpoint,
-then ask the exact explicit product-owner decision
-on that bundle. Record either acceptance or rejection, close/land the decision
-documents and receipt, and teardown only after positive guarded landing, push, and
-re-fetch proof.
+already positive. Seal the accepted decision; revalidate its clean tip against current
+clean main; guarded-land it; prove ancestry; run the post-merge gate; push and re-fetch
+the exact merge; then guarded-remove the feature worktree.
 Then use a separate docs-only final-receipt closeout worktree to record the
 feature landing/teardown proof, guarded-land/push that closeout, and clean it.
-Acceptance authorizes CX-004; actual provider-neutral fake-process containment
+The acceptance authorizes CX-004; actual provider-neutral fake-process containment
 work begins only after both feature and final-receipt closeouts have positive
-landing/push/re-fetch/teardown proof. Rejection leaves native execution blocked
-and requires the next product decision; it does not authorize CX-004. CX-004
+landing/push/re-fetch/teardown proof. CX-004
 must not start Codex. Stable 0.144.1 remains unable to mint the complete effective-
 policy receipt. Before a later stable CX-005 provider process, shared-login-home
 access, or invocation, a separately approved fresh production bootstrap/install/
@@ -531,10 +529,12 @@ fallback is authorized.
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003`
 - CX-003 contract: `docs/execution/slices/CX-003.md`
 - CX-003 evidence: `docs/research/codex-native-execution-safety.md`
-- CX-003 proposed ADR:
+- CX-003 accepted ADR:
   `docs/decisions/0002-codex-native-execution-safety.md`
-- CX-003 active proposal receipt: `docs/execution/receipts/CX-003.md`
-- CX-003 status: proposal checkpoint verified; explicit product-owner decision pending
+- CX-003 decision receipt: `docs/execution/receipts/CX-003.md`
+- CX-003 proposal checkpoint:
+  `4fbbdf0f77b447e78f4218816e90d553ed93145a`
+- CX-003 status: ADR-0002 accepted; guarded feature and final-receipt closeouts pending
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -608,10 +608,9 @@ git log --oneline --decorate -8
 ```
 
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are
-removed. Main and the isolated CX-003 worktree are registered now. After the
-CX-003 acceptance or rejection is recorded, the feature branch must be guarded-
-landed, pushed, re-fetched, and its worktree torn down; abandonment is not an
-alternative after an accept/reject outcome. A separate docs-only final-receipt
+removed. Main and the isolated CX-003 worktree are registered now. The accepted
+CX-003 feature branch must be guarded-landed, pushed, re-fetched, and its worktree
+torn down; abandonment is not an alternative after the decision. A separate docs-only final-receipt
 worktree then records that feature proof and must itself be guarded-landed,
 pushed, re-fetched, and torn down before closeout is complete and main alone
 remains.
@@ -626,9 +625,9 @@ No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
-documentation-closeout blocker. CX-003's evidence phase has no blocker; its
-proposal checkpoint requires the explicit product-owner native-code/platform
-decision before acceptance and implementation. Stable app-server 0.144.1 has a
+documentation-closeout blocker. CX-003's evidence phase has no blocker and the
+native-code/platform decision is accepted; only its two auditable closeouts remain
+before fake-only CX-004. Stable app-server 0.144.1 has a
 confirmed effective-policy receipt blocker, so it cannot start a native thread
 or turn. Waiting for/upgrading to a qualifying stable release is recommended;
 experimental, forked, alternate-wire, API-billed, or weaker routes cannot

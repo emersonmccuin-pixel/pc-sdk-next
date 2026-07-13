@@ -1,9 +1,10 @@
 # Current state
 
 Last updated: 2026-07-13 during the CX-003 native-execution safety decision.
-The stable-0.144.1 policy and Windows containment evidence is in final hostile
-review before the docs-only proposal reaches the product owner. No native
-Codex process, thread, turn, or credential access occurred.
+The stable-0.144.1 policy and Windows containment proposal passed three independent
+exact-hash hostile reviews, and the product owner explicitly accepted ADR-0002 as
+proposed. Guarded decision closeout is in progress. No native Codex process, thread,
+turn, or credential access occurred.
 
 ## Preserved baseline
 
@@ -195,8 +196,10 @@ only in PC-SDK Next.
 - CX-003 branch: `codex/cx-003-native-execution-decision`
 - CX-003 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003`
-- CX-003 status: proposal checkpoint verified by three independent exact-hash hostile
-  reviews with no P0/P1/P2; explicit product-owner decision pending
+- CX-003 proposal checkpoint:
+  `4fbbdf0f77b447e78f4218816e90d553ed93145a`
+- CX-003 status: ADR-0002 explicitly accepted by the product owner; guarded decision
+  closeout is in progress and CX-004 remains blocked until both closeouts finish
 
 Isolation defaults in the planning slice:
 
@@ -808,7 +811,7 @@ and the real-fix gate remain open. Detailed evidence is in
 
 ## Active N5 native-execution safety decision
 
-CX-003 has completed its draft evidence without starting Codex or touching a
+CX-003 has completed its accepted decision evidence without starting Codex or touching a
 credential home. Stable app-server 0.144.1 can echo the resolved sandbox and
 approval/reviewer posture in a thread response before a turn, but it cannot
 attest a closed-world effective external-action inventory across built-in and
@@ -823,7 +826,7 @@ connect an MCP manager rather than serve as passive admission. Native execution
 remains typed unavailable on this version.
 
 Windows Job Objects supply an honest lifecycle primitive for ordinary, non-
-handle-stealing in-tree `CreateProcess` descendants. The proposal owns two narrow
+handle-stealing in-tree `CreateProcess` descendants. The accepted design owns two narrow
 repository-native artifacts: the same transient cold-start/controlled-restart PE and
 a C++ Node-API full-spawn addon. The pinned `better_sqlite3.node` addon is a separate
 privileged PE. A live future N7 launcher must retain non-authoritative same-PE
@@ -895,7 +898,7 @@ not an escape or exact topology claim. Job Objects remain lifecycle containment,
 filesystem/network/security sandbox; hostile cross-process handle acquisition needs a
 separately proven OS boundary.
 
-The proposal qualifies one exact Windows 11 25H2 x64 client full-revision/UBR/
+The accepted decision qualifies one exact Windows 11 25H2 x64 client full-revision/UBR/
 identity tuple within base build `10.0.26200`, using a pinned disposable runner with
 native identity and immutable image provenance. Any delta is typed unsupported until
 the full matrix requalifies. `windows-latest` is independently observed and always
@@ -906,15 +909,15 @@ decision supplies a real
 receipt; CX-003 authorizes no installer, elevation, WDAC/AppLocker mutation, or
 runtime self-ACL seal.
 
-ADR-0002 is proposed, not accepted. It asks the product owner to approve that native/
-platform bundle and to wait for a later stable app-server that provides a complete
+ADR-0002 was explicitly approved as proposed by the product owner on 2026-07-13. The
+accepted native/platform bundle requires waiting for a later stable app-server that provides a complete
 independently verifiable effective-policy receipt, quiescent two-step admission
 barrier, and immutable epoch. Fork, experimental, alternate-wire, raw-API, and
 detect-and-abort paths cannot bypass the gates. The first live gate requires an all-
 origin empty external-action inventory, approval requests disabled, unknown actions
 always denied, and exact sandbox/filesystem/network evidence.
 
-Acceptance authorizes only fake-process/fake-principal CX-004 after the feature and
+This acceptance authorizes only fake-process/fake-principal CX-004 after the feature and
 separate final-receipt closeouts. Before any provider process, login-home access, or
 CX-005 invocation, a separately approved fresh production receipt and explicit
 provider-root TCB-versus-opaque-broker choice must positively qualify every root-
@@ -926,14 +929,13 @@ subscription/session/dispatch/context/usage; CX-007 compiles inert provider-free
 non-process policy. CX-008 revalidates the root and adds lower/sibling/transition/Git
 isolation and the restricted-candidate→owner-verifier→owner-promotion/ref-CAS path.
 CX-009 and CX-010 each require matching fresh provider/OS receipts and a challenge-
-bound composite CAS before disposable parity and the real fix. Rejection is recorded
-and landed, leaves native execution blocked, and does not authorize CX-004.
+bound composite CAS before disposable parity and the real fix.
 
 Detailed evidence is in
 `docs/research/codex-native-execution-safety.md`, the active contract is
-`docs/execution/slices/CX-003.md`, and the proposed decision is
-`docs/decisions/0002-codex-native-execution-safety.md`. The active proposal
-checkpoint is `docs/execution/receipts/CX-003.md`.
+`docs/execution/slices/CX-003.md`, and the accepted decision is
+`docs/decisions/0002-codex-native-execution-safety.md`. The active decision
+receipt is `docs/execution/receipts/CX-003.md`.
 
 ## Known architectural gaps
 
