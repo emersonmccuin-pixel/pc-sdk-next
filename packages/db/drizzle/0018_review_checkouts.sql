@@ -66,6 +66,115 @@ CREATE INDEX `review_checkouts_recovery_idx`
   ON `review_checkouts` (`status`, `updated_at`);
 --> statement-breakpoint
 
+-- Migration 0015 admitted exactly the six-key builder receipt. DL-004 adds a
+-- second, closed checkout-specific shape while preserving the builder door.
+DROP TRIGGER `agent_runs_repository_receipt_insert_guard`;
+--> statement-breakpoint
+CREATE TRIGGER `agent_runs_repository_receipt_insert_guard`
+BEFORE INSERT ON `agent_runs`
+WHEN NEW.`snapshot_state` = 'stamped'
+AND NEW.`git_receipt` IS NOT NULL
+AND COALESCE((
+  json_valid(NEW.`git_receipt`) = 1
+  AND json_type(NEW.`git_receipt`) = 'object'
+  AND json_type(NEW.`git_receipt`, '$.repositoryIdentity') = 'object'
+  AND NOT EXISTS (
+    SELECT 1 FROM json_each(NEW.`git_receipt`, '$.repositoryIdentity') AS field
+    WHERE field.key NOT IN ('protocol', 'gitCommonDir', 'leaseKey')
+  )
+  AND (SELECT count(*) FROM json_each(NEW.`git_receipt`, '$.repositoryIdentity')) = 3
+  AND json_extract(NEW.`git_receipt`, '$.repositoryIdentity.protocol') = 'git-common-dir-v1'
+  AND json_type(NEW.`git_receipt`, '$.repositoryIdentity.gitCommonDir') = 'text'
+  AND trim(json_extract(NEW.`git_receipt`, '$.repositoryIdentity.gitCommonDir')) <> ''
+  AND json_extract(NEW.`git_receipt`, '$.repositoryIdentity.gitCommonDir') =
+      trim(json_extract(NEW.`git_receipt`, '$.repositoryIdentity.gitCommonDir'))
+  AND json_type(NEW.`git_receipt`, '$.repositoryIdentity.leaseKey') = 'text'
+  AND length(json_extract(NEW.`git_receipt`, '$.repositoryIdentity.leaseKey')) = 71
+  AND substr(json_extract(NEW.`git_receipt`, '$.repositoryIdentity.leaseKey'), 1, 7) = 'sha256:'
+  AND substr(json_extract(NEW.`git_receipt`, '$.repositoryIdentity.leaseKey'), 8)
+      NOT GLOB '*[^0-9a-f]*'
+  AND (
+    (
+      NOT EXISTS (
+        SELECT 1 FROM json_each(NEW.`git_receipt`) AS field
+        WHERE field.key NOT IN (
+          'worktreePath', 'branch', 'baseBranch', 'baseSha', 'cleanStatus',
+          'repositoryIdentity'
+        )
+      )
+      AND (SELECT count(*) FROM json_each(NEW.`git_receipt`)) = 6
+      AND json_type(NEW.`git_receipt`, '$.worktreePath') = 'text'
+      AND trim(json_extract(NEW.`git_receipt`, '$.worktreePath')) <> ''
+      AND json_extract(NEW.`git_receipt`, '$.worktreePath') =
+          trim(json_extract(NEW.`git_receipt`, '$.worktreePath'))
+      AND json_type(NEW.`git_receipt`, '$.branch') = 'text'
+      AND trim(json_extract(NEW.`git_receipt`, '$.branch')) <> ''
+      AND json_extract(NEW.`git_receipt`, '$.branch') = trim(json_extract(NEW.`git_receipt`, '$.branch'))
+      AND json_type(NEW.`git_receipt`, '$.baseBranch') = 'text'
+      AND trim(json_extract(NEW.`git_receipt`, '$.baseBranch')) <> ''
+      AND json_extract(NEW.`git_receipt`, '$.baseBranch') = trim(json_extract(NEW.`git_receipt`, '$.baseBranch'))
+      AND json_type(NEW.`git_receipt`, '$.baseSha') = 'text'
+      AND trim(json_extract(NEW.`git_receipt`, '$.baseSha')) <> ''
+      AND json_extract(NEW.`git_receipt`, '$.baseSha') = trim(json_extract(NEW.`git_receipt`, '$.baseSha'))
+      AND json_type(NEW.`git_receipt`, '$.cleanStatus') IN ('true', 'false')
+    )
+    OR
+    (
+      NOT EXISTS (
+        SELECT 1 FROM json_each(NEW.`git_receipt`) AS field
+        WHERE field.key NOT IN (
+          'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+          'producerRunId', 'reviewerRunId', 'repositoryIdentity',
+          'worktreePath', 'ownedRootRealPath', 'sealedCommit', 'branch',
+          'baseBranch', 'baseSha', 'cleanStatus', 'registrationCount',
+          'registrationPath', 'headSha', 'detachedHead', 'trackedChanges',
+          'stagedChanges', 'observedAt'
+        )
+      )
+      AND (SELECT count(*) FROM json_each(NEW.`git_receipt`)) = 22
+      AND json_extract(NEW.`git_receipt`, '$.protocol') = 'review-checkout-git-v1'
+      AND json_extract(NEW.`git_receipt`, '$.reviewerRunId') = NEW.`id`
+      AND json_extract(NEW.`git_receipt`, '$.projectId') = NEW.`project_id`
+      AND json_extract(NEW.`git_receipt`, '$.worktreePath') = NEW.`worktree_dir`
+      AND json_extract(NEW.`git_receipt`, '$.registrationPath') = NEW.`worktree_dir`
+      AND json_extract(NEW.`git_receipt`, '$.branch') = '(detached)'
+      AND json_extract(NEW.`git_receipt`, '$.baseBranch') = '(detached)'
+      AND NEW.`worktree_base_branch` = '(detached)'
+      AND json_extract(NEW.`git_receipt`, '$.sealedCommit') = NEW.`worktree_base_sha`
+      AND json_extract(NEW.`git_receipt`, '$.baseSha') = NEW.`worktree_base_sha`
+      AND json_extract(NEW.`git_receipt`, '$.headSha') = NEW.`worktree_base_sha`
+      AND json_extract(NEW.`git_receipt`, '$.cleanStatus') = 1
+      AND json_extract(NEW.`git_receipt`, '$.registrationCount') = 1
+      AND json_extract(NEW.`git_receipt`, '$.detachedHead') = 1
+      AND json_extract(NEW.`git_receipt`, '$.trackedChanges') = 0
+      AND json_extract(NEW.`git_receipt`, '$.stagedChanges') = 0
+      AND json_type(NEW.`git_receipt`, '$.observedAt') = 'integer'
+      AND json_extract(NEW.`git_receipt`, '$.observedAt') >= 0
+      AND EXISTS (
+        SELECT 1 FROM `review_checkouts` rc
+        WHERE rc.`id` = json_extract(NEW.`git_receipt`, '$.id')
+          AND rc.`project_id` = json_extract(NEW.`git_receipt`, '$.projectId')
+          AND rc.`contract_id` = json_extract(NEW.`git_receipt`, '$.contractId')
+          AND rc.`contract_version` = json_extract(NEW.`git_receipt`, '$.contractVersion')
+          AND rc.`producer_run_id` = json_extract(NEW.`git_receipt`, '$.producerRunId')
+          AND rc.`reviewer_run_id` = NEW.`id`
+          AND rc.`repository_identity` = json_extract(NEW.`git_receipt`, '$.repositoryIdentity')
+          AND rc.`worktree_path` = NEW.`worktree_dir`
+          AND rc.`owned_root_real_path` = json_extract(NEW.`git_receipt`, '$.ownedRootRealPath')
+          AND rc.`sealed_commit` = NEW.`worktree_base_sha`
+          AND rc.`status` = 'provisioned'
+          AND rc.`provision_receipt` IS NOT NULL
+          AND rc.`teardown_receipt` IS NULL
+          AND rc.`destroyed_at` IS NULL
+      )
+    )
+  )
+), 0) <> 1
+BEGIN
+  SELECT RAISE(ABORT, 'agent run git receipt requires a complete repository identity or exact detached-review authority');
+END;
+--> statement-breakpoint
+
 -- Reservation must match the exact already-reserved contract frame. The
 -- reviewer run must not exist yet: its insertion is downstream of the
 -- workspace's positive provision/preparation/readiness gate.

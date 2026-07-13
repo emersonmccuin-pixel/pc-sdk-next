@@ -7,6 +7,7 @@ import {
   createNotRequiredWorktreePhaseReceipt,
   isReviewCheckoutRuntimeReady,
   type ReviewCheckoutAuthority,
+  type ReviewCheckoutGitReceipt,
   type ReviewCheckoutProvisionReceipt,
   type ReviewCheckoutTeardownReceipt,
   type ULID,
@@ -92,6 +93,38 @@ function teardown(authority: ReviewCheckoutAuthority, startedAt: number): Review
   };
 }
 
+function reviewerGitReceipt(
+  authority: ReviewCheckoutAuthority,
+  observedAt: number,
+): ReviewCheckoutGitReceipt {
+  return {
+    ...authority,
+    protocol: 'review-checkout-git-v1',
+    branch: '(detached)',
+    baseBranch: '(detached)',
+    baseSha: authority.sealedCommit,
+    cleanStatus: true,
+    registrationCount: 1,
+    registrationPath: authority.worktreePath,
+    headSha: authority.sealedCommit,
+    detachedHead: true,
+    trackedChanges: 0,
+    stagedChanges: 0,
+    observedAt,
+  };
+}
+
+function reviewerSnapshot() {
+  return {
+    specialistId: db.newId() as ULID,
+    revision: 'sha256:review-checkout',
+    name: 'reviewer',
+    charter: 'Review.',
+    contextDocs: [],
+    maxTurns: 10,
+  };
+}
+
 test('exact review checkout reservation gates provision, phases, recovery, and settlement', () => {
   const authority = reserve(`review-${db.newId().toLowerCase()}`);
   const created = db.createReviewCheckoutReservation({ ...authority, createdAt: 100 });
@@ -121,6 +154,44 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
   });
   assert.ok(provisioned);
   assert.equal(provisioned.status, 'provisioned');
+
+  const reviewContract = db.createContract({
+    projectId: authority.projectId,
+    expectedOutput: { kind: 'payload', semantic: 'verdict', schema: { type: 'object' } },
+  });
+  const runInput = {
+    id: authority.reviewerRunId,
+    projectId: authority.projectId,
+    dispatcherSessionId: 'review-dispatch',
+    specialistSnapshot: reviewerSnapshot(),
+    selection: {
+      runtimeId: 'runtime', accountId: 'account', model: 'model',
+      effort: { kind: 'none' as const },
+    },
+    continuation: { mode: 'create' as const },
+    status: 'queued' as const,
+    input: 'review',
+    contractId: reviewContract.id,
+    worktreeDir: authority.worktreePath,
+    worktreeBaseBranch: '(detached)',
+    worktreeBaseSha: authority.sealedCommit,
+    queuedAt: 115,
+  };
+  assert.throws(() => db.insertAgentRunRow({
+    ...runInput,
+    gitReceipt: {
+      ...reviewerGitReceipt(authority, 110),
+      providerSessionId: 'native-leak',
+    } as ReviewCheckoutGitReceipt,
+  }), /exact detached-review authority/);
+  assert.doesNotThrow(() => db.insertAgentRunRow({
+    ...runInput,
+    gitReceipt: reviewerGitReceipt(authority, 110),
+  }));
+  assert.deepEqual(
+    db.getAgentRunRow(authority.reviewerRunId)?.gitReceipt,
+    reviewerGitReceipt(authority, 110),
+  );
 
   const preparation = createNotRequiredWorktreePhaseReceipt({
     phase: 'preparation', reason: 'no-commands-configured', finishedAt: 120,
