@@ -1187,6 +1187,7 @@ export class DispatchService {
     for (const { phase, commands } of phases) {
       const beforeIssue = await this.reviewWorkspaceAuthorityIssue(checkoutId, false);
       if (beforeIssue) {
+        console.warn(`[pc-sdk][dispatch] review ${input.runId} ${phase} refused: ${beforeIssue}`);
         this.settleTerminal(input.runId, {
           status: 'failed',
           result: null,
@@ -1223,6 +1224,7 @@ export class DispatchService {
       }
       const afterCommandIssue = await this.reviewWorkspaceAuthorityIssue(checkoutId, false);
       if (afterCommandIssue) {
+        console.warn(`[pc-sdk][dispatch] review ${input.runId} ${phase} drifted: ${afterCommandIssue}`);
         this.settleTerminal(input.runId, {
           status: 'failed',
           result: null,
@@ -1262,6 +1264,7 @@ export class DispatchService {
     }
     const readyIssue = await this.reviewWorkspaceAuthorityIssue(checkoutId, true);
     if (readyIssue) {
+      console.warn(`[pc-sdk][dispatch] review ${input.runId} mint refused: ${readyIssue}`);
       this.settleTerminal(input.runId, {
         status: 'failed',
         result: null,
@@ -1562,6 +1565,7 @@ export class DispatchService {
     if (input.authorizeRuntimeCwd) {
       const refusal = await input.authorizeRuntimeCwd();
       if (refusal) {
+        console.warn(`[pc-sdk][dispatch] review ${input.runId} preflight cwd refused: ${refusal}`);
         this.settleTerminal(input.runId, {
           status: 'failed',
           result: null,
@@ -1589,6 +1593,7 @@ export class DispatchService {
     if (input.authorizeRuntimeCwd) {
       const refusal = await input.authorizeRuntimeCwd();
       if (refusal) {
+        console.warn(`[pc-sdk][dispatch] review ${input.runId} mint cwd refused: ${refusal}`);
         this.settleTerminal(input.runId, {
           status: 'failed',
           result: null,
