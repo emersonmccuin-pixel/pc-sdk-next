@@ -149,8 +149,21 @@ with exact feature/merge tree
 `a7f255ef25d5cd0d5b08e275f00c5e071f3f0698`. Repository builders now require
 context-bound positive preparation and readiness receipts before mint/revival;
 pre/post-merge 392/392 gates, exact push/re-fetch, and guarded feature-worktree
-cleanup passed. The next N4 gap is approved-abandonment authority and
-settlement; `OPS-006` loopback binding remains in N7.
+cleanup passed.
+
+DL-002 feature record `7b194a941ae6fa45056ffc2ab1a253518ed9faad`
+guarded-landed as `02231eceae4a5f26c6bd83cd5b486fd6752569a4`
+with exact feature/merge tree
+`20994454b05e2dfa3250e58ad11192844b2c99a2`. Browser-only approved
+abandonment now has immutable authority and positive branch-preserving
+settlement receipts, boot re-drive, and legacy non-authority preservation;
+pre/post-merge 413/413 gates, exact push/re-fetch, and guarded feature-worktree
+cleanup passed.
+
+DL-003 now owns the remaining bounded N4 recovery gate: landed teardown must
+prove worktree-directory, Git-registration, and merged-branch absence while
+remaining retryable across crashes, and unresolved process-failure truth must
+stay visible in the existing Activity rail. `OPS-006` remains in N7.
 
 ## Lifecycle states
 

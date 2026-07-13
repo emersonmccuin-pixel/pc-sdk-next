@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after DL-002 guarded landing, post-merge verification,
-exact push/re-fetch, and feature-worktree cleanup.
+Updated: 2026-07-12 after DL-003 contract definition from the completed DL-002
+base and three independent recovery audits.
 
 ## Repository
 
@@ -179,6 +179,10 @@ exact push/re-fetch, and feature-worktree cleanup.
   dependency/build residue removed after parent/name/process guards
 - DL-002 feature branch: preserved
 - DL-002 receipt: `docs/execution/receipts/DL-002.md`
+- Active slice: `docs/execution/slices/DL-003.md`
+- DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
+- DL-003 branch: `codex/dl-003-recovery-gate`
+- DL-003 worktree: `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
 
 ## Status
 
@@ -337,10 +341,19 @@ fetch, and guarded feature-worktree cleanup all passed. `WT-005` and `WT-006`
 remain accepted because their broader process-failure/recovery and
 nonparticipant/escaped-child boundaries are incomplete.
 
-Define the remaining N4 process-failure/recovery UI slice. Keep it bounded to
-evidence-backed failure/recovery behavior and do not silently turn it into a
-general recovery center or workflow engine, `OPS-006`, PM/MCP integration,
-Codex, or N7.
+Implement `DL-003`: positive retryable landed teardown, exact unresolved-run
+retention, an honest Activity recovery rail, and a provider-free composed
+two-worktree hard-kill gate. Reuse existing run/contract/worktree truth and
+DL-002 abandonment; add no duplicate recovery database or unattributed browser
+continuation door. Keep general recovery-center/workflow behavior, arbitrary
+Git repair, `OPS-006`, nonparticipant/escaped-child containment, PM/MCP,
+Codex, and N7 out of scope.
+
+- DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
+- DL-003 branch: `codex/dl-003-recovery-gate`
+- DL-003 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
+- DL-003 contract: `docs/execution/slices/DL-003.md`
 
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
 - DL-002 branch: `codex/dl-002-approved-abandonment`
