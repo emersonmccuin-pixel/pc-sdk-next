@@ -362,9 +362,11 @@ teardown all passed.
 CX-001 is the one active slice. Its exact clean pushed base is `dea2df76`; its
 contract is `docs/execution/slices/CX-001.md`. Implement only the pinned
 non-experimental app-server schema, hardened adapter-local JSONL/process/env
-boundary, provider-free fake coverage, and one explicit ChatGPT subscription
-admission/model-discovery proof repeated across a positive native-process
-restart. Do not start a live thread or turn: stable 0.144.1 has no proven
+boundary, provider-free fake coverage, and one explicit exact-home cached
+ChatGPT-auth-kind plus non-custom built-in advertised-catalog observation,
+repeated across a positive native-process restart. This does not prove fresh
+entitlement, billing route, or model usability. Do not start a live thread or
+turn: stable 0.144.1 has no proven
 pre-execution built-in-tool denial, and read-only still permits reads. Do not
 register a production Codex
 adapter, change defaults or selector UI, claim canonical parity, add live
@@ -409,8 +411,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed feature and closeout worktrees are removed. Only the main
-checkout is registered. Keep the PC-SDK Next main checkout read-only.
+All completed feature and closeout worktrees are removed. The main checkout and
+the active isolated CX-001 feature worktree are registered. Keep the PC-SDK Next
+main checkout read-only.
 
 ## Known blockers
 
