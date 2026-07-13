@@ -2,8 +2,8 @@
 
 Date: 2026-07-13
 
-Status: CX-002 implementation sealed and feature-tree verification green;
-guarded landing and closeout are still pending.
+Status: CX-002 code guarded-landed, post-merge verified, pushed, and feature
+worktree removed; documentation closeout is pending.
 
 ## Result
 
@@ -126,8 +126,11 @@ promoted.
   tree `9de0007e4420849af4cf4b7f999856167f29c46f`.
 - Final feature-tree `pnpm ci:check` passes with 660/660 server tests and the
   dead-import guard; the production build is green.
-- Landing, push/re-fetch, and teardown evidence will be appended to the CX-002
-  verification receipt as those gates complete.
+- Feature record `98ce745db5e440a2f5c45fe2e620c00fda427dbf` guarded-landed as
+  `611c304eaa8932900b4f9d339edbb2058d99fa0f`; both resolve to exact
+  tree `ce1c31e8ba38095a6e7571f2fe2705939436e645`.
+- Post-merge `pnpm ci:check` passes with 660/660 server tests; the production
+  build, exact push/re-fetch, and guarded feature-worktree/residue teardown pass.
 
 ## Next boundary
 
