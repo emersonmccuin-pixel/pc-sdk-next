@@ -20,6 +20,12 @@ import {
   type RuntimeEvent,
   type RuntimeSelection,
 } from '../src/runner/runtime.ts';
+import {
+  genericRuntimeAdapterConformanceFixture,
+  runtimeAdapterConformance,
+  type RuntimeAdapterConformanceFactory,
+  type RuntimeAdapterConformanceScenario,
+} from './runtime-adapter-conformance.ts';
 
 const MODELS: ModelInfo[] = [
   {
@@ -259,6 +265,136 @@ async function firstEvent(session: { sendTurn(text: string): AsyncIterable<Runti
   assert.equal(event.done, false);
   return event.value as RuntimeEvent;
 }
+
+const CLAUDE_CONFORMANCE_CREATED_NATIVE_ID = 'claude-created-native';
+const CLAUDE_CONFORMANCE_RESUMED_NATIVE_ID = 'claude-resumed-native';
+const CLAUDE_CONFORMANCE_TEXT = 'claude conformance response';
+
+function claudeConformanceSessionQuery(input: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  nativeSessionId: string;
+  scenario: RuntimeAdapterConformanceScenario;
+  blocked: Gate;
+  interruptedTerminal: Gate;
+  onInterrupt: () => void;
+  onClose: () => void;
+}): Query {
+  const stopped = gate();
+  let closed = false;
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    yield {
+      type: 'system', subtype: 'init', uuid: 'conformance-init',
+      session_id: input.nativeSessionId,
+    } as unknown as SDKMessage;
+    if (typeof input.prompt !== 'string') {
+      await input.prompt[Symbol.asyncIterator]().next();
+    }
+
+    if (input.scenario === 'interrupt' || input.scenario === 'dispose') {
+      // A provider-neutral activity frame makes the conformance scanner prove
+      // that command acceptance is correlated to the result, not array shape.
+      yield {
+        type: 'system', subtype: 'status', status: 'requesting',
+        uuid: 'conformance-status', session_id: input.nativeSessionId,
+      } as unknown as SDKMessage;
+      input.blocked.resolve();
+      if (input.scenario === 'interrupt') {
+        await input.interruptedTerminal.promise;
+        yield {
+          type: 'result', subtype: 'error_during_execution', is_error: true,
+          terminal_reason: 'aborted_streaming', uuid: 'conformance-aborted',
+          session_id: input.nativeSessionId,
+        } as unknown as SDKMessage;
+      } else {
+        await stopped.promise;
+      }
+      return;
+    }
+
+    yield {
+      type: 'assistant', uuid: 'conformance-assistant',
+      session_id: input.nativeSessionId, parent_tool_use_id: null,
+      message: {
+        id: 'conformance-message',
+        content: [{ type: 'text', text: CLAUDE_CONFORMANCE_TEXT }],
+        usage: { iterations: null },
+      },
+    } as unknown as SDKMessage;
+    yield {
+      type: 'result', subtype: 'success', is_error: false,
+      stop_reason: 'end_turn', num_turns: 1, duration_ms: 1,
+      uuid: 'conformance-result', session_id: input.nativeSessionId,
+      usage: {
+        input_tokens: 1, output_tokens: 2,
+        cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      },
+      modelUsage: { opus: {} },
+    } as unknown as SDKMessage;
+    await stopped.promise;
+  }
+
+  const iterator = messages();
+  return Object.assign(iterator, {
+    supportedModels: async () => MODELS,
+    getContextUsage: async () => ({
+      totalTokens: 12, maxTokens: 100, rawMaxTokens: 100,
+    }),
+    interrupt: async () => { input.onInterrupt(); return undefined; },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      input.onClose();
+      stopped.resolve();
+    },
+  }) as unknown as Query;
+}
+
+const claudeRuntimeAdapterConformanceFixture: RuntimeAdapterConformanceFactory = (
+  scenario,
+) => {
+  const blocked = gate();
+  const interruptedTerminal = gate();
+  let interruptAcceptances = 0;
+  let nativeCloses = 0;
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(),
+    queryFactory: (params) => {
+      if (params.options?.model === undefined) return discoveryQuery(MODELS);
+      const requestedNativeSessionId = params.options.resume;
+      return claudeConformanceSessionQuery({
+        prompt: params.prompt,
+        nativeSessionId: typeof requestedNativeSessionId === 'string'
+          ? requestedNativeSessionId
+          : CLAUDE_CONFORMANCE_CREATED_NATIVE_ID,
+        scenario,
+        blocked,
+        interruptedTerminal,
+        onInterrupt: () => { interruptAcceptances += 1; },
+        onClose: () => { nativeCloses += 1; },
+      });
+    },
+  });
+  return {
+    adapter,
+    selection: selection({ kind: 'selected', value: 'high' }),
+    missingAccountId: 'missing',
+    expectedText: CLAUDE_CONFORMANCE_TEXT,
+    expectedContext: {
+      confidence: 'derived', usedTokens: 12,
+      usableTokens: 100, contextWindowTokens: 100,
+    },
+    createdNativeSessionId: CLAUDE_CONFORMANCE_CREATED_NATIVE_ID,
+    resumedNativeSessionId: CLAUDE_CONFORMANCE_RESUMED_NATIVE_ID,
+    cwd: resolve('.'),
+    blockedTurnReady: blocked.promise,
+    releaseInterruptedTurn: interruptedTerminal.resolve,
+    interruptAcceptanceCount: () => interruptAcceptances,
+    nativeCloseCount: () => nativeCloses,
+  };
+};
+
+runtimeAdapterConformance('generic fake', genericRuntimeAdapterConformanceFixture);
+runtimeAdapterConformance('Claude', claudeRuntimeAdapterConformanceFixture);
 
 test('Claude session config requires an exact durable continuation attempt identity', () => {
   for (const continuationAttemptId of ['', ' attempt-padded ']) {
