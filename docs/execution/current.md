@@ -1,9 +1,9 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after CX-002 implementation sealing, final feature-tree
-verification, and hostile re-review. CX-002 is ready for its deterministic
-guarded landing; the main checkout remains clean and read-only until that exact
-mutation.
+Updated: 2026-07-13 after CX-002 guarded code landing, post-merge verification,
+exact push/re-fetch, and guarded feature-worktree/residue cleanup. The isolated
+documentation closeout is the one active mutation; main remains clean and
+read-only.
 
 ## Repository
 
@@ -407,11 +407,11 @@ branch is preserved.
 
 ## Active action
 
-Commit the CX-002 feature record, then guarded-land its exact tip from the
-recorded worktree into clean unchanged `main`. Prove contract/implementation/
-feature ancestry and exact feature/merge tree equality; run post-merge
-`pnpm ci:check` and the production web build; push and re-fetch the exact merge;
-then complete documentation closeout and guarded worktree teardown.
+Commit this CX-002 documentation closeout, prove its exact documentation-only
+scope and ancestry, guarded-land it into clean unchanged `main`, push/re-fetch
+the exact merge, then remove the closeout worktree under exact path, tip,
+landing, remote, and zero-process guards. A final receipt update must record
+that closeout landing and cleanup.
 
 Do not compose or register Codex, broaden the CX-001 admission allowlist, expose
 selectors or handoff UI, start a native thread/turn, or run the real-fix gate.
@@ -421,16 +421,23 @@ experimental protocol, raw API billing, or weaker fallback is authorized.
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
-- CX-002 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-002`
+- CX-002 worktree: removed after guarded landing/push proof and guarded residual
+  cleanup
 - CX-002 contract: `docs/execution/slices/CX-002.md`
 - CX-002 contract commit: `23b2b90ca75b47daa7fca1ccf9f859e2b7c271ef`
 - CX-002 sealed implementation:
   `bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`
 - CX-002 sealed tree: `9de0007e4420849af4cf4b7f999856167f29c46f`
 - CX-002 receipt: `docs/execution/receipts/CX-002.md`
-- Main is read-only until the reviewed feature record is committed and every
-  deterministic landing precondition is re-proved.
+- CX-002 feature record: `98ce745db5e440a2f5c45fe2e620c00fda427dbf`
+- CX-002 code landing: `611c304eaa8932900b4f9d339edbb2058d99fa0f`
+- CX-002 exact feature/code-merge tree:
+  `ce1c31e8ba38095a6e7571f2fe2705939436e645`
+- CX-002 closeout branch: `codex/cx-002-closeout`
+- CX-002 closeout worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-002-closeout`
+- Main is read-only until the documentation-only closeout record is sealed and
+  every deterministic landing precondition is re-proved.
 
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
 - CX-001 branch: `codex/cx-001-codex-subscription-spike`
@@ -483,10 +490,10 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed CX-001 feature, closeout, and final-receipt worktrees are removed.
-Only the clean main checkout and recorded CX-002 feature worktree are
-registered. Keep the PC-SDK Next main checkout read-only until the deterministic
-guarded CX-002 landing mutation.
+All completed CX-001 worktrees and the landed CX-002 feature worktree/residual
+are removed. Only the clean main checkout and recorded CX-002 closeout worktree
+are registered. Keep main read-only until the deterministic documentation-only
+closeout landing.
 
 ## Known blockers
 
@@ -497,8 +504,8 @@ No DL-002 blocker remains.
 No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
-implementation, verification, review, or product-direction blocker; its
-guarded landing, closeout, push proof, and teardown are the active operations.
+implementation, verification, review, code-landing, push, feature-teardown, or
+product-direction blocker; documentation closeout and its teardown are active.
 Native process containment and real tool/MCP/approval enforcement remain later
 gates; they do not authorize a live turn in CX-002.
 Experimental/API-billed/weaker alternatives are still not authorized.

@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-13 after CX-002 implementation sealing, final feature-tree
-verification, and hostile re-review. Its guarded landing and closeout are still
-pending; main remains on the clean pushed CX-001 closeout base.
+Last updated: 2026-07-13 after CX-002 guarded code landing, post-merge
+verification, exact push/re-fetch, and guarded feature-worktree/residue cleanup.
+Documentation closeout remains active in its isolated worktree.
 
 ## Preserved baseline
 
@@ -175,8 +175,13 @@ only in PC-SDK Next.
 - CX-002 sealed implementation:
   `bf1f3a5ec8a12c17defa954c1bd5ccf3c59f4e87`
 - CX-002 sealed tree: `9de0007e4420849af4cf4b7f999856167f29c46f`
-- CX-002 feature worktree: active and clean except for the pending feature
-  record; guarded landing has not started
+- CX-002 feature record: `98ce745db5e440a2f5c45fe2e620c00fda427dbf`
+- CX-002 code landing merge: `611c304eaa8932900b4f9d339edbb2058d99fa0f`
+- CX-002 exact feature/code-merge tree:
+  `ce1c31e8ba38095a6e7571f2fe2705939436e645`
+- CX-002 feature worktree: deregistered; exact residual directory removed after
+  parent/name/no-`.git`/ancestry/remote/branch-tip/zero-process guards
+- CX-002 documentation closeout branch: `codex/cx-002-closeout` (active)
 
 Isolation defaults in the planning slice:
 
@@ -736,7 +741,7 @@ remain unavailable. CX-001 promotes no requirement. Full evidence is in
 `docs/research/codex-app-server-spike.md` and
 `docs/execution/receipts/CX-001.md`.
 
-## Sealed N5 provider-free Codex adapter mapping (pre-landing)
+## Completed N5 provider-free Codex adapter mapping
 
 CX-002 implements the provider-local `CodexRuntimeAdapter`, runtime session,
 stable 0.144.1 mapping, and reusable public conformance harness without
@@ -761,14 +766,22 @@ mapping/static coverage passes 99/99; final feature-tree `pnpm ci:check` passes
 with 660/660 server tests and the dead-import guard; the production web build
 and three independent final hostile re-reviews pass.
 
+Feature record `98ce745db5e440a2f5c45fe2e620c00fda427dbf` guarded-landed as
+code merge `611c304eaa8932900b4f9d339edbb2058d99fa0f`. Feature and merge
+resolve to exact tree `ce1c31e8ba38095a6e7571f2fe2705939436e645`.
+Post-merge `pnpm ci:check` remains green with 660/660 server tests and the
+dead-import guard; the production build and exact push/re-fetch pass. Guarded
+feature-worktree deregistration and residual removal pass, and the feature
+branch is preserved.
+
 This implementation starts no native process, thread, turn, or inference and
 promotes no requirement. Native continuation support is true only for the
 explicitly injected conformance peer. Credential/subscription/billing/model
 usability, effective native tool/MCP/approval enforcement, escaped-descendant
 containment, native dispatch, selectors, handoff, context/quota acquisition,
-and the real-fix gate remain open. Detailed pre-landing evidence is in
-`docs/research/codex-runtime-adapter.md`; the verification receipt remains
-explicitly pre-landing until the guarded landing and teardown gates succeed.
+and the real-fix gate remain open. Detailed evidence is in
+`docs/research/codex-runtime-adapter.md` and
+`docs/execution/receipts/CX-002.md`.
 
 ## Known architectural gaps
 
