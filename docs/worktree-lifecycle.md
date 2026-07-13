@@ -5,7 +5,8 @@ Status: **locked architecture with implemented v1 lifecycle** (updated
 guarded landing, teardown, and recovery have live evidence. SF-002 implements
 cooperative same-host repository exclusion and is sealed, guarded-landed,
 post-merge verified, pushed, and cleaned up. DL-004's exact detached-review
-authority is implementation-sealed; its guarded landing receipt is pending.
+authority is sealed, guarded-landed, post-merge verified, pushed, and cleaned
+up.
 
 ## Decision
 
@@ -181,8 +182,12 @@ checkout-specific Git/preparation/readiness evidence before runtime, immutable
 typed verdict evidence, and positive teardown before verdict effect or
 successor admission. Contract, producer lifecycle, workspace application
 marker, revisions, and outbox facts settle atomically. Full feature-tree
-`pnpm ci:check` passes with 452/452 server tests; guarded landing, post-merge
-verification, exact push/re-fetch, and feature-worktree cleanup are pending.
+`pnpm ci:check` passes with 452/452 server tests. Feature record
+`1e59c052b989d208ae22a0a6db60823b04286733` guarded-landed as
+`2ea345a4807a49b05a55024cd4053fe81ac25ecd` with exact feature/code-
+merge tree `1d53ce1fdbea686e370d12594f6af7ceee0216a2`; post-merge
+452/452, production build, exact push/re-fetch, and guarded feature-worktree/
+residue cleanup pass.
 
 ## Lifecycle states
 
