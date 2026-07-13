@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "spike": "pnpm --filter @pc-sdk/spike start",
+    "spike:codex": "node apps/server/node_modules/tsx/dist/cli.mjs apps/server/scripts/codex-spike.ts",
     "smoke": "pnpm --filter @pc-sdk/server smoke",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r --if-present test",
