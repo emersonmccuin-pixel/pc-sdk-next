@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-13 after DL-004 implementation sealing and full feature-
-tree verification; guarded landing, push, and cleanup are pending.
+Last updated: 2026-07-13 after DL-004 guarded code landing, post-merge
+verification, exact push/re-fetch, and guarded feature-worktree cleanup.
 
 ## Preserved baseline
 
@@ -127,6 +127,18 @@ only in PC-SDK Next.
   before documentation closeout
 - SF-002 feature worktree: deregistered after proof; exact residue removed
   after a zero-process guard; feature branch preserved
+- DL-004 base: `d82df6d89eebb8bbdb8d094a891298abdc855221`
+- DL-004 branch: `codex/dl-004-review-workspace` (preserved)
+- DL-004 contract commit: `07cec4d8aa69e8c0177e6204c04690acf034447f`
+- DL-004 sealed implementation:
+  `41370a51f83275719239feff85ea5f493892b0cd`
+- DL-004 sealed tree: `6c53ad49167a3879938dc9c5bf753ca0618a5c21`
+- DL-004 feature record: `1e59c052b989d208ae22a0a6db60823b04286733`
+- DL-004 code landing merge: `2ea345a4807a49b05a55024cd4053fe81ac25ecd`
+- DL-004 exact feature/code-merge tree:
+  `1d53ce1fdbea686e370d12594f6af7ceee0216a2`
+- DL-004 feature worktree: deregistered; exact dependency/build residue removed
+  after parent/name/ancestry/remote/zero-process guards
 
 Isolation defaults in the planning slice:
 
@@ -633,7 +645,13 @@ production web build, 23/23 recovery matrix, 19/19 full-review matrix, exact
 45-path audit, and final hostile reviews also pass. No provider, PM/MCP-network,
 stable-data, original-app, or external-repository action was required. Guarded
 landing, post-merge verification, exact push/re-fetch, and feature-worktree
-cleanup remain pending and are not inferred from the seal.
+cleanup pass. Feature record
+`1e59c052b989d208ae22a0a6db60823b04286733` guarded-landed as
+`2ea345a4807a49b05a55024cd4053fe81ac25ecd` with exact feature/code-
+merge tree `1d53ce1fdbea686e370d12594f6af7ceee0216a2`. Post-merge
+`pnpm ci:check` remains green with 452/452 server tests; production build,
+exact push/re-fetch, and guarded feature-worktree/residue cleanup pass. The
+feature branch is preserved.
 
 ## Known architectural gaps
 
