@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 const REPO = join(SRC, '..', '..', '..');
+const CODEX_SOURCE_ROOT = join(SRC, 'runner', 'codex');
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs']);
 const PRODUCTION_ROOTS = [
   SRC,
@@ -13,6 +14,7 @@ const PRODUCTION_ROOTS = [
     .map((name) => join(REPO, 'packages', name, 'src'))
     .filter(existsSync),
 ];
+const EXTRA_PRODUCTION_FILES = [join(REPO, 'apps', 'server', 'scripts', 'codex-spike.ts')];
 const CHILD_PROCESS_MODULE = /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bimport\s*)['"](?:node:)?child_process['"]/;
 const PROCESS_ENV = String.raw`process(?:\.env|\[\s*['"]env['"]\s*\])(?![.\[])`;
 const BROAD_ENVIRONMENT_PATTERNS = [
@@ -40,7 +42,7 @@ function count(text: string, pattern: RegExp): number {
 }
 
 function productionFiles(): string[] {
-  return PRODUCTION_ROOTS.flatMap((root) => walk(root)).sort();
+  return [...PRODUCTION_ROOTS.flatMap((root) => walk(root)), ...EXTRA_PRODUCTION_FILES].sort();
 }
 
 test('source guard recognizes alternate child imports and broad environment handoffs', () => {
@@ -74,6 +76,7 @@ test('every direct production child-process importer is classified and policy-bu
     'apps/server/src/dispatch/repository-lease.ts',
     'apps/server/src/dispatch/worktrees.ts',
     'apps/server/src/index.ts',
+    'apps/server/src/runner/codex/app-server-client.ts',
   ]);
 
   const repositoryLease = source('dispatch/repository-lease.ts');
@@ -85,7 +88,7 @@ test('every direct production child-process importer is classified and policy-bu
   const worktrees = source('dispatch/worktrees.ts');
   assert.match(worktrees, /import\s*\{\s*execFile\s*,\s*spawn\s*\}\s*from\s*['"]node:child_process['"]/);
   assert.equal(count(worktrees, /(?:node:)?child_process/g), 1);
-  assert.equal(count(worktrees, /\bexecFile\(/g), 2, 'Git and fixed taskkill helper');
+  assert.equal(count(worktrees, /\bexecFile\(/g), 2, 'Git and Windows process cleanup helper');
   assert.equal(count(worktrees, /\bspawn\(/g), 3, 'two binary-safe Git readers and one shared profile/verification shell');
   assert.equal(count(worktrees, /env:\s*buildChildEnvironment\(\)/g), 4);
   assert.equal(count(worktrees, /spawn\('git',\s*\[\.\.\.args\],\s*\{/g), 2);
@@ -100,6 +103,34 @@ test('every direct production child-process importer is classified and policy-bu
   assert.equal(count(index, /\bspawn\(/g), 1, 'the sole direct exception is same-engine restart');
   assert.equal(count(index, /\.\.\.\s*process\.env\b/g), 1);
   assert.match(index, /RESTART_ADMISSION_WAIT_ENV/);
+
+  const codex = source('runner/codex/app-server-client.ts');
+  assert.match(codex, /import\s*\{\s*spawn\s*\}\s*from\s*['"]node:child_process['"]/);
+  assert.equal(count(codex, /(?:node:)?child_process/g), 1);
+  assert.equal(count(codex, /\bspawn\(/g), 1);
+  assert.match(codex, /const environment = buildCodexEnvironment\(options\.codexHome\)/);
+  assert.match(codex, /const executable = resolvePinnedCodexExecutable\(\)/);
+  assert.match(
+    codex,
+    /'app-server',\s*'--stdio',\s*'-c',\s*'cli_auth_credentials_store="file"'/,
+  );
+  assert.match(codex, /env:\s*environment/);
+  assert.match(codex, /shell:\s*false/);
+  assert.match(codex, /windowsHide:\s*true/);
+  assert.match(codex, /detached:\s*false/);
+  assert.match(codex, /terminationAttempt\('SIGTERM'\)/);
+  assert.match(codex, /terminationAttempt\('SIGKILL'\)/);
+  assert.match(codex, /this\.child\.kill\(signal\)/);
+  assert.doesNotMatch(codex, /this\.child\.stdin\.end\(/);
+  assert.doesNotMatch(codex, /spawn\(\s*['"]codex(?:\.exe)?['"]/);
+  assert.doesNotMatch(codex, /process\.env/);
+
+  const codexBoundary = [...walk(CODEX_SOURCE_ROOT), ...EXTRA_PRODUCTION_FILES]
+    .map((file) => readFileSync(file, 'utf8'))
+    .join('\n');
+  assert.doesNotMatch(codexBoundary, /process[-_ ]?tree|treeAbsence|taskkill/i);
+  assert.doesNotMatch(codexBoundary, /process\.kill\s*\(\s*-/);
+  assert.doesNotMatch(codexBoundary, /detached:\s*(?:true|process\.platform)/);
 });
 
 test('broad process.env cloning or direct handoff is confined to the trusted same-engine restart', () => {
@@ -116,6 +147,8 @@ test('broad process.env cloning or direct handoff is confined to the trusted sam
 test('provider and MCP subprocess seams retain their explicit environment boundaries', () => {
   const account = source('runner/account-env.ts');
   const adapter = source('runner/claude-adapter.ts');
+  const codexEnvironment = source('runner/codex/environment.ts');
+  const codexClient = source('runner/codex/app-server-client.ts');
   assert.match(account, /buildChildEnvironment\(base\)/);
   assert.match(account, /env\.CLAUDE_CONFIG_DIR = configDir/);
   assert.doesNotMatch(account, /withoutAmbientGitRepositorySelectors|Object\.entries\(base\)/);
@@ -124,6 +157,11 @@ test('provider and MCP subprocess seams retain their explicit environment bounda
     count(adapter, /this\.accounts\.buildEnv\(this\.id,/g) >= 2,
     'discovery and session mint both start from the account-owned safe environment',
   );
+  assert.match(codexEnvironment, /buildChildEnvironment\(/);
+  assert.match(codexEnvironment, /environment\.CODEX_HOME = canonicalHome/);
+  assert.doesNotMatch(codexEnvironment, /OPENAI_API_KEY|CODEX_API_KEY|CODEX_ACCESS_TOKEN/);
+  assert.match(codexClient, /buildCodexEnvironment\(options\.codexHome\)/);
+  assert.match(codexClient, /resolvePinnedCodexExecutable\(\)/);
 
   for (const relativePath of [
     'apps/server/src/mcp/client.ts',

@@ -1,7 +1,7 @@
 # Current state
 
-Last updated: 2026-07-13 after DL-004 guarded code and documentation closeout
-landings, exact push/re-fetch, and guarded feature/closeout-worktree cleanup.
+Last updated: 2026-07-13 after CX-001 sealed implementation, full verification,
+and the bounded no-turn Codex admission observation. Guarded landing remains.
 
 ## Preserved baseline
 
@@ -147,6 +147,13 @@ only in PC-SDK Next.
   `c92f78bc4fc664db1f67bfb93b01b8ba57232cd9`
 - DL-004 documentation closeout worktree: removed after exact
   path/ancestry/remote/zero-process proof; closeout branch preserved
+- CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
+- CX-001 branch: `codex/cx-001-codex-subscription-spike`
+- CX-001 contract commits: `02135481`, `27d5ea54`, and `8c15023e`
+- CX-001 sealed implementation:
+  `648b7d971c34ccf36985d84c0d20155e5eacf7d3`
+- CX-001 sealed tree: `2e10894429d4a99cce91b3665b45585240c52bde`
+- CX-001 feature record/landing/cleanup: pending guarded completion
 
 Isolation defaults in the planning slice:
 
@@ -228,6 +235,10 @@ Isolation defaults in the planning slice:
 - Account-scoped Claude capabilities/model discovery and immediate pre-mint
   validation with no runtime, account, model, effort, continuation, or billing
   fallback.
+- Pinned Codex admission-only substrate: direct native 0.144.1 app-server,
+  version-matched stable schema, exact-home/file-store isolation, strict config/
+  account/catalog admission, redacted receipt, and positive direct-child
+  disposal. It is not registered or composed as a production adapter.
 - A fresh persisted continuation-attempt identity for every orchestrator native
   create/resume mint. Positive receipts and failure callbacks use exact DB CAS,
   so output from abandoned creates, resumes, restarts, or disposed services
@@ -664,13 +675,36 @@ guarded-landed as `fba54487` with exact tree `c92f78bc`; its documentation-only
 scope, ancestry, exact push/re-fetch, and guarded worktree removal pass. The
 closeout branch is preserved, and only the main checkout remains registered.
 
+## Completed N5 Codex admission spike
+
+CX-001 pins direct native `@openai/codex@0.144.1` and its 598-file stable
+generated schema behind a provider-local JSONL/process/environment boundary.
+The approved no-turn live gate positively observed one exact existing home,
+active file-store provenance, cached ChatGPT auth kind, built-in OpenAI routing,
+and advertised default `gpt-5.6-sol` with supported default effort `medium`.
+The exact observation matched across two distinct directly disposed app-server
+processes; temporary cleanup and the zero repository-owned-process guard passed.
+No raw account identity, plan, home path, native ID, frame, config/origin payload,
+quota, provider prose, token, or reasoning was retained.
+
+Credential freshness, entitlement, subscription usability, billing route,
+model usability/inference, production adapter registration/composition/session
+stamps, native create/resume/continuation, tools/MCP/approvals/interruption,
+context/quota, canonical dispatch/handoff, and escaped-descendant containment
+remain unavailable. CX-001 promotes no requirement. Full evidence is in
+`docs/research/codex-app-server-spike.md` and
+`docs/execution/receipts/CX-001.md`.
+
 ## Known architectural gaps
 
-- Production composition remains fixed to Claude and existing orchestrator
-  defaults; there is no Codex adapter or deliberate runtime/model/effort
-  selector yet.
+- Production composition remains Claude-only. CX-001 is an unregistered
+  admission spike; no `CodexRuntimeAdapter`, shared Codex conformance, positive
+  escaped-descendant containment, or deliberate runtime/model/effort selector
+  exists yet.
 - Full specialist-builder defaults, attributed cross-runtime handoff, and
   deliberate runtime/account/model/effort selector UI remain unimplemented.
+- Codex context and subscription-quota acquisition/normalization remain
+  unavailable; CX-001 does not advance RS-002 or RS-004 parity.
 - Some older runtime-notice vocabulary remains not yet fully provider-neutral.
 - The accepted AInativePM seam remains unimplemented. Typed PM refs,
   stable PC-SDK run links, authority/principal-pinned query health, vault-backed consumer

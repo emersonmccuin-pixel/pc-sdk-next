@@ -1,7 +1,8 @@
 # Agent runtime architecture
 
-Status: **locked boundary; Claude orchestrator selection path implemented**
-(updated 2026-07-11). `docs/current-state.md` records the as-built gaps.
+Status: **locked boundary; Claude selection path implemented; bounded Codex
+admission spike complete, no Codex adapter** (updated 2026-07-13).
+`docs/current-state.md` records the as-built gaps.
 `docs/master-plan.md` wins on product scope; `AGENTS.md` holds the short-form
 non-negotiable rules.
 
@@ -180,6 +181,19 @@ silent fallback or invented context/usage precision.
   instructions, runtime settings, and native MCP configuration.
 - Boundary: ChatGPT subscription access is through Codex. Raw OpenAI Responses
   API or Agents SDK use API billing and are not the subscription adapter.
+- CX-001 admission evidence: exact `@openai/codex@0.144.1`, its direct native
+  app-server, and its version-matched non-experimental generated schema are
+  pinned. The no-turn gate used one exact canonical existing `CODEX_HOME`,
+  forced and positively correlated the active file credential-store layer,
+  rejected custom catalog/provider routing, observed cached ChatGPT auth with
+  `requiresOpenaiAuth: true`, discovered one visible advertised default and
+  supported default effort, and repeated the exact result through two distinct
+  positively disposed native processes.
+- CX-001 did not send a thread, turn, login, logout, tool, MCP, approval,
+  context, quota, or inference request. It is not registered or composed as a
+  `CodexRuntimeAdapter`. Cached auth and catalog presence do not establish
+  credential freshness, entitlement, subscription usability, billing route,
+  model usability, or inference.
 
 Additional runtimes are allowed only by implementing the same adapter and
 conformance suite. Do not add provider conditionals to core services.
@@ -199,8 +213,10 @@ An adapter may add only its internally selected credential-home selector after
 that reduction. The Claude session sanitizes both its constructor input and
 the final SDK query options; the pinned SDK fake-spawn guard proves the native
 process receives only that result plus SDK-authored version/entrypoint markers.
-A future Codex adapter must add its selected `CODEX_HOME` through the same
-boundary and conformance suite.
+CX-001 supplies a tested Codex environment/executable substrate for its
+admission-only spike. A production Codex adapter must reuse that boundary, add
+positive escaped-descendant containment, and pass the shared adapter
+conformance suite before registration; the spike itself is not an adapter.
 
 MCP stdio remains a separate explicit-consumer boundary: the MCP SDK supplies
 its small safe default environment and PC-SDK merges only the registered
@@ -282,6 +298,10 @@ runtime/account attribution. The UI always presents consumed/used; unavailable
 or stale data stays explicit. Billing remains subscription-first; any API-billed
 adapter requires an explicit product decision and visibly separate semantics.
 
+CX-001 queried neither context nor quota. It supplies no Codex evidence for
+freshness/staleness, context/compaction, usage windows, normalization, or
+billing semantics.
+
 Session context is a separate observation family. `RuntimeSession` exposes one
 required observation command and capabilities separately state supported
 current-use confidences and compaction evidence. The Claude adapter validates
@@ -327,13 +347,19 @@ and immutable orchestrator create/remint/resume path. RS-002 added honest
 Claude-backed orchestrator context observation and projection. RS-003 completed
 specialist revision/run selection, native attempt receipts, and safe public
 provenance. RS-004 completed provider-neutral subscription quota on the Claude
-path. The remaining runtime-boundary N3/N5 backlog below does not reorder or
-authorize skipping the master plan's global N1/N4 gates:
+path. CX-001 completed only the bounded pinned Codex admission dependency:
+exact-home/file-store cached-auth-kind and advertised-catalog observation across
+two directly disposed native processes, without a turn or adapter registration.
+The remaining runtime-boundary N3/N5 backlog below does not reorder or authorize
+skipping the master plan's global N1/N4 gates:
 
-1. implement a Codex subscription spike against the same contract;
-2. add `CodexRuntimeAdapter` and run the same conformance suite;
-3. expose deliberate runtime/account/model/effort selection controls;
-4. compile attributed cross-runtime handoffs and their UI provenance.
+1. add `CodexRuntimeAdapter`, positive containment, and the same conformance
+   suite without production registration until its gates pass;
+2. expose deliberate runtime/account/model/effort selection controls;
+3. compile attributed cross-runtime handoffs and their UI provenance.
+
+CX-001 itself authorizes no live thread or turn; any later live step requires a
+separate contract and positive safety gates.
 
 No compatibility shim or parallel wire is permitted. When canonical event
 names change, contracts, persistence mapping, server, tests, and web consumers
@@ -370,9 +396,9 @@ move in one pass.
 - using raw API keys because the subscription adapter is inconvenient without
   an explicit architecture and billing decision.
 
-## External facts to re-verify when implementing Codex
+## External facts to re-verify on Codex upgrade or adapter implementation
 
-These official OpenAI surfaces support the decision as of 2026-07-10. They are
+These official OpenAI surfaces support the decision as of 2026-07-13. They are
 implementation inputs, not permission to leak Codex protocol into core:
 
 - [Codex authentication](https://developers.openai.com/codex/auth): ChatGPT
@@ -387,6 +413,7 @@ implementation inputs, not permission to leak Codex protocol into core:
   `developer_instructions`, replacement `model_instructions_file`, model,
   sandbox/approval, MCP, and credential-store controls.
 
-Re-run a small local spike and generate/read the app-server schema from the
-pinned Codex version before implementing the adapter. Public docs and the
-generated version-matched schema win over remembered event shapes.
+CX-001 generated and reverified the stable app-server schema from pinned
+0.144.1. Re-run the bounded spike and regenerate/re-review that schema before an
+upgrade or production adapter change. Public docs and the generated version-
+matched schema win over remembered event shapes.
