@@ -119,6 +119,22 @@ through `RUN-004`, `RUN-006`, and `RUN-007`. The runtime rows remain `accepted`
 until Codex conformance and deliberate selector/handoff behavior satisfy the
 remaining global text.
 
+CX-001 evidence note (2026-07-13): this bounded admission spike promotes no
+requirement. Against pinned `@openai/codex@0.144.1`, provider-native code and
+schema remain confined to the Codex runner boundary, strict provider-free
+guards cover the admitted path, and the no-turn live gate observed an exact-
+home/file-store cached ChatGPT account plus one advertised visible default model
+and supported default effort twice across distinct directly disposed native
+processes. This is supporting evidence only for `ARCH-003` through `ARCH-005`,
+the discovery/degradation portions of `RUN-002` and `RUN-007`, and the existing
+`SEC-001`/`SEC-003` boundaries. It does not implement runtime selection,
+immutable app-session stamps, native continuation, or selection-change
+semantics under `RUN-001`, `RUN-003`, or `RUN-004`. Credential freshness,
+entitlement/subscription usability, billing route, and model usability remain
+unavailable. No context or quota method was called, so `CTX-002`, `CTX-003`,
+`USE-002`, and `USE-003` receive no Codex implementation evidence and all
+statuses remain unchanged.
+
 ## Context and usage
 
 | ID | Status | Requirement |
