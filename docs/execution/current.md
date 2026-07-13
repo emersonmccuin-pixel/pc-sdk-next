@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after DL-002 implementation seal and full feature gate;
-guarded landing is the active closeout action.
+Updated: 2026-07-12 after DL-002 guarded landing, post-merge verification,
+exact push/re-fetch, and feature-worktree cleanup.
 
 ## Repository
 
@@ -161,7 +161,7 @@ guarded landing is the active closeout action.
 - BC-002 landing merge: `9278a6f9e9769b73601c58399554468328b314a1`
 - BC-002 landed tree: `75c83dd3024d47fe73a655a41e46fae604b824ed`
 - BC-002 worktree: removed; feature branch preserved
-- Active slice: `docs/execution/slices/DL-002.md`
+- Completed slice: `docs/execution/slices/DL-002.md`
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
 - DL-002 branch: `codex/dl-002-approved-abandonment`
 - DL-002 contract commit: `03cf153dbc48e7b569a385ccebd62a38adbd5253`
@@ -169,6 +169,15 @@ guarded landing is the active closeout action.
   `367f208b976d554ed58703a172e18045b045fe30`
 - DL-002 sealed implementation tree:
   `1d5367a4a2c2a93033e0b1c2c8a5f505de416616`
+- DL-002 feature record:
+  `7b194a941ae6fa45056ffc2ab1a253518ed9faad`
+- DL-002 landing merge:
+  `02231eceae4a5f26c6bd83cd5b486fd6752569a4`
+- DL-002 exact feature/merge tree:
+  `20994454b05e2dfa3250e58ad11192844b2c99a2`
+- DL-002 feature worktree: removed after positive landing/push proof; exact
+  dependency/build residue removed after parent/name/process guards
+- DL-002 feature branch: preserved
 - DL-002 receipt: `docs/execution/receipts/DL-002.md`
 
 ## Status
@@ -321,17 +330,17 @@ teardown all passed.
 
 ## Active action
 
-Guard-land and close `DL-002`. The implementation is sealed at `367f208b`
-with tree `1d5367a4`; the full feature gate passes with 413/413 server tests,
-`git diff --check` passes, and three independent hostile re-reviews report no
-P0/P1/P2 blocker. Complete exact feature/merge-tree and ancestry proof,
-post-merge `pnpm ci:check`, exact push/re-fetch, receipt closeout, and guarded
-feature-worktree cleanup.
+DL-002 is complete. Sealed implementation `367f208b`, feature record
+`7b194a94`, guarded landing `02231ece`, exact feature/merge tree `20994454`,
+pre/post-merge 413/413 gates, three clean hostile re-reviews, exact push/re-
+fetch, and guarded feature-worktree cleanup all passed. `WT-005` and `WT-006`
+remain accepted because their broader process-failure/recovery and
+nonparticipant/escaped-child boundaries are incomplete.
 
-After closeout, the next bounded planning action is to define the remaining N4
-process-failure/recovery UI slice. Do not silently widen DL-002 into a general
-recovery center, `OPS-006`, nonparticipant/escaped-child containment, PM/MCP
-integration, Codex, or N7.
+Define the remaining N4 process-failure/recovery UI slice. Keep it bounded to
+evidence-backed failure/recovery behavior and do not silently turn it into a
+general recovery center or workflow engine, `OPS-006`, PM/MCP integration,
+Codex, or N7.
 
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`
 - DL-002 branch: `codex/dl-002-approved-abandonment`
@@ -348,8 +357,9 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-The PM-001, BC-002, SF-001, SF-002, SEC-003, and DL-001 feature worktrees are
-removed. DL-002 remains registered only for guarded landing and closeout.
+The PM-001, BC-002, SF-001, SF-002, SEC-003, DL-001, and DL-002 feature
+worktrees are removed. The DL-002 closeout worktree exists only for this
+documentation receipt and must be removed after guarded landing.
 Keep the PC-SDK Next main checkout read-only.
 
 ## Known blockers
@@ -357,6 +367,7 @@ Keep the PC-SDK Next main checkout read-only.
 No SEC-003 blocker remains. No PM-001 blocker remains. Its `get_started`
 remote-state uncertainty is retained in the completion receipt rather than
 repaired through private-data inspection.
+No DL-002 blocker remains.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
 product-direction, verification, or landing blocker.
