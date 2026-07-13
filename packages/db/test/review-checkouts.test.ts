@@ -193,9 +193,26 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
     reviewerGitReceipt(authority, 110),
   );
 
+  const arbitraryPayloadRunId = db.newId() as ULID;
+  db.insertAgentRunRow({
+    ...runInput,
+    id: arbitraryPayloadRunId,
+    contractId: null,
+    worktreeDir: null,
+    worktreeBaseBranch: null,
+    worktreeBaseSha: null,
+    gitReceipt: null,
+  });
+
   const preparation = createNotRequiredWorktreePhaseReceipt({
     phase: 'preparation', reason: 'no-commands-configured', finishedAt: 120,
   });
+  assert.equal(
+    db.setAgentRunPhaseReceipt(arbitraryPayloadRunId, preparation),
+    false,
+    'lifecycle-null alone is not reviewer workspace authority',
+  );
+  assert.equal(db.setAgentRunPhaseReceipt(authority.reviewerRunId, preparation), true);
   const prepared = db.setReviewCheckoutPhaseReceipt({
     authority,
     expectedUpdatedAt: provisioned.updatedAt,
@@ -207,6 +224,7 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
   const readiness = createNotRequiredWorktreePhaseReceipt({
     phase: 'readiness', reason: 'no-commands-configured', finishedAt: 130,
   });
+  assert.equal(db.setAgentRunPhaseReceipt(authority.reviewerRunId, readiness), true);
   assert.equal(db.setReviewCheckoutPhaseReceipt({
     authority,
     expectedUpdatedAt: provisioned.updatedAt,

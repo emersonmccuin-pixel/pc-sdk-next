@@ -26,6 +26,7 @@ import {
   isMatchingWorktreeAbandonmentTeardown,
   isPositivePreparationReceiptForRun,
   isPositiveWorktreePhaseReceipt,
+  isReviewCheckoutGitReceipt,
   isWorktreePhaseReceipt,
   isSpecialistExecutionSnapshot,
   type AgentRunFailureCause,
@@ -389,10 +390,30 @@ export function setAgentRunPhaseReceipt(
   const patch: Partial<AgentRunRow> =
     receipt.phase === 'preparation' ? { preparationReceipt: receipt } : { readinessReceipt: receipt };
   patch.rev = REV_INC;
+  const isDetachedReviewer = current.lifecycleState === null &&
+    current.continues === null &&
+    current.nativeSessionId === null &&
+    current.nativeIdentityState === 'unbound' &&
+    current.continuationState === 'clean-pending' &&
+    current.spawnedAt === null &&
+    current.pid === null &&
+    isReviewCheckoutGitReceipt(current.gitReceipt);
+  const lifecycleAdmission = isDetachedReviewer
+    ? and(
+        isNull(agentRuns.lifecycleState),
+        isNull(agentRuns.continues),
+        isNull(agentRuns.nativeSessionId),
+        eq(agentRuns.nativeIdentityState, 'unbound'),
+        eq(agentRuns.continuationState, 'clean-pending'),
+        isNull(agentRuns.spawnedAt),
+        isNull(agentRuns.pid),
+        eq(agentRuns.gitReceipt, current.gitReceipt!),
+      )
+    : eq(agentRuns.lifecycleState, 'preparing');
   return getDb().update(agentRuns).set(patch).where(and(
     eq(agentRuns.id, id),
     eq(agentRuns.status, 'queued'),
-    eq(agentRuns.lifecycleState, 'preparing'),
+    lifecycleAdmission,
     isNull(receiptColumn),
   )).run().changes === 1;
 }
