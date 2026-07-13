@@ -6,8 +6,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ContractService, SubscriptionQuotaService } from '@pc/app-services';
-import { insertAgentRunRow, markAgentRunTerminal, newId } from '@pc/db';
-import type { ULID } from '@pc/domain';
+import {
+  createReviewCheckoutReservation,
+  insertAgentRunRow,
+  markAgentRunTerminal,
+  newId,
+} from '@pc/db';
+import type { ReviewCheckoutAuthority, ULID } from '@pc/domain';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
@@ -169,6 +174,87 @@ test('run list retention: preserved lifecycle states outlive the 24h window; une
     // the web keys the preserved split off lifecycleState — it must ride the DTO
     const preservedDto = res.runs.find((r: Json) => r.runId === parkedMergeReady);
     assert.equal(preservedDto.lifecycleState, 'merge-ready');
+  } finally {
+    await server.close();
+  }
+});
+
+test('review checkout read exposes exact unresolved workspace authority and scopes it to the project', async () => {
+  freshDb();
+  const project = newProject();
+  const producerRunId = newId() as ULID;
+  insertAgentRunRow({
+    id: producerRunId,
+    projectId: project.id,
+    ...testAgentRunExecution('builder'),
+    dispatcherSessionId: 'disp-review-read',
+    status: 'queued',
+    input: 'build',
+    queuedAt: Date.now(),
+  });
+  const contracts = new ContractService();
+  const target = contracts.create({
+    projectId: project.id,
+    agentRunId: producerRunId,
+    podName: 'builder',
+    expectedOutput: { kind: 'repo', review: 'full' },
+    landingPolicy: 'full-review',
+  });
+  const verified = contracts.setVerification({
+    id: target.id,
+    verificationStatus: 'passed',
+  });
+  assert.ok(verified);
+  const reviewerRunId = newId() as ULID;
+  const reservedTarget = contracts.reserveReview({
+    id: verified.id,
+    expectedVersion: verified.version,
+    expectedReviewRunId: null,
+    expectedAgentRunId: producerRunId,
+    reviewRound: 1,
+    reviewRunId: reviewerRunId,
+    reviewSealedCommit: 'a'.repeat(40),
+  });
+  assert.ok(reservedTarget);
+  const authority: ReviewCheckoutAuthority = {
+    id: newId() as ULID,
+    projectId: project.id,
+    contractId: target.id as ULID,
+    contractVersion: reservedTarget.version,
+    producerRunId,
+    reviewerRunId,
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1' as const,
+      gitCommonDir: 'C:\\repo\\.git',
+      leaseKey: `sha256:${'b'.repeat(64)}`,
+    },
+    worktreePath: `C:\\repo-worktrees\\review-${reviewerRunId.slice(-8)}`,
+    ownedRootRealPath: 'C:\\repo-worktrees',
+    sealedCommit: 'a'.repeat(40),
+  };
+  assert.ok(createReviewCheckoutReservation({ ...authority, createdAt: 10 }));
+
+  const { server, base } = await boot();
+  try {
+    const response = await fetch(`${base}/api/projects/${project.id}/review-checkouts`).then(body);
+    assert.equal(response.ok, true);
+    assert.equal(response.reviewCheckouts.length, 1);
+    assert.deepEqual(response.reviewCheckouts[0], {
+      ...authority,
+      status: 'reserved',
+      provisionReceipt: null,
+      preparationReceipt: null,
+      readinessReceipt: null,
+      teardownReceipt: null,
+      cleanupError: null,
+      createdAt: 10,
+      updatedAt: 10,
+      destroyedAt: null,
+    });
+    assert.equal(
+      (await fetch(`${base}/api/projects/${newId()}/review-checkouts`)).status,
+      404,
+    );
   } finally {
     await server.close();
   }

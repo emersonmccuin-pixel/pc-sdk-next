@@ -1,5 +1,8 @@
-import type { AgentRunDto, Contract } from '@pc/contracts';
-import type { AgentRunView } from '@/features/agent-runs/use-project-agent-runs';
+import type { AgentRunDto, Contract, ReviewCheckoutDto } from '@pc/contracts';
+import {
+  isRecoveryTerminalRun,
+  type AgentRunView,
+} from '@/features/agent-runs/use-project-agent-runs';
 import type { StrandedWorktreeDto } from '@/features/worktrees/client';
 
 export interface RecoveryRunCard {
@@ -11,6 +14,53 @@ export interface RecoveryRunCard {
 export interface RecoveryProjection {
   runCards: RecoveryRunCard[];
   strandedWorktrees: StrandedWorktreeDto[];
+}
+
+export interface ReviewVerdictEvidence {
+  verdict: 'approve' | 'reject';
+  findingCount: number;
+}
+
+export function reviewCheckoutsRequiringAttention(
+  reviewCheckouts: readonly ReviewCheckoutDto[],
+): ReviewCheckoutDto[] {
+  return reviewCheckouts.filter((checkout) => checkout.status === 'teardown-pending');
+}
+
+/** Only the reviewer's schema-validated payload contract is verdict evidence.
+ * Final prose, the target contract state, and a terminal run are not parsed as
+ * a verdict. This browser check is defensive presentation; server settlement
+ * remains the authority door. */
+export function exactReviewVerdictEvidence(
+  reviewerContract: Contract | null,
+): ReviewVerdictEvidence | null {
+  const expected = reviewerContract?.expectedOutput;
+  if (
+    !reviewerContract ||
+    !expected ||
+    expected.kind !== 'payload' ||
+    expected.semantic !== 'verdict' ||
+    reviewerContract.verificationStatus !== 'passed' ||
+    reviewerContract.deliverable?.kind !== 'payload'
+  ) return null;
+  const data = reviewerContract.deliverable.data;
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  if (
+    (record.verdict !== 'approve' && record.verdict !== 'reject') ||
+    !Array.isArray(record.findings)
+  ) return null;
+  for (const finding of record.findings) {
+    if (finding === null || typeof finding !== 'object' || Array.isArray(finding)) return null;
+    const item = finding as Record<string, unknown>;
+    if (
+      typeof item.file !== 'string' ||
+      typeof item.summary !== 'string' ||
+      !['critical', 'major', 'minor'].includes(String(item.severity)) ||
+      (item.line !== undefined && typeof item.line !== 'number')
+    ) return null;
+  }
+  return { verdict: record.verdict, findingCount: record.findings.length };
 }
 
 export function contractForRecoveryRun(
@@ -55,7 +105,7 @@ export function buildRecoveryProjection(input: {
 
   for (const run of input.runs) {
     const contract = contractForRecoveryRun(run, input.contracts);
-    if (run.lifecycleState === 'merge-ready' && contract?.landingStatus !== 'landed') continue;
+    if (!isRecoveryTerminalRun(run, contract?.landingStatus ?? null)) continue;
     if (contract && input.strongerContractIds.has(contract.id)) continue;
     const worktree = exactStrandedEvidenceForRun(run, contract, input.worktrees);
     const candidate = { run, contract, worktree };

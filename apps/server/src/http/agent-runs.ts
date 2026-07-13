@@ -12,12 +12,14 @@ import {
   getLiveEventHighWater,
   getPendingAsk,
   getProjectById,
+  getReviewCheckoutForReviewer,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   listConversationEvents,
   listPreservedTerminalAgentRuns,
   listProjectVisibleAgents,
   listRecentTerminalAgentRuns,
+  listReviewCheckoutsNeedingRecovery,
   listStrandedWorktrees,
 } from '@pc/db';
 import { ContractService, toAgentRunDto, toPendingAskDto } from '@pc/app-services';
@@ -27,7 +29,7 @@ import {
   parseCreatePendingAskRequest,
   type ChatEvent,
 } from '@pc/contracts';
-import type { AgentRunStatus, ULID } from '@pc/domain';
+import type { AgentRunRow, AgentRunStatus, ReviewCheckout, ULID } from '@pc/domain';
 import type { DispatchService } from '../dispatch/service.ts';
 
 const TERMINAL_LIST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -111,8 +113,15 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     const recent = listRecentTerminalAgentRuns(Date.now() - TERMINAL_LIST_WINDOW_MS).filter(
       (r) => r.projectId === projectId,
     );
+    // Review-workspace cleanup is separate durable truth. Its exact reviewer
+    // must remain inspectable even after the ordinary recent-terminal window
+    // while that workspace still needs recovery.
+    const reviewRecoveryRuns = listReviewCheckoutsNeedingRecovery()
+      .filter((checkout) => checkout.projectId === projectId)
+      .map((checkout) => getAgentRunRow(checkout.reviewerRunId))
+      .filter((row): row is AgentRunRow => row !== null && row.projectId === projectId);
     const seen = new Set<string>();
-    const rows = [...active, ...preserved, ...recent].filter((r) =>
+    const rows = [...active, ...preserved, ...recent, ...reviewRecoveryRuns].filter((r) =>
       seen.has(r.id) ? false : (seen.add(r.id), true),
     );
     // Synchronous DB reads make this a consistent outbox boundary: any live
@@ -121,6 +130,29 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     // comparing clocks.
     const asOfCursor = getLiveEventHighWater();
     return c.json({ ok: true, runs: rows.map((r) => toAgentRunDto(r)), asOfCursor });
+  });
+
+  /** Workspace-owned detached-review evidence. Unresolved authority is never
+   * age-bounded. Settled evidence follows the same recent-terminal window as
+   * its reviewer transcript; the append-only row remains durable after it
+   * leaves this browser projection. */
+  app.get('/api/projects/:id/review-checkouts', (c) => {
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    const unresolved = listReviewCheckoutsNeedingRecovery().filter(
+      (checkout) => checkout.projectId === projectId,
+    );
+    const recent = listRecentTerminalAgentRuns(Date.now() - TERMINAL_LIST_WINDOW_MS)
+      .filter((row) => row.projectId === projectId)
+      .map((row) => getReviewCheckoutForReviewer(row.id))
+      .filter((checkout): checkout is ReviewCheckout =>
+        checkout !== null && checkout.projectId === projectId,
+      );
+    const seen = new Set<string>();
+    const reviewCheckouts = [...unresolved, ...recent].filter((checkout) =>
+      seen.has(checkout.id) ? false : (seen.add(checkout.id), true),
+    );
+    return c.json({ ok: true, reviewCheckouts });
   });
 
   /** pc_list_my_runs — scoped to the dispatcher session. */

@@ -2,17 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import type { AgentRunDto, Contract } from '@pc/contracts';
+import type { AgentRunDto, Contract, ReviewCheckoutDto } from '@pc/contracts';
 import type { AgentRunView } from '../src/features/agent-runs/use-project-agent-runs.ts';
 import type { StrandedWorktreeDto } from '../src/features/worktrees/client.ts';
 import {
   buildRecoveryProjection,
+  exactReviewVerdictEvidence,
   exactStrandedEvidenceForRun,
   preservationEvidenceMessage,
   recoveryRunGuidance,
   recoveryRunLabel,
+  reviewCheckoutsRequiringAttention,
   sealedEvidenceMessage,
 } from '../src/features/recovery/view.ts';
+import { parseReviewCheckoutListResponse } from '../src/features/recovery/use-review-checkouts.ts';
 
 function run(overrides: Partial<AgentRunDto> = {}): AgentRunView {
   return {
@@ -96,6 +99,35 @@ function worktree(overrides: Partial<StrandedWorktreeDto> = {}): StrandedWorktre
     contractId: 'contract-1',
     strandedReason: 'no-live-run',
     strandedAt: 30,
+    ...overrides,
+  };
+}
+
+function reviewCheckout(overrides: Partial<ReviewCheckoutDto> = {}): ReviewCheckoutDto {
+  return {
+    id: '01J00000000000000000000001',
+    projectId: '01J00000000000000000000002',
+    contractId: '01J00000000000000000000003',
+    contractVersion: 4,
+    producerRunId: '01J00000000000000000000004',
+    reviewerRunId: '01J00000000000000000000005',
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1',
+      gitCommonDir: 'C:\\repo\\.git',
+      leaseKey: `sha256:${'b'.repeat(64)}`,
+    },
+    worktreePath: 'C:\\repo-worktrees\\review-00000005',
+    ownedRootRealPath: 'C:\\repo-worktrees',
+    sealedCommit: 'a'.repeat(40),
+    status: 'reserved',
+    provisionReceipt: null,
+    preparationReceipt: null,
+    readinessReceipt: null,
+    teardownReceipt: null,
+    cleanupError: null,
+    createdAt: 10,
+    updatedAt: 10,
+    destroyedAt: null,
     ...overrides,
   };
 }
@@ -218,12 +250,67 @@ test('typed labels, sealed evidence, and guidance stay provider-neutral', () => 
   assert.equal(sealedEvidenceMessage(contract({ expectedOutput: { kind: 'answer' } })), null);
 });
 
+test('review checkout read and recovery attention are strict and state-based', () => {
+  const reserved = reviewCheckout();
+  const pending = reviewCheckout({
+    id: '01J00000000000000000000006',
+    reviewerRunId: '01J00000000000000000000007',
+    status: 'teardown-pending',
+    cleanupError: 'locked registration',
+    updatedAt: 11,
+  });
+  assert.deepEqual(
+    parseReviewCheckoutListResponse({ ok: true, reviewCheckouts: [reserved, pending] }),
+    [reserved, pending],
+  );
+  assert.deepEqual(reviewCheckoutsRequiringAttention([reserved, pending]).map((item) => item.id), [pending.id]);
+  assert.throws(
+    () => parseReviewCheckoutListResponse({ ok: true, reviewCheckouts: [pending], native: 'leak' }),
+    /invalid review checkout response/,
+  );
+  assert.throws(
+    () => parseReviewCheckoutListResponse({ ok: true, reviewCheckouts: [{ ...reserved, sealedCommit: 'bad' }] }),
+    /invalid review checkout response/,
+  );
+});
+
+test('review verdict presentation accepts only a verified typed reviewer contract', () => {
+  const reviewer = contract({
+    expectedOutput: { kind: 'payload', semantic: 'verdict', schema: { type: 'object' } },
+    verificationStatus: 'passed',
+    deliverable: {
+      kind: 'payload',
+      data: {
+        verdict: 'reject',
+        findings: [{ file: 'src/a.ts', line: 7, summary: 'unsafe', severity: 'major' }],
+      },
+    },
+  });
+  assert.deepEqual(exactReviewVerdictEvidence(reviewer), { verdict: 'reject', findingCount: 1 });
+  assert.equal(exactReviewVerdictEvidence(contract({
+    ...reviewer,
+    verificationStatus: 'failed',
+  })), null);
+  assert.equal(exactReviewVerdictEvidence(contract({
+    ...reviewer,
+    deliverable: {
+      kind: 'payload',
+      data: { verdict: 'approve', findings: [{ file: 'x', summary: 'bad', severity: 'unknown' }] },
+    },
+  })), null);
+});
+
 test('activity source keeps separate counts, explicit unavailable retries, and no continuation door', () => {
   const source = readFileSync(new URL('../src/components/ActivityPanel.tsx', import.meta.url), 'utf8');
   assert.match(source, /Recovery required/);
   assert.match(source, /Running agents/);
   assert.match(source, /runReadStatus === 'error'/);
   assert.match(source, /worktreeReadStatus === 'error'/);
+  assert.match(source, /reviewCheckoutReadStatus === 'error'/);
+  assert.match(source, /Review checkout/);
+  assert.match(source, /cleanup pending/);
+  assert.match(source, /Recent review evidence/);
+  assert.match(source, /cleanup settled/);
   assert.match(source, /status unavailable/);
   assert.match(source, /Running agent status unavailable/);
   assert.match(source, /strandedRead\.status === 'ready' \? strandedRead\.worktrees : \[\]/);
