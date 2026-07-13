@@ -26,8 +26,8 @@ import {
   listProjects,
   listProtectedAbandonmentWorktreePaths,
   listStrandedWorktrees,
-  markWorktreeDestroyed,
   markExactWorktreeDestroyed,
+  markExactWorktreeSnapshotDestroyed,
   markExactUnpublishedWorktreeDestroyed,
   markWorktreeStranded,
   reviveStrandedWorktree,
@@ -1546,12 +1546,12 @@ export async function settleAbandonedWorktree(
 }
 
 /** Reclaim the worktree DIRECTORY. The branch is preserved on purpose —
- *  unlanded/abandoned work stays recoverable from the branch (a successful
- *  land deletes the branch separately, once merged — see deleteMergedBranch).
+ *  unlanded/abandoned work stays recoverable from the branch. Landed cleanup
+ *  uses the separate exact positive settlement door below.
  *  Profile `cleanupCommands` run first, IN the worktree, bounded and
  *  best-effort — a cleanup failure logs and defers to removal (never blocks
- *  settlement). Returns false when removal fails (worktree row stays active)
- *  so callers can stamp 'stranded' instead of falsely claiming completion. */
+ *  settlement). Returns false when removal fails (the exact active/stranded
+ *  row remains retryable) so callers never falsely claim completion. */
 export async function teardownWorktree(
   projectDir: string,
   dir: string,
@@ -1571,6 +1571,13 @@ export async function teardownWorktree(
     console.warn(`[pc-sdk][worktree] teardown authority unavailable for ${dir}: ${repositoryLeaseMessage(error)}`);
     return false;
   }
+  const candidates = [...listActiveWorktrees(), ...listStrandedWorktrees()].filter(
+    (row) => normalizePathKey(row.path) === normalizePathKey(dir),
+  );
+  if (candidates.length > 1 || (existsSync(dir) && candidates.length !== 1)) {
+    console.warn(`[pc-sdk][worktree] teardown exact row is unavailable or ambiguous for ${dir}`);
+    return false;
+  }
   if (cleanupCommands.length > 0 && existsSync(dir)) {
     const cleanup = await runProfileCommands(
       dir,
@@ -1587,59 +1594,249 @@ export async function teardownWorktree(
   }
   const removed = await git(['worktree', 'remove', '--force', dir], projectDir);
   if (!removed.ok) {
-    // Crash-window idempotency: a prior teardown can succeed at removal and
-    // die before markWorktreeDestroyed — the boot re-run's removal then fails
-    // ('not a working tree') on a dir git no longer knows. Dir absent AND
-    // unregistered is positive proof the removal already happened; converge
-    // to success instead of stranding a finished teardown every boot.
-    if (!existsSync(dir) && !(await isRegisteredWorktree(projectDir, dir))) {
-      markWorktreeDestroyed(basename(dir));
-      return true;
-    }
     // FS fallback: locked files (Windows node_modules binaries) can make
     // `git worktree remove --force` fail outright. Force the directory off
-    // the filesystem ourselves, then prune the now-stale registration
-    // (best-effort — a registration git won't prune, e.g. an explicit
-    // `worktree lock`, is harmless once the directory backing it is gone).
-    // Directory absence here is OUR OWN positive proof of removal — unlike
-    // the crash-window branch above, no registration re-check is needed.
+    // the filesystem ourselves. This is not settlement evidence by itself:
+    // an explicit Git lock can preserve a stale registration after the path
+    // disappears, so the shared proof below still requires both absences.
     if (existsSync(dir)) {
       console.warn(`[pc-sdk][worktree] git remove failed for ${dir} (${removed.stderr}) — trying filesystem force-delete`);
       forceRemoveDir(dir);
-      await git(['worktree', 'prune'], projectDir);
-      if (!existsSync(dir)) {
-        markWorktreeDestroyed(basename(dir));
-        return true;
-      }
     }
-    // Removal failure is logged and left to boot recovery (stranded scan +
-    // orphan sweep); never block settlement on cleanup.
-    console.warn(`[pc-sdk][worktree] remove failed for ${dir}: ${removed.stderr}`);
+  }
+  await git(['worktree', 'prune'], projectDir);
+  if (existsSync(dir) || await isRegisteredWorktree(projectDir, dir)) {
+    console.warn(
+      `[pc-sdk][worktree] remove remains incomplete for ${dir}: ` +
+        `${existsSync(dir) ? 'directory present' : 'Git registration present'}`,
+    );
     return false;
   }
-  markWorktreeDestroyed(basename(dir));
-  return true;
+  if (candidates.length === 0) return true;
+  return markExactWorktreeSnapshotDestroyed({
+    worktree: candidates[0]!,
+    destroyedAt: Date.now(),
+  });
 }
 
-/** Delete the branch AFTER a confirmed land — best-effort, never throws. The
- *  merge already carried its history into the base branch, so the agent
- *  branch ref itself is disposable; unlanded/abandoned work never reaches
- *  this call (teardownWorktree keeps preserving those branches). */
-export async function deleteMergedBranch(
-  projectDir: string,
-  branch: string,
-  expectedIdentity: RepositoryIdentityReceipt | null = null,
-): Promise<void> {
+export type LandedWorktreeSettlementResult =
+  | { ok: true }
+  | {
+      ok: false;
+      code:
+        | 'invalid-binding'
+        | 'repository-unavailable'
+        | 'removal-incomplete'
+        | 'registration-inconclusive'
+        | 'branch-delete-failed'
+        | 'branch-absence-inconclusive'
+        | 'row-settlement-failed';
+      error: string;
+    };
+
+/** Positive landed cleanup for one exact durable binding. The merge receipt
+ * proves history only; this door independently proves directory, Git
+ * registration, and exact merged-branch absence before the row is destroyed.
+ * An already-destroyed exact row is accepted only after re-running those
+ * external absence proofs, closing the crash window before lifecycle stamp. */
+export async function settleLandedWorktree(input: {
+  projectDir: string;
+  projectId: ULID;
+  contractId: ULID;
+  producerRunId: ULID;
+  worktree: Worktree;
+  branch: string;
+  branchTip: string;
+  cleanupCommands?: readonly string[];
+  repositoryIdentity: RepositoryIdentityReceipt;
+}): Promise<LandedWorktreeSettlementResult> {
+  const { worktree } = input;
+  if (
+    !['active', 'stranded', 'destroyed'].includes(worktree.status) ||
+    worktree.projectId !== input.projectId ||
+    worktree.contractId !== input.contractId ||
+    worktree.agentRunId !== input.producerRunId ||
+    worktree.path === '' ||
+    worktree.name !== input.branch ||
+    worktree.branch !== input.branch ||
+    basename(worktree.path) !== input.branch ||
+    !worktree.baseBranch ||
+    !isOwnedWorktreePath(input.projectDir, worktree.path) ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(input.branchTip)
+  ) {
+    return { ok: false, code: 'invalid-binding', error: 'landed cleanup binding is unavailable or inconsistent' };
+  }
   try {
-    await repositoryLeaseManager.acquire(projectDir, expectedIdentity);
+    await repositoryLeaseManager.acquire(input.projectDir, input.repositoryIdentity);
+    if (existsSync(worktree.path)) {
+      await repositoryLeaseManager.acquire(worktree.path, input.repositoryIdentity);
+    }
   } catch (error) {
-    console.warn(`[pc-sdk][worktree] branch-delete authority unavailable for ${branch}: ${repositoryLeaseMessage(error)}`);
-    return;
+    return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
   }
-  const del = await git(['branch', '-D', branch], projectDir);
-  if (!del.ok) {
-    console.warn(`[pc-sdk][worktree] branch delete failed for ${branch} (best-effort, land receipt already durable): ${del.stderr}`);
+
+  const beforeRegistrations = await readWorktreeRegistrations(input.projectDir);
+  if (!beforeRegistrations.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: beforeRegistrations.error };
   }
+  const beforeRegistration = registrationForPath(beforeRegistrations.rows, worktree.path);
+  if (beforeRegistration === 'duplicate') {
+    return { ok: false, code: 'invalid-binding', error: 'duplicate landed worktree registrations exist' };
+  }
+  if (
+    beforeRegistration &&
+    (
+      beforeRegistration.branch !== input.branch ||
+      beforeRegistration.head !== input.branchTip
+    )
+  ) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: 'landed worktree registration no longer matches the exact path, branch, and receipted tip',
+    };
+  }
+  if (existsSync(worktree.path) && beforeRegistration === null) {
+    return {
+      ok: false,
+      code: 'invalid-binding',
+      error: 'present landed worktree directory has no exact Git registration',
+    };
+  }
+
+  const currentExactBinding = (): Worktree | null => {
+    const current = getWorktreeById(worktree.id);
+    if (
+      !current ||
+      !['active', 'stranded', 'destroyed'].includes(current.status) ||
+      current.projectId !== input.projectId ||
+      current.contractId !== input.contractId ||
+      current.agentRunId !== input.producerRunId ||
+      current.path !== worktree.path ||
+      current.name !== input.branch ||
+      current.branch !== input.branch ||
+      current.baseBranch !== worktree.baseBranch ||
+      current.baseSha !== worktree.baseSha ||
+      current.createdAt !== worktree.createdAt
+    ) return null;
+    return current;
+  };
+
+  const verifyPresentBinding = async (): Promise<LandedWorktreeSettlementResult | null> => {
+    if (!currentExactBinding()) {
+      return { ok: false, code: 'row-settlement-failed', error: 'durable worktree ownership changed' };
+    }
+    if (!existsSync(worktree.path)) return null;
+    if (!isOwnedWorktreePath(input.projectDir, worktree.path)) {
+      return { ok: false, code: 'invalid-binding', error: 'landed worktree path is no longer owned' };
+    }
+    try {
+      await repositoryLeaseManager.acquire(worktree.path, input.repositoryIdentity);
+    } catch (error) {
+      return { ok: false, code: 'repository-unavailable', error: repositoryLeaseMessage(error) };
+    }
+    const currentRegistrations = await readWorktreeRegistrations(input.projectDir);
+    if (!currentRegistrations.ok) {
+      return { ok: false, code: 'registration-inconclusive', error: currentRegistrations.error };
+    }
+    const currentRegistration = registrationForPath(currentRegistrations.rows, worktree.path);
+    if (
+      currentRegistration === 'duplicate' ||
+      currentRegistration === null ||
+      currentRegistration.branch !== input.branch ||
+      currentRegistration.head !== input.branchTip
+    ) {
+      return {
+        ok: false,
+        code: 'invalid-binding',
+        error: 'present landed worktree no longer matches its exact Git registration',
+      };
+    }
+    return null;
+  };
+
+  if ((input.cleanupCommands?.length ?? 0) > 0 && existsSync(worktree.path)) {
+    const unsafe = await verifyPresentBinding();
+    if (unsafe) return unsafe;
+    const cleanup = await runProfileCommands(
+      worktree.path,
+      input.cleanupCommands!,
+      CLEANUP_CMD_TIMEOUT_MS,
+      input.repositoryIdentity,
+    );
+    if (!cleanup.ok) {
+      const failed = cleanup.steps[cleanup.steps.length - 1];
+      console.warn(
+        `[pc-sdk][worktree] cleanup command failed in ${worktree.path} (exit ${failed?.exitCode}): ${failed?.command} — proceeding to exact removal`,
+      );
+    }
+  }
+
+  if (existsSync(worktree.path)) {
+    const unsafe = await verifyPresentBinding();
+    if (unsafe) return unsafe;
+    const removed = await git(['worktree', 'remove', '--force', worktree.path], input.projectDir);
+    if (!removed.ok && existsSync(worktree.path)) {
+      const fallbackUnsafe = await verifyPresentBinding();
+      if (fallbackUnsafe) return fallbackUnsafe;
+      forceRemoveDir(worktree.path);
+    }
+  }
+  // Missing-directory recovery may still have a stale unlocked registration.
+  await git(['worktree', 'prune'], input.projectDir);
+  if (existsSync(worktree.path)) {
+    return { ok: false, code: 'removal-incomplete', error: 'landed worktree directory is still present' };
+  }
+  const registrations = await readWorktreeRegistrations(input.projectDir);
+  if (!registrations.ok) {
+    return { ok: false, code: 'registration-inconclusive', error: registrations.error };
+  }
+  if (registrationForPath(registrations.rows, worktree.path) !== null) {
+    return { ok: false, code: 'removal-incomplete', error: 'Git still registers the landed worktree path' };
+  }
+
+  const branchRef = `refs/heads/${input.branch}`;
+  if (!currentExactBinding()) {
+    return { ok: false, code: 'row-settlement-failed', error: 'durable worktree ownership changed before branch cleanup' };
+  }
+  const before = await git(['for-each-ref', '--format=%(refname)', branchRef], input.projectDir);
+  if (!before.ok) {
+    return { ok: false, code: 'branch-absence-inconclusive', error: 'landed branch state could not be read' };
+  }
+  if (before.stdout !== '') {
+    const deleted = await git(['update-ref', '-d', branchRef, input.branchTip], input.projectDir);
+    if (!deleted.ok) {
+      return {
+        ok: false,
+        code: 'branch-delete-failed',
+        error: `exact landed branch '${input.branch}' could not be deleted at its receipted tip`,
+      };
+    }
+  }
+  const after = await git(['for-each-ref', '--format=%(refname)', branchRef], input.projectDir);
+  if (!after.ok || after.stdout !== '') {
+    return {
+      ok: false,
+      code: 'branch-absence-inconclusive',
+      error: `exact absence of landed branch '${input.branch}' was not proven`,
+    };
+  }
+
+  const current = currentExactBinding();
+  if (!current) {
+    return { ok: false, code: 'row-settlement-failed', error: 'durable worktree ownership changed before cleanup settlement' };
+  }
+  if (current.status === 'destroyed') return { ok: true };
+  if (current.status !== 'active' && current.status !== 'stranded') {
+    return { ok: false, code: 'row-settlement-failed', error: 'durable worktree row is not retryable' };
+  }
+  const destroyed = markExactWorktreeSnapshotDestroyed({
+    worktree: current,
+    destroyedAt: Date.now(),
+  });
+  return destroyed
+    ? { ok: true }
+    : { ok: false, code: 'row-settlement-failed', error: 'exact worktree row settlement lost its compare-and-set' };
 }
 
 /** True when git still lists `dir` as a registered worktree of the repo.
@@ -1694,11 +1891,10 @@ export interface StrandedReconcileResult {
  *  user-approved state awaiting cleanup, not stranding. Findings are written
  *  through the repo: row → status 'stranded' + reason + strandedAt; the bound
  *  run (when resolvable) gets lifecycle 'stranded' where canTransition allows.
- *  A stranded row whose dir + live run are back flips to active (self-heal;
- *  fuller recovery is a later slice). A stranded row whose dir is gone AND
- *  whose contract already landed/abandoned resolves to terminal 'destroyed'
- *  — the contract record proves the work is done, so it never lingers as a
- *  scary-but-harmless stranded row forever. Never throws. */
+ *  A stranded row whose dir + live run are back flips to active (self-heal).
+ *  Only positively settled abandonment may resolve a missing row here.
+ *  Landing proves merge history, not registration/branch cleanup, so landed
+ *  rows remain retryable for the dedicated positive teardown door. */
 export function reconcileStrandedWorktrees(
   authorizedProjectIds?: ReadonlySet<string>,
 ): StrandedReconcileResult {
@@ -1760,31 +1956,27 @@ export function reconcileStrandedWorktrees(
     // so this is a finished dispatch's leftover row, not a genuine stranding.
     // A dir-gone row whose contract is NOT positively settled (or has none)
     // stays surfaced as 'stranded' — that is the real, actionable case.
-    if (!existsSync(row.path) && isLandedOrAbandoned(row.contractId)) {
-      markWorktreeDestroyed(row.name);
-      resolved.push(row.name);
+    if (!existsSync(row.path) && isSettledAbandonment(row.contractId)) {
+      if (markExactWorktreeSnapshotDestroyed({ worktree: row, destroyedAt: Date.now() })) {
+        resolved.push(row.name);
+      }
     }
   }
   return { stranded, revived, resolved };
 }
 
-/** True when the worktree's contract already reached a positively proven
- *  terminal outcome. Used to resolve a stranded row whose
- *  directory is gone into terminal 'destroyed' instead of leaving it stranded
- *  forever — the contract's own record proves the work is done, so there is
- *  nothing left for a human to reclaim. A legacy raw `abandoned` status is
- *  deliberately inconclusive and therefore never authorizes resolution. */
-function isLandedOrAbandoned(contractId: ULID | null): boolean {
+/** True only for a positively settled abandonment. A landed receipt proves
+ * merge history but cannot authorize this reconcile path to skip registration
+ * and branch cleanup. Legacy raw `abandoned` is also inconclusive. */
+function isSettledAbandonment(contractId: ULID | null): boolean {
   if (!contractId) return false;
   const contract = getContract(contractId);
   if (!contract) return false;
-  return contract.landingStatus === 'landed' || (
-    contract.landingStatus === 'abandoned' &&
+  return contract.landingStatus === 'abandoned' &&
     isMatchingWorktreeAbandonmentTeardown(
       contract.abandonmentReceipt,
       contract.abandonmentTeardownReceipt,
-    )
-  );
+    );
 }
 
 /** True when the worktree's contract is parked for review/landing: verification
@@ -1898,12 +2090,28 @@ export async function sweepOrphanedWorktreeDirs(
     const dir = join(root, name);
     const key = normalizePathKey(dir);
     if (registered.has(key) || keep.has(key)) continue;
+    const rowCandidates = [...listActiveWorktrees(), ...listStrandedWorktrees()].filter(
+      (row) => normalizePathKey(row.path) === key,
+    );
+    if (rowCandidates.length > 1) {
+      console.warn(`[pc-sdk][worktree] orphan sweep preserved ambiguous durable bindings for ${dir}`);
+      continue;
+    }
     forceRemoveDir(dir);
     if (existsSync(dir)) {
       console.warn(`[pc-sdk][worktree] orphan sweep could not remove ${dir}`);
       continue;
     }
-    markWorktreeDestroyed(name);
+    if (
+      rowCandidates.length === 1 &&
+      !markExactWorktreeSnapshotDestroyed({
+        worktree: rowCandidates[0]!,
+        destroyedAt: Date.now(),
+      })
+    ) {
+      console.warn(`[pc-sdk][worktree] orphan sweep removed ${dir} but exact row settlement lost its compare-and-set`);
+      continue;
+    }
     removed.push(name);
     console.warn(`[pc-sdk][worktree] orphan sweep removed ${dir}`);
   }

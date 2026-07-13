@@ -26,6 +26,14 @@ import {
 import { useLiveAgentEvents } from '@/state/agent-event-store';
 import { useResourceEvent } from '@/state/resource-store';
 import { useAgentTranscript } from '@/store/agent-transcript';
+import { isRecoveryTerminalRun } from '@/features/agent-runs/use-project-agent-runs';
+import {
+  exactStrandedEvidenceForRun,
+  preservationEvidenceMessage,
+  sealedEvidenceMessage,
+} from '@/features/recovery/view';
+import { useRecoveryWorktrees } from '@/features/recovery/use-recovery-worktrees';
+import type { StrandedWorktreeDto } from '@/features/worktrees/client';
 import { AbandonWorktreeModal } from './AbandonWorktreeModal';
 import { RichAgentTranscript } from './RichAgentTranscript';
 
@@ -91,6 +99,15 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
       contracts.find((c) => run.worktreeDir.length > 0 && c.worktreePath === run.worktreeDir) ??
       null,
     [contracts, run.runId, run.worktreeDir],
+  );
+  const recoveryWorktrees = useRecoveryWorktrees(run.projectId, true);
+  const recoveryWorktree = useMemo(
+    () => exactStrandedEvidenceForRun(
+      run,
+      contract,
+      recoveryWorktrees.status === 'ready' ? recoveryWorktrees.worktrees : [],
+    ),
+    [run, contract, recoveryWorktrees.status, recoveryWorktrees.worktrees],
   );
 
   const items = useMemo(
@@ -166,6 +183,15 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
           {run.status === 'failed' && run.failureReason && (
             <div className="mt-1 text-[11px] text-destructive">{run.failureReason}</div>
           )}
+          {isRecoveryTerminalRun(run, contract?.landingStatus ?? null) && (
+            <RunRecoveryDetails
+              run={run}
+              contract={contract}
+              worktree={recoveryWorktree}
+              worktreeReadUnavailable={recoveryWorktrees.status !== 'ready'}
+              onRetryWorktreeRead={recoveryWorktrees.retry}
+            />
+          )}
           <PhaseReceiptDetails
             phase="preparation"
             applicable={run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
@@ -216,6 +242,52 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
         />
       )}
     </div>
+  );
+}
+
+export function RunRecoveryDetails({
+  run,
+  contract,
+  worktree,
+  worktreeReadUnavailable = false,
+  onRetryWorktreeRead,
+}: {
+  run: AgentRunDto;
+  contract: Contract | null;
+  worktree: StrandedWorktreeDto | null;
+  worktreeReadUnavailable?: boolean;
+  onRetryWorktreeRead?: () => void;
+}) {
+  const sealed = sealedEvidenceMessage(contract);
+  return (
+    <details className="mt-1 border border-destructive/30 bg-destructive/5 px-2 py-1" open>
+      <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-destructive">
+        recovery evidence
+      </summary>
+      <dl className="mt-1 space-y-0.5 font-mono text-[10px]">
+        <ReceiptRow label="failure cause" value={run.failureCause ?? 'unavailable'} />
+        <ReceiptRow label="lifecycle" value={run.lifecycleState ?? 'unavailable'} />
+      </dl>
+      {sealed && <div className="mt-1 text-[11px] text-muted-foreground">{sealed}</div>}
+      {worktreeReadUnavailable ? (
+        <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-destructive">
+          <span>Worktree recovery status unavailable; preservation is not proven.</span>
+          {onRetryWorktreeRead && (
+            <button
+              type="button"
+              onClick={onRetryWorktreeRead}
+              className="shrink-0 border border-border bg-card px-2 py-0.5 text-[10px] text-foreground hover:bg-muted"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          {preservationEvidenceMessage(worktree)}
+        </div>
+      )}
+    </details>
   );
 }
 

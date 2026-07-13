@@ -90,6 +90,36 @@ export interface BootRecoveryResult {
   cancelledLegacyQueueItemIds: string[];
 }
 
+export interface PreAttachRepositoryRecoveryDispatch {
+  recoverSealedRuns(): Promise<void>;
+  recoverPendingLandings(): Promise<void>;
+  recoverApprovedAbandonments(): Promise<void>;
+  recoverIncompleteTeardowns(): Promise<void>;
+}
+
+/** Production-owned repository recovery composition. Both the server root and
+ * the OS-kill gate execute this exact ordered function, so the gate cannot stay
+ * green if production drops or reorders a pre-attach recovery pass. The
+ * process/DB sweep (`runBootRecovery`) runs first in `startServer`; attachment
+ * remains the caller's next step. */
+export async function runPreAttachRepositoryRecovery(
+  dispatch: PreAttachRepositoryRecoveryDispatch,
+): Promise<void> {
+  await dispatch
+    .recoverSealedRuns()
+    .catch((err) => console.warn('[pc-sdk][dispatch] sealed-run recovery failed:', err));
+  await dispatch
+    .recoverPendingLandings()
+    .catch((err) => console.warn('[pc-sdk][dispatch] pending-landing re-drive failed:', err));
+  await dispatch
+    .recoverApprovedAbandonments()
+    .catch((err) => console.warn('[pc-sdk][dispatch] approved-abandonment re-drive failed:', err));
+  await dispatch
+    .recoverIncompleteTeardowns()
+    .catch((err) => console.warn('[pc-sdk][dispatch] teardown resume failed:', err));
+  await reconcileStrandedWorktreesAtBoot();
+}
+
 /** Scan every project's active session; close out crashed turns. Returns the
  *  recovered session ids. */
 export function runBootRecovery(): BootRecoveryResult {

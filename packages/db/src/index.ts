@@ -118,10 +118,12 @@ export {
   getActiveWorktreeByName,
   getWorktreeById,
   getWorktreeForContract,
+  getWorktreeForLandedContract,
   listActiveWorktrees,
   listStrandedWorktrees,
   markWorktreeDestroyed,
   markExactWorktreeDestroyed,
+  markExactWorktreeSnapshotDestroyed,
   markExactUnpublishedWorktreeDestroyed,
   markWorktreeStranded,
   reviveStrandedWorktree,
@@ -130,6 +132,7 @@ export {
 } from './repos/worktrees.ts';
 export type {
   MarkExactWorktreeDestroyedInput,
+  MarkExactWorktreeSnapshotDestroyedInput,
   MarkExactUnpublishedWorktreeDestroyedInput,
   UpsertWorktreeInput,
   WorktreeRow,

@@ -361,20 +361,23 @@ test('teardown reclaims the directory but ALWAYS preserves the branch', async ()
   }
 });
 
-test('teardown: git remove fails but the filesystem fallback still removes the dir — converges true', async () => {
+test('teardown: filesystem fallback cannot settle while a locked Git registration survives', async () => {
   freshDb();
   const gp = await newGitProject();
   try {
     const wt = await provisionOk(gp.dir);
     // git's own lock blocks `git worktree remove --force` deterministically,
     // but it is administrative only — it never stops a plain filesystem
-    // delete, so the fallback (the Windows-locked-node_modules recovery path)
-    // removes the directory anyway and teardown converges to success.
+    // delete. Directory absence alone is not settlement while the locked
+    // registration survives.
     assert.equal((await git(['worktree', 'lock', wt.dir], gp.dir)).ok, true);
     const ok = await teardownWorktree(gp.dir, wt.dir); // must not throw
-    assert.equal(ok, true, 'teardown converges via the filesystem fallback');
+    assert.equal(ok, false, 'registration absence is still required');
     assert.equal(existsSync(wt.dir), false, 'directory removed by the fallback');
-    assert.equal(getActiveWorktreeByName(wt.branch), null, 'row marked destroyed');
+    assert.notEqual(getActiveWorktreeByName(wt.branch), null, 'row stays retryable');
+    assert.equal((await git(['worktree', 'unlock', wt.dir], gp.dir)).ok, true);
+    assert.equal(await teardownWorktree(gp.dir, wt.dir), true, 'unlocked registration prunes on retry');
+    assert.equal(getActiveWorktreeByName(wt.branch), null, 'row settles only after both absences');
   } finally {
     await gp.cleanup();
   }

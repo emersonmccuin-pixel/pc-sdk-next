@@ -30,6 +30,7 @@ import {
   getPodForSpawn,
   getProjectById,
   getWorktreeForContract,
+  getWorktreeForLandedContract,
   hasContinuation,
   hasOpenPendingAskForRun,
   hasPendingAskForRun,
@@ -121,7 +122,6 @@ import {
   type RepositoryLeaseGuard,
 } from './repository-lease.ts';
 import {
-  deleteMergedBranch,
   deriveDiffStat,
   git,
   landBranch,
@@ -134,8 +134,8 @@ import {
   runProfileCommands,
   inspectWorktreeAbandonment,
   settleAbandonedWorktree,
+  settleLandedWorktree,
   sweepOrphanedWorktreeDirs,
-  teardownWorktree,
 } from './worktrees.ts';
 
 const WALL_CLOCK_DEFAULT_MS = 2 * 60 * 60 * 1000;
@@ -4120,16 +4120,11 @@ export class DispatchService {
       stamp('merged');
       stamp('tearing-down');
       // Failed reclaim = stranded isolation, never a false 'completed' receipt.
-      const toreDown = await teardownWorktree(
-        authorizedProjectDir,
-        contract.worktreePath,
-        this.cleanupCommandsFor(project),
+      const toreDown = await this.settleLandedCleanup(
+        updated,
+        project,
         repositoryIdentity,
       );
-      // Confirmed land ⇒ the branch is merged history now; delete it (branch
-      // survives for unlanded/abandoned work only — best-effort, never blocks).
-      await deleteMergedBranch(authorizedProjectDir, branch, repositoryIdentity);
-      await this.sweepOrphansFor(project, repositoryIdentity);
       // `completed` is the terminal-pipeline barrier: no branch delete or
       // orphan-prune work remains in flight once observers see it.
       stamp(toreDown ? 'completed' : 'stranded');
@@ -4202,16 +4197,11 @@ export class DispatchService {
       stamp('merged');
       stamp('tearing-down');
       // Failed reclaim = stranded isolation, never a false 'completed' receipt.
-      const toreDown = await teardownWorktree(
-        authorizedProjectDir,
-        contract.worktreePath,
-        this.cleanupCommandsFor(project),
+      const toreDown = await this.settleLandedCleanup(
+        updated,
+        project,
         repositoryIdentity,
       );
-      // Confirmed land ⇒ the branch is merged history now; delete it (branch
-      // survives for unlanded/abandoned work only — best-effort, never blocks).
-      await deleteMergedBranch(authorizedProjectDir, branch, repositoryIdentity);
-      await this.sweepOrphansFor(project, repositoryIdentity);
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
       if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
@@ -4236,6 +4226,59 @@ export class DispatchService {
   private cleanupCommandsFor(project: Project | null): string[] {
     const parsed = parseWorktreeProfile(project?.worktreeProfile ?? null);
     return parsed.ok ? parsed.profile?.cleanupCommands ?? [] : [];
+  }
+
+  /** One positive cleanup path for fresh landings and every boot re-drive.
+   * Contract merge evidence never substitutes for the exact worktree,
+   * registration, branch-ref, or row proofs owned by the workspace service. */
+  private async settleLandedCleanup(
+    contract: Contract,
+    project: Project,
+    repositoryIdentity: RepositoryIdentityReceipt,
+  ): Promise<boolean> {
+    const configuredIdentity = project.repositoryIdentity;
+    const worktree = getWorktreeForLandedContract(contract.id as ULID);
+    const producerRunId = (contract.agentRunId ?? null) as ULID | null;
+    const branch = contract.landedBranch;
+    const branchTip = contract.landedSha;
+    if (
+      !worktree ||
+      !producerRunId ||
+      !branch ||
+      !branchTip ||
+      !project.folderPath ||
+      !configuredIdentity ||
+      configuredIdentity.protocol !== repositoryIdentity.protocol ||
+      configuredIdentity.gitCommonDir !== repositoryIdentity.gitCommonDir ||
+      configuredIdentity.leaseKey !== repositoryIdentity.leaseKey ||
+      contract.worktreePath !== worktree.path ||
+      contract.worktreeBaseBranch !== worktree.baseBranch ||
+      contract.worktreeBaseSha !== worktree.baseSha
+    ) {
+      console.warn(
+        `[pc-sdk][worktree] landed cleanup for contract ${contract.id} deferred: exact durable binding is unavailable`,
+      );
+      return false;
+    }
+    const settled = await settleLandedWorktree({
+      projectDir: project.folderPath,
+      projectId: contract.projectId as ULID,
+      contractId: contract.id as ULID,
+      producerRunId,
+      worktree,
+      branch,
+      branchTip,
+      cleanupCommands: this.cleanupCommandsFor(project),
+      repositoryIdentity,
+    });
+    if (!settled.ok) {
+      console.warn(
+        `[pc-sdk][worktree] landed cleanup for contract ${contract.id} remains retryable (${settled.code}): ${settled.error}`,
+      );
+      return false;
+    }
+    await this.sweepOrphansFor(project, repositoryIdentity);
+    return true;
   }
 
   /** Best-effort orphan GC after a land completes teardown — a locked
@@ -4457,10 +4500,12 @@ export class DispatchService {
    *  reclaim genuinely fails here strands correctly, receipt intact. */
   async recoverIncompleteTeardowns(): Promise<void> {
     const { listContractsLandedTeardownIncomplete } = await import('@pc/db');
-    for (const contract of listContractsLandedTeardownIncomplete()) {
+    for (const row of listContractsLandedTeardownIncomplete()) {
       // Per-contract isolation: one bad row never aborts boot.
       try {
-        const project = getProjectById(contract.projectId);
+        const contract = this.contracts.get(row.id);
+        if (!contract || contract.landingStatus !== 'landed') continue;
+        const project = getProjectById(contract.projectId as ULID);
         if (!project?.folderPath || !contract.worktreePath) continue;
         const producing = contract.agentRunId
           ? getAgentRunRow(contract.agentRunId as ULID)
@@ -4476,33 +4521,21 @@ export class DispatchService {
         console.warn(
           `[pc-sdk][boot-recovery] contract ${contract.id} landed but its worktree survived — resuming teardown of ${contract.worktreePath}.`,
         );
-        const runId = contract.agentRunId;
+        const runId = (contract.agentRunId ?? null) as ULID | null;
         // Crash mid-'merging': the durable receipt proves the merge happened.
         this.stampLifecycleWhenLegal(runId, 'merged');
         this.stampLifecycleWhenLegal(runId, 'tearing-down');
-        const ok = await teardownWorktree(
-          project.folderPath,
-          contract.worktreePath,
-          this.cleanupCommandsFor(project),
+        const ok = await this.settleLandedCleanup(
+          contract,
+          project,
           repositoryIdentity,
         );
-        // Confirmed land (this contract only re-enters here already landed)
-        // ⇒ delete the now-merged branch — best-effort, never blocks.
-        const branch = contract.landedBranch ?? contract.worktreePath.split(/[\\/]/).pop() ?? '';
-        if (branch) {
-          await deleteMergedBranch(
-            project.folderPath,
-            branch,
-            repositoryIdentity,
-          );
-        }
-        await this.sweepOrphansFor(project, repositoryIdentity);
         this.stampLifecycleWhenLegal(runId, ok ? 'completed' : 'stranded');
         // A reclaim that finally succeeded resolves earlier preserved parks
         // (a previously 'stranded' run exits the feed here).
         if (ok) this.resolvePreservedRuns(contract.id as ULID);
       } catch (err) {
-        console.error(`[pc-sdk][boot-recovery] teardown resume failed for contract ${contract.id} — continuing with the rest:`, err);
+        console.error(`[pc-sdk][boot-recovery] teardown resume failed for contract ${row.id} — continuing with the rest:`, err);
       }
     }
   }

@@ -7,13 +7,14 @@ import { TranscriptRow } from '../src/components/TranscriptRow.tsx';
 import {
   AbandonmentReceiptDetails,
   PhaseReceiptDetails,
+  RunRecoveryDetails,
 } from '../src/components/AgentTranscriptModal.tsx';
 import {
   parseAgentRunEventsResponse,
   type AgentRunEventEntry,
 } from '../src/features/agent-runs/client.ts';
 import { mergeAgentTranscriptEvents } from '../src/features/agent-runs/transcript.ts';
-import type { AgentEventFrame, Contract } from '@pc/contracts';
+import type { AgentEventFrame, AgentRunDto, Contract } from '@pc/contracts';
 
 const ENTRY = {
   dedupId: 'event-1',
@@ -213,4 +214,58 @@ test('abandonment receipt presentation distinguishes pending, settled, and legac
   assert.match(legacy, /authority unavailable/);
   assert.match(legacy, /no explicit user approval receipt/i);
   assert.match(legacy, /automatic cleanup is not authorized/i);
+});
+
+test('recovery evidence distinguishes typed cause, sealed evidence, preservation, and unavailable reads', () => {
+  const run = {
+    runId: 'run-1',
+    agentName: 'builder',
+    projectId: 'project-1',
+    dispatcherSessionId: 'session-1',
+    worktreeDir: 'C:\\repo-worktrees\\run-1',
+    startedAt: 1,
+    status: 'failed',
+    lifecycleState: 'failed',
+    result: '',
+    failureReason: 'server restarted while the run was live',
+    failureCause: 'server-restart',
+    endedAt: 2,
+    rev: 3,
+  } as AgentRunDto;
+  const contract = {
+    expectedOutput: { kind: 'repo' },
+    deliverable: { kind: 'repo', branch: 'run-1', commit: 'a'.repeat(40) },
+  } as Contract;
+  const worktree = {
+    id: 'worktree-1',
+    name: 'run-1',
+    path: run.worktreeDir,
+    branch: 'run-1',
+    baseBranch: 'main',
+    agentRunId: run.runId,
+    contractId: 'contract-1',
+    strandedReason: 'no-live-run',
+    strandedAt: 10,
+  } as const;
+
+  const positive = renderToStaticMarkup(createElement(RunRecoveryDetails, {
+    run,
+    contract,
+    worktree,
+  }));
+  assert.match(positive, /server-restart/);
+  assert.match(positive, /lifecycle/);
+  assert.match(positive, /sealed deliverable recorded/i);
+  assert.match(positive, /worktree remains preserved/i);
+
+  const unavailable = renderToStaticMarkup(createElement(RunRecoveryDetails, {
+    run,
+    contract,
+    worktree: null,
+    worktreeReadUnavailable: true,
+    onRetryWorktreeRead: () => {},
+  }));
+  assert.match(unavailable, /worktree recovery status unavailable/i);
+  assert.match(unavailable, /preservation is not proven/i);
+  assert.match(unavailable, /Retry/);
 });
