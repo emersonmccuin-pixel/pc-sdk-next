@@ -1,7 +1,7 @@
 # Current execution handoff
 
-Updated: 2026-07-12 after DL-003 implementation sealing, exact feature-tree
-verification, and three independent hostile re-reviews.
+Updated: 2026-07-12 after DL-003 guarded landing, post-merge verification,
+exact push/re-fetch, and guarded feature-worktree cleanup.
 
 ## Repository
 
@@ -334,27 +334,24 @@ teardown all passed.
 
 ## Active action
 
-DL-003 implementation is sealed as
-`eef661d7e97e6a9ce66568afff88a081129896aa`, exact tree
-`d0351abbd2349c1ca739bc1ed16c804667943b65`. Positive retryable landed
-teardown, exact unresolved-owner retention, the honest Activity recovery rail,
-server-cursor reconnect convergence, shared production recovery composition,
-and the provider-free two-worktree OS hard-kill gate are complete. Three final
-hostile re-reviews report no P0/P1/P2 blocker. Exact feature-tree
-`pnpm ci:check` is green with 419/419 server tests and the dead-import guard;
-the production web build is green.
+DL-003 is complete. Sealed implementation `eef661d7`, feature record
+`f15d6d0f`, guarded landing `23872f15`, and exact feature/merge tree
+`4c66313c` are positive. Three final hostile re-reviews report no P0/P1/P2
+blocker. Feature and post-merge `pnpm ci:check` are green with 419/419 server
+tests and the dead-import guard; production web build, exact push/re-fetch, and
+guarded feature-worktree/residue cleanup passed. `OPS-003` is verified.
 
-Guard-land the sealed feature record onto the exact clean pushed base, prove
-feature/merge tree equality and ancestry, rerun the full gate on `main`, push
-and re-fetch the exact merge, then remove only the proven landed feature
-worktree/residue. Keep general recovery-center/workflow behavior, arbitrary
-Git repair, `OPS-006`, nonparticipant/escaped-child containment, PM/MCP,
-Codex, and N7 out of scope.
+Define `DL-004` around the remaining exact detached-review checkout authority
+and receipts that keep `WT-002` accepted. Audit the existing independent-
+review provision/cleanup path first, then choose the smallest contract that
+proves repository identity, checkout commit/path, readiness, review evidence,
+and positive teardown without widening into a general review/workflow engine.
+Keep nonparticipant/escaped-child containment, general recovery-center
+behavior, arbitrary Git repair, `OPS-006`, PM/MCP, Codex, and N7 out of scope.
 
 - DL-003 base: `bbce281c4022a9389ff42a9c992b37d0630f7303`
 - DL-003 branch: `codex/dl-003-recovery-gate`
-- DL-003 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-dl-003`
+- DL-003 worktree: removed after guarded landing/push proof
 - DL-003 contract: `docs/execution/slices/DL-003.md`
 
 - DL-002 base: `964a93aa8d7cc7b70968d8c256fbc16dbb31e84f`

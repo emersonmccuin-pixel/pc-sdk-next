@@ -584,9 +584,13 @@ The implementation sealed as
 `eef661d7e97e6a9ce66568afff88a081129896aa`, tree
 `d0351abbd2349c1ca739bc1ed16c804667943b65`. Full feature-tree
 `pnpm ci:check` passes with 419/419 server tests and the dead-import guard; the
-production web build also passes. No provider, PM/MCP-network, stable-data,
-original-app, or external-repository action was required. Guarded landing and
-post-merge closeout remain the active action.
+production web build also passes. Feature record
+`f15d6d0f76687e37ce1a81fe823812360ec70655` guarded-landed as
+`23872f15b1a9da749cc9efb5d7336b17470ed33e` with exact feature/merge tree
+`4c66313c084543ca7684cbe11a93c52468f77289`. Post-merge 419/419, exact push/
+re-fetch, and guarded feature-worktree/residue cleanup passed; the branch is
+preserved. No provider, PM/MCP-network, stable-data, original-app, or external-
+repository action was required.
 
 ## Known architectural gaps
 
