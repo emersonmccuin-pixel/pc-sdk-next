@@ -1,9 +1,9 @@
 # Pinned Codex app-server subscription-path spike
 
 Date: 2026-07-13
-Status: CX-001 implementation and evidence are guarded-landed, post-merge
-verified, pushed, and cleaned up; documentation closeout remains. This is not a
-production adapter or a requirement promotion.
+Status: CX-001 complete — implementation and evidence are guarded-landed,
+post-merge verified, documentation-closeout landed, pushed, and cleaned up.
+This is not a production adapter or a requirement promotion.
 
 ## Executive result
 
@@ -39,6 +39,14 @@ or a production `CodexRuntimeAdapter`.
 - Feature branch: preserved at the exact feature record.
 - Feature worktree: deregistered and its exact residual directory removed after
   guarded landing, remote, path, and process proof.
+- Documentation closeout commit:
+  `6fb5fb74a7408b6505067ac23df69a6ef806393f`.
+- Documentation closeout merge:
+  `1168394a1f1d26ad5bf89110a34cb28dc64cfd52`.
+- Exact documentation-closeout/merge tree:
+  `61c6848dd6a06e1598fdc8fd308792a8c41c9e3c`.
+- Closeout branch: preserved; worktree removed after exact landing, remote,
+  path, clean-tip, ancestry, and process proof.
 - Package/native CLI: `@openai/codex@0.144.1` / `codex-cli 0.144.1`.
 - Stable generated TypeScript schema: 598 files; inventory hash
   `sha256:96edfa58afbd0925a74a4e7575df581c05525567965b44d61cdf2fc43d8eb5f8`;

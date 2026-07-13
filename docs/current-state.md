@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-13 after CX-001 guarded code landing, post-merge
-verification, exact push/re-fetch, and guarded feature-worktree cleanup.
-Documentation closeout is the only remaining CX-001 operation.
+Last updated: 2026-07-13 after CX-001 guarded code and documentation-closeout
+landings, post-merge verification, exact push/re-fetch, and guarded feature and
+closeout-worktree cleanup.
 
 ## Preserved baseline
 
@@ -160,8 +160,15 @@ only in PC-SDK Next.
   `14bd4f9c93ab481dbd5c2443a76c1d1fb7a556ec`
 - CX-001 feature worktree: deregistered; exact residual directory removed
   after parent/name/deregistration/no-`.git`/ancestry/remote/zero-process guards
-- CX-001 documentation closeout: `codex/cx-001-closeout` from the exact pushed
-  code landing; guarded closeout landing/push/cleanup pending
+- CX-001 documentation closeout branch: `codex/cx-001-closeout` (preserved)
+- CX-001 documentation closeout commit:
+  `6fb5fb74a7408b6505067ac23df69a6ef806393f`
+- CX-001 documentation closeout merge:
+  `1168394a1f1d26ad5bf89110a34cb28dc64cfd52`
+- CX-001 documentation closeout tree:
+  `61c6848dd6a06e1598fdc8fd308792a8c41c9e3c`
+- CX-001 documentation closeout worktree: removed after exact
+  path/clean-tip/ancestry/remote/zero-process proof
 
 Isolation defaults in the planning slice:
 
@@ -702,6 +709,10 @@ Post-merge `pnpm ci:check` remains green with 597/597 server tests and the
 dead-import guard; production web build and focused schema/static checks pass.
 The merge was pushed and re-fetched exactly before guarded feature-worktree
 deregistration and residual-directory removal. The feature branch is preserved.
+Documentation closeout commit `6fb5fb74` then guarded-landed as `1168394a`
+with exact tree `61c6848d`; its five-path documentation-only scope, parents,
+ancestry, exact push/re-fetch, and guarded worktree removal pass. The closeout
+branch is preserved.
 
 Credential freshness, entitlement, subscription usability, billing route,
 model usability/inference, production adapter registration/composition/session
