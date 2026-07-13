@@ -8,7 +8,8 @@
 // epoch ms, JSON blobs via `text({ mode: 'json' })`, foreign keys declared via
 // `.references(...)`.
 
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import type {
   AcceptanceCriteria,
   AgentRunContinuationState,
@@ -27,6 +28,10 @@ import type {
   PendingAskKind,
   PendingAskOption,
   PendingAskStatus,
+  RepositoryIdentityReceipt,
+  ReviewCheckoutProvisionReceipt,
+  ReviewCheckoutStatus,
+  ReviewCheckoutTeardownReceipt,
   RunLifecycleState,
   SpecialistExecutionSnapshot,
   ULID,
@@ -257,6 +262,59 @@ export const agentContracts = sqliteTable(
   (t) => [
     index('agent_contracts_project_idx').on(t.projectId),
     index('agent_contracts_run_idx').on(t.agentRunId),
+  ],
+);
+
+/** Workspace-owned detached checkout authority for one independent reviewer.
+ * The reservation exists before Git mutation; reviewer_run_id is intentionally
+ * a soft binding because the run row is minted only after positive workspace
+ * provision/preparation/readiness evidence. */
+export const reviewCheckouts = sqliteTable(
+  'review_checkouts',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    projectId: text('project_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => projects.id),
+    contractId: text('contract_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => agentContracts.id),
+    contractVersion: integer('contract_version').notNull(),
+    producerRunId: text('producer_run_id').notNull().$type<ULID>(),
+    reviewerRunId: text('reviewer_run_id').notNull().$type<ULID>(),
+    repositoryIdentity: text('repository_identity', { mode: 'json' })
+      .notNull()
+      .$type<RepositoryIdentityReceipt>(),
+    worktreePath: text('worktree_path').notNull(),
+    ownedRootRealPath: text('owned_root_real_path').notNull(),
+    sealedCommit: text('sealed_commit').notNull(),
+    status: text('status', {
+      enum: ['reserved', 'provisioned', 'teardown-pending', 'destroyed'],
+    }).notNull().$type<ReviewCheckoutStatus>(),
+    provisionReceipt: text('provision_receipt', { mode: 'json' })
+      .$type<ReviewCheckoutProvisionReceipt | null>(),
+    preparationReceipt: text('preparation_receipt', { mode: 'json' })
+      .$type<WorktreePhaseReceipt | null>(),
+    readinessReceipt: text('readiness_receipt', { mode: 'json' })
+      .$type<WorktreePhaseReceipt | null>(),
+    teardownReceipt: text('teardown_receipt', { mode: 'json' })
+      .$type<ReviewCheckoutTeardownReceipt | null>(),
+    cleanupError: text('cleanup_error'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    destroyedAt: integer('destroyed_at'),
+  },
+  (t) => [
+    uniqueIndex('review_checkouts_reviewer_idx').on(t.reviewerRunId),
+    uniqueIndex('review_checkouts_contract_current_idx')
+      .on(t.contractId)
+      .where(sql`status <> 'destroyed'`),
+    uniqueIndex('review_checkouts_path_current_idx')
+      .on(t.worktreePath)
+      .where(sql`status <> 'destroyed'`),
+    index('review_checkouts_recovery_idx').on(t.status, t.updatedAt),
   ],
 );
 

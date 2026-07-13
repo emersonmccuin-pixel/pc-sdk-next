@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   isAgentRunChangedLivePayload,
   isAgentRunDto,
+  isReviewCheckoutDto,
+  isReviewCheckoutGitReceiptDto,
   isWorktreePhaseReceiptDto,
   isPendingAskDto,
   parseAnswerPendingAskRequest,
@@ -11,6 +13,66 @@ import {
   parseCreatePendingAskRequest,
   type AgentRunDto,
 } from '../src/index.ts';
+
+test('review checkout DTO and reviewer Git receipt require exact detached authority', () => {
+  const authority = {
+    id: '01J00000000000000000000001',
+    projectId: '01J00000000000000000000002',
+    contractId: '01J00000000000000000000003',
+    contractVersion: 4,
+    producerRunId: '01J00000000000000000000004',
+    reviewerRunId: '01J00000000000000000000005',
+    repositoryIdentity: {
+      protocol: 'git-common-dir-v1' as const,
+      gitCommonDir: '/repo/.git',
+      leaseKey: `sha256:${'a'.repeat(64)}`,
+    },
+    worktreePath: '/repo/reviews/reviewer',
+    ownedRootRealPath: '/repo/reviews',
+    sealedCommit: 'b'.repeat(40),
+  };
+  const provision = {
+    protocol: 'review-checkout-provision-v1' as const,
+    ...authority,
+    registrationCount: 1 as const,
+    registrationPath: authority.worktreePath,
+    headSha: authority.sealedCommit,
+    detachedHead: true as const,
+    trackedChanges: 0 as const,
+    stagedChanges: 0 as const,
+    observedAt: 10,
+  };
+  const gitReceipt = {
+    ...provision,
+    protocol: 'review-checkout-git-v1' as const,
+    branch: '(detached)' as const,
+    baseBranch: '(detached)' as const,
+    baseSha: authority.sealedCommit,
+    cleanStatus: true as const,
+  };
+  const checkout = {
+    ...authority,
+    status: 'provisioned' as const,
+    provisionReceipt: provision,
+    preparationReceipt: null,
+    readinessReceipt: null,
+    teardownReceipt: null,
+    cleanupError: null,
+    createdAt: 1,
+    updatedAt: 10,
+    destroyedAt: null,
+  };
+
+  assert.equal(isReviewCheckoutDto(checkout), true);
+  assert.equal(isReviewCheckoutDto({
+    ...checkout,
+    provisionReceipt: { ...provision, reviewerRunId: authority.producerRunId },
+  }), false);
+  assert.equal(isReviewCheckoutGitReceiptDto(gitReceipt), true);
+  assert.equal(isAgentRunDto(makeDto({ gitReceipt })), true);
+  assert.equal(isReviewCheckoutGitReceiptDto({ ...gitReceipt, branch: 'review-00000005' }), false);
+  assert.equal(isReviewCheckoutGitReceiptDto({ ...gitReceipt, providerSessionId: 'leak' }), false);
+});
 
 function makeDto(over: Partial<AgentRunDto> = {}): AgentRunDto {
   return {

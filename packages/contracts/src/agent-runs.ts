@@ -130,6 +130,80 @@ export type WorktreePhaseReceiptDto =
   | WorktreePhaseExecutedReceiptDto
   | WorktreePhaseNotRequiredReceiptDto;
 
+// ── Workspace-owned independent-review checkout evidence (DL-004) ──────
+
+export const REVIEW_CHECKOUT_STATUSES = [
+  'reserved',
+  'provisioned',
+  'teardown-pending',
+  'destroyed',
+] as const;
+export type ReviewCheckoutStatusDto = (typeof REVIEW_CHECKOUT_STATUSES)[number];
+
+export interface ReviewCheckoutAuthorityDto {
+  id: ULID;
+  projectId: ULID;
+  contractId: ULID;
+  contractVersion: number;
+  producerRunId: ULID;
+  reviewerRunId: ULID;
+  repositoryIdentity: RepositoryIdentityReceiptDto;
+  worktreePath: string;
+  ownedRootRealPath: string;
+  sealedCommit: string;
+}
+
+export interface ReviewCheckoutProvisionReceiptDto extends ReviewCheckoutAuthorityDto {
+  protocol: 'review-checkout-provision-v1';
+  registrationCount: 1;
+  registrationPath: string;
+  headSha: string;
+  detachedHead: true;
+  trackedChanges: 0;
+  stagedChanges: 0;
+  observedAt: number;
+}
+
+export interface ReviewCheckoutGitReceiptDto
+  extends WorktreeGitReceiptDto, ReviewCheckoutAuthorityDto {
+  protocol: 'review-checkout-git-v1';
+  branch: '(detached)';
+  baseBranch: '(detached)';
+  baseSha: string;
+  cleanStatus: true;
+  registrationCount: 1;
+  registrationPath: string;
+  headSha: string;
+  detachedHead: true;
+  trackedChanges: 0;
+  stagedChanges: 0;
+  observedAt: number;
+  repositoryIdentity: RepositoryIdentityReceiptDto;
+}
+
+export interface ReviewCheckoutTeardownReceiptDto extends ReviewCheckoutAuthorityDto {
+  protocol: 'review-checkout-teardown-v1';
+  startedAt: number;
+  finishedAt: number;
+  directoryAbsent: true;
+  registrationAbsent: true;
+  branchDeletion: 'not-applicable-detached';
+}
+
+/** Separate workspace projection. It is intentionally not embedded in the
+ * agent-run row/DTO because workspace lifecycle authority has one owner. */
+export interface ReviewCheckoutDto extends ReviewCheckoutAuthorityDto {
+  status: ReviewCheckoutStatusDto;
+  provisionReceipt: ReviewCheckoutProvisionReceiptDto | null;
+  preparationReceipt: WorktreePhaseReceiptDto | null;
+  readinessReceipt: WorktreePhaseReceiptDto | null;
+  teardownReceipt: ReviewCheckoutTeardownReceiptDto | null;
+  cleanupError: string | null;
+  createdAt: number;
+  updatedAt: number;
+  destroyedAt: number | null;
+}
+
 /** Browser-safe mirror of the agent-run row. */
 export interface AgentRunDto {
   runId: ULID;
@@ -160,7 +234,7 @@ export interface AgentRunDto {
    *  new repository builders carry both phase receipts, including explicit
    *  no-ops. Absent/null remains only for non-repo, detached-review, and
    *  historical/incomplete rows. */
-  gitReceipt?: WorktreeGitReceiptDto | null;
+  gitReceipt?: WorktreeGitReceiptDto | ReviewCheckoutGitReceiptDto | null;
   preparationReceipt?: WorktreePhaseReceiptDto | null;
   readinessReceipt?: WorktreePhaseReceiptDto | null;
 }
@@ -210,6 +284,161 @@ export function isAgentRunStatus(value: unknown): value is AgentRunStatus {
 
 export function isRunLifecycleState(value: unknown): value is RunLifecycleState {
   return typeof value === 'string' && (RUN_LIFECYCLE_STATES as readonly string[]).includes(value);
+}
+
+export function isReviewCheckoutStatus(
+  value: unknown,
+): value is ReviewCheckoutStatusDto {
+  return typeof value === 'string' &&
+    (REVIEW_CHECKOUT_STATUSES as readonly string[]).includes(value);
+}
+
+function isReviewCheckoutAuthorityDto(
+  value: unknown,
+): value is ReviewCheckoutAuthorityDto {
+  return isRecord(value) &&
+    isUlid(value.id) &&
+    isUlid(value.projectId) &&
+    isUlid(value.contractId) &&
+    Number.isSafeInteger(value.contractVersion) &&
+    (value.contractVersion as number) > 0 &&
+    isUlid(value.producerRunId) &&
+    isUlid(value.reviewerRunId) &&
+    isRepositoryIdentityReceiptDto(value.repositoryIdentity) &&
+    exactNonEmptyString(value.worktreePath) &&
+    exactNonEmptyString(value.ownedRootRealPath) &&
+    typeof value.sealedCommit === 'string' &&
+    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value.sealedCommit);
+}
+
+function hasMatchingReviewCheckoutAuthorityDto(
+  authority: ReviewCheckoutAuthorityDto,
+  receipt: ReviewCheckoutAuthorityDto,
+): boolean {
+  return receipt.id === authority.id &&
+    receipt.projectId === authority.projectId &&
+    receipt.contractId === authority.contractId &&
+    receipt.contractVersion === authority.contractVersion &&
+    receipt.producerRunId === authority.producerRunId &&
+    receipt.reviewerRunId === authority.reviewerRunId &&
+    receipt.worktreePath === authority.worktreePath &&
+    receipt.ownedRootRealPath === authority.ownedRootRealPath &&
+    receipt.sealedCommit === authority.sealedCommit &&
+    receipt.repositoryIdentity.protocol === authority.repositoryIdentity.protocol &&
+    receipt.repositoryIdentity.gitCommonDir === authority.repositoryIdentity.gitCommonDir &&
+    receipt.repositoryIdentity.leaseKey === authority.repositoryIdentity.leaseKey;
+}
+
+export function isReviewCheckoutProvisionReceiptDto(
+  value: unknown,
+): value is ReviewCheckoutProvisionReceiptDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value)) return false;
+  return hasOnlyKeys(value, [
+      'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+      'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+      'ownedRootRealPath', 'sealedCommit', 'registrationCount',
+      'registrationPath', 'headSha', 'detachedHead', 'trackedChanges',
+      'stagedChanges', 'observedAt',
+    ]) &&
+    value.protocol === 'review-checkout-provision-v1' &&
+    value.registrationCount === 1 &&
+    value.registrationPath === value.worktreePath &&
+    value.headSha === value.sealedCommit &&
+    value.detachedHead === true &&
+    value.trackedChanges === 0 &&
+    value.stagedChanges === 0 &&
+    Number.isSafeInteger(value.observedAt) &&
+    (value.observedAt as number) >= 0;
+}
+
+export function isReviewCheckoutGitReceiptDto(
+  value: unknown,
+): value is ReviewCheckoutGitReceiptDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value)) return false;
+  return hasOnlyKeys(value, [
+      'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+      'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+      'ownedRootRealPath', 'sealedCommit', 'branch', 'baseBranch', 'baseSha',
+      'cleanStatus', 'registrationCount', 'registrationPath', 'headSha',
+      'detachedHead', 'trackedChanges', 'stagedChanges', 'observedAt',
+    ]) &&
+    value.protocol === 'review-checkout-git-v1' &&
+    value.branch === '(detached)' &&
+    value.baseBranch === '(detached)' &&
+    value.baseSha === value.sealedCommit &&
+    value.cleanStatus === true &&
+    value.registrationCount === 1 &&
+    value.registrationPath === value.worktreePath &&
+    value.headSha === value.sealedCommit &&
+    value.detachedHead === true &&
+    value.trackedChanges === 0 &&
+    value.stagedChanges === 0 &&
+    Number.isSafeInteger(value.observedAt) &&
+    (value.observedAt as number) >= 0;
+}
+
+export function isReviewCheckoutTeardownReceiptDto(
+  value: unknown,
+): value is ReviewCheckoutTeardownReceiptDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value)) return false;
+  return hasOnlyKeys(value, [
+      'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+      'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+      'ownedRootRealPath', 'sealedCommit', 'startedAt', 'finishedAt',
+      'directoryAbsent', 'registrationAbsent', 'branchDeletion',
+    ]) &&
+    value.protocol === 'review-checkout-teardown-v1' &&
+    Number.isSafeInteger(value.startedAt) &&
+    (value.startedAt as number) >= 0 &&
+    Number.isSafeInteger(value.finishedAt) &&
+    (value.finishedAt as number) >= (value.startedAt as number) &&
+    value.directoryAbsent === true &&
+    value.registrationAbsent === true &&
+    value.branchDeletion === 'not-applicable-detached';
+}
+
+export function isReviewCheckoutDto(value: unknown): value is ReviewCheckoutDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value) || !hasOnlyKeys(value, [
+    'id', 'projectId', 'contractId', 'contractVersion', 'producerRunId',
+    'reviewerRunId', 'repositoryIdentity', 'worktreePath', 'ownedRootRealPath',
+    'sealedCommit', 'status', 'provisionReceipt', 'preparationReceipt',
+    'readinessReceipt', 'teardownReceipt', 'cleanupError', 'createdAt',
+    'updatedAt', 'destroyedAt',
+  ])) return false;
+  if (!isReviewCheckoutStatus(value.status)) return false;
+  if (value.provisionReceipt !== null && (
+    !isReviewCheckoutProvisionReceiptDto(value.provisionReceipt) ||
+    !hasMatchingReviewCheckoutAuthorityDto(value, value.provisionReceipt)
+  )) return false;
+  if (value.teardownReceipt !== null && (
+    !isReviewCheckoutTeardownReceiptDto(value.teardownReceipt) ||
+    !hasMatchingReviewCheckoutAuthorityDto(value, value.teardownReceipt)
+  )) return false;
+  if (value.preparationReceipt !== null &&
+      !isWorktreePhaseReceiptDto(value.preparationReceipt, 'preparation')) return false;
+  if (value.readinessReceipt !== null &&
+      !isWorktreePhaseReceiptDto(value.readinessReceipt, 'readiness')) return false;
+  if (value.cleanupError !== null && !exactNonEmptyString(value.cleanupError)) return false;
+  if (!Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0 ||
+      !Number.isSafeInteger(value.updatedAt) || (value.updatedAt as number) < 0 ||
+      (value.updatedAt as number) < (value.createdAt as number)) return false;
+  if (value.destroyedAt !== null &&
+      (!Number.isSafeInteger(value.destroyedAt) ||
+       (value.destroyedAt as number) !== (value.updatedAt as number))) return false;
+  if (value.status === 'reserved') {
+    return value.provisionReceipt === null && value.teardownReceipt === null &&
+      value.preparationReceipt === null && value.readinessReceipt === null &&
+      value.destroyedAt === null && value.cleanupError === null;
+  }
+  if (value.status === 'provisioned') {
+    return value.provisionReceipt !== null && value.teardownReceipt === null &&
+      value.destroyedAt === null && value.cleanupError === null;
+  }
+  if (value.status === 'teardown-pending') {
+    return value.teardownReceipt === null && value.destroyedAt === null;
+  }
+  return value.teardownReceipt !== null && value.destroyedAt !== null &&
+    value.cleanupError === null;
 }
 
 export function isAgentRunChangedReason(value: unknown): value is AgentRunChangedReason {
@@ -269,7 +498,7 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
 }
 
 function isOptionalGitReceipt(value: unknown): boolean {
-  return value === undefined || value === null || (
+  return value === undefined || value === null || isReviewCheckoutGitReceiptDto(value) || (
     isRecord(value) &&
     hasOnlyKeys(value, [
       'worktreePath',

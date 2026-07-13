@@ -127,6 +127,13 @@
       "when": 1783940400000,
       "tag": "0017_worktree_abandonment",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1783944000000,
+      "tag": "0018_review_checkouts",
+      "breakpoints": true
     }
   ]
 }
