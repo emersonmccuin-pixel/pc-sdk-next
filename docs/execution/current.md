@@ -1,9 +1,9 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after CX-001 guarded code and documentation-closeout
-landings, post-merge verification, exact push/re-fetch, and guarded feature and
-closeout-worktree cleanup. No implementation slice is active; this final receipt
-is the sole remaining bookkeeping operation until its guarded landing/teardown.
+Updated: 2026-07-13 after CX-001 final-receipt landing and cleanup, and CX-002
+provider-free Codex adapter contract startup. CX-002 is the one active
+implementation slice in its recorded worktree; the main checkout remains
+read-only.
 
 ## Repository
 
@@ -407,28 +407,26 @@ branch is preserved.
 
 ## Active action
 
-CX-001 is fully closed. Sealed implementation `648b7d97`, feature record
-`b9fce8df`, guarded code landing `11365f1c`, and exact feature/code-merge tree
-`14bd4f9c` are positive. Pre- and post-merge `pnpm ci:check`, production web
-builds, focused schema/static checks, exact push/re-fetch, and guarded feature-
-worktree cleanup pass. Documentation closeout `6fb5fb74` guarded-landed as
-`1168394a`, exact tree `61c6848d`; its documentation-only scope, parents,
-ancestry, push/re-fetch, and guarded worktree cleanup pass. Both branches are
-preserved.
+Implement CX-002 from `docs/execution/slices/CX-002.md`: an unregistered
+provider-local `CodexRuntimeAdapter`, stable protocol mapping, and shared public
+adapter/session conformance exercised only through an injected provider-free
+peer. The adapter must validate an explicitly fake-only execution-policy
+receipt, exact create/resume identity, ordered text turns, interruption versus
+terminal proof, typed unavailable context/quota, and idempotent disposal.
 
-This documentation-only final receipt may now be guarded-landed from
-`codex/cx-001-final-receipt`, pushed/re-fetched exactly, and removed only after
-positive tree, ancestry, remote, path, clean-tip, and process proof. At this
-checkpoint that is the sole remaining bookkeeping operation. Once those
-postconditions pass, no implementation slice or cleanup operation is active.
+Do not compose or register Codex, broaden the CX-001 admission allowlist, expose
+selectors or handoff UI, start a native thread/turn, or run the real-fix gate.
+Native execution remains blocked until effective tool/MCP/approval enforcement
+and escaped-descendant containment have positive production receipts. No
+experimental protocol, raw API billing, or weaker fallback is authorized.
 
-The next bounded action is then to define CX-002: a provider-local
-`CodexRuntimeAdapter` behind the existing `AgentRuntimeAdapter` contract using
-pinned app-server 0.144.1 and its checked-in stable schema, with provider-free
-canonical conformance first. Do not register Codex, expose selectors or handoff
-UI, start a live turn, or run the real-fix gate until pre-execution tool/MCP/
-approval enforcement and escaped-descendant containment have positive receipts.
-No experimental protocol or API-billing fallback.
+- CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
+- CX-002 branch: `codex/cx-002-codex-runtime-adapter`
+- CX-002 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-002`
+- CX-002 contract: `docs/execution/slices/CX-002.md`
+- Main is read-only until a sealed, reviewed feature record is ready for the
+  deterministic guarded landing.
 
 - CX-001 base: `dea2df76ff623ec96123b61ca6b9ab5f8aa8d639`
 - CX-001 branch: `codex/cx-001-codex-subscription-spike`
@@ -483,11 +481,10 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed feature and closeout worktrees are removed. During final-receipt
-preparation, only the main checkout and the recorded CX-001 final-receipt
-worktree are registered. After its guarded landing/push/cleanup postconditions
-pass, only main is registered. Keep the PC-SDK Next main checkout read-only
-except for that deterministic guarded landing mutation.
+All completed CX-001 feature, closeout, and final-receipt worktrees are removed.
+Only the clean main checkout and recorded CX-002 feature worktree are
+registered. Keep the PC-SDK Next main checkout read-only until the deterministic
+guarded CX-002 landing mutation.
 
 ## Known blockers
 
@@ -497,9 +494,10 @@ repaired through private-data inspection.
 No DL-002 blocker remains.
 No DL-004 implementation, closeout, cleanup, or product-direction blocker
 remains. No CX-001 implementation, verification, hostile-review, live-gate,
-code-landing, closeout, or product-direction blocker remains. Only this final-
-receipt landing/push/cleanup bookkeeping operation remains at the checkpoint;
-after its positive postconditions, no CX-001 cleanup blocker remains.
+landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
+product-direction blocker for its provider-free mapping/conformance scope.
+Native process containment and real tool/MCP/approval enforcement remain later
+gates; they do not authorize a live turn in CX-002.
 Experimental/API-billed/weaker alternatives are still not authorized.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
