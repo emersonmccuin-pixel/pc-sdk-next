@@ -245,6 +245,8 @@ test('review checkout read exposes exact unresolved workspace authority and scop
       provisionReceipt: null,
       preparationReceipt: null,
       readinessReceipt: null,
+      verdictReceipt: null,
+      verdictAppliedAt: null,
       teardownReceipt: null,
       cleanupError: null,
       createdAt: 10,

@@ -34,7 +34,7 @@ import { useAgentTranscript } from '@/store/agent-transcript';
 import { isRecoveryTerminalRun } from '@/features/agent-runs/use-project-agent-runs';
 import {
   exactStrandedEvidenceForRun,
-  exactReviewVerdictEvidence,
+  reviewVerdictPresentation,
   preservationEvidenceMessage,
   sealedEvidenceMessage,
 } from '@/features/recovery/view';
@@ -232,14 +232,14 @@ export function AgentTranscriptModal({ run: initialRun, onClose }: AgentTranscri
             phase="preparation"
             applicable={isReviewRun || run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
             receipt={isReviewRun
-              ? reviewCheckout?.preparationReceipt ?? null
+              ? reviewCheckout?.preparationReceipt?.evidence ?? null
               : run.preparationReceipt ?? null}
           />
           <PhaseReceiptDetails
             phase="readiness"
             applicable={isReviewRun || run.lifecycleState !== null || contract?.expectedOutput?.kind === 'repo'}
             receipt={isReviewRun
-              ? reviewCheckout?.readinessReceipt ?? null
+              ? reviewCheckout?.readinessReceipt?.evidence ?? null
               : run.readinessReceipt ?? null}
           />
           <LandingReceiptDetails contract={contract} />
@@ -331,7 +331,7 @@ export function ReviewCheckoutDetails({
     );
   }
 
-  const verdict = exactReviewVerdictEvidence(reviewerContract);
+  const verdict = reviewVerdictPresentation(checkout, reviewerContract);
   const summary = checkout.status === 'destroyed'
     ? 'cleanup settled'
     : checkout.status === 'teardown-pending'
@@ -347,7 +347,9 @@ export function ReviewCheckoutDetails({
   const provision = checkout.provisionReceipt;
   const teardown = checkout.teardownReceipt;
   const verdictLabel = verdict
-    ? `${verdict.verdict} · ${verdict.findingCount} finding${verdict.findingCount === 1 ? '' : 's'}`
+    ? `${verdict.authority === 'recorded' ? verdict.outcome : `submitted ${verdict.outcome}`} · ` +
+      `${verdict.findingCount} finding${verdict.findingCount === 1 ? '' : 's'} · ` +
+      `${verdict.authority === 'recorded' ? `effect ${verdict.effect}` : 'not yet recorded'}`
     : NON_TERMINAL.has(run.status)
       ? 'pending'
       : 'typed verdict unavailable or void';
@@ -372,7 +374,11 @@ export function ReviewCheckoutDetails({
         <ReceiptRow
           label="decision gate"
           value={checkout.status === 'destroyed'
-            ? 'positive cleanup settled'
+            ? checkout.verdictReceipt
+              ? checkout.verdictAppliedAt === null
+                ? 'positive cleanup settled · contract effect pending'
+                : 'positive cleanup settled · contract effect applied'
+              : 'positive cleanup settled · typed verdict unavailable'
             : 'blocked until positive cleanup settlement'}
         />
         {teardown && (

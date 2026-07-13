@@ -30,8 +30,10 @@ import type {
   PendingAskStatus,
   RepositoryIdentityReceipt,
   ReviewCheckoutProvisionReceipt,
+  ReviewCheckoutPhaseReceipt,
   ReviewCheckoutStatus,
   ReviewCheckoutTeardownReceipt,
+  ReviewCheckoutVerdictReceipt,
   RunLifecycleState,
   SpecialistExecutionSnapshot,
   ULID,
@@ -296,9 +298,12 @@ export const reviewCheckouts = sqliteTable(
     provisionReceipt: text('provision_receipt', { mode: 'json' })
       .$type<ReviewCheckoutProvisionReceipt | null>(),
     preparationReceipt: text('preparation_receipt', { mode: 'json' })
-      .$type<WorktreePhaseReceipt | null>(),
+      .$type<ReviewCheckoutPhaseReceipt | null>(),
     readinessReceipt: text('readiness_receipt', { mode: 'json' })
-      .$type<WorktreePhaseReceipt | null>(),
+      .$type<ReviewCheckoutPhaseReceipt | null>(),
+    verdictReceipt: text('verdict_receipt', { mode: 'json' })
+      .$type<ReviewCheckoutVerdictReceipt | null>(),
+    verdictAppliedAt: integer('verdict_applied_at'),
     teardownReceipt: text('teardown_receipt', { mode: 'json' })
       .$type<ReviewCheckoutTeardownReceipt | null>(),
     cleanupError: text('cleanup_error'),
@@ -315,6 +320,9 @@ export const reviewCheckouts = sqliteTable(
       .on(t.worktreePath)
       .where(sql`status <> 'destroyed'`),
     index('review_checkouts_recovery_idx').on(t.status, t.updatedAt),
+    index('review_checkouts_verdict_recovery_idx')
+      .on(t.verdictAppliedAt, t.updatedAt)
+      .where(sql`verdict_receipt IS NOT NULL`),
   ],
 );
 

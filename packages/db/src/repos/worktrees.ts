@@ -1,19 +1,24 @@
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import {
+  isMatchingReviewCheckoutPhase,
   isMatchingReviewCheckoutProvision,
   isMatchingReviewCheckoutTeardown,
+  isMatchingReviewCheckoutVerdict,
   isPositiveWorktreePhaseReceipt,
   isReviewCheckoutAuthority,
+  isReviewCheckoutPhaseReceipt,
   isReviewCheckoutProvisionReceipt,
   isReviewCheckoutTeardownReceipt,
-  isWorktreePhaseReceipt,
+  isReviewCheckoutVerdictReceipt,
+  reviewCheckoutVerdictReceiptsEqual,
   type ReviewCheckout,
   type ReviewCheckoutAuthority,
+  type ReviewCheckoutPhaseReceipt,
   type ReviewCheckoutProvisionReceipt,
   type ReviewCheckoutTeardownReceipt,
+  type ReviewCheckoutVerdictReceipt,
   type ULID,
   type Worktree,
-  type WorktreePhaseReceipt,
   type WorktreeStrandedReason,
 } from '@pc/domain';
 import { getDb, type DbExecutor } from '../connection.ts';
@@ -40,7 +45,18 @@ export interface SetReviewCheckoutProvisionReceiptInput
 
 export interface SetReviewCheckoutPhaseReceiptInput
   extends ReviewCheckoutMutationInput {
-  receipt: WorktreePhaseReceipt;
+  receipt: ReviewCheckoutPhaseReceipt;
+}
+
+export interface SetReviewCheckoutVerdictReceiptInput
+  extends ReviewCheckoutMutationInput {
+  receipt: ReviewCheckoutVerdictReceipt;
+}
+
+export interface ApplyReviewCheckoutVerdictEvidenceInput {
+  receipt: ReviewCheckoutVerdictReceipt;
+  expectedUpdatedAt: number;
+  appliedAt: number;
 }
 
 export interface MarkReviewCheckoutTeardownPendingInput
@@ -103,6 +119,8 @@ export function createReviewCheckoutReservation(
       provisionReceipt: null,
       preparationReceipt: null,
       readinessReceipt: null,
+      verdictReceipt: null,
+      verdictAppliedAt: null,
       teardownReceipt: null,
       cleanupError: null,
       updatedAt: input.createdAt,
@@ -145,9 +163,28 @@ export function getCurrentReviewCheckoutForContract(
 export function listReviewCheckoutsNeedingRecovery(
   db: DbExecutor = getDb(),
 ): ReviewCheckoutRow[] {
-  return db.select().from(reviewCheckouts).where(inArray(
-    reviewCheckouts.status,
-    ['reserved', 'provisioned', 'teardown-pending'],
+  return db.select().from(reviewCheckouts).where(or(
+    inArray(reviewCheckouts.status, ['reserved', 'provisioned', 'teardown-pending']),
+    and(
+      eq(reviewCheckouts.status, 'destroyed'),
+      isNotNull(reviewCheckouts.verdictReceipt),
+      isNull(reviewCheckouts.verdictAppliedAt),
+    ),
+  )).orderBy(asc(reviewCheckouts.updatedAt), asc(reviewCheckouts.id)).all() as ReviewCheckoutRow[];
+}
+
+/** Workspace-owned candidates for cross-component blocking projection. The
+ * composition layer correlates destroyed rows with the contract owner's exact
+ * marker; this repository never reads another component's tables. */
+export function listReviewCheckoutBlockingCandidates(
+  db: DbExecutor = getDb(),
+): ReviewCheckoutRow[] {
+  return db.select().from(reviewCheckouts).where(or(
+    inArray(reviewCheckouts.status, ['reserved', 'provisioned', 'teardown-pending']),
+    and(
+      eq(reviewCheckouts.status, 'destroyed'),
+      isNull(reviewCheckouts.verdictAppliedAt),
+    ),
   )).orderBy(asc(reviewCheckouts.updatedAt), asc(reviewCheckouts.id)).all() as ReviewCheckoutRow[];
 }
 
@@ -172,30 +209,35 @@ export function setReviewCheckoutProvisionReceipt(
   return changed.changes === 1 ? getReviewCheckoutById(input.authority.id, db) : null;
 }
 
-export function setReviewCheckoutPhaseReceipt(
+/** Workspace-owned executor-aware phase command. The application-service
+ * coordinator commits this checkout evidence with the agent-run owner's phase
+ * command and outbox fact in one transaction. */
+export function setReviewCheckoutPhaseReceiptInDb(
   input: SetReviewCheckoutPhaseReceiptInput,
-  db: DbExecutor = getDb(),
+  db: DbExecutor,
 ): ReviewCheckoutRow | null {
   if (!isReviewCheckoutAuthority(input.authority) ||
-      !isWorktreePhaseReceipt(input.receipt)) return null;
+      !isReviewCheckoutPhaseReceipt(input.receipt) ||
+      !isMatchingReviewCheckoutPhase(input.authority, input.receipt)) return null;
   const current = getReviewCheckoutById(input.authority.id, db);
   if (!current || current.status !== 'provisioned' ||
       current.updatedAt !== input.expectedUpdatedAt) return null;
-  if (input.receipt.phase === 'preparation') {
+  if (input.receipt.evidence.phase === 'preparation') {
     if (current.preparationReceipt !== null || current.readinessReceipt !== null) return null;
   } else if (current.readinessReceipt !== null ||
-      !isPositiveWorktreePhaseReceipt(current.preparationReceipt, 'preparation')) {
+      !isMatchingReviewCheckoutPhase(current, current.preparationReceipt, 'preparation') ||
+      !isPositiveWorktreePhaseReceipt(current.preparationReceipt.evidence, 'preparation')) {
     return null;
   }
-  const receiptColumn = input.receipt.phase === 'preparation'
+  const receiptColumn = input.receipt.evidence.phase === 'preparation'
     ? reviewCheckouts.preparationReceipt
     : reviewCheckouts.readinessReceipt;
-  const patch = input.receipt.phase === 'preparation'
+  const patch = input.receipt.evidence.phase === 'preparation'
     ? { preparationReceipt: input.receipt }
     : { readinessReceipt: input.receipt };
   const changed = db.update(reviewCheckouts).set({
     ...patch,
-    updatedAt: mutationTime(input.expectedUpdatedAt, input.receipt.finishedAt),
+    updatedAt: mutationTime(input.expectedUpdatedAt, input.receipt.evidence.finishedAt),
   }).where(and(
     exactReviewCheckoutAuthority(input.authority),
     eq(reviewCheckouts.status, 'provisioned'),
@@ -203,6 +245,59 @@ export function setReviewCheckoutPhaseReceipt(
     isNull(receiptColumn),
   )).run();
   return changed.changes === 1 ? getReviewCheckoutById(input.authority.id, db) : null;
+}
+
+/** Record the exact terminal verdict before teardown. It is immutable and can
+ * be applied only after the same checkout reaches positive destruction. */
+export function setReviewCheckoutVerdictReceipt(
+  input: SetReviewCheckoutVerdictReceiptInput,
+  db: DbExecutor = getDb(),
+): ReviewCheckoutRow | null {
+  if (!isReviewCheckoutAuthority(input.authority) ||
+      !isReviewCheckoutVerdictReceipt(input.receipt) ||
+      !isMatchingReviewCheckoutVerdict(input.authority, input.receipt)) return null;
+  const changed = db.update(reviewCheckouts).set({
+    verdictReceipt: input.receipt,
+    updatedAt: mutationTime(input.expectedUpdatedAt, input.receipt.recordedAt),
+  }).where(and(
+    exactReviewCheckoutAuthority(input.authority),
+    inArray(reviewCheckouts.status, ['provisioned', 'teardown-pending']),
+    eq(reviewCheckouts.updatedAt, input.expectedUpdatedAt),
+    isNull(reviewCheckouts.verdictReceipt),
+    isNull(reviewCheckouts.verdictAppliedAt),
+    isNull(reviewCheckouts.teardownReceipt),
+  )).run();
+  return changed.changes === 1 ? getReviewCheckoutById(input.authority.id, db) : null;
+}
+
+/** Workspace-owned exact verdict-effect receipt CAS. Contract state is not
+ * read here; the SQL effect guard and app-service transaction require the
+ * contract owner to have committed the matching effect in the same unit. */
+export function applyReviewCheckoutVerdictEvidenceInDb(
+  input: ApplyReviewCheckoutVerdictEvidenceInput,
+  db: DbExecutor,
+): ReviewCheckoutRow | null {
+  const checkout = getReviewCheckoutById(input.receipt.id, db);
+  if (!checkout ||
+      !isMatchingReviewCheckoutVerdict(checkout, input.receipt) ||
+      checkout.status !== 'destroyed' ||
+      !isMatchingReviewCheckoutTeardown(checkout, checkout.teardownReceipt) ||
+      checkout.verdictAppliedAt !== null ||
+      checkout.updatedAt !== input.expectedUpdatedAt ||
+      !Number.isSafeInteger(input.appliedAt) ||
+      input.appliedAt < (checkout.destroyedAt ?? Number.MAX_SAFE_INTEGER) ||
+      !reviewCheckoutVerdictReceiptsEqual(checkout.verdictReceipt, input.receipt)) return null;
+  const changed = db.update(reviewCheckouts).set({
+    verdictAppliedAt: input.appliedAt,
+  }).where(and(
+    eq(reviewCheckouts.id, input.receipt.id),
+    eq(reviewCheckouts.updatedAt, input.expectedUpdatedAt),
+    eq(reviewCheckouts.status, 'destroyed'),
+    isNotNull(reviewCheckouts.teardownReceipt),
+    isNotNull(reviewCheckouts.verdictReceipt),
+    isNull(reviewCheckouts.verdictAppliedAt),
+  )).run();
+  return changed.changes === 1 ? getReviewCheckoutById(input.receipt.id, db) : null;
 }
 
 export function markReviewCheckoutTeardownPending(

@@ -35,18 +35,20 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ContractService } from '@pc/app-services';
 import type { Contract, Deliverable } from '@pc/contracts';
-import { bindProjectRepositoryIdentity, createContract, createPendingAsk, createProject, getActiveWorktreeByName, getAgentRunRow, getContract, getRawDb, getWorktreeById, getWorktreeForLandedContract, insertAgentRunRow, listAgentRunsForContract, listProjects, listStrandedWorktrees, markAgentRunDelivered, markPendingAskAnswered, markWorktreeStranded, newId, setContractReviewState, setWorktreeContractId, updateAgentRunStatus } from '@pc/db';
+import { bindProjectRepositoryIdentity, createContract, createPendingAsk, createProject, createReviewCheckoutReservation, getActiveWorktreeByName, getAgentRunRow, getContract, getRawDb, getWorktreeById, getWorktreeForLandedContract, insertAgentRunRow, listAgentRunsForContract, listProjects, listStrandedWorktrees, markAgentRunDelivered, markPendingAskAnswered, markReviewCheckoutTeardownPending, markWorktreeStranded, newId, setContractReviewState, setWorktreeContractId, updateAgentRunStatus } from '@pc/db';
 import type {
   AcceptanceCriteria,
   ExpectedOutput,
   RepositoryIdentityReceipt,
+  ReviewCheckout,
+  ReviewCheckoutAuthority,
   ULID,
 } from '@pc/domain';
 import { AccountRegistry } from '../src/runner/account-env.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import { RuntimeRegistry } from '../src/runner/runtime.ts';
 import { DispatchService, type DispatchServiceDeps } from '../src/dispatch/service.ts';
-import { git, landBranch, provisionWorktree, settleLandedWorktree } from '../src/dispatch/worktrees.ts';
+import { git, landBranch, provisionWorktree, requireReviewCheckoutOwnedRoot, settleLandedWorktree } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
   commitFile,
@@ -1092,12 +1094,100 @@ test('review cleanup rejection fails its post-terminal owner and shutdown', asyn
   const dispatch = rig();
   try {
     const contracts = new ContractService();
-    const { runId } = await completedRepoRun(contracts, gp, {
+    const { runId: producerRunId, contract, wt, tip } = await completedRepoRun(contracts, gp, {
       spec: SCOPED_SPEC,
       acceptanceCriteria: SCOPED_CRITERIA,
       landingPolicy: 'default-review',
     });
-    const row = getAgentRunRow(runId)!;
+    assert.equal(updateAgentRunStatus({
+      id: producerRunId,
+      status: 'completed',
+      lifecycleState: 'reviewing',
+    }), true);
+    const verified = contracts.setVerification({
+      id: contract.id,
+      verificationStatus: 'passed',
+      verifiedBaseSha: wt.baseSha,
+    });
+    assert.ok(verified);
+
+    const reviewerRunId = newId() as ULID;
+    const reserved = contracts.reserveReview({
+      id: verified.id,
+      expectedVersion: verified.version,
+      expectedReviewRunId: verified.reviewRunId,
+      expectedAgentRunId: producerRunId,
+      reviewRound: 1,
+      reviewRunId: reviewerRunId,
+      reviewSealedCommit: tip,
+    });
+    assert.ok(reserved);
+    const producer = getAgentRunRow(producerRunId)!;
+    const root = await requireReviewCheckoutOwnedRoot(
+      gp.dir,
+      producer.gitReceipt!.repositoryIdentity,
+    );
+    if (!root.ok) throw new Error(root.error);
+    const authority: ReviewCheckoutAuthority = {
+      id: newId() as ULID,
+      projectId: gp.project.id,
+      contractId: reserved.id as ULID,
+      contractVersion: reserved.version,
+      producerRunId,
+      reviewerRunId,
+      repositoryIdentity: producer.gitReceipt!.repositoryIdentity,
+      ownedRootRealPath: root.ownedRootRealPath,
+      worktreePath: join(
+        root.ownedRootRealPath,
+        `review-${reviewerRunId.slice(-8).toLowerCase()}`,
+      ),
+      sealedCommit: tip,
+    };
+    const checkout = createReviewCheckoutReservation({ ...authority, createdAt: Date.now() });
+    assert.ok(checkout);
+
+    const reviewerContract = contracts.create({
+      projectId: gp.project.id,
+      podName: 'contract-reviewer',
+      expectedOutput: {
+        kind: 'payload',
+        semantic: 'verdict',
+        schema: {
+          type: 'object',
+          properties: {
+            verdict: { type: 'string' },
+            findings: { type: 'array' },
+          },
+          required: ['verdict', 'findings'],
+        },
+      },
+      acceptanceCriteria: [],
+      verificationTier: 'auto',
+    });
+    insertAgentRunRow({
+      id: reviewerRunId,
+      projectId: gp.project.id,
+      ...testAgentRunExecution('contract-reviewer'),
+      dispatcherSessionId: 'review-cleanup-rejection',
+      status: 'queued',
+      input: 'review target',
+      contractId: reviewerContract.id as ULID,
+      worktreeDir: authority.worktreePath,
+      worktreeBaseBranch: '(detached)',
+      worktreeBaseSha: authority.sealedCommit,
+      gitReceipt: null,
+      queuedAt: Date.now(),
+    });
+    assert.ok(contracts.setRun(reviewerContract.id, reviewerRunId));
+    advanceTestAgentRunStatus(reviewerRunId, 'failed');
+    assert.ok(markReviewCheckoutTeardownPending({
+      authority,
+      expectedUpdatedAt: checkout.updatedAt,
+      fromStatus: 'reserved',
+      at: Date.now(),
+      error: null,
+    }));
+    const row = getAgentRunRow(reviewerRunId)!;
     const cleanupFailure = new Error('forced reviewer cleanup failure');
     const internals = dispatch as unknown as {
       trackPostTerminalTask(id: ULID, work: () => Promise<void>): Promise<void>;
@@ -1106,18 +1196,18 @@ test('review cleanup rejection fails its post-terminal owner and shutdown', asyn
         observed: NonNullable<ReturnType<typeof getAgentRunRow>>,
         targetId: ULID | null,
       ): Promise<void>;
-      reclaimReviewCheckout(observed: NonNullable<ReturnType<typeof getAgentRunRow>>): Promise<void>;
+      settleReviewCheckoutCleanup(observed: ReviewCheckout): Promise<ReviewCheckout>;
       postTerminalTasks: Map<string, { status: string }>;
     };
-    internals.reclaimReviewCheckout = async () => {
+    internals.settleReviewCheckoutCleanup = async () => {
       throw cleanupFailure;
     };
     const owner = internals.trackPostTerminalTask(
-      runId,
-      () => internals.ensureReviewCleanup(runId, row, null),
+      reviewerRunId,
+      () => internals.ensureReviewCleanup(reviewerRunId, row, contract.id as ULID),
     );
     await assert.rejects(owner, /forced reviewer cleanup failure/);
-    assert.equal(internals.postTerminalTasks.get(runId)?.status, 'failed');
+    assert.equal(internals.postTerminalTasks.get(reviewerRunId)?.status, 'failed');
     await assert.rejects(
       dispatch.disposeAll(),
       (error: unknown) => error instanceof AggregateError && error.errors.includes(cleanupFailure),

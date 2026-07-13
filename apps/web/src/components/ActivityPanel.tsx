@@ -26,7 +26,7 @@ import {
 } from '@/features/contracts/view';
 import {
   buildRecoveryProjection,
-  exactReviewVerdictEvidence,
+  reviewVerdictPresentation,
   preservationEvidenceMessage,
   reviewCheckoutsRequiringAttention,
   recoveryRunGuidance,
@@ -80,7 +80,9 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
     [reviewCheckoutRead.reviewCheckouts],
   );
   const settledReviewCheckouts = useMemo(
-    () => reviewCheckoutRead.reviewCheckouts.filter((checkout) => checkout.status === 'destroyed'),
+    () => reviewCheckoutRead.reviewCheckouts.filter((checkout) =>
+      checkout.status === 'destroyed' && checkout.verdictAppliedAt !== null,
+    ),
     [reviewCheckoutRead.reviewCheckouts],
   );
   const knownReviewerRunIds = useMemo(
@@ -273,7 +275,7 @@ function ReviewEvidenceRegion({
           const reviewerContract = contracts.find(
             (contract) => contract.agentRunId === checkout.reviewerRunId,
           ) ?? null;
-          const verdict = exactReviewVerdictEvidence(reviewerContract);
+          const verdict = reviewVerdictPresentation(checkout, reviewerContract);
           return (
             <li key={checkout.id}>
               <button
@@ -302,9 +304,9 @@ function ReviewEvidenceRegion({
                     : 'Provision evidence unavailable.'}
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  preparation {phaseEvidenceLabel(checkout.preparationReceipt)} · readiness{' '}
-                  {phaseEvidenceLabel(checkout.readinessReceipt)} · verdict{' '}
-                  {verdict ? `${verdict.verdict} (${verdict.findingCount})` : 'unavailable or void'}
+                  preparation {phaseEvidenceLabel(checkout.preparationReceipt?.evidence ?? null)} · readiness{' '}
+                  {phaseEvidenceLabel(checkout.readinessReceipt?.evidence ?? null)} · verdict{' '}
+                  {verdictEvidenceLabel(verdict, 'typed verdict unavailable')}
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
                   <span>Directory and Git registration absence positively settled.</span>
@@ -321,6 +323,20 @@ function ReviewEvidenceRegion({
 
 function phaseEvidenceLabel(receipt: { ok: boolean } | null): string {
   return receipt === null ? 'unavailable' : receipt.ok ? 'ok' : 'failed';
+}
+
+function verdictEvidenceLabel(
+  verdict: ReturnType<typeof reviewVerdictPresentation>,
+  unavailable: string,
+): string {
+  if (!verdict) return unavailable;
+  const prefix = verdict.authority === 'recorded'
+    ? verdict.outcome
+    : `submitted ${verdict.outcome}`;
+  const state = verdict.authority === 'recorded'
+    ? `effect ${verdict.effect}`
+    : 'not yet recorded';
+  return `${prefix} (${verdict.findingCount}) · ${state}`;
 }
 
 function RunningAgentsRegion({
@@ -542,7 +558,7 @@ function RecoveryRequiredRegion({
           const reviewerContract = contracts.find(
             (contract) => contract.agentRunId === checkout.reviewerRunId,
           ) ?? null;
-          const verdict = exactReviewVerdictEvidence(reviewerContract);
+          const verdict = reviewVerdictPresentation(checkout, reviewerContract);
           return (
             <li key={`review:${checkout.id}`} className="flex items-stretch">
               <button
@@ -559,20 +575,22 @@ function RecoveryRequiredRegion({
                     Independent review
                   </div>
                   <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
-                    cleanup pending
+                    {checkout.status === 'destroyed' ? 'effect pending' : 'cleanup pending'}
                   </span>
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={checkout.worktreePath}>
                   seal {checkout.sealedCommit.slice(0, 12)} · checkout {checkout.id.slice(0, 8)}
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  Detached review cleanup has not positively proved both directory and Git-registration absence.
+                  {checkout.status === 'destroyed'
+                    ? 'Checkout cleanup is positively settled, but its typed contract effect is pending or unavailable.'
+                    : 'Detached review cleanup has not positively proved both directory and Git-registration absence.'}
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted-foreground">
                   provision {checkout.provisionReceipt ? 'exact detached clean HEAD' : 'unavailable'} · preparation{' '}
-                  {phaseEvidenceLabel(checkout.preparationReceipt)} · readiness{' '}
-                  {phaseEvidenceLabel(checkout.readinessReceipt)} · verdict{' '}
-                  {verdict ? `${verdict.verdict} (${verdict.findingCount})` : 'pending, unavailable, or void'}
+                  {phaseEvidenceLabel(checkout.preparationReceipt?.evidence ?? null)} · readiness{' '}
+                  {phaseEvidenceLabel(checkout.readinessReceipt?.evidence ?? null)} · verdict{' '}
+                  {verdictEvidenceLabel(verdict, 'pending or unavailable')}
                 </div>
                 {checkout.cleanupError && (
                   <div className="mt-0.5 line-clamp-2 text-[11px] text-destructive" title={checkout.cleanupError}>
@@ -580,7 +598,9 @@ function RecoveryRequiredRegion({
                   </div>
                 )}
                 <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                  <span>Landing, Fix, override, and successor review remain blocked.</span>
+                  <span>{checkout.status === 'destroyed'
+                    ? 'Landing, Fix, and successor review remain blocked until the exact verdict effect settles.'
+                    : 'Landing, Fix, override, and successor review remain blocked.'}</span>
                   <span className="shrink-0 font-medium text-foreground">
                     {inspectable ? 'Inspect' : 'No transcript'}
                   </span>

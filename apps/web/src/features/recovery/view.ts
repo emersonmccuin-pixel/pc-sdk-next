@@ -21,10 +21,20 @@ export interface ReviewVerdictEvidence {
   findingCount: number;
 }
 
+export interface ReviewVerdictPresentation {
+  outcome: 'approve' | 'reject' | 'unavailable' | 'void' | 'overridden';
+  findingCount: number;
+  authority: 'recorded' | 'submitted';
+  effect: 'applied' | 'pending' | 'unrecorded';
+}
+
 export function reviewCheckoutsRequiringAttention(
   reviewCheckouts: readonly ReviewCheckoutDto[],
 ): ReviewCheckoutDto[] {
-  return reviewCheckouts.filter((checkout) => checkout.status === 'teardown-pending');
+  return reviewCheckouts.filter((checkout) =>
+    checkout.status === 'teardown-pending' ||
+    (checkout.status === 'destroyed' && checkout.verdictAppliedAt === null),
+  );
 }
 
 /** Only the reviewer's schema-validated payload contract is verdict evidence.
@@ -61,6 +71,32 @@ export function exactReviewVerdictEvidence(
     ) return null;
   }
   return { verdict: record.verdict, findingCount: record.findings.length };
+}
+
+/** The immutable checkout receipt is the presentation authority. A validated
+ * reviewer payload is shown only as an unrecorded submission while no receipt
+ * exists; it can never override a durable void/overridden/unavailable result. */
+export function reviewVerdictPresentation(
+  checkout: ReviewCheckoutDto,
+  reviewerContract: Contract | null,
+): ReviewVerdictPresentation | null {
+  if (checkout.verdictReceipt) {
+    return {
+      outcome: checkout.verdictReceipt.outcome,
+      findingCount: checkout.verdictReceipt.findings.length,
+      authority: 'recorded',
+      effect: checkout.verdictAppliedAt === null ? 'pending' : 'applied',
+    };
+  }
+  const submitted = exactReviewVerdictEvidence(reviewerContract);
+  return submitted
+    ? {
+        outcome: submitted.verdict,
+        findingCount: submitted.findingCount,
+        authority: 'submitted',
+        effect: 'unrecorded',
+      }
+    : null;
 }
 
 export function contractForRecoveryRun(

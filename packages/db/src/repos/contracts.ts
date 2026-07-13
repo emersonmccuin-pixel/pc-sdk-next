@@ -15,6 +15,7 @@ import type {
   ContractStatus,
   ContractV2,
   Deliverable,
+  ReviewCheckoutVerdictReceipt,
   ULID,
   VerificationStatus,
   VerificationTier,
@@ -23,6 +24,7 @@ import type {
 } from '@pc/domain';
 import {
   isMatchingWorktreeAbandonmentTeardown,
+  isReviewCheckoutVerdictReceipt,
   isWorktreeAbandonmentReceipt,
   isWorktreeAbandonmentTeardownReceipt,
 } from '@pc/domain';
@@ -817,6 +819,91 @@ export function clearContractReviewReservation(
     isNull(agentContracts.abandonmentReceipt),
   )).run();
   return changed.changes === 1 ? getContractInDb(db, id) : null;
+}
+
+export interface ApplyReviewVerdictToContractInput {
+  receipt: ReviewCheckoutVerdictReceipt;
+  appliedAt: number;
+}
+
+/** Contract-owned verdict effect. The app-service coordinator pairs this with
+ * the workspace owner's positive-teardown verdict CAS in one transaction. */
+export function applyReviewVerdictToContractInDb(
+  input: ApplyReviewVerdictToContractInput,
+  db: DbExecutor,
+): ContractRow | null {
+  if (!isReviewCheckoutVerdictReceipt(input.receipt) ||
+      !Number.isSafeInteger(input.appliedAt) || input.appliedAt < 0) return null;
+  const target = getContractInDb(db, input.receipt.contractId);
+  if (!target || target.reviewRunId !== input.receipt.reviewerRunId) return null;
+  const frameIsCurrent = target.version === input.receipt.contractVersion &&
+    target.agentRunId === input.receipt.producerRunId &&
+    target.reviewSealedCommit === input.receipt.sealedCommit &&
+    target.verificationStatus === 'passed' &&
+    target.landingStatus === null &&
+    target.abandonmentReceipt === null &&
+    (target.deliverable as { commit?: string } | null)?.commit === input.receipt.sealedCommit;
+  if (input.receipt.outcome !== 'void' &&
+      input.receipt.outcome !== 'overridden' &&
+      !frameIsCurrent) return null;
+
+  let patch: Partial<ContractRow> = {
+    reviewRunId: null,
+    reviewSealedCommit: null,
+    version: target.version + 1,
+    updatedAt: input.appliedAt,
+  };
+  if (input.receipt.outcome === 'approve') {
+    const note =
+      `independent review approved (run ${input.receipt.reviewerRunId}, round ${target.reviewRound ?? '?'}, checkout ${input.receipt.id})` +
+      (input.receipt.findings.length > 0 ? `\nfindings: ${JSON.stringify(input.receipt.findings)}` : '');
+    patch = {
+      ...patch,
+      status: 'accepted',
+      verificationStatus: 'passed',
+      verificationNotes: target.verificationNotes ? `${target.verificationNotes}\n${note}` : note,
+      landingStatus: 'pending',
+      landingAuthorizer: 'reviewer',
+      landingError: null,
+    };
+  } else if (input.receipt.outcome === 'reject') {
+    patch = {
+      ...patch,
+      status: 'rejected',
+      verificationStatus: 'failed',
+      verificationNotes: JSON.stringify({
+        independentReview: {
+          reviewRunId: input.receipt.reviewerRunId,
+          reviewCheckoutId: input.receipt.id,
+          round: target.reviewRound,
+          sealedCommit: input.receipt.sealedCommit,
+          verdict: 'reject',
+          findings: input.receipt.findings,
+        },
+      }, null, 2),
+    };
+  }
+
+  const staleRetirement = input.receipt.outcome === 'void' || input.receipt.outcome === 'overridden';
+  const stableFrameGuard = staleRetirement
+    ? sql`1 = 1`
+    : and(
+        eq(agentContracts.version, input.receipt.contractVersion),
+        eq(agentContracts.agentRunId, input.receipt.producerRunId),
+        eq(agentContracts.reviewSealedCommit, input.receipt.sealedCommit),
+        eq(agentContracts.verificationStatus, 'passed'),
+        isNull(agentContracts.landingStatus),
+        sql`json_extract(${agentContracts.deliverable}, '$.commit') = ${input.receipt.sealedCommit}`,
+      );
+  const contractChanged = db.update(agentContracts).set(patch).where(and(
+    eq(agentContracts.id, input.receipt.contractId),
+    eq(agentContracts.version, target.version),
+    eq(agentContracts.reviewRunId, input.receipt.reviewerRunId),
+    staleRetirement ? sql`1 = 1` : isNull(agentContracts.abandonmentReceipt),
+    stableFrameGuard,
+  )).run();
+  if (contractChanged.changes !== 1) return null;
+  return getContractInDb(db, input.receipt.contractId);
 }
 
 /** The full-review target a review run was dispatched against (reviewRunId

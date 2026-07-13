@@ -19,7 +19,7 @@ import {
   listPreservedTerminalAgentRuns,
   listProjectVisibleAgents,
   listRecentTerminalAgentRuns,
-  listReviewCheckoutsNeedingRecovery,
+  listReviewCheckoutBlockingCandidates,
   listStrandedWorktrees,
 } from '@pc/db';
 import { ContractService, toAgentRunDto, toPendingAskDto } from '@pc/app-services';
@@ -49,6 +49,12 @@ export interface AgentRunsHttpDeps {
 export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
   const { dispatch } = deps;
   const contracts = new ContractService();
+  const blockingReviewCheckouts = (projectId: ULID): ReviewCheckout[] =>
+    listReviewCheckoutBlockingCandidates().filter((checkout) => {
+      if (checkout.projectId !== projectId) return false;
+      if (checkout.status !== 'destroyed') return true;
+      return contracts.get(checkout.contractId)?.reviewRunId === checkout.reviewerRunId;
+    });
 
   const project = (c: { req: { param: (k: string) => string } }): ULID | null => {
     const id = c.req.param('id') as ULID;
@@ -116,8 +122,7 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     // Review-workspace cleanup is separate durable truth. Its exact reviewer
     // must remain inspectable even after the ordinary recent-terminal window
     // while that workspace still needs recovery.
-    const reviewRecoveryRuns = listReviewCheckoutsNeedingRecovery()
-      .filter((checkout) => checkout.projectId === projectId)
+    const reviewRecoveryRuns = blockingReviewCheckouts(projectId)
       .map((checkout) => getAgentRunRow(checkout.reviewerRunId))
       .filter((row): row is AgentRunRow => row !== null && row.projectId === projectId);
     const seen = new Set<string>();
@@ -139,9 +144,7 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
   app.get('/api/projects/:id/review-checkouts', (c) => {
     const projectId = project(c);
     if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
-    const unresolved = listReviewCheckoutsNeedingRecovery().filter(
-      (checkout) => checkout.projectId === projectId,
-    );
+    const unresolved = blockingReviewCheckouts(projectId);
     const recent = listRecentTerminalAgentRuns(Date.now() - TERMINAL_LIST_WINDOW_MS)
       .filter((row) => row.projectId === projectId)
       .map((row) => getReviewCheckoutForReviewer(row.id))

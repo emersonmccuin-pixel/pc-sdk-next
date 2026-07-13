@@ -9,6 +9,7 @@ import {
   reviewCheckoutPhaseMatchesRun,
   type ReviewCheckoutAuthority,
   type ReviewCheckoutGitReceipt,
+  type ReviewCheckoutPhaseReceipt,
   type ReviewCheckoutProvisionReceipt,
   type ReviewCheckoutTeardownReceipt,
   type ReviewCheckoutVerdictReceipt,
@@ -33,6 +34,24 @@ const identity = {
   gitCommonDir: 'E:/repo/.git',
   leaseKey: `sha256:${'b'.repeat(64)}`,
 };
+
+function persistReviewPhase(input: {
+  authority: ReviewCheckoutAuthority;
+  expectedUpdatedAt: number;
+  receipt: ReviewCheckoutPhaseReceipt;
+}) {
+  return getDb().transaction((tx) => {
+    const run = db.setReviewAgentRunPhaseReceiptInDb(
+      input.authority.reviewerRunId,
+      input.receipt,
+      tx,
+    );
+    if (!run) return null;
+    const checkout = db.setReviewCheckoutPhaseReceiptInDb(input, tx);
+    if (!checkout) throw new Error('review checkout phase CAS failed after reviewer phase write');
+    return checkout;
+  });
+}
 
 function snapshot(name: string) {
   return {
@@ -169,20 +188,25 @@ function harness(label: string): Harness {
     folderPath: join(tmpDir, label),
   });
   const producerRunId = db.newId() as ULID;
-  db.insertAgentRunRow(runInput({
-    id: producerRunId,
-    projectId: project.id,
-    name: `${label}-producer`,
-    contractId: null,
-  }));
-  completeQueuedRun(producerRunId, 'produced', Date.now());
-
   const target = db.createContract({
     projectId: project.id,
     agentRunId: producerRunId,
     expectedOutput: { kind: 'repo', review: 'full' },
     landingPolicy: 'full-review',
   });
+  db.insertAgentRunRow(runInput({
+    id: producerRunId,
+    projectId: project.id,
+    name: `${label}-producer`,
+    contractId: target.id,
+  }));
+  completeQueuedRun(producerRunId, 'produced', Date.now());
+  assert.equal(db.updateAgentRunStatus({
+    id: producerRunId,
+    status: 'completed',
+    lifecycleState: 'reviewing',
+  }), true);
+
   assert.ok(db.setContractDeliverable(target.id, {
     deliverable: { kind: 'repo', branch: 'feature', commit: sealedCommit },
   }));
@@ -259,13 +283,329 @@ function noCommands(
   });
 }
 
+function unpersistedAuthority(label: string): ReviewCheckoutAuthority {
+  const project = db.createProject({
+    slug: `${label}-${db.newId().toLowerCase()}`,
+    name: label,
+    folderPath: join(tmpDir, label),
+  });
+  const producerRunId = db.newId() as ULID;
+  const target = db.createContract({
+    projectId: project.id,
+    agentRunId: producerRunId,
+    expectedOutput: { kind: 'repo', review: 'full' },
+    landingPolicy: 'full-review',
+  });
+  assert.ok(db.setContractDeliverable(target.id, {
+    deliverable: { kind: 'repo', branch: 'feature', commit: sealedCommit },
+  }));
+  const verified = db.setContractVerification(target.id, { verificationStatus: 'passed' });
+  assert.ok(verified);
+  const reviewerRunId = db.newId() as ULID;
+  const reserved = db.reserveContractReview(target.id, {
+    expectedVersion: verified.version,
+    expectedReviewRunId: null,
+    expectedAgentRunId: producerRunId,
+    reviewRound: 1,
+    reviewRunId: reviewerRunId,
+    reviewSealedCommit: sealedCommit,
+  });
+  assert.ok(reserved);
+  return {
+    id: db.newId() as ULID,
+    projectId: project.id,
+    contractId: target.id,
+    contractVersion: reserved.version,
+    producerRunId,
+    reviewerRunId,
+    repositoryIdentity: identity,
+    worktreePath: join(tmpDir, 'reviews', reviewerRunId),
+    ownedRootRealPath: join(tmpDir, 'reviews'),
+    sealedCommit,
+  };
+}
+
+function rawInsertReservation(input: {
+  authority: ReviewCheckoutAuthority;
+  repositoryIdentity?: unknown;
+  worktreePath?: string;
+  ownedRootRealPath?: string;
+}): void {
+  const authority = input.authority;
+  db.getRawDb().prepare(`
+    INSERT INTO review_checkouts (
+      id, project_id, contract_id, contract_version, producer_run_id,
+      reviewer_run_id, repository_identity, worktree_path,
+      owned_root_real_path, sealed_commit, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', 100, 100)
+  `).run(
+    authority.id,
+    authority.projectId,
+    authority.contractId,
+    authority.contractVersion,
+    authority.producerRunId,
+    authority.reviewerRunId,
+    JSON.stringify(input.repositoryIdentity ?? authority.repositoryIdentity),
+    input.worktreePath ?? authority.worktreePath,
+    input.ownedRootRealPath ?? authority.ownedRootRealPath,
+    authority.sealedCommit,
+  );
+}
+
+test('raw reservation authority rejects open identity and Unicode-padded paths', () => {
+  const authority = unpersistedAuthority('raw-reservation-shape');
+  for (const hostile of [
+    {
+      authority,
+      repositoryIdentity: { ...authority.repositoryIdentity, providerSessionId: 'native-leak' },
+    },
+    {
+      authority,
+      repositoryIdentity: {
+        ...authority.repositoryIdentity,
+        gitCommonDir: `${authority.repositoryIdentity.gitCommonDir}\u2003`,
+      },
+    },
+    { authority, worktreePath: `\u2003${authority.worktreePath}` },
+    { authority, ownedRootRealPath: `${authority.ownedRootRealPath}\u00a0` },
+  ]) {
+    assert.throws(
+      () => rawInsertReservation(hostile),
+      /invalid review checkout reservation authority/,
+    );
+  }
+  assert.equal(db.getReviewCheckoutById(authority.id), null);
+  assert.ok(db.createReviewCheckoutReservation({ ...authority, createdAt: 100 }));
+});
+
+test('raw provision and teardown receipts reject open shapes and unsafe timestamps', () => {
+  const authority = unpersistedAuthority('raw-provision-teardown-shape');
+  const created = db.createReviewCheckoutReservation({ ...authority, createdAt: 100 });
+  assert.ok(created);
+  const raw = db.getRawDb();
+  const canonicalProvision = provision(authority, 110);
+  const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+  for (const hostile of [
+    { ...canonicalProvision, providerReceipt: 'native-leak' },
+    {
+      ...canonicalProvision,
+      repositoryIdentity: {
+        ...canonicalProvision.repositoryIdentity,
+        providerSessionId: 'native-leak',
+      },
+    },
+    { ...canonicalProvision, observedAt: unsafeInteger },
+  ]) {
+    assert.throws(
+      () => raw.prepare(`
+        UPDATE review_checkouts
+        SET status = 'provisioned', provision_receipt = ?
+        WHERE id = ?
+      `).run(JSON.stringify(hostile), authority.id),
+      /invalid review checkout provision receipt/,
+    );
+  }
+  assert.equal(db.getReviewCheckoutById(authority.id)?.status, 'reserved');
+  assert.equal(db.getReviewCheckoutById(authority.id)?.provisionReceipt, null);
+
+  const provisioned = db.setReviewCheckoutProvisionReceipt({
+    authority,
+    expectedUpdatedAt: created.updatedAt,
+    receipt: canonicalProvision,
+  });
+  assert.ok(provisioned);
+  const pending = db.markReviewCheckoutTeardownPending({
+    authority,
+    expectedUpdatedAt: provisioned.updatedAt,
+    fromStatus: 'provisioned',
+    at: 120,
+    error: null,
+  });
+  assert.ok(pending);
+  const canonicalTeardown = teardown(authority, 130);
+  for (const hostile of [
+    { ...canonicalTeardown, providerReceipt: 'native-leak' },
+    {
+      ...canonicalTeardown,
+      repositoryIdentity: {
+        ...canonicalTeardown.repositoryIdentity,
+        providerSessionId: 'native-leak',
+      },
+    },
+    { ...canonicalTeardown, startedAt: unsafeInteger, finishedAt: unsafeInteger },
+    { ...canonicalTeardown, finishedAt: unsafeInteger },
+  ]) {
+    assert.throws(
+      () => raw.prepare(`
+        UPDATE review_checkouts
+        SET status = 'destroyed', teardown_receipt = ?, destroyed_at = 140
+        WHERE id = ?
+      `).run(JSON.stringify(hostile), authority.id),
+      /invalid review checkout teardown receipt/,
+    );
+  }
+  assert.equal(db.getReviewCheckoutById(authority.id)?.status, 'teardown-pending');
+  assert.equal(db.getReviewCheckoutById(authority.id)?.teardownReceipt, null);
+  const destroyed = db.settleReviewCheckoutTeardown({
+    authority,
+    expectedUpdatedAt: pending.updatedAt,
+    receipt: canonicalTeardown,
+    destroyedAt: 140,
+  });
+  assert.ok(destroyed);
+  assert.deepEqual(destroyed.provisionReceipt, canonicalProvision);
+  assert.deepEqual(destroyed.teardownReceipt, canonicalTeardown);
+});
+
+test('raw checkout-bound phase rejects open identity, unsafe step numbers, and Unicode padding', () => {
+  const h = harness('raw-phase-hardening');
+  const raw = db.getRawDb();
+  const executed: WorktreePhaseReceipt = {
+    phase: 'preparation',
+    outcome: 'executed',
+    ok: true,
+    steps: [{
+      command: 'pnpm test',
+      exitCode: 0,
+      durationMs: 10,
+      stdoutTail: '',
+      stderrTail: '',
+      timedOut: false,
+    }],
+    finishedAt: 130,
+  };
+  const canonical = createReviewCheckoutPhaseReceipt(h.authority, executed);
+  const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+  const hostileReceipts = [
+    {
+      ...canonical,
+      repositoryIdentity: {
+        ...canonical.repositoryIdentity,
+        providerSessionId: 'native-leak',
+      },
+    },
+    {
+      ...canonical,
+      evidence: {
+        ...executed,
+        steps: [{ ...executed.steps[0]!, exitCode: unsafeInteger }],
+      },
+    },
+    {
+      ...canonical,
+      evidence: {
+        ...executed,
+        steps: [{ ...executed.steps[0]!, durationMs: unsafeInteger }],
+      },
+    },
+    {
+      ...canonical,
+      evidence: {
+        ...executed,
+        steps: [{ ...executed.steps[0]!, command: '\u2003pnpm test\u2003' }],
+      },
+    },
+  ];
+  for (const hostile of hostileReceipts) {
+    assert.equal(raw.prepare(
+      'UPDATE agent_runs SET preparation_receipt = ? WHERE id = ?',
+    ).run(JSON.stringify(hostile.evidence), h.authority.reviewerRunId).changes, 1);
+    assert.throws(
+      () => raw.prepare(
+        'UPDATE review_checkouts SET preparation_receipt = ? WHERE id = ?',
+      ).run(JSON.stringify(hostile), h.authority.id),
+      /invalid checkout-bound review preparation receipt/,
+    );
+  }
+  assert.equal(db.getReviewCheckoutById(h.authority.id)?.preparationReceipt, null);
+  assert.equal(raw.prepare(
+    'UPDATE agent_runs SET preparation_receipt = ? WHERE id = ?',
+  ).run(JSON.stringify(executed), h.authority.reviewerRunId).changes, 1);
+  assert.equal(raw.prepare(
+    'UPDATE review_checkouts SET preparation_receipt = ? WHERE id = ?',
+  ).run(JSON.stringify(canonical), h.authority.id).changes, 1);
+  assert.deepEqual(db.getReviewCheckoutById(h.authority.id)?.preparationReceipt, canonical);
+});
+
+test('raw unavailable verdict rejects open identity and unsafe recordedAt', () => {
+  const h = harness('raw-unavailable-verdict-hardening');
+  completeQueuedRun(h.authority.reviewerRunId, 'review unavailable', 140);
+  const canonical: ReviewCheckoutVerdictReceipt = {
+    protocol: 'review-checkout-verdict-v1',
+    ...h.authority,
+    reviewerContractId: h.reviewerContractId,
+    terminalStatus: 'completed',
+    outcome: 'unavailable',
+    findings: [],
+    recordedAt: 150,
+  };
+  const raw = db.getRawDb();
+  for (const hostile of [
+    {
+      ...canonical,
+      repositoryIdentity: {
+        ...canonical.repositoryIdentity,
+        providerSessionId: 'native-leak',
+      },
+    },
+    { ...canonical, recordedAt: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    assert.throws(
+      () => raw.prepare(
+        'UPDATE review_checkouts SET verdict_receipt = ? WHERE id = ?',
+      ).run(JSON.stringify(hostile), h.authority.id),
+      /invalid review checkout verdict receipt/,
+    );
+  }
+  assert.equal(db.getReviewCheckoutById(h.authority.id)?.verdictReceipt, null);
+  raw.exec('BEGIN');
+  try {
+    assert.equal(raw.prepare(
+      'UPDATE agent_contracts SET version = version + 1 WHERE id = ?',
+    ).run(h.authority.contractId).changes, 1);
+    assert.throws(
+      () => raw.prepare(
+        'UPDATE review_checkouts SET verdict_receipt = ? WHERE id = ?',
+      ).run(JSON.stringify(canonical), h.authority.id),
+      /invalid review checkout verdict receipt/,
+      'a stable verdict cannot be appended after the target frame drifts',
+    );
+    assert.equal(db.getReviewCheckoutById(h.authority.id)?.verdictReceipt, null);
+  } finally {
+    raw.exec('ROLLBACK');
+  }
+  raw.exec('BEGIN');
+  try {
+    db.insertAgentRunRow(runInput({
+      id: db.newId() as ULID,
+      projectId: h.authority.projectId,
+      name: 'competing-target-run',
+      contractId: h.authority.contractId,
+    }));
+    assert.throws(
+      () => raw.prepare(
+        'UPDATE review_checkouts SET verdict_receipt = ? WHERE id = ?',
+      ).run(JSON.stringify(canonical), h.authority.id),
+      /invalid review checkout verdict receipt/,
+      'a stable verdict cannot be appended while another target run is live',
+    );
+    assert.equal(db.getReviewCheckoutById(h.authority.id)?.verdictReceipt, null);
+  } finally {
+    raw.exec('ROLLBACK');
+  }
+  assert.equal(raw.prepare(
+    'UPDATE review_checkouts SET verdict_receipt = ? WHERE id = ?',
+  ).run(JSON.stringify(canonical), h.authority.id).changes, 1);
+  assert.deepEqual(db.getReviewCheckoutById(h.authority.id)?.verdictReceipt, canonical);
+});
+
 test('phase persistence rejects wrong authority and closed-shape/raw SQL substitutions', () => {
   const wrongHarness = harness('wrong-authority');
   const wrongAuthority = {
     ...wrongHarness.authority,
     reviewerRunId: db.newId() as ULID,
   };
-  assert.equal(db.setReviewCheckoutRunPhaseReceipt({
+  assert.equal(persistReviewPhase({
     authority: wrongAuthority,
     expectedUpdatedAt: wrongHarness.provisionedUpdatedAt,
     receipt: createReviewCheckoutPhaseReceipt(wrongAuthority, noCommands('preparation', 120)),
@@ -277,7 +617,7 @@ test('phase persistence rejects wrong authority and closed-shape/raw SQL substit
     wrongHarness.authority,
     noCommands('preparation', 121),
   );
-  assert.equal(db.setReviewCheckoutRunPhaseReceipt({
+  assert.equal(persistReviewPhase({
     authority: wrongHarness.authority,
     expectedUpdatedAt: wrongHarness.provisionedUpdatedAt,
     receipt: { ...exactReceipt, providerReceipt: 'native-leak' } as never,
@@ -321,7 +661,7 @@ test('review phase writes roll back both copies on failure and persist exact equ
     END;
   `);
   try {
-    assert.throws(() => db.setReviewCheckoutRunPhaseReceipt({
+    assert.throws(() => persistReviewPhase({
       authority: h.authority,
       expectedUpdatedAt: h.provisionedUpdatedAt,
       receipt: preparationReceipt,
@@ -336,7 +676,7 @@ test('review phase writes roll back both copies on failure and persist exact equ
   assert.equal(rolledBackCheckout.preparationReceipt, null);
   assert.equal(rolledBackCheckout.updatedAt, h.provisionedUpdatedAt);
 
-  const prepared = db.setReviewCheckoutRunPhaseReceipt({
+  const prepared = persistReviewPhase({
     authority: h.authority,
     expectedUpdatedAt: h.provisionedUpdatedAt,
     receipt: preparationReceipt,
@@ -359,7 +699,7 @@ test('review phase writes roll back both copies on failure and persist exact equ
   );
 
   const readiness = noCommands('readiness', 210);
-  const ready = db.setReviewCheckoutRunPhaseReceipt({
+  const ready = persistReviewPhase({
     authority: h.authority,
     expectedUpdatedAt: prepared.updatedAt,
     receipt: createReviewCheckoutPhaseReceipt(h.authority, readiness),
@@ -377,13 +717,13 @@ test('review phase writes roll back both copies on failure and persist exact equ
 
 test('verdict effect is recoverable only after teardown and settles atomically once', () => {
   const h = harness('verdict-recovery');
-  const prepared = db.setReviewCheckoutRunPhaseReceipt({
+  const prepared = persistReviewPhase({
     authority: h.authority,
     expectedUpdatedAt: h.provisionedUpdatedAt,
     receipt: createReviewCheckoutPhaseReceipt(h.authority, noCommands('preparation', 300)),
   });
   assert.ok(prepared);
-  const ready = db.setReviewCheckoutRunPhaseReceipt({
+  const ready = persistReviewPhase({
     authority: h.authority,
     expectedUpdatedAt: prepared.updatedAt,
     receipt: createReviewCheckoutPhaseReceipt(h.authority, noCommands('readiness', 310)),
@@ -415,13 +755,29 @@ test('verdict effect is recoverable only after teardown and settles atomically o
   assert.ok(recorded);
 
   const applyInTransaction = (expectedCheckoutUpdatedAt: number, appliedAt: number) =>
-    getDb().transaction((tx) => db.applyReviewCheckoutVerdict({
-      receipt: verdict,
-      expectedCheckoutUpdatedAt,
-      appliedAt,
-    }, tx));
+    getDb().transaction((tx) => {
+      const target = db.applyReviewVerdictToContractInDb({ receipt: verdict, appliedAt }, tx);
+      if (!target) return null;
+      const producer = db.transitionAgentRunLifecycleInDb({
+        id: verdict.producerRunId,
+        expectedFrom: 'reviewing',
+        to: 'merge-ready',
+      }, tx);
+      if (!producer) throw new Error('review verdict producer lifecycle CAS failed after contract transition');
+      const evidence = db.applyReviewCheckoutVerdictEvidenceInDb({
+        receipt: verdict,
+        expectedUpdatedAt: expectedCheckoutUpdatedAt,
+        appliedAt,
+      }, tx);
+      if (!evidence) throw new Error('review checkout verdict evidence CAS failed after contract transition');
+      return target;
+    });
 
-  assert.equal(applyInTransaction(recorded.updatedAt, 340), null, 'teardown is mandatory');
+  assert.throws(
+    () => applyInTransaction(recorded.updatedAt, 340),
+    /review checkout verdict evidence CAS failed/,
+    'teardown is mandatory and the transaction rolls back',
+  );
   assert.equal(db.getContract(h.authority.contractId)?.reviewRunId, h.authority.reviewerRunId);
   assert.equal(db.getReviewCheckoutById(h.authority.id)?.verdictAppliedAt, null);
 
@@ -445,7 +801,11 @@ test('verdict effect is recoverable only after teardown and settles atomically o
     true,
     'destroyed-but-unapplied verdict remains a recovery feeder',
   );
-  assert.equal(applyInTransaction(destroyed.updatedAt - 1, 380), null, 'stale checkout CAS refuses');
+  assert.throws(
+    () => applyInTransaction(destroyed.updatedAt - 1, 380),
+    /review checkout verdict evidence CAS failed/,
+    'stale checkout CAS refuses and rolls back',
+  );
 
   assert.throws(
     () => db.getRawDb().prepare(

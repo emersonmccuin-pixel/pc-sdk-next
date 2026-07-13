@@ -56,6 +56,8 @@ test('review checkout DTO and reviewer Git receipt require exact detached author
     provisionReceipt: provision,
     preparationReceipt: null,
     readinessReceipt: null,
+    verdictReceipt: null,
+    verdictAppliedAt: null,
     teardownReceipt: null,
     cleanupError: null,
     createdAt: 1,

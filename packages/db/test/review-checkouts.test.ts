@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createNotRequiredWorktreePhaseReceipt,
+  createReviewCheckoutPhaseReceipt,
   isReviewCheckoutRuntimeReady,
   type ReviewCheckoutAuthority,
   type ReviewCheckoutGitReceipt,
+  type ReviewCheckoutPhaseReceipt,
   type ReviewCheckoutProvisionReceipt,
   type ReviewCheckoutTeardownReceipt,
   type ULID,
@@ -29,6 +31,35 @@ const identity = {
   gitCommonDir: 'E:/repo/.git',
   leaseKey: `sha256:${'b'.repeat(64)}`,
 };
+
+function persistReviewPhase(input: {
+  authority: ReviewCheckoutAuthority;
+  expectedUpdatedAt: number;
+  receipt: ReviewCheckoutPhaseReceipt;
+}) {
+  try {
+    return db.getDb().transaction((tx) => {
+      const run = db.setReviewAgentRunPhaseReceiptInDb(
+        input.authority.reviewerRunId,
+        input.receipt,
+        tx,
+      );
+      if (!run) return null;
+      const checkout = db.setReviewCheckoutPhaseReceiptInDb(input, tx);
+      if (!checkout) throw new Error('review checkout phase CAS failed after reviewer phase write');
+      return checkout;
+    });
+  } catch (error) {
+    // A checkout CAS loss after the run-owner write must abort the whole
+    // transaction. This local DB-repository harness maps that expected atomic
+    // refusal back to null; the application-service gateway intentionally
+    // surfaces the same rollback as an exception and tests it separately.
+    if (error instanceof Error && error.message === 'review checkout phase CAS failed after reviewer phase write') {
+      return null;
+    }
+    throw error;
+  }
+}
 
 function reserve(slug: string): ReviewCheckoutAuthority {
   const project = db.createProject({ slug, name: slug, folderPath: join(tmpDir, slug) });
@@ -212,11 +243,15 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
     false,
     'lifecycle-null alone is not reviewer workspace authority',
   );
-  assert.equal(db.setAgentRunPhaseReceipt(authority.reviewerRunId, preparation), true);
-  const prepared = db.setReviewCheckoutPhaseReceipt({
+  assert.equal(
+    db.setAgentRunPhaseReceipt(authority.reviewerRunId, preparation),
+    false,
+    'generic phase writer rejects detached review rows',
+  );
+  const prepared = persistReviewPhase({
     authority,
     expectedUpdatedAt: provisioned.updatedAt,
-    receipt: preparation,
+    receipt: createReviewCheckoutPhaseReceipt(authority, preparation),
   });
   assert.ok(prepared);
   assert.equal(isReviewCheckoutRuntimeReady(prepared), false);
@@ -224,16 +259,15 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
   const readiness = createNotRequiredWorktreePhaseReceipt({
     phase: 'readiness', reason: 'no-commands-configured', finishedAt: 130,
   });
-  assert.equal(db.setAgentRunPhaseReceipt(authority.reviewerRunId, readiness), true);
-  assert.equal(db.setReviewCheckoutPhaseReceipt({
+  assert.equal(persistReviewPhase({
     authority,
     expectedUpdatedAt: provisioned.updatedAt,
-    receipt: readiness,
+    receipt: createReviewCheckoutPhaseReceipt(authority, readiness),
   }), null, 'stale CAS cannot write readiness');
-  const ready = db.setReviewCheckoutPhaseReceipt({
+  const ready = persistReviewPhase({
     authority,
     expectedUpdatedAt: prepared.updatedAt,
-    receipt: readiness,
+    receipt: createReviewCheckoutPhaseReceipt(authority, readiness),
   });
   assert.ok(ready);
   assert.equal(isReviewCheckoutRuntimeReady(ready), true);
@@ -274,7 +308,17 @@ test('exact review checkout reservation gates provision, phases, recovery, and s
   assert.equal(destroyed.status, 'destroyed');
   assert.equal(destroyed.cleanupError, null);
   assert.equal(db.getCurrentReviewCheckoutForContract(authority.contractId), null);
-  assert.equal(db.listReviewCheckoutsNeedingRecovery().some((row) => row.id === authority.id), false);
+  assert.equal(
+    db.listReviewCheckoutsNeedingRecovery().some((row) => row.id === authority.id),
+    false,
+    'workspace recovery alone cannot classify a cross-component admission crash',
+  );
+  assert.equal(
+    db.listReviewCheckoutBlockingCandidates().some((row) => row.id === authority.id),
+    true,
+    'destroyed unapplied evidence remains a composition-layer blocking candidate',
+  );
+  assert.ok(db.clearContractReviewReservation(authority.contractId, authority.reviewerRunId));
 
   const raw = db.getRawDb();
   assert.throws(
@@ -303,26 +347,53 @@ test('failed preparation is durable but cannot authorize readiness or runtime mi
     receipt: provision(authority, 210),
   });
   assert.ok(provisioned);
-  const failed = db.setReviewCheckoutPhaseReceipt({
+  const reviewContract = db.createContract({
+    projectId: authority.projectId,
+    expectedOutput: { kind: 'payload', semantic: 'verdict', schema: { type: 'object' } },
+  });
+  db.insertAgentRunRow({
+    id: authority.reviewerRunId,
+    projectId: authority.projectId,
+    dispatcherSessionId: 'failed-review-dispatch',
+    specialistSnapshot: reviewerSnapshot(),
+    selection: {
+      runtimeId: 'runtime', accountId: 'account', model: 'model',
+      effort: { kind: 'none' as const },
+    },
+    continuation: { mode: 'create' },
+    status: 'queued',
+    input: 'review',
+    contractId: reviewContract.id,
+    worktreeDir: authority.worktreePath,
+    worktreeBaseBranch: '(detached)',
+    worktreeBaseSha: authority.sealedCommit,
+    gitReceipt: reviewerGitReceipt(authority, 210),
+    queuedAt: 215,
+  });
+  const failedEvidence = {
+    phase: 'preparation' as const, outcome: 'executed' as const, ok: false,
+    steps: [{
+      command: 'setup', exitCode: 1, durationMs: 1,
+      stdoutTail: '', stderrTail: 'failed', timedOut: false,
+    }],
+    finishedAt: 220,
+  };
+  const failed = persistReviewPhase({
     authority,
     expectedUpdatedAt: provisioned.updatedAt,
-    receipt: {
-      phase: 'preparation', outcome: 'executed', ok: false,
-      steps: [{
-        command: 'setup', exitCode: 1, durationMs: 1,
-        stdoutTail: '', stderrTail: 'failed', timedOut: false,
-      }],
-      finishedAt: 220,
-    },
+    receipt: createReviewCheckoutPhaseReceipt(authority, failedEvidence),
   });
   assert.ok(failed);
-  assert.equal(failed.preparationReceipt?.ok, false);
+  assert.equal(failed.preparationReceipt?.evidence.ok, false);
   assert.equal(isReviewCheckoutRuntimeReady(failed), false);
-  assert.equal(db.setReviewCheckoutPhaseReceipt({
+  assert.equal(persistReviewPhase({
     authority,
     expectedUpdatedAt: failed.updatedAt,
-    receipt: createNotRequiredWorktreePhaseReceipt({
-      phase: 'readiness', reason: 'no-commands-configured', finishedAt: 230,
-    }),
+    receipt: createReviewCheckoutPhaseReceipt(
+      authority,
+      createNotRequiredWorktreePhaseReceipt({
+        phase: 'readiness', reason: 'no-commands-configured', finishedAt: 230,
+      }),
+    ),
   }), null);
 });

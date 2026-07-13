@@ -43,6 +43,7 @@ import {
   listAgentRunsForContract,
   listConversationEvents,
   listOpenPendingAsksForProject,
+  listReviewCheckoutBlockingCandidates,
   listReviewCheckoutsNeedingRecovery,
   listTurnBudgetExhaustedRuns,
   listContractsNeedingAbandonmentRecovery,
@@ -54,10 +55,9 @@ import {
   prepareAgentRunResumeInDb,
   runtimeSelectionForAgentRun,
   setAgentRunFailureReason,
-  setAgentRunPhaseReceipt,
   setReviewCheckoutCleanupError,
-  setReviewCheckoutPhaseReceipt,
   setReviewCheckoutProvisionReceipt,
+  setReviewCheckoutVerdictReceipt,
   settleReviewCheckoutTeardown,
   setWorktreeContractId,
   specialistSnapshotForAgentRun,
@@ -81,6 +81,7 @@ import {
   PRESERVED_LIFECYCLE_STATES,
   canTransition,
   createNotRequiredWorktreePhaseReceipt,
+  createReviewCheckoutPhaseReceipt,
   deriveAcceptanceCriteriaV2,
   effectiveLandingPolicy,
   getPodDefaultExpectedOutput,
@@ -89,6 +90,7 @@ import {
   isPositiveWorktreePhaseReceipt,
   isMatchingReviewCheckoutProvision,
   isMatchingReviewCheckoutTeardown,
+  isMatchingReviewCheckoutVerdict,
   isReviewCheckoutGitReceipt,
   isReviewCheckoutRuntimeReady,
   isRepositoryIdentityReceipt,
@@ -96,6 +98,7 @@ import {
   parseReviewVerdictPayload,
   parseWorktreeProfile,
   reviewVerdictExpectedOutput,
+  reviewCheckoutPhaseMatchesRun,
   type AgentRunRow,
   type ContractLandingAuthorizer,
   type Deliverable,
@@ -106,8 +109,10 @@ import {
   type ReviewCheckout,
   type ReviewCheckoutAuthority,
   type ReviewCheckoutGitReceipt,
+  type ReviewCheckoutPhaseEvidence,
   type ReviewCheckoutProvisionReceipt,
   type ReviewCheckoutTeardownReceipt,
+  type ReviewCheckoutVerdictReceipt,
   type RunLifecycleState,
   type SpecialistExecutionSnapshot,
   type PodSpawnBundle,
@@ -772,6 +777,14 @@ export class DispatchService {
     if (parent.status !== 'completed' && parent.status !== 'failed') {
       return refuse('not-continuable', `run is '${parent.status}' — only completed/failed runs can be continued`, 409);
     }
+    const parentReviewCheckout = getReviewCheckoutForReviewer(parent.id);
+    if (parentReviewCheckout) {
+      return refuse(
+        'not-continuable',
+        `independent reviewer run ${parent.id} has immutable checkout authority and cannot be continued; review re-entry requires positive teardown and a fresh reviewer`,
+        409,
+      );
+    }
     const parentMutationIssue = this.runMutationQuiescenceIssue(
       parent.id,
       input.autoContinueCount > 0,
@@ -1196,13 +1209,17 @@ export class DispatchService {
         });
         return;
       }
-      let receipt: WorktreePhaseReceipt;
+      let receipt: ReviewCheckoutPhaseEvidence;
       if (commands.length === 0) {
-        receipt = createNotRequiredWorktreePhaseReceipt({
+        const noCommands = createNotRequiredWorktreePhaseReceipt({
           phase,
           reason: 'no-commands-configured',
           finishedAt: Date.now(),
         });
+        if (noCommands.reason !== 'no-commands-configured') {
+          throw new Error('review phase unexpectedly inherited preparation evidence');
+        }
+        receipt = noCommands;
       } else {
         const checkout = getReviewCheckoutById(checkoutId);
         if (!checkout) return;
@@ -1235,12 +1252,16 @@ export class DispatchService {
       }
       const checkout = getReviewCheckoutById(checkoutId);
       if (!checkout) return;
-      const workspaceReceipt = setReviewCheckoutPhaseReceipt({
+      const boundReceipt = createReviewCheckoutPhaseReceipt(
+        this.reviewCheckoutAuthority(checkout),
+        receipt,
+      );
+      const phasePublication = this.gateway.commitReviewCheckoutPhaseReceipt({
         authority: this.reviewCheckoutAuthority(checkout),
         expectedUpdatedAt: checkout.updatedAt,
-        receipt,
+        receipt: boundReceipt,
       });
-      if (!workspaceReceipt || !setAgentRunPhaseReceipt(input.runId, receipt)) {
+      if (!phasePublication) {
         this.settleTerminal(input.runId, {
           status: 'failed',
           result: null,
@@ -1475,7 +1496,7 @@ export class DispatchService {
    * run legitimately loses the race and stays terminal; any other refusal is
    * missing evidence and must not leave a queued run wedged forever. */
   private persistPhaseReceipt(runId: ULID, receipt: WorktreePhaseReceipt): boolean {
-    if (setAgentRunPhaseReceipt(runId, receipt)) return true;
+    if (this.gateway.commitPhaseReceipt({ runId, receipt })) return true;
     if (!this.runIsTerminal(runId)) {
       this.failPhaseEvidence(runId, `${receipt.phase} receipt could not be persisted immutably`);
     }
@@ -1679,6 +1700,21 @@ export class DispatchService {
       return;
     }
 
+    if (input.authorizeRuntimeCwd) {
+      const refusal = await input.authorizeRuntimeCwd();
+      if (refusal) {
+        console.warn(`[pc-sdk][dispatch] review ${input.runId} post-mint cwd refused: ${refusal}`);
+        await this.disposeUninstalledRuntime(input.runId, session);
+        this.settleTerminal(input.runId, {
+          status: 'failed',
+          result: null,
+          failureCause: 'worktree-provision-failed',
+          failureReason: `review workspace authorization refused after runtime mint: ${refusal}`,
+        }, continuationAttemptId);
+        return;
+      }
+    }
+
     // Session creation is asynchronous. A kill can land while the provider is
     // minting the native session; the row must be re-read before installing a
     // live projection, starting the wall clock, or sending a turn that could
@@ -1740,6 +1776,26 @@ export class DispatchService {
     await this.consumeTurn(input.runId, input.projectId, turn, { firstTurn: true });
   }
 
+  /** Fail closed when a paused reviewer no longer owns runtime-ready checkout
+   * authority. The ask-aware kill door terminalizes it before exact cleanup. */
+  private async retireInvalidReviewRevival(
+    run: AgentRunRow,
+    checkout: ReviewCheckout,
+    issue: string,
+  ): Promise<void> {
+    console.warn(
+      `[pc-sdk][dispatch] paused reviewer ${run.id} revival refused: ${issue}; terminalizing for exact cleanup`,
+    );
+    const killed = await this.killRun(run.projectId, run.id as ULID, {
+      failureCause: 'cancelled',
+      failureReason: `paused independent reviewer lost checkout authority: ${issue}`,
+    });
+    if (!killed.ok) return;
+    // killRun registered the exact cleanup task. Do not await it from inside
+    // the revival promise: cleanup quiescence intentionally waits for that
+    // promise to leave liveRevivals, so awaiting here would self-deadlock.
+  }
+
   /** Re-mint a paused run from its exact frozen snapshot/selection. The ask
    * remains open until this native resume is positively receipted on the next
    * sendTurn; a failed or stale mint never falls back to current defaults. */
@@ -1757,6 +1813,14 @@ export class DispatchService {
       const contract = run.contractId ? this.contracts.get(run.contractId) : null;
       const spec = (contract?.expectedOutput ?? null) as ExpectedOutput | null;
       if (!contract || !spec) return null;
+      const reviewCheckout = getReviewCheckoutForReviewer(run.id as ULID);
+      if (reviewCheckout) {
+        const issue = await this.reviewWorkspaceAuthorityIssue(reviewCheckout.id, true);
+        if (issue) {
+          await this.retireInvalidReviewRevival(run, reviewCheckout, issue);
+          return null;
+        }
+      }
       if (
         spec.kind === 'repo' &&
         !this.hasPositiveBuilderWorkspaceEvidence(run, run.worktreeDir)
@@ -1796,6 +1860,13 @@ export class DispatchService {
       const continuation = { mode: 'resume' as const, nativeSessionId: run.nativeSessionId };
       const validation = await this.deps.preflightRuntimeSession(selection, continuation);
       if (validation.status === 'invalid' || this.ctx !== ctx || this.shuttingDown) return null;
+      if (reviewCheckout) {
+        const issue = await this.reviewWorkspaceAuthorityIssue(reviewCheckout.id, true);
+        if (issue) {
+          await this.retireInvalidReviewRevival(run, reviewCheckout, issue);
+          return null;
+        }
+      }
       const beforePrepare = getAgentRunRow(run.id);
       if (!beforePrepare || beforePrepare.status !== 'paused') return null;
       try {
@@ -1817,6 +1888,13 @@ export class DispatchService {
             repositoryLease.identity,
           )
         : run.worktreeDir ?? project.folderPath ?? process.cwd();
+      if (reviewCheckout) {
+        const issue = await this.reviewWorkspaceAuthorityIssue(reviewCheckout.id, true);
+        if (issue) {
+          await this.retireInvalidReviewRevival(run, reviewCheckout, issue);
+          return null;
+        }
+      }
       let instructions = buildSpecialistInstructions({
         charter: snapshot.charter,
         podName: snapshot.name,
@@ -1863,6 +1941,14 @@ export class DispatchService {
           // A kill/answer/racing recovery may already have advanced the row.
         }
         return null;
+      }
+      if (reviewCheckout) {
+        const issue = await this.reviewWorkspaceAuthorityIssue(reviewCheckout.id, true);
+        if (issue) {
+          await this.disposeUninstalledRuntime(run.id as ULID, session);
+          await this.retireInvalidReviewRevival(run, reviewCheckout, issue);
+          return null;
+        }
       }
       // The stale `run` snapshot predates an async provider resume. Only a
       // still-paused row may receive this projection; kill/answer/recovery can
@@ -2688,7 +2774,13 @@ export class DispatchService {
           id: contract.id,
           reviewRunId: supersededReviewId,
         });
-        if (!clearedReservation) {
+        const atomicallyCleared = this.contracts.get(contract.id);
+        const settledCheckout = getReviewCheckoutForReviewer(supersededReviewId);
+        if (!clearedReservation && !(
+          atomicallyCleared?.reviewRunId === null &&
+          settledCheckout?.verdictAppliedAt !== null &&
+          settledCheckout?.verdictReceipt?.outcome === 'overridden'
+        )) {
           return {
             ok: false,
             message: 'independent reviewer changed before cleanup settlement could clear its reservation',
@@ -2866,7 +2958,10 @@ export class DispatchService {
     // do today. `row.autoContinueCount` is this run's OWN position in the
     // chain (stamped at insert time, immutable since), so it's read once
     // here rather than after the mutation.
-    const autoContinueEligible = status === 'failed' && failureCause === 'turn-budget-exhausted';
+    const reviewCheckout = getReviewCheckoutForReviewer(runId);
+    const autoContinueEligible = status === 'failed' &&
+      failureCause === 'turn-budget-exhausted' &&
+      reviewCheckout === null;
     const autoContinue = autoContinueEligible && row.autoContinueCount < MAX_AUTO_CONTINUES;
     if (autoContinueEligible && !autoContinue) {
       failureReason = `hit turn budget ${MAX_AUTO_CONTINUES}× — needs attention`;
@@ -2979,6 +3074,18 @@ export class DispatchService {
   async recoverPendingAutoContinues(): Promise<void> {
     for (const row of listTurnBudgetExhaustedRuns()) {
       try {
+        const reviewCheckout = getReviewCheckoutForReviewer(row.id as ULID);
+        if (reviewCheckout) {
+          await this.trackPostTerminalTask(
+            row.id as ULID,
+            () => this.ensureReviewCleanup(
+              row.id as ULID,
+              row,
+              reviewCheckout.contractId,
+            ),
+          );
+          continue;
+        }
         if (row.autoContinueCount >= MAX_AUTO_CONTINUES) continue; // ceiling already reached
         if (hasContinuation(row.id)) continue; // already fired
         console.warn(
@@ -3277,6 +3384,21 @@ export class DispatchService {
         gitReceipt.sealedCommit !== checkout.sealedCommit) {
       return `review checkout ${checkoutId} reviewer Git receipt is missing or stale`;
     }
+    if (requireRuntimeReady &&
+        (!reviewCheckoutPhaseMatchesRun(
+          checkout,
+          checkout.preparationReceipt,
+          reviewer.preparationReceipt,
+          'preparation',
+        ) ||
+        !reviewCheckoutPhaseMatchesRun(
+          checkout,
+          checkout.readinessReceipt,
+          reviewer.readinessReceipt,
+          'readiness',
+        ))) {
+      return `review checkout ${checkoutId} run/workspace phase evidence is mismatched`;
+    }
     const project = getProjectById(checkout.projectId);
     if (!project?.folderPath) return `review checkout ${checkoutId} project folder is unavailable`;
     const inspected = await inspectReviewCheckout(
@@ -3288,6 +3410,7 @@ export class DispatchService {
     }
     const current = getReviewCheckoutById(checkoutId);
     const currentTarget = this.contracts.get(checkout.contractId);
+    const currentReviewer = getAgentRunRow(checkout.reviewerRunId);
     if (!current || current.updatedAt !== checkout.updatedAt ||
         current.status !== 'provisioned' ||
         (requireRuntimeReady ? !isReviewCheckoutRuntimeReady(current) :
@@ -3297,7 +3420,21 @@ export class DispatchService {
         currentTarget.agentRunId !== checkout.producerRunId ||
         currentTarget.reviewSealedCommit !== checkout.sealedCommit ||
         (currentTarget.deliverable as { commit?: string } | null)?.commit !== checkout.sealedCommit ||
-        currentTarget.landingStatus !== null) {
+        currentTarget.landingStatus !== null ||
+        (requireRuntimeReady &&
+          (!currentReviewer ||
+            !reviewCheckoutPhaseMatchesRun(
+              current,
+              current.preparationReceipt,
+              currentReviewer.preparationReceipt,
+              'preparation',
+            ) ||
+            !reviewCheckoutPhaseMatchesRun(
+              current,
+              current.readinessReceipt,
+              currentReviewer.readinessReceipt,
+              'readiness',
+            )))) {
       return `review checkout ${checkoutId} authority changed while Git evidence was inspected`;
     }
     return null;
@@ -3369,10 +3506,146 @@ export class DispatchService {
     return final;
   }
 
-  /** One idempotent cleanup owner per reviewer. The promise is retained for the
-   * duration of one attempt so concurrent terminal/kill/override observers
-   * share it. A failed attempt is released for an explicit retry while durable
-   * teardown-pending/error evidence continues to fence every downstream door. */
+  private buildReviewVerdictReceipt(
+    checkout: ReviewCheckout,
+    row: AgentRunRow,
+    target: Contract,
+    reviewerContract: Contract | null,
+    workspaceAuthorityIssue: string | null,
+  ): ReviewCheckoutVerdictReceipt {
+    const terminalStatus = row.status as 'completed' | 'failed' | 'cancelled';
+    const producingRow = target.agentRunId
+      ? getAgentRunRow(target.agentRunId as ULID)
+      : null;
+    const stableFrame = target.version === checkout.contractVersion &&
+      target.agentRunId === checkout.producerRunId &&
+      target.reviewRunId === checkout.reviewerRunId &&
+      target.reviewSealedCommit === checkout.sealedCommit &&
+      target.verificationStatus === 'passed' &&
+      target.landingStatus === null &&
+      (target.deliverable as { commit?: string } | null)?.commit === checkout.sealedCommit &&
+      producingRow !== null &&
+      ['completed', 'failed', 'cancelled'].includes(producingRow.status) &&
+      producingRow.lifecycleState === 'reviewing';
+    const trustedReviewAuthority = workspaceAuthorityIssue === null &&
+      isReviewCheckoutRuntimeReady(checkout) &&
+      row.id === checkout.reviewerRunId &&
+      isReviewCheckoutGitReceipt(row.gitReceipt) &&
+      row.gitReceipt.id === checkout.id &&
+      row.gitReceipt.contractId === checkout.contractId &&
+      row.gitReceipt.contractVersion === checkout.contractVersion &&
+      row.gitReceipt.producerRunId === checkout.producerRunId &&
+      row.gitReceipt.reviewerRunId === checkout.reviewerRunId &&
+      row.gitReceipt.worktreePath === checkout.worktreePath &&
+      row.gitReceipt.sealedCommit === checkout.sealedCommit &&
+      reviewCheckoutPhaseMatchesRun(
+        checkout,
+        checkout.preparationReceipt,
+        row.preparationReceipt,
+        'preparation',
+      ) &&
+      reviewCheckoutPhaseMatchesRun(
+        checkout,
+        checkout.readinessReceipt,
+        row.readinessReceipt,
+        'readiness',
+      );
+    const verdict = terminalStatus === 'completed' &&
+      reviewerContract?.verificationStatus === 'passed'
+      ? parseReviewVerdictPayload(
+          (reviewerContract.deliverable as { data?: unknown } | null)?.data,
+        )
+      : null;
+    const outcome = this.reviewOverrides.has(row.id)
+      ? 'overridden'
+      : !stableFrame
+        ? 'void'
+        : !trustedReviewAuthority
+          ? 'unavailable'
+          : verdict?.verdict ?? 'unavailable';
+    return {
+      ...this.reviewCheckoutAuthority(checkout),
+      protocol: 'review-checkout-verdict-v1',
+      reviewerContractId: row.contractId,
+      terminalStatus,
+      outcome,
+      findings: outcome === 'approve' || outcome === 'reject'
+        ? verdict?.findings ?? []
+        : [],
+      recordedAt: Date.now(),
+    };
+  }
+
+  private recordReviewVerdict(
+    observed: ReviewCheckout,
+    row: AgentRunRow,
+    target: Contract,
+    reviewerContract: Contract | null,
+    workspaceAuthorityIssue: string | null,
+  ): ReviewCheckout {
+    const current = getReviewCheckoutById(observed.id) ?? observed;
+    if (current.verdictReceipt) {
+      if (isMatchingReviewCheckoutVerdict(current, current.verdictReceipt)) return current;
+      throw new Error(`review checkout ${current.id} has malformed verdict evidence`);
+    }
+    const receipt = this.buildReviewVerdictReceipt(
+      current,
+      row,
+      target,
+      reviewerContract,
+      workspaceAuthorityIssue,
+    );
+    const recorded = setReviewCheckoutVerdictReceipt({
+      authority: this.reviewCheckoutAuthority(current),
+      expectedUpdatedAt: current.updatedAt,
+      receipt,
+    });
+    if (!recorded || !isMatchingReviewCheckoutVerdict(recorded, recorded.verdictReceipt)) {
+      throw new Error(`review checkout ${current.id} verdict could not be recorded before teardown`);
+    }
+    return recorded;
+  }
+
+  private async applyReviewVerdictEffect(observed: ReviewCheckout): Promise<void> {
+    const checkout = getReviewCheckoutById(observed.id) ?? observed;
+    const receipt = checkout.verdictReceipt;
+    if (!receipt || !isMatchingReviewCheckoutVerdict(checkout, receipt)) {
+      throw new Error(`review checkout ${checkout.id} has no exact typed verdict receipt`);
+    }
+    if (checkout.verdictAppliedAt !== null) return;
+    if (checkout.status !== 'destroyed' ||
+        !isMatchingReviewCheckoutTeardown(checkout, checkout.teardownReceipt)) {
+      throw new Error(`review checkout ${checkout.id} verdict is fenced by incomplete teardown`);
+    }
+    const appliedAt = Math.max(Date.now(), (checkout.destroyedAt ?? 0) + 1);
+    const target = this.contracts.applyReviewCheckoutVerdict({
+      receipt,
+      expectedCheckoutUpdatedAt: checkout.updatedAt,
+      appliedAt,
+    });
+    const settled = getReviewCheckoutById(checkout.id);
+    if (!target || !settled || settled.verdictAppliedAt !== appliedAt) {
+      throw new Error(`review checkout ${checkout.id} verdict effect could not settle atomically`);
+    }
+    if (receipt.outcome === 'approve') {
+      await this.landAcceptedContract(target, 'reviewer');
+      return;
+    }
+    if (receipt.outcome === 'reject') {
+      return;
+    }
+    if (receipt.outcome === 'unavailable' || receipt.outcome === 'void') {
+      console.warn(
+        `[pc-sdk][dispatch] review run ${receipt.reviewerRunId} settled '${receipt.outcome}' ` +
+        `for contract ${receipt.contractId} — re-entering the review gate when eligible.`,
+      );
+      if (!this.shuttingDown) await this.ensureIndependentReview(receipt.contractId);
+    }
+  }
+
+  /** One idempotent cleanup owner per reviewer. Typed verdict evidence is
+   * recorded before teardown; its target effect commits only after exact
+   * positive absence, so every crash point is a durable recovery feeder. */
   private ensureReviewCleanup(
     runId: ULID,
     observedRow: AgentRunRow | null,
@@ -3388,20 +3661,30 @@ export class DispatchService {
       if (!['completed', 'failed', 'cancelled'].includes(row.status)) {
         throw new Error(`review run ${runId} is still '${row.status}'`);
       }
-      const checkout = getReviewCheckoutForReviewer(runId);
-      if (!checkout) throw new Error(`review run ${runId} has no durable checkout authority`);
-      await this.settleReviewCheckoutCleanup(checkout);
       const reviewTarget = findContractByReviewRun(runId);
       const reviewTargetId = reviewTarget?.id ?? this.reviewTargetsByRun.get(runId) ?? observedTargetId;
+      let checkout = getReviewCheckoutForReviewer(runId);
+      if (!checkout) throw new Error(`review run ${runId} has no durable checkout authority`);
       if (reviewTarget) {
         const reviewerContract = row.contractId ? this.contracts.get(row.contractId) : null;
-        await this.settleReviewVerdict(
-          reviewTarget.id,
-          runId,
+        const workspaceAuthorityIssue = checkout.verdictReceipt
+          ? null
+          : await this.reviewWorkspaceAuthorityIssue(checkout.id, true);
+        if (workspaceAuthorityIssue) {
+          console.warn(
+            `[pc-sdk][dispatch] review ${runId} terminal verdict authority refused: ${workspaceAuthorityIssue}`,
+          );
+        }
+        checkout = this.recordReviewVerdict(
+          checkout,
+          row,
+          reviewTarget,
           reviewerContract,
-          row.status as 'completed' | 'failed' | 'cancelled',
+          workspaceAuthorityIssue,
         );
       }
+      checkout = await this.settleReviewCheckoutCleanup(checkout);
+      if (checkout.verdictReceipt) await this.applyReviewVerdictEffect(checkout);
       if (reviewTargetId && this.reviewTargetsByRun.get(runId) === reviewTargetId) {
         this.reviewTargetsByRun.delete(runId);
       }
@@ -3412,144 +3695,18 @@ export class DispatchService {
       this.pendingReviewCleanupTasks.delete(task);
       if (this.reviewCleanupTasks.get(runId) === task) this.reviewCleanupTasks.delete(runId);
     }).catch(() => {});
-    void task.then(() => {
-      this.reviewCleanupFailures.delete(runId);
-    });
-    void task.catch((error) => {
-      this.reviewCleanupFailures.set(runId, error);
-    });
-    return task;
-  }
-
-  /** Route a review run's terminal into the target contract: approve → land
-   *  via the normal guarded path (authorizer 'reviewer'); reject → verification
-   *  'failed' with the structured findings + lifecycle 'review-rejected' (the
-   *  Fix door — a continuation reseals, re-verifies, re-reviews, guard 4);
-   *  no usable verdict (crash/kill/garbage payload) → clear the marker and
-   *  re-enter the review gate (bounded), never wedged. */
-  private async settleReviewVerdict(
-    targetId: ULID,
-    reviewRunId: ULID,
-    reviewerContract: Contract | null,
-    terminalStatus: 'completed' | 'failed' | 'cancelled',
-  ): Promise<void> {
-    const target = this.contracts.get(targetId);
-    if (!target) return;
-    // A landed receipt is final; abandoned work never re-enters review.
-    if (
-      target.landingStatus === 'landed' ||
-      target.landingStatus === 'abandoning' ||
-      target.landingStatus === 'abandoned'
-    ) return;
-    // Stale verdict: the marker moved on (orchestrator override via
-    // pc_review_contract, or a newer round) — this run's verdict is void.
-    if (target.reviewRunId !== reviewRunId) return;
-    const checkout = getReviewCheckoutForReviewer(reviewRunId);
-    if (!checkout || checkout.contractId !== targetId ||
-        checkout.reviewerRunId !== reviewRunId ||
-        checkout.status !== 'destroyed' ||
-        !isMatchingReviewCheckoutTeardown(checkout, checkout.teardownReceipt)) {
-      throw new Error(
-        `review run ${reviewRunId} verdict is blocked until its exact checkout teardown is positively settled`,
-      );
-    }
-    // The orchestrator override retains the same reservation until teardown
-    // settles. Its fence makes this old terminal evidence intentionally void;
-    // the override caller clears the exact marker only after this cleanup.
-    if (this.reviewOverrides.has(reviewRunId)) return;
-    const producingRunId = (target.agentRunId ?? null) as ULID | null;
-    // The verdict counts only off a COMPLETED reviewer whose own contract
-    // verified (schema_valid over the payload) — never off prose or a crash.
-    const verdict =
-      terminalStatus === 'completed' && reviewerContract?.verificationStatus === 'passed'
-        ? parseReviewVerdictPayload((reviewerContract.deliverable as { data?: unknown } | null)?.data)
-        : null;
-    const sealedNow = (target.deliverable as { commit?: string } | null)?.commit ?? null;
-    const briefedSeal = target.reviewSealedCommit ?? null;
-    const producingRow = producingRunId ? getAgentRunRow(producingRunId) : null;
-    const producingTerminal =
-      producingRow !== null && ['completed', 'failed', 'cancelled'].includes(producingRow.status);
-    if (
-      verdict &&
-      (
-        target.verificationStatus !== 'passed' ||
-        briefedSeal === null ||
-        sealedNow !== briefedSeal ||
-        !producingTerminal
-      )
-    ) {
-      console.warn(
-        `[pc-sdk][dispatch] review run ${reviewRunId} returned a verdict for ${briefedSeal ?? '(unrecorded)'} but contract ` +
-          `${targetId} now seals ${sealedNow ?? '(none)'}, verification is ${target.verificationStatus ?? 'unset'}, ` +
-          `and its producer is ${producingRow?.status ?? 'missing'} — verdict void`,
-      );
-      this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
-      // Seal-only drift on an otherwise passed, settled producer needs a fresh
-      // review. A live/missing producer or stale failed verification instead
-      // belongs to that producer's settlement/recovery path; never overwrite
-      // it with this old review.
-      if (target.verificationStatus === 'passed' && producingTerminal) {
-        await this.ensureIndependentReview(targetId);
-      }
-      return;
-    }
-
-    if (verdict?.verdict === 'approve') {
-      // Bind the approval to the EXACT seal the reviewer was briefed on and
-      // to a SETTLED producing run: a mid-review reseal (fix continuation,
-      // leftover builder process) means this approval covers a commit nobody
-      // reviewed, and a live continuation means landing would merge + tear
-      // down a worktree under a running agent (the same hazard reviewContract
-      // refuses). Either way the verdict is unusable — re-enter the gate.
-      // Verification stays 'passed'; the approval receipt is appended.
-      const note =
-        `independent review approved (run ${reviewRunId}, round ${target.reviewRound ?? '?'})` +
-        (verdict.findings.length > 0 ? `\nfindings: ${JSON.stringify(verdict.findings)}` : '');
-      this.contracts.setVerification({
-        id: target.id,
-        verificationStatus: 'passed',
-        verificationNotes: target.verificationNotes ? `${target.verificationNotes}\n${note}` : note,
-      });
-      this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
-      // reviewing → merge-ready; landAcceptedContract stamps merging onward.
-      this.stampLifecycleWhenLegal(producingRunId, 'merge-ready');
-      const fresh = this.contracts.get(target.id);
-      if (fresh) await this.landAcceptedContract(fresh, 'reviewer');
-      return;
-    }
-
-    if (verdict?.verdict === 'reject') {
-      // Structured findings tied to contract + sealed commit ride
-      // verificationNotes as JSON; 'review-rejected' is the durable Fix door.
-      this.contracts.setVerification({
-        id: target.id,
-        verificationStatus: 'failed',
-        verificationNotes: JSON.stringify(
-          {
-            independentReview: {
-              reviewRunId,
-              round: target.reviewRound,
-              sealedCommit: (target.deliverable as { commit?: string } | null)?.commit ?? null,
-              verdict: 'reject',
-              findings: verdict.findings,
-            },
-          },
-          null,
-          2,
-        ),
-      });
-      this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
-      this.stampLifecycleWhenLegal(producingRunId, 'review-rejected');
-      return;
-    }
-
-    // No usable verdict — the review died. Clear the marker and re-enter the
-    // gate: another round while the budget lasts, the exhausted park after.
-    console.warn(
-      `[pc-sdk][dispatch] review run ${reviewRunId} ended '${terminalStatus}' with no usable verdict for contract ${targetId} — re-entering the review gate.`,
+    void task.then(
+      () => {
+        this.reviewCleanupFailures.delete(runId);
+        const postTerminal = this.postTerminalTasks.get(runId);
+        if (postTerminal?.status === 'failed') {
+          postTerminal.status = 'completed';
+          postTerminal.error = null;
+        }
+      },
+      (error) => this.reviewCleanupFailures.set(runId, error),
     );
-    this.contracts.setReviewState({ id: target.id, reviewRunId: null, reviewSealedCommit: null });
-    await this.ensureIndependentReview(targetId);
+    return task;
   }
 
   /** The idempotent full-review re-entry door. Called on a verified pass, on a
@@ -3578,6 +3735,23 @@ export class DispatchService {
       : null;
     if (!producingRun || !['completed', 'failed', 'cancelled'].includes(producingRun.status)) {
       return contract;
+    }
+    if (contract.reviewRunId) {
+      const exactCheckout = getReviewCheckoutForReviewer(contract.reviewRunId as ULID);
+      if (exactCheckout?.status === 'destroyed') {
+        if (exactCheckout.verdictReceipt && exactCheckout.verdictAppliedAt === null) {
+          await this.applyReviewVerdictEffect(exactCheckout);
+          return this.contracts.get(contract.id);
+        }
+        if (exactCheckout.verdictAppliedAt === null) {
+          console.warn(
+            `[pc-sdk][dispatch] contract ${contract.id} retains destroyed review checkout ` +
+            `${exactCheckout.id} without recoverable verdict evidence — successor fenced`,
+          );
+          return contract;
+        }
+        return this.contracts.get(contract.id);
+      }
     }
     const currentCheckout = getCurrentReviewCheckoutForContract(contract.id as ULID);
     if (currentCheckout) {
@@ -3618,6 +3792,32 @@ export class DispatchService {
       });
       this.stampLifecycleWhenLegal((contract.agentRunId ?? null) as ULID | null, 'review-rejected');
       return updated ?? this.contracts.get(contract.id);
+    }
+    // Retryable admission failures deliberately park the settled producer at
+    // merge-ready after releasing their exact reservation. Before reserving a
+    // successor reviewer, re-enter `reviewing` through an exact, atomic
+    // lifecycle/outbox edge. Without this step the successor can run against
+    // valid checkout authority but its verdict is necessarily void (and the
+    // verdict application CAS cannot move merge-ready as if it were reviewing).
+    if (producingRun.lifecycleState !== 'reviewing') {
+      if (producingRun.lifecycleState !== 'merge-ready') {
+        console.warn(
+          `[pc-sdk][dispatch] contract ${contract.id} cannot admit a reviewer while producer ` +
+          `${producingRun.id} lifecycle is '${producingRun.lifecycleState ?? 'unset'}'`,
+        );
+        return contract;
+      }
+      const reentered = this.gateway.commitLifecycleTransition({
+        runId: producingRun.id,
+        expectedFrom: 'merge-ready',
+        to: 'reviewing',
+      });
+      if (!reentered || reentered.run.lifecycleState !== 'reviewing') {
+        console.warn(
+          `[pc-sdk][dispatch] contract ${contract.id} lost the exact producer lifecycle race while re-entering review`,
+        );
+        return this.contracts.get(contract.id);
+      }
     }
     return this.dispatchReviewRun(contract, round + 1);
   }
@@ -3741,6 +3941,13 @@ export class DispatchService {
     const admissionTask = new Promise<void>((resolve) => { settleAdmission = resolve; });
     this.reviewAdmissionTasks.set(runId, admissionTask);
     this.reviewTargetsByRun.set(runId, target.id);
+    const releaseAdmissionFence = (): void => {
+      this.reviewAdmissions.delete(runId);
+      if (this.reviewAdmissionTasks.get(runId) === admissionTask) {
+        this.reviewAdmissionTasks.delete(runId);
+        settleAdmission();
+      }
+    };
     const parkOwnedReservation = async (why: string): Promise<Contract | null> => {
       try {
         await this.settleReviewCheckoutCleanup(workspaceReservation);
@@ -3851,6 +4058,11 @@ export class DispatchService {
         failureReason: 'review producer/contract ownership binding was not positively committed',
         completedAt: Date.now(),
       });
+      // The shared cleanup owner waits for admission quiescence. This failure
+      // is still inside the admission try/finally, so release its exact fence
+      // first; otherwise cleanup awaits this promise while this path awaits
+      // cleanup and neither can reach the outer finally.
+      releaseAdmissionFence();
       try {
         await this.ensureReviewCleanup(runId, getAgentRunRow(runId), target.id as ULID);
       } catch (error) {
@@ -3888,11 +4100,7 @@ export class DispatchService {
     });
     return this.contracts.get(target.id);
     } finally {
-      this.reviewAdmissions.delete(runId);
-      if (this.reviewAdmissionTasks.get(runId) === admissionTask) {
-        this.reviewAdmissionTasks.delete(runId);
-        settleAdmission();
-      }
+      releaseAdmissionFence();
       if (!getAgentRunRow(runId) && this.reviewTargetsByRun.get(runId) === target.id) {
         this.reviewTargetsByRun.delete(runId);
       }
@@ -3905,7 +4113,15 @@ export class DispatchService {
    * successor. Missing-before-add and removed-before-settlement are ordinary
    * idempotent teardown cases; drift remains cleanup-pending and blocks. */
   async recoverReviewWorkspaces(): Promise<void> {
-    for (const observed of listReviewCheckoutsNeedingRecovery()) {
+    const executable = listReviewCheckoutsNeedingRecovery();
+    const seen = new Set(executable.map((checkout) => checkout.id));
+    const destroyedAdmissions = listReviewCheckoutBlockingCandidates().filter((checkout) => {
+      if (seen.has(checkout.id) || checkout.status !== 'destroyed' || checkout.verdictReceipt !== null ||
+          getAgentRunRow(checkout.reviewerRunId) !== null) return false;
+      const target = this.contracts.get(checkout.contractId);
+      return target?.reviewRunId === checkout.reviewerRunId;
+    });
+    for (const observed of [...executable, ...destroyedAdmissions]) {
       try {
         let checkout = getReviewCheckoutById(observed.id) ?? observed;
         const project = getProjectById(checkout.projectId);
@@ -5080,17 +5296,34 @@ export class DispatchService {
     this.shuttingDown = true;
     for (const [runId, liveRun] of [...this.live]) {
       if (getReviewCheckoutForReviewer(runId as ULID)) {
-        this.settleTerminal(runId as ULID, {
-          status: 'cancelled',
-          result: null,
-          failureCause: 'cancelled',
-          failureReason: 'server shutdown retired independent reviewer',
-        });
+        const reviewer = getAgentRunRow(runId as ULID);
+        if (reviewer) {
+          await this.killRun(reviewer.projectId, runId as ULID, {
+            failureCause: 'cancelled',
+            failureReason: 'server shutdown retired independent reviewer',
+          });
+        } else {
+          clearTimeout(liveRun.wallClock);
+          this.live.delete(runId);
+          this.retireRuntime(runId as ULID, liveRun.session);
+        }
         continue;
       }
       clearTimeout(liveRun.wallClock);
       this.live.delete(runId);
       this.retireRuntime(runId as ULID, liveRun.session);
+    }
+    // Profile/preflight/mint reviewers may own a queued/spawning row without
+    // a live runtime handle. Terminalize those rows now so the task drain can
+    // pass them through the same verdict-recording and teardown owner.
+    for (const checkout of listReviewCheckoutsNeedingRecovery()) {
+      const run = getAgentRunRow(checkout.reviewerRunId);
+      if (run && !['completed', 'failed', 'cancelled'].includes(run.status)) {
+        await this.killRun(run.projectId, checkout.reviewerRunId, {
+          failureCause: 'cancelled',
+          failureReason: 'server shutdown retired pre-live independent reviewer',
+        });
+      }
     }
     // Drain to a fixed point: a tracked producer can synchronously register a
     // later generation (terminal verification -> reviewer cleanup, or a run
@@ -5118,15 +5351,27 @@ export class DispatchService {
       ...[...this.retiringRuns.values()]
         .filter((retirement) => retirement.status === 'failed')
         .map((retirement) => retirement.error),
-      ...[...this.postTerminalTasks.values()]
-        .filter((task) => task.status === 'failed')
-        .map((task) => task.error),
-      ...this.reviewCleanupFailures.values(),
+      ...[...this.postTerminalTasks.entries()]
+        .filter(([runId, task]) =>
+          task.status === 'failed' && !this.reviewSettlementIsDurablyComplete(runId as ULID),
+        )
+        .map(([, task]) => task.error),
+      ...[...this.reviewCleanupFailures.entries()]
+        .filter(([runId]) => !this.reviewSettlementIsDurablyComplete(runId as ULID))
+        .map(([, error]) => error),
       ...this.runtimeRetirementFailures.values(),
     ];
     if (failures.length > 0) {
       throw new AggregateError(failures, 'one or more specialist runtimes failed to dispose');
     }
+  }
+
+  private reviewSettlementIsDurablyComplete(runId: ULID): boolean {
+    const checkout = getReviewCheckoutForReviewer(runId);
+    if (!checkout || checkout.status !== 'destroyed' ||
+        !isMatchingReviewCheckoutTeardown(checkout, checkout.teardownReceipt)) return false;
+    if (checkout.verdictReceipt) return checkout.verdictAppliedAt !== null;
+    return findContractByReviewRun(runId) === null;
   }
 }
 

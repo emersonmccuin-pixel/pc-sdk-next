@@ -89,6 +89,7 @@ export {
   reserveContractLanding,
   settleContractLanding,
   authorizeContractAbandonment,
+  applyReviewVerdictToContractInDb,
   setContractAbandonmentError,
   settleContractAbandonment,
   setContractReviewState,
@@ -97,6 +98,9 @@ export {
   setContractRunRecoveryVerification,
   setContractRun,
   setContractVerification,
+} from './repos/contracts.ts';
+export type {
+  ApplyReviewVerdictToContractInput,
 } from './repos/contracts.ts';
 export type {
   ContractRow,
@@ -116,6 +120,7 @@ export type {
 
 export {
   createReviewCheckoutReservation,
+  applyReviewCheckoutVerdictEvidenceInDb,
   getCurrentReviewCheckoutForContract,
   getReviewCheckoutById,
   getReviewCheckoutForReviewer,
@@ -124,6 +129,7 @@ export {
   getWorktreeForContract,
   getWorktreeForLandedContract,
   listActiveWorktrees,
+  listReviewCheckoutBlockingCandidates,
   listReviewCheckoutsNeedingRecovery,
   listStrandedWorktrees,
   markWorktreeDestroyed,
@@ -134,7 +140,8 @@ export {
   markWorktreeStranded,
   reviveStrandedWorktree,
   setReviewCheckoutCleanupError,
-  setReviewCheckoutPhaseReceipt,
+  setReviewCheckoutPhaseReceiptInDb,
+  setReviewCheckoutVerdictReceipt,
   setReviewCheckoutProvisionReceipt,
   setWorktreeContractId,
   settleReviewCheckoutTeardown,
@@ -142,6 +149,7 @@ export {
 } from './repos/worktrees.ts';
 export type {
   CreateReviewCheckoutReservationInput,
+  ApplyReviewCheckoutVerdictEvidenceInput,
   MarkExactWorktreeDestroyedInput,
   MarkExactWorktreeSnapshotDestroyedInput,
   MarkExactUnpublishedWorktreeDestroyedInput,
@@ -310,11 +318,16 @@ export {
   specialistSnapshotForAgentRun,
   setAgentRunFailureReason,
   setAgentRunPhaseReceipt,
+  setAgentRunPhaseReceiptInDb,
+  setReviewAgentRunPhaseReceiptInDb,
   touchAgentRunActivity,
+  transitionAgentRunLifecycleInDb,
+  validateReviewVerdictAgentRunFrameInDb,
   updateAgentRunPid,
   updateAgentRunStatus,
 } from './repos/agent-runs.ts';
 export type {
+  TransitionAgentRunLifecycleInput,
   InsertAgentRunRowInput,
   ListAgentRunsForSessionOptions,
   MarkAgentRunTerminalInput,

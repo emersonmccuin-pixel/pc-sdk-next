@@ -134,6 +134,13 @@
       "when": 1783944000000,
       "tag": "0018_review_checkouts",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1783947600000,
+      "tag": "0019_review_checkout_verdicts",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@
 // (packages/db/src/repos/worktrees.ts). Binding fields (project/run/contract/
 // branch provenance) are nullable — legacy rows predate them.
 
+import { parseReviewVerdictPayload, type ReviewFinding } from './contract.ts';
 import { isUlid, type ULID } from './ulid.ts';
 
 /** 'stranded' is DURABLE (docs/worktree-lifecycle.md 'Recovery'): the row's
@@ -527,6 +528,8 @@ export interface WorktreeGitReceipt {
 export const REVIEW_CHECKOUT_PROVISION_PROTOCOL =
   'review-checkout-provision-v1' as const;
 export const REVIEW_CHECKOUT_GIT_PROTOCOL = 'review-checkout-git-v1' as const;
+export const REVIEW_CHECKOUT_PHASE_PROTOCOL = 'review-checkout-phase-v1' as const;
+export const REVIEW_CHECKOUT_VERDICT_PROTOCOL = 'review-checkout-verdict-v1' as const;
 export const REVIEW_CHECKOUT_TEARDOWN_PROTOCOL =
   'review-checkout-teardown-v1' as const;
 
@@ -585,6 +588,37 @@ export interface ReviewCheckoutGitReceipt extends ReviewCheckoutAuthority {
   readonly observedAt: number;
 }
 
+/** Checkout-bound preparation/readiness authority. The generic phase evidence
+ * is nested deliberately: a builder receipt (or continuation-only inherited
+ * preparation) cannot be written directly into a review workspace row. */
+export interface ReviewCheckoutPhaseReceipt extends ReviewCheckoutAuthority {
+  readonly protocol: typeof REVIEW_CHECKOUT_PHASE_PROTOCOL;
+  readonly evidence: ReviewCheckoutPhaseEvidence;
+}
+
+export type ReviewCheckoutPhaseEvidence =
+  | WorktreePhaseExecutedReceipt
+  | WorktreePhaseNoCommandsReceipt;
+
+export type ReviewCheckoutVerdictOutcome =
+  | 'approve'
+  | 'reject'
+  | 'unavailable'
+  | 'void'
+  | 'overridden';
+
+/** Durable typed terminal evidence, recorded before teardown. Its effect is
+ * applied only after exact positive teardown and is recovered independently
+ * of the now-absent checkout. */
+export interface ReviewCheckoutVerdictReceipt extends ReviewCheckoutAuthority {
+  readonly protocol: typeof REVIEW_CHECKOUT_VERDICT_PROTOCOL;
+  readonly reviewerContractId: ULID | null;
+  readonly terminalStatus: 'completed' | 'failed' | 'cancelled';
+  readonly outcome: ReviewCheckoutVerdictOutcome;
+  readonly findings: readonly ReviewFinding[];
+  readonly recordedAt: number;
+}
+
 /** Positive teardown settlement. Detached review checkouts never own a branch
  * and therefore never authorize branch deletion. */
 export interface ReviewCheckoutTeardownReceipt extends ReviewCheckoutAuthority {
@@ -599,8 +633,10 @@ export interface ReviewCheckoutTeardownReceipt extends ReviewCheckoutAuthority {
 export interface ReviewCheckout extends ReviewCheckoutAuthority {
   readonly status: ReviewCheckoutStatus;
   readonly provisionReceipt: ReviewCheckoutProvisionReceipt | null;
-  readonly preparationReceipt: WorktreePhaseReceipt | null;
-  readonly readinessReceipt: WorktreePhaseReceipt | null;
+  readonly preparationReceipt: ReviewCheckoutPhaseReceipt | null;
+  readonly readinessReceipt: ReviewCheckoutPhaseReceipt | null;
+  readonly verdictReceipt: ReviewCheckoutVerdictReceipt | null;
+  readonly verdictAppliedAt: number | null;
   readonly teardownReceipt: ReviewCheckoutTeardownReceipt | null;
   readonly cleanupError: string | null;
   readonly createdAt: number;
@@ -687,6 +723,50 @@ export function isReviewCheckoutGitReceipt(
     isNonNegativeSafeInteger(value.observedAt);
 }
 
+export function isReviewCheckoutPhaseReceipt(
+  value: unknown,
+): value is ReviewCheckoutPhaseReceipt {
+  if (!isRecord(value) || !isReviewCheckoutAuthority(value)) return false;
+  if (!hasOnlyKeys(value, [
+    'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+    'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+    'ownedRootRealPath', 'sealedCommit', 'evidence',
+  ])) return false;
+  if (value.protocol !== REVIEW_CHECKOUT_PHASE_PROTOCOL ||
+      !isWorktreePhaseReceipt(value.evidence)) return false;
+  return !(value.evidence.phase === 'preparation' &&
+    value.evidence.outcome === 'not-required' &&
+    value.evidence.reason === 'existing-worktree-preparation');
+}
+
+export function isReviewCheckoutVerdictReceipt(
+  value: unknown,
+): value is ReviewCheckoutVerdictReceipt {
+  if (!isRecord(value) || !isReviewCheckoutAuthority(value)) return false;
+  if (!hasOnlyKeys(value, [
+    'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+    'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+    'ownedRootRealPath', 'sealedCommit', 'reviewerContractId',
+    'terminalStatus', 'outcome', 'findings', 'recordedAt',
+  ])) return false;
+  if (value.protocol !== REVIEW_CHECKOUT_VERDICT_PROTOCOL ||
+      (value.reviewerContractId !== null && !isAppMintedUlid(value.reviewerContractId)) ||
+      (value.terminalStatus !== 'completed' &&
+        value.terminalStatus !== 'failed' &&
+        value.terminalStatus !== 'cancelled') ||
+      (value.outcome !== 'approve' && value.outcome !== 'reject' &&
+        value.outcome !== 'unavailable' && value.outcome !== 'void' &&
+        value.outcome !== 'overridden') ||
+      !Array.isArray(value.findings) ||
+      !isNonNegativeSafeInteger(value.recordedAt)) return false;
+  if (value.outcome === 'approve' || value.outcome === 'reject') {
+    return value.terminalStatus === 'completed' &&
+      value.reviewerContractId !== null &&
+      parseReviewVerdictPayload({ verdict: value.outcome, findings: value.findings }) !== null;
+  }
+  return value.findings.length === 0;
+}
+
 export function isReviewCheckoutTeardownReceipt(
   value: unknown,
 ): value is ReviewCheckoutTeardownReceipt {
@@ -724,14 +804,105 @@ export function isMatchingReviewCheckoutTeardown(
     hasMatchingReviewCheckoutAuthority(authority, receipt);
 }
 
+export function isMatchingReviewCheckoutPhase(
+  authority: ReviewCheckoutAuthority,
+  receipt: unknown,
+  phase?: WorktreePhase,
+): receipt is ReviewCheckoutPhaseReceipt {
+  return isReviewCheckoutAuthority(authority) &&
+    isReviewCheckoutPhaseReceipt(receipt) &&
+    hasMatchingReviewCheckoutAuthority(authority, receipt) &&
+    (phase === undefined || receipt.evidence.phase === phase);
+}
+
+export function isMatchingReviewCheckoutVerdict(
+  authority: ReviewCheckoutAuthority,
+  receipt: unknown,
+): receipt is ReviewCheckoutVerdictReceipt {
+  return isReviewCheckoutAuthority(authority) &&
+    isReviewCheckoutVerdictReceipt(receipt) &&
+    hasMatchingReviewCheckoutAuthority(authority, receipt);
+}
+
+export function reviewCheckoutVerdictReceiptsEqual(
+  left: unknown,
+  right: unknown,
+): boolean {
+  if (!isReviewCheckoutVerdictReceipt(left) ||
+      !isReviewCheckoutVerdictReceipt(right) ||
+      !hasMatchingReviewCheckoutAuthority(left, right) ||
+      left.reviewerContractId !== right.reviewerContractId ||
+      left.terminalStatus !== right.terminalStatus ||
+      left.outcome !== right.outcome ||
+      left.recordedAt !== right.recordedAt ||
+      left.findings.length !== right.findings.length) return false;
+  return left.findings.every((finding, index) => {
+    const other = right.findings[index];
+    return !!other && finding.file === other.file && finding.line === other.line &&
+      finding.summary === other.summary && finding.severity === other.severity;
+  });
+}
+
+export function createReviewCheckoutPhaseReceipt(
+  authority: ReviewCheckoutAuthority,
+  evidence: ReviewCheckoutPhaseEvidence,
+): ReviewCheckoutPhaseReceipt {
+  if (!isReviewCheckoutAuthority(authority) ||
+      !isWorktreePhaseReceipt(evidence) ||
+      (evidence.outcome === 'not-required' && evidence.reason !== 'no-commands-configured')) {
+    throw new Error('review checkout phase receipt requires exact fresh checkout evidence');
+  }
+  return { ...authority, protocol: REVIEW_CHECKOUT_PHASE_PROTOCOL, evidence };
+}
+
+/** Both copies must contain the exact same generic evidence: the workspace
+ * carries checkout authority, while the run copy remains the canonical
+ * provider-neutral phase receipt. */
+export function reviewCheckoutPhaseMatchesRun(
+  authority: ReviewCheckoutAuthority,
+  checkoutReceipt: unknown,
+  runReceipt: unknown,
+  phase: WorktreePhase,
+): boolean {
+  return isMatchingReviewCheckoutPhase(authority, checkoutReceipt, phase) &&
+    isWorktreePhaseReceipt(runReceipt, phase) &&
+    worktreePhaseEvidenceEquals(checkoutReceipt.evidence, runReceipt);
+}
+
+function worktreePhaseEvidenceEquals(
+  left: WorktreePhaseReceipt,
+  right: WorktreePhaseReceipt,
+): boolean {
+  if (left.phase !== right.phase || left.outcome !== right.outcome ||
+      left.ok !== right.ok || left.finishedAt !== right.finishedAt) return false;
+  if (left.outcome === 'not-required' || right.outcome === 'not-required') {
+    return left.outcome === 'not-required' && right.outcome === 'not-required' &&
+      left.reason === right.reason &&
+      (left.reason !== 'existing-worktree-preparation' ||
+        (right.reason === 'existing-worktree-preparation' &&
+          left.inheritedFromRunId === right.inheritedFromRunId));
+  }
+  return left.steps.length === right.steps.length && left.steps.every((step, index) => {
+    const other = right.steps[index];
+    return !!other && step.command === other.command &&
+      step.exitCode === other.exitCode && step.durationMs === other.durationMs &&
+      step.stdoutTail === other.stdoutTail && step.stderrTail === other.stderrTail &&
+      step.timedOut === other.timedOut;
+  });
+}
+
 /** Complete authority required immediately before reviewer runtime mint. */
 export function isReviewCheckoutRuntimeReady(
   checkout: ReviewCheckout,
 ): boolean {
   return checkout.status === 'provisioned' &&
     isMatchingReviewCheckoutProvision(checkout, checkout.provisionReceipt) &&
-    isPositiveWorktreePhaseReceipt(checkout.preparationReceipt, 'preparation') &&
-    isPositiveWorktreePhaseReceipt(checkout.readinessReceipt, 'readiness') &&
+    isMatchingReviewCheckoutPhase(checkout, checkout.preparationReceipt, 'preparation') &&
+    isPositiveWorktreePhaseReceipt(checkout.preparationReceipt.evidence, 'preparation') &&
+    isMatchingReviewCheckoutPhase(checkout, checkout.readinessReceipt, 'readiness') &&
+    isPositiveWorktreePhaseReceipt(checkout.readinessReceipt.evidence, 'readiness') &&
+    checkout.verdictReceipt === null &&
+    checkout.verdictAppliedAt === null &&
     checkout.teardownReceipt === null &&
     checkout.cleanupError === null &&
     checkout.destroyedAt === null;

@@ -181,6 +181,25 @@ export interface ReviewCheckoutGitReceiptDto
   repositoryIdentity: RepositoryIdentityReceiptDto;
 }
 
+export interface ReviewCheckoutPhaseReceiptDto extends ReviewCheckoutAuthorityDto {
+  protocol: 'review-checkout-phase-v1';
+  evidence: WorktreePhaseExecutedReceiptDto | WorktreePhaseNoCommandsReceiptDto;
+}
+
+export interface ReviewCheckoutVerdictReceiptDto extends ReviewCheckoutAuthorityDto {
+  protocol: 'review-checkout-verdict-v1';
+  reviewerContractId: ULID | null;
+  terminalStatus: 'completed' | 'failed' | 'cancelled';
+  outcome: 'approve' | 'reject' | 'unavailable' | 'void' | 'overridden';
+  findings: Array<{
+    file: string;
+    line?: number;
+    summary: string;
+    severity: 'critical' | 'major' | 'minor';
+  }>;
+  recordedAt: number;
+}
+
 export interface ReviewCheckoutTeardownReceiptDto extends ReviewCheckoutAuthorityDto {
   protocol: 'review-checkout-teardown-v1';
   startedAt: number;
@@ -195,8 +214,10 @@ export interface ReviewCheckoutTeardownReceiptDto extends ReviewCheckoutAuthorit
 export interface ReviewCheckoutDto extends ReviewCheckoutAuthorityDto {
   status: ReviewCheckoutStatusDto;
   provisionReceipt: ReviewCheckoutProvisionReceiptDto | null;
-  preparationReceipt: WorktreePhaseReceiptDto | null;
-  readinessReceipt: WorktreePhaseReceiptDto | null;
+  preparationReceipt: ReviewCheckoutPhaseReceiptDto | null;
+  readinessReceipt: ReviewCheckoutPhaseReceiptDto | null;
+  verdictReceipt: ReviewCheckoutVerdictReceiptDto | null;
+  verdictAppliedAt: number | null;
   teardownReceipt: ReviewCheckoutTeardownReceiptDto | null;
   cleanupError: string | null;
   createdAt: number;
@@ -377,6 +398,45 @@ export function isReviewCheckoutGitReceiptDto(
     (value.observedAt as number) >= 0;
 }
 
+export function isReviewCheckoutPhaseReceiptDto(
+  value: unknown,
+): value is ReviewCheckoutPhaseReceiptDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value) || !hasOnlyKeys(value, [
+    'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+    'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+    'ownedRootRealPath', 'sealedCommit', 'evidence',
+  ])) return false;
+  return value.protocol === 'review-checkout-phase-v1' &&
+    isWorktreePhaseReceiptDto(value.evidence) &&
+    !(value.evidence.outcome === 'not-required' &&
+      value.evidence.reason === 'existing-worktree-preparation');
+}
+
+export function isReviewCheckoutVerdictReceiptDto(
+  value: unknown,
+): value is ReviewCheckoutVerdictReceiptDto {
+  if (!isRecord(value) || !isReviewCheckoutAuthorityDto(value) || !hasOnlyKeys(value, [
+    'protocol', 'id', 'projectId', 'contractId', 'contractVersion',
+    'producerRunId', 'reviewerRunId', 'repositoryIdentity', 'worktreePath',
+    'ownedRootRealPath', 'sealedCommit', 'reviewerContractId',
+    'terminalStatus', 'outcome', 'findings', 'recordedAt',
+  ])) return false;
+  if (value.protocol !== 'review-checkout-verdict-v1' ||
+      (value.reviewerContractId !== null && !isUlid(value.reviewerContractId)) ||
+      !['completed', 'failed', 'cancelled'].includes(String(value.terminalStatus)) ||
+      !['approve', 'reject', 'unavailable', 'void', 'overridden'].includes(String(value.outcome)) ||
+      !Array.isArray(value.findings) ||
+      !Number.isSafeInteger(value.recordedAt) || (value.recordedAt as number) < 0) return false;
+  if ((value.outcome === 'approve' || value.outcome === 'reject') &&
+      (value.terminalStatus !== 'completed' || value.reviewerContractId === null)) return false;
+  if (value.outcome !== 'approve' && value.outcome !== 'reject' && value.findings.length !== 0) return false;
+  return value.findings.every((finding) => isRecord(finding) &&
+    hasOnlyKeys(finding, ['file', ...(finding.line === undefined ? [] : ['line']), 'summary', 'severity']) &&
+    typeof finding.file === 'string' && typeof finding.summary === 'string' &&
+    ['critical', 'major', 'minor'].includes(String(finding.severity)) &&
+    (finding.line === undefined || (typeof finding.line === 'number' && Number.isFinite(finding.line))));
+}
+
 export function isReviewCheckoutTeardownReceiptDto(
   value: unknown,
 ): value is ReviewCheckoutTeardownReceiptDto {
@@ -402,7 +462,8 @@ export function isReviewCheckoutDto(value: unknown): value is ReviewCheckoutDto 
     'id', 'projectId', 'contractId', 'contractVersion', 'producerRunId',
     'reviewerRunId', 'repositoryIdentity', 'worktreePath', 'ownedRootRealPath',
     'sealedCommit', 'status', 'provisionReceipt', 'preparationReceipt',
-    'readinessReceipt', 'teardownReceipt', 'cleanupError', 'createdAt',
+    'readinessReceipt', 'verdictReceipt', 'verdictAppliedAt',
+    'teardownReceipt', 'cleanupError', 'createdAt',
     'updatedAt', 'destroyedAt',
   ])) return false;
   if (!isReviewCheckoutStatus(value.status)) return false;
@@ -415,9 +476,16 @@ export function isReviewCheckoutDto(value: unknown): value is ReviewCheckoutDto 
     !hasMatchingReviewCheckoutAuthorityDto(value, value.teardownReceipt)
   )) return false;
   if (value.preparationReceipt !== null &&
-      !isWorktreePhaseReceiptDto(value.preparationReceipt, 'preparation')) return false;
+      (!isReviewCheckoutPhaseReceiptDto(value.preparationReceipt) ||
+       !hasMatchingReviewCheckoutAuthorityDto(value, value.preparationReceipt) ||
+       value.preparationReceipt.evidence.phase !== 'preparation')) return false;
   if (value.readinessReceipt !== null &&
-      !isWorktreePhaseReceiptDto(value.readinessReceipt, 'readiness')) return false;
+      (!isReviewCheckoutPhaseReceiptDto(value.readinessReceipt) ||
+       !hasMatchingReviewCheckoutAuthorityDto(value, value.readinessReceipt) ||
+       value.readinessReceipt.evidence.phase !== 'readiness')) return false;
+  if (value.verdictReceipt !== null &&
+      (!isReviewCheckoutVerdictReceiptDto(value.verdictReceipt) ||
+       !hasMatchingReviewCheckoutAuthorityDto(value, value.verdictReceipt))) return false;
   if (value.cleanupError !== null && !exactNonEmptyString(value.cleanupError)) return false;
   if (!Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0 ||
       !Number.isSafeInteger(value.updatedAt) || (value.updatedAt as number) < 0 ||
@@ -425,9 +493,14 @@ export function isReviewCheckoutDto(value: unknown): value is ReviewCheckoutDto 
   if (value.destroyedAt !== null &&
       (!Number.isSafeInteger(value.destroyedAt) ||
        (value.destroyedAt as number) !== (value.updatedAt as number))) return false;
+  if (value.verdictAppliedAt !== null &&
+      (!Number.isSafeInteger(value.verdictAppliedAt) || value.destroyedAt === null ||
+       (value.verdictAppliedAt as number) < (value.destroyedAt as number) ||
+       value.verdictReceipt === null)) return false;
   if (value.status === 'reserved') {
     return value.provisionReceipt === null && value.teardownReceipt === null &&
       value.preparationReceipt === null && value.readinessReceipt === null &&
+      value.verdictReceipt === null && value.verdictAppliedAt === null &&
       value.destroyedAt === null && value.cleanupError === null;
   }
   if (value.status === 'provisioned') {
@@ -438,7 +511,8 @@ export function isReviewCheckoutDto(value: unknown): value is ReviewCheckoutDto 
     return value.teardownReceipt === null && value.destroyedAt === null;
   }
   return value.teardownReceipt !== null && value.destroyedAt !== null &&
-    value.cleanupError === null;
+    value.cleanupError === null &&
+    (value.verdictAppliedAt === null || value.verdictReceipt !== null);
 }
 
 export function isAgentRunChangedReason(value: unknown): value is AgentRunChangedReason {

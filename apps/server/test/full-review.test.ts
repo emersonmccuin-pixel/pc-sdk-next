@@ -217,6 +217,10 @@ async function readyReviewTarget(gp: Awaited<ReturnType<typeof newGitProject>>):
     dispatcherSessionId: 'review-target',
     status: 'queued',
     input: 'produce review target',
+    // This fixture represents a producer whose repository verification has
+    // already passed and whose next durable pipeline owner is independent
+    // review. NULL is legacy/non-repository and cannot authorize admission.
+    lifecycleState: 'reviewing',
     contractId: created.id,
     worktreeDir: provisioned.dir,
     worktreeBaseBranch: provisioned.baseBranch,

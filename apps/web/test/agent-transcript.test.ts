@@ -309,6 +309,8 @@ test('review checkout evidence distinguishes cleanup blocking, settlement, and u
     provisionReceipt: null,
     preparationReceipt: null,
     readinessReceipt: null,
+    verdictReceipt: null,
+    verdictAppliedAt: null,
     teardownReceipt: null,
     cleanupError: 'registration locked',
     createdAt: 10,
@@ -323,7 +325,7 @@ test('review checkout evidence distinguishes cleanup blocking, settlement, and u
     reviewerContract,
   }));
   assert.match(blocked, /cleanup pending/i);
-  assert.match(blocked, /approve · 0 findings/i);
+  assert.match(blocked, /submitted approve · 0 findings · not yet recorded/i);
   assert.match(blocked, /blocked until positive cleanup settlement/i);
   assert.match(blocked, /registration locked/i);
 
@@ -336,12 +338,23 @@ test('review checkout evidence distinguishes cleanup blocking, settlement, and u
     registrationAbsent: true as const,
     branchDeletion: 'not-applicable-detached' as const,
   };
+  const verdictReceipt = {
+    protocol: 'review-checkout-verdict-v1' as const,
+    ...authority,
+    reviewerContractId: '01J00000000000000000000006',
+    terminalStatus: 'completed' as const,
+    outcome: 'overridden' as const,
+    findings: [],
+    recordedAt: 12,
+  };
   const settled = renderToStaticMarkup(createElement(ReviewCheckoutDetails, {
     run,
     checkout: {
       ...pending,
       status: 'destroyed',
       cleanupError: null,
+      verdictReceipt,
+      verdictAppliedAt: 14,
       teardownReceipt,
       updatedAt: 13,
       destroyedAt: 13,
@@ -351,6 +364,9 @@ test('review checkout evidence distinguishes cleanup blocking, settlement, and u
     reviewerContract,
   }));
   assert.match(settled, /cleanup settled/i);
+  assert.match(settled, /overridden · 0 findings · effect applied/i);
+  assert.doesNotMatch(settled, /submitted approve/i);
+  assert.match(settled, /contract effect applied/i);
   assert.match(settled, /directory absent · registration absent/i);
 
   const unavailable = renderToStaticMarkup(createElement(ReviewCheckoutDetails, {

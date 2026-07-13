@@ -13,6 +13,7 @@ import {
   recoveryRunGuidance,
   recoveryRunLabel,
   reviewCheckoutsRequiringAttention,
+  reviewVerdictPresentation,
   sealedEvidenceMessage,
 } from '../src/features/recovery/view.ts';
 import { parseReviewCheckoutListResponse } from '../src/features/recovery/use-review-checkouts.ts';
@@ -123,6 +124,8 @@ function reviewCheckout(overrides: Partial<ReviewCheckoutDto> = {}): ReviewCheck
     provisionReceipt: null,
     preparationReceipt: null,
     readinessReceipt: null,
+    verdictReceipt: null,
+    verdictAppliedAt: null,
     teardownReceipt: null,
     cleanupError: null,
     createdAt: 10,
@@ -298,6 +301,50 @@ test('review verdict presentation accepts only a verified typed reviewer contrac
       data: { verdict: 'approve', findings: [{ file: 'x', summary: 'bad', severity: 'unknown' }] },
     },
   })), null);
+
+  const checkout = reviewCheckout();
+  const recorded = reviewCheckout({
+    verdictReceipt: {
+      protocol: 'review-checkout-verdict-v1',
+      id: checkout.id,
+      projectId: checkout.projectId,
+      contractId: checkout.contractId,
+      contractVersion: checkout.contractVersion,
+      producerRunId: checkout.producerRunId,
+      reviewerRunId: checkout.reviewerRunId,
+      repositoryIdentity: checkout.repositoryIdentity,
+      worktreePath: checkout.worktreePath,
+      ownedRootRealPath: checkout.ownedRootRealPath,
+      sealedCommit: checkout.sealedCommit,
+      reviewerContractId: reviewer.id,
+      terminalStatus: 'completed',
+      outcome: 'overridden',
+      findings: [],
+      recordedAt: 20,
+    },
+    verdictAppliedAt: null,
+  });
+  assert.deepEqual(reviewVerdictPresentation(recorded, reviewer), {
+    outcome: 'overridden',
+    findingCount: 0,
+    authority: 'recorded',
+    effect: 'pending',
+  }, 'immutable receipt overrides the stale submitted reject payload');
+  assert.deepEqual(reviewVerdictPresentation(
+    { ...recorded, verdictAppliedAt: 21 },
+    reviewer,
+  ), {
+    outcome: 'overridden',
+    findingCount: 0,
+    authority: 'recorded',
+    effect: 'applied',
+  });
+  assert.deepEqual(reviewVerdictPresentation(checkout, reviewer), {
+    outcome: 'reject',
+    findingCount: 1,
+    authority: 'submitted',
+    effect: 'unrecorded',
+  });
 });
 
 test('activity source keeps separate counts, explicit unavailable retries, and no continuation door', () => {

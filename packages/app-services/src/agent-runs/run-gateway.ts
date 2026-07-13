@@ -28,20 +28,38 @@ import {
   markAgentRunTerminal as defaultMarkAgentRunTerminal,
   markPendingAskAnswered as defaultMarkPendingAskAnswered,
   markPendingAskCancelled as defaultMarkPendingAskCancelled,
+  setAgentRunPhaseReceiptInDb,
+  setReviewAgentRunPhaseReceiptInDb,
+  setReviewCheckoutPhaseReceiptInDb,
+  transitionAgentRunLifecycleInDb,
   updateAgentRunStatus as defaultUpdateAgentRunStatus,
   type CreatePendingAskInput,
   type DbExecutor,
   type InsertLiveEventDraft,
   type LiveOutboxEvent,
   type MarkAgentRunTerminalInput,
+  type SetReviewCheckoutPhaseReceiptInput,
   type UpdateAgentRunStatusInput,
 } from '@pc/db';
-import type { AgentRunFailureCause, AgentRunRow, AgentRunStatus, RunLifecycleState, ULID } from '@pc/domain';
+import {
+  reviewCheckoutPhaseMatchesRun,
+  type AgentRunFailureCause,
+  type AgentRunRow,
+  type AgentRunStatus,
+  type ReviewCheckout,
+  type RunLifecycleState,
+  type ULID,
+  type WorktreePhaseReceipt,
+} from '@pc/domain';
 import { toAgentRunDto } from './adapters.ts';
 
 export interface AgentRunChangedPublication {
   liveEvent: LiveOutboxEvent<AgentRunChangedLivePayload>;
   run: AgentRunDto;
+}
+
+export interface ReviewCheckoutPhasePublication extends AgentRunChangedPublication {
+  checkout: ReviewCheckout;
 }
 
 const TERMINAL: ReadonlySet<AgentRunStatus> = new Set(['completed', 'failed', 'cancelled']);
@@ -108,6 +126,75 @@ export class AgentRunMutationGateway {
       });
       const draft = buildDraft(input.reason, run, input.pendingAskId);
       const liveEvent = this.insert(tx, draft);
+      return { liveEvent, run };
+    });
+  }
+
+  /** Commit a generic builder phase plus its versioned agent-run fact. */
+  commitPhaseReceipt(input: {
+    runId: ULID;
+    receipt: WorktreePhaseReceipt;
+  }): AgentRunChangedPublication | null {
+    return this.tx((tx) => {
+      const row = setAgentRunPhaseReceiptInDb(input.runId, input.receipt, tx);
+      if (!row) return null;
+      const run = toAgentRunDto(row);
+      const liveEvent = this.insert(tx, buildDraft('reconciled', run));
+      return { liveEvent, run };
+    });
+  }
+
+  /** Coordinate the agent-run and review-workspace owners without moving
+   * either state machine into the other repository. The run rev, both copies
+   * of phase evidence, and the replayable agent-run fact commit together. */
+  commitReviewCheckoutPhaseReceipt(
+    input: SetReviewCheckoutPhaseReceiptInput,
+  ): ReviewCheckoutPhasePublication | null {
+    return this.tx((tx) => {
+      const row = setReviewAgentRunPhaseReceiptInDb(
+        input.authority.reviewerRunId,
+        input.receipt,
+        tx,
+      );
+      if (!row) return null;
+      const checkout = setReviewCheckoutPhaseReceiptInDb(input, tx);
+      if (!checkout) {
+        throw new Error('review checkout phase CAS failed after reviewer phase write');
+      }
+      const phase = input.receipt.evidence.phase;
+      const checkoutReceipt = phase === 'preparation'
+        ? checkout.preparationReceipt
+        : checkout.readinessReceipt;
+      const runReceipt = phase === 'preparation'
+        ? row.preparationReceipt
+        : row.readinessReceipt;
+      if (!reviewCheckoutPhaseMatchesRun(checkout, checkoutReceipt, runReceipt, phase)) {
+        throw new Error('review checkout phase evidence diverged inside its atomic write');
+      }
+      const run = toAgentRunDto(row);
+      const liveEvent = this.insert(tx, buildDraft('reconciled', run));
+      return { liveEvent, run, checkout };
+    });
+  }
+
+  /** Move a settled repository run through one exact lifecycle edge and
+   * publish the matching versioned fact in the same transaction. Recovery
+   * callers use this instead of a write followed by a separately committed
+   * announcement, so a crash cannot leave the durable row and outbox split. */
+  commitLifecycleTransition(input: {
+    runId: ULID;
+    expectedFrom: RunLifecycleState;
+    to: RunLifecycleState;
+  }): AgentRunChangedPublication | null {
+    return this.tx((tx) => {
+      const row = transitionAgentRunLifecycleInDb({
+        id: input.runId,
+        expectedFrom: input.expectedFrom,
+        to: input.to,
+      }, tx);
+      if (!row) return null;
+      const run = toAgentRunDto(row);
+      const liveEvent = this.insert(tx, buildDraft('reconciled', run));
       return { liveEvent, run };
     });
   }
