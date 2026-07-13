@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createNotRequiredWorktreePhaseReceipt,
+  createReviewCheckoutPhaseReceipt,
   isMatchingReviewCheckoutProvision,
   isMatchingReviewCheckoutTeardown,
   isReviewCheckoutGitReceipt,
@@ -89,8 +90,10 @@ test('reviewer Git receipt is detached, exact, and runtime readiness needs both 
     ...authority,
     status: 'provisioned',
     provisionReceipt: provision,
-    preparationReceipt: preparation,
-    readinessReceipt: readiness,
+    preparationReceipt: createReviewCheckoutPhaseReceipt(authority, preparation),
+    readinessReceipt: createReviewCheckoutPhaseReceipt(authority, readiness),
+    verdictReceipt: null,
+    verdictAppliedAt: null,
     teardownReceipt: null,
     cleanupError: null,
     createdAt: 1,
