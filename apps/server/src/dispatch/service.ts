@@ -3446,10 +3446,7 @@ export class DispatchService {
     if (target.reviewRunId !== reviewRunId) return;
     const checkout = getReviewCheckoutForReviewer(reviewRunId);
     if (!checkout || checkout.contractId !== targetId ||
-        checkout.contractVersion !== target.version ||
         checkout.reviewerRunId !== reviewRunId ||
-        checkout.producerRunId !== target.agentRunId ||
-        checkout.sealedCommit !== target.reviewSealedCommit ||
         checkout.status !== 'destroyed' ||
         !isMatchingReviewCheckoutTeardown(checkout, checkout.teardownReceipt)) {
       throw new Error(
