@@ -1,6 +1,11 @@
 {
   "name": "pc-sdk",
   "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": "22.13.0",
+    "pnpm": "10.33.0"
+  },
   "scripts": {
     "spike": "pnpm --filter @pc-sdk/spike start",
     "spike:codex": "node apps/server/node_modules/tsx/dist/cli.mjs apps/server/scripts/codex-spike.ts",
@@ -9,5 +14,9 @@
     "test": "pnpm -r --if-present test",
     "check:dead-imports": "node scripts/check-dead-imports.mjs",
     "ci:check": "pnpm typecheck && pnpm test && pnpm check:dead-imports"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "node-gyp": "12.3.0"
   }
 }

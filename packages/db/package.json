@@ -16,7 +16,7 @@
     "@pc/contracts": "workspace:*",
     "@pc/domain": "workspace:*",
     "@pc/utils": "workspace:*",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "11.10.0",
     "drizzle-orm": "^0.38.0",
     "ulid": "^2.3.0"
   },
