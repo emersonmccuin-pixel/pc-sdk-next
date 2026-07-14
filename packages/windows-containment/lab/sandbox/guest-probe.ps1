@@ -105,6 +105,22 @@ function ConvertTo-Cx004IntegrityAlias {
     }
 }
 
+function Test-Cx004FileAccessDeniedFacts {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $ErrorType,
+        [Parameter(Mandatory)] [long] $ErrorHResult,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $ErrorInnerType,
+        [Parameter(Mandatory)] [long] $ErrorInnerHResult,
+        [Parameter(Mandatory)] [bool] $ErrorInnerHasInnerException
+    )
+
+    return $ErrorType -ceq 'System.Management.Automation.MethodInvocationException' -and
+        $ErrorHResult -eq -2146233087 -and
+        $ErrorInnerType -ceq 'System.UnauthorizedAccessException' -and
+        $ErrorInnerHResult -eq -2147024891 -and
+        (-not $ErrorInnerHasInnerException)
+}
+
 function Get-Cx004FileSha256 {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 
@@ -574,6 +590,10 @@ $inputWritePath = [System.IO.Path]::Combine(
     '.cx004-write-probe-' + $runManifest.challenge + '.tmp')
 $inputWriteSucceeded = $false
 $inputWriteErrorType = ''
+$inputWriteErrorHResult = [long] 0
+$inputWriteErrorInnerType = ''
+$inputWriteErrorInnerHResult = [long] 0
+$inputWriteErrorInnerHasInnerException = $false
 try {
     $probeBytes = $script:Cx004Utf8.GetBytes($runManifest.challenge + "`n")
     $stream = New-Object System.IO.FileStream(
@@ -592,12 +612,23 @@ try {
 }
 catch {
     $inputWriteErrorType = $_.Exception.GetType().FullName
+    $inputWriteErrorHResult = [long] $_.Exception.HResult
+    if ($null -ne $_.Exception.InnerException) {
+        $inputWriteErrorInnerType = $_.Exception.InnerException.GetType().FullName
+        $inputWriteErrorInnerHResult = [long] $_.Exception.InnerException.HResult
+        $inputWriteErrorInnerHasInnerException = $null -ne $_.Exception.InnerException.InnerException
+    }
 }
 $inputWriteArtifactPresent = [System.IO.File]::Exists($inputWritePath)
 $inputNewFileCreateDenied =
     (-not $inputWriteSucceeded) -and
     (-not $inputWriteArtifactPresent) -and
-    $inputWriteErrorType -ceq 'System.UnauthorizedAccessException'
+    (Test-Cx004FileAccessDeniedFacts `
+        -ErrorType $inputWriteErrorType `
+        -ErrorHResult $inputWriteErrorHResult `
+        -ErrorInnerType $inputWriteErrorInnerType `
+        -ErrorInnerHResult $inputWriteErrorInnerHResult `
+        -ErrorInnerHasInnerException $inputWriteErrorInnerHasInnerException)
 
 $existingInputRelativePath = 'guest-probe.ps1'
 $existingInputPath = [System.IO.Path]::Combine(
@@ -606,6 +637,10 @@ $existingInputPath = [System.IO.Path]::Combine(
 $existingInputSha256Before = Get-Cx004FileSha256 -LiteralPath $existingInputPath
 $existingInputWriteOpenSucceeded = $false
 $existingInputWriteOpenErrorType = ''
+$existingInputWriteOpenErrorHResult = [long] 0
+$existingInputWriteOpenErrorInnerType = ''
+$existingInputWriteOpenErrorInnerHResult = [long] 0
+$existingInputWriteOpenErrorInnerHasInnerException = $false
 try {
     $stream = New-Object System.IO.FileStream(
         $existingInputPath,
@@ -621,11 +656,22 @@ try {
 }
 catch {
     $existingInputWriteOpenErrorType = $_.Exception.GetType().FullName
+    $existingInputWriteOpenErrorHResult = [long] $_.Exception.HResult
+    if ($null -ne $_.Exception.InnerException) {
+        $existingInputWriteOpenErrorInnerType = $_.Exception.InnerException.GetType().FullName
+        $existingInputWriteOpenErrorInnerHResult = [long] $_.Exception.InnerException.HResult
+        $existingInputWriteOpenErrorInnerHasInnerException = $null -ne $_.Exception.InnerException.InnerException
+    }
 }
 $existingInputSha256After = Get-Cx004FileSha256 -LiteralPath $existingInputPath
 $existingInputWriteOpenDenied =
     (-not $existingInputWriteOpenSucceeded) -and
-    $existingInputWriteOpenErrorType -ceq 'System.UnauthorizedAccessException'
+    (Test-Cx004FileAccessDeniedFacts `
+        -ErrorType $existingInputWriteOpenErrorType `
+        -ErrorHResult $existingInputWriteOpenErrorHResult `
+        -ErrorInnerType $existingInputWriteOpenErrorInnerType `
+        -ErrorInnerHResult $existingInputWriteOpenErrorInnerHResult `
+        -ErrorInnerHasInnerException $existingInputWriteOpenErrorInnerHasInnerException)
 $existingInputUnmodified =
     $existingInputSha256Before -ceq $existingInputSha256After -and
     $existingInputSha256After -ceq [string]$stableFiles[1].sha256
@@ -865,10 +911,18 @@ $evidence = [ordered]@{
             writeSucceeded = $inputWriteSucceeded
             artifactPresent = $inputWriteArtifactPresent
             errorType = $inputWriteErrorType
+            errorHResult = $inputWriteErrorHResult
+            errorInnerType = $inputWriteErrorInnerType
+            errorInnerHResult = $inputWriteErrorInnerHResult
+            errorInnerHasInnerException = $inputWriteErrorInnerHasInnerException
             existingFileRelativePath = $existingInputRelativePath
             existingFileWriteOpenAttempted = $true
             existingFileWriteOpenSucceeded = $existingInputWriteOpenSucceeded
             existingFileWriteOpenErrorType = $existingInputWriteOpenErrorType
+            existingFileWriteOpenErrorHResult = $existingInputWriteOpenErrorHResult
+            existingFileWriteOpenErrorInnerType = $existingInputWriteOpenErrorInnerType
+            existingFileWriteOpenErrorInnerHResult = $existingInputWriteOpenErrorInnerHResult
+            existingFileWriteOpenErrorInnerHasInnerException = $existingInputWriteOpenErrorInnerHasInnerException
             existingFileSha256Before = $existingInputSha256Before
             existingFileSha256After = $existingInputSha256After
             existingFileUnmodified = $existingInputUnmodified

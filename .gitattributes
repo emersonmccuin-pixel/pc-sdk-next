@@ -3,3 +3,4 @@
 
 # CX-004 executes and byte-seals these reviewed Sandbox qualification sources.
 /packages/windows-containment/lab/** text eol=lf
+/docs/execution/manifests/CX-004-sandbox-runner.json text eol=lf

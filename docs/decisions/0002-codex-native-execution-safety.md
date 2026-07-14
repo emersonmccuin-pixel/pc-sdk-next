@@ -390,21 +390,25 @@ The accepted bundle is:
    hostile same-user owner/job-handle acquisition. CX-005 must prove every provider-
    root-to-owner/outside denial before credentials; CX-008 revalidates it and adds
    lower/sibling/cross-tier directions.
-2. Initial fake-lab support is one qualified Windows 11 25H2 x64 client tuple within
-   base build `10.0.26200`. Source build occurs on the exact sealed host; runtime and
-   the hard-kill matrix are mandatory in fresh Windows Sandbox sessions. The CX-004 Q0S
-   receipt pins the exact host and
-   observed guest full revision/UBR, native identity, Sandbox feature/application/CLI,
+2. Initial fake-lab support is one exact two-part tuple: the sealed Windows 11 Pro 25H2
+   x64 client host `10.0.26200.8655`, plus the separately observed Windows Sandbox
+   runtime at Windows 11 24H2 Enterprise client/workstation AMD64 `10.0.26100.8655`.
+   The guest's raw registry `ProductName="Windows 10 Enterprise"` is retained as evidence
+   and is not a Windows 10 marketing-identity claim. Source build occurs on the exact
+   sealed host; runtime and the hard-kill matrix are mandatory in fresh Windows Sandbox
+   sessions. The CX-004 Q0S receipt pins the exact host and exact guest full revision/UBR,
+   native identity, Sandbox feature/application/CLI,
    canonical configuration, and sealed harness/input/artifact digests. Production
    runtime admission is separate and must bind the exact current host plus its native
    OS/security-component and protected-install evidence; it never equals or inherits
-   a Sandbox image. Any Q0S-bound delta is typed unsupported until a fresh fake-only
+   a Sandbox image, and the guest's `26100` evidence makes no production-host `26200`
+   behavior claim. Any Q0S-bound delta is typed unsupported until a fresh fake-only
    Q0S run qualifies the replacement tuple. CI fails
    on mismatch. `windows-latest` is an independently observed, always non-admitted
    lane that may source-build and proves the public typed-unsupported path, but
    contributes no containment or admission evidence; an identity match fails for
    an explicit runner-policy decision. Every other Windows
-   build/product/architecture and every non-Windows host fails typed with no
+   host/guest build, product, edition, or architecture tuple and every non-Windows host fails typed with no
    fallback.
    Development may source-build from pinned inputs, but every build seals both
    complete native-load closures and final PEs. Future one-click distribution must
@@ -717,8 +721,9 @@ level choices are:
    a separately approved protected-
    install/OS-policy packaging/N7-launcher-lifecycle decision (no installer, elevation, WDAC/AppLocker
    mutation, self-ACL seal, or long-lived helper here);
-2. one exact fake-qualified Windows 11 25H2 x64 client host/Windows-Sandbox-guest
-   identity tuple within build 26200, sealed Sandbox configuration/input/artifact
+2. one exact fake-qualified tuple containing the Windows 11 Pro 25H2 x64 client host
+   `26200.8655` and the separately observed Windows 11 24H2 Enterprise Sandbox guest
+   `26100.8655` (raw registry `ProductName="Windows 10 Enterprise"`), sealed Sandbox configuration/input/artifact
    provenance, independently observed `windows-latest` non-admitted build/unsupported
    proof, and typed unsupported behavior on every bound delta/other host; and
 3. stable-upgrade/wait with full version requalification, quiescent two-step
@@ -734,3 +739,13 @@ packaging, OS-policy, or N7 launcher choice.
 The product owner amended accepted-decision item 2 and only the disposable-runner/
 provenance, fake protected-install, and power-reset portions of item 1 on 2026-07-13
 to the Windows Sandbox method above. Every other accepted choice remains binding.
+
+On 2026-07-14, the first challenge-bound guest discovery clarified—not broadened—that
+tuple. The exact 25H2 host produced the exact 24H2 Sandbox guest recorded above. This is
+the guest identity that CX-004 must qualify; it is not a 26100-or-26200 compatibility
+range and does not amend the production-host pin in the accepted residuals. The same
+discovery showed Windows PowerShell 5.1 reports mapped-input access denial as the exact
+two-node `MethodInvocationException (0x80131501) -> UnauthorizedAccessException
+(0x80070005)` chain. CX-004 may credit read-only mapping only when it retains that raw
+outer/inner/HRESULT/no-deeper-inner evidence together with absent write artifacts and
+unchanged sealed hashes; every other error shape stays inconclusive.

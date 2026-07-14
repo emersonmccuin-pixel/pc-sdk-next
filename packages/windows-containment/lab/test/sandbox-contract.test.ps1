@@ -734,6 +734,7 @@ foreach ($sourceSealBinding in @(
     'ExpectedS0Tree',
     'origin/main',
     'source-worktree-byte-mismatch',
+    'source-index-flags',
     'sha256',
     'blob'
 )) {
@@ -762,6 +763,7 @@ $hostCanaryCompleteRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Comple
 $gitIdentityRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004GitIdentity'
 $gitPathRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004GitPath'
 $gitInvokeRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Invoke-Cx004Git'
+$gitBlobIdRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004GitBlobIdFromBytes'
 $sourceSealFunctionRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004SourceSeal'
 $guestTerminalWaitRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Wait-Cx004GuestTerminalFiles'
 $networkFailureDispositionRaw = Get-Cx004FunctionSource -Path $probePath -Name 'Get-Cx004NetworkFailureDisposition'
@@ -773,6 +775,10 @@ $snapshotUnchangedRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Assert-
 $hostSmokeFunctionRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Invoke-Cx004HostSmoke'
 $hostDoctorRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004HostDoctor'
 $positiveIntegrityRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Test-Cx004PositiveIntegrityError'
+$guestFileAccessDeniedRaw = Get-Cx004FunctionSource -Path $probePath -Name 'Test-Cx004FileAccessDeniedFacts'
+$hostFileAccessDeniedRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Test-Cx004FileAccessDeniedFacts'
+$guestIdentityFactsRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Test-Cx004GuestIdentityFacts'
+$freshSessionIdsRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Assert-Cx004FreshSessionIds'
 
 $readFinalPathMatch = [regex]::Match(
     $moduleRaw,
@@ -1029,8 +1035,29 @@ Assert-Cx004Matches -Actual $sourceSealFunctionRaw `
     -Pattern '(?is)\$item\.PSIsContainer.*FileAttributes\]::ReparsePoint.*unexpected-harness-source.*\$actualRelativePaths.*Sort-Object.*\$expectedRelativePaths\s*\|\s*Sort-Object' `
     -Message 'bounded source enumeration must reject directories/reparse points and equal the exact sorted allowlist'
 Assert-Cx004Matches -Actual $sourceSealFunctionRaw `
+    -Pattern '(?is)ls-files[''"],\s*[''"]-v[''"],\s*[''"]--[''"].*?"H \$_".*?source-index-flags' `
+    -Message 'source seal must reject assume-unchanged, skip-worktree, missing, duplicate, or nonordinary index entries for every sealed path'
+Assert-Cx004SourceOrder -Source $sourceSealFunctionRaw -Markers @(
+    '[string[]] $sealedRelativePaths = @($manifestRelativePath) + $expectedRelativePaths',
+    '[Array]::Sort($sealedRelativePaths, [StringComparer]::Ordinal)',
+    "@('ls-files', '-v', '--') + `$sealedRelativePaths",
+    '$expectedIndexStateLines = @($sealedRelativePaths'
+) -Message 'sealed index paths must use Git-compatible ordinal byte order before exact all-H comparison'
+Assert-Cx004Matches -Actual $sourceSealFunctionRaw `
     -Pattern '(?is)\[long\]\s*\$manifestFile\.length\s+-lt\s+1\s+-or\s+\[long\]\s*\$manifestFile\.length\s+-gt\s+4MB' `
     -Message 'each tracked source manifest length must stay within the four-MiB pre-allocation cap'
+Assert-Cx004Matches -Actual $sourceSealFunctionRaw `
+    -Pattern ([regex]::Escape('Test-Cx004IntegralPrimitive -Value $manifestFile.length')) `
+    -Message 'tracked source lengths must reject floating, Boolean, enum, and other non-integral JSON/CLR values before conversion'
+Assert-Cx004SourceOrder -Source $sourceSealFunctionRaw -Markers @(
+    '$manifestTreeLine = Get-Cx004SingleLine',
+    '$manifestAttribute = Get-Cx004SingleLine',
+    '$manifestRelativePath`: eol: lf',
+    '$manifestRead = [Cx004NativeFileInfo]::ReadBoundedRegularFile($manifestPath, 1MB)',
+    'Get-Cx004GitBlobIdFromBytes -Bytes $manifestRead.Bytes',
+    '-cne $manifestGitBlob',
+    '$sourceManifest = $manifestText | ConvertFrom-Json'
+) -Message 'the retained strict manifest bytes must equal their caller-pinned HEAD blob before the manifest can authorize any source'
 Assert-Cx004SourceOrder -Source $sourceSealFunctionRaw -Markers @(
     '$manifestFile.length -gt 4MB',
     '[Cx004NativeFileInfo]::ReadBoundedRegularFile($path, [int] $manifestFile.length)',
@@ -1040,6 +1067,13 @@ Assert-Cx004SourceOrder -Source $sourceSealFunctionRaw -Markers @(
     "@('check-attr'",
     "@('ls-tree'"
 ) -Message 'each source must be retained under its manifest length before hash/length and Git blob/eol acceptance'
+Assert-Cx004Matches -Actual $sourceSealFunctionRaw `
+    -Pattern '(?is)\$sourceGitBlob\s*=\s*\[string\]\s*\$Matches\[1\].*?Get-Cx004GitBlobIdFromBytes\s+-Bytes\s+\$sourceRead\.Bytes.*?-cne\s+\$sourceGitBlob.*?source-blob-mismatch' `
+    -Message 'every retained executed source byte set must equal its caller-pinned HEAD blob id'
+foreach ($gitBlobHelperMarker in @('blob $($Bytes.LongLength)', 'IncrementalHash', 'HashAlgorithmName]::SHA1', 'AppendData($header)', 'AppendData($Bytes)')) {
+    Assert-Cx004Matches -Actual $gitBlobIdRaw -Pattern ([regex]::Escape($gitBlobHelperMarker)) `
+        -Message "Git blob-id helper must retain exact byte framing marker $gitBlobHelperMarker"
+}
 
 # Host-smoke compilation is a provider-free, sealed Roslyn invocation. Bind
 # the exact 13-file runtime closure plus vswhere/csc/references/staged source,
@@ -1363,7 +1397,7 @@ foreach ($uncertainOperationCode in @(
 Assert-Cx004Matches -Actual $sessionFunctionRaw `
     -Pattern '(?is)catch\s*\{\s*\$runError\s*=\s*\$_\s*\r?\n\s*\$operationUncertain\s*=\s*\$true\s*\r?\n\s*if\s*\(Test-Cx004PositiveIntegrityError\s+-Message\s+\$_\.Exception\.Message\)\s*\{\s*\$positiveBoundaryFailure\s*=\s*\$true' `
     -Message 'every classified or unclassified pre-stop run error must default to operation uncertainty'
-$expectedPositiveIntegrityPattern = '^CX004\[(stage-source-seal-drift|rendered-config-mutated|input-mutated|unexpected-directory-surface|missing-fixed-input|staged-source-mismatch|template-source-mismatch|unexpected-harness-source|dirty-source-tree|source-seal-mismatch|source-seal-manifest-missing|source-seal-manifest-untracked|source-seal-manifest-invalid|source-worktree-byte-mismatch|source-eol-policy-mismatch|source-blob-mismatch|host-smoke-source-missing|host-smoke-staged-source-mismatch)\]'
+$expectedPositiveIntegrityPattern = '^CX004\[(stage-source-seal-drift|rendered-config-mutated|input-mutated|unexpected-directory-surface|missing-fixed-input|staged-source-mismatch|template-source-mismatch|unexpected-harness-source|dirty-source-tree|source-index-flags|source-seal-mismatch|source-seal-manifest-missing|source-seal-manifest-untracked|source-seal-manifest-invalid|source-worktree-byte-mismatch|source-eol-policy-mismatch|source-blob-mismatch|host-smoke-source-missing|host-smoke-staged-source-mismatch)\]'
 Assert-Cx004Matches -Actual $positiveIntegrityRaw `
     -Pattern ([regex]::Escape("'$expectedPositiveIntegrityPattern'")) `
     -Message 'positive integrity failure detection must remain anchored to its exact closed source/staging code set'
@@ -1504,6 +1538,41 @@ Assert-Cx004Matches -Actual $moduleRaw -Pattern 'host-canary-self-probe-timeout'
 Assert-Cx004Matches -Actual $q0sFunctionRaw `
     -Pattern '(?is)\$positiveSessionFailure\s*=\s*\(\$null\s+-ne\s+\$firstSession\s+-and\s+\$firstSession\.outcome\s+-ceq\s+''failed''\)\s+-or\s*\(\$null\s+-ne\s+\$secondSession\s+-and\s+\$secondSession\.outcome\s+-ceq\s+''failed''\).*?\$positiveCaughtFailure\s*=\s*\(Test-Cx004PositiveIntegrityError.*?host-smoke-positive-violation\|guest-semantic-drift\|nonfresh-second-session\|stable-input-drift.*?\$outcome\s*=\s*if\s*\(\$positiveSessionFailure\s+-or\s+\$positiveCaughtFailure\)\s*\{\s*''failed''\s*\}\s*else\s*\{\s*''inconclusive''' `
     -Message 'outer qualification must preserve prior positive session failure, admit only closed positive caught failures, and default every other exception to inconclusive'
+Assert-Cx004SourceOrder -Source $q0sFunctionRaw -Markers @(
+    '$secondSession = Invoke-Cx004SandboxSession',
+    '$secondCanary = $null',
+    'Assert-Cx004FreshSessionIds',
+    '-FirstSessionId ([string] $firstSession.sessionId)',
+    '-SecondSessionId ([string] $secondSession.sessionId)',
+    'Get-Cx004GuestSemanticVector'
+) -Message 'fresh-session proof must compare the two returned canonical session ids before semantic-vector acceptance'
+foreach ($freshSessionGuard in @('TryParseExact', "ToString('D')", 'FirstSessionId -ceq $SecondSessionId', 'nonfresh-second-session')) {
+    Assert-Cx004Matches -Actual $freshSessionIdsRaw -Pattern ([regex]::Escape($freshSessionGuard)) `
+        -Message "fresh-session id guard must retain marker $freshSessionGuard"
+}
+
+# The first successful guest discovery pins one exact Sandbox tuple. The host stays
+# 26200.8655/25H2; the guest is the separately observed 26100.8655/24H2 runtime whose
+# raw registry ProductName remains Windows 10 Enterprise.
+Assert-Cx004Matches -Actual $guestValidatorRaw `
+    -Pattern ([regex]::Escape('Test-Cx004GuestIdentityFacts -Guest $guest')) `
+    -Message 'guest validator must delegate the exact discovered tuple to the behaviorally tested closed predicate'
+foreach ($guestIdentityPin in @(
+    "'productName') -ceq 'Windows 10 Enterprise'",
+    "'displayVersion') -ceq '24H2'",
+    "'editionId') -ceq 'Enterprise'",
+    "'installationType') -ceq 'Client'",
+    "'productType') -eq 1",
+    "'version') -ceq '10.0.26100'",
+    "'buildNumber') -ceq '26100'",
+    "'ubr') -eq 8655",
+    "'fullBuild') -ceq '26100.8655'",
+    "'architecture') -ceq 'AMD64'",
+    "'processArchitecture') -ceq 'AMD64'"
+)) {
+    Assert-Cx004Matches -Actual $guestIdentityFactsRaw -Pattern ([regex]::Escape($guestIdentityPin)) `
+        -Message "closed guest identity predicate must retain exact discovered identity pin $guestIdentityPin"
+}
 
 # Read-only mapping proof covers both file creation and write access to a known
 # existing mapped input. IPv6 site-local addresses remain routable evidence.
@@ -1513,6 +1582,10 @@ foreach ($writeOpenMarker in @(
     'existingFileWriteOpenAttempted',
     'existingFileWriteOpenSucceeded',
     'existingFileWriteOpenErrorType',
+    'existingFileWriteOpenErrorHResult',
+    'existingFileWriteOpenErrorInnerType',
+    'existingFileWriteOpenErrorInnerHResult',
+    'existingFileWriteOpenErrorInnerHasInnerException',
     'existingFileSha256Before',
     'existingFileSha256After',
     'existingFileUnmodified',
@@ -1522,6 +1595,30 @@ foreach ($writeOpenMarker in @(
         -Message "guest must retain existing-input write-open proof marker $writeOpenMarker"
     Assert-Cx004Matches -Actual $moduleRaw -Pattern ([regex]::Escape($writeOpenMarker)) `
         -Message "host must strictly validate existing-input write-open marker $writeOpenMarker"
+}
+foreach ($createDenialMarker in @(
+    'errorType',
+    'errorHResult',
+    'errorInnerType',
+    'errorInnerHResult',
+    'errorInnerHasInnerException'
+)) {
+    Assert-Cx004Matches -Actual $probeRaw -Pattern ([regex]::Escape($createDenialMarker)) `
+        -Message "guest must retain new-file denial fact $createDenialMarker"
+    Assert-Cx004Matches -Actual $guestValidatorRaw -Pattern ([regex]::Escape($createDenialMarker)) `
+        -Message "host must rederive new-file denial fact $createDenialMarker"
+}
+Assert-Cx004Equal -Actual $guestFileAccessDeniedRaw -Expected $hostFileAccessDeniedRaw `
+    -Message 'guest and host must use one byte-identical closed access-denial predicate'
+foreach ($accessDenialPin in @(
+    'System.Management.Automation.MethodInvocationException',
+    '-2146233087',
+    'System.UnauthorizedAccessException',
+    '-2147024891',
+    'ErrorInnerHasInnerException'
+)) {
+    Assert-Cx004Matches -Actual $guestFileAccessDeniedRaw -Pattern ([regex]::Escape($accessDenialPin)) `
+        -Message "closed access-denial predicate must retain exact marker $accessDenialPin"
 }
 foreach ($writeOpenOperationMarker in @('FileMode]::Open', 'FileAccess]::Write')) {
     Assert-Cx004Matches -Actual $probeRaw -Pattern ([regex]::Escape($writeOpenOperationMarker)) `
@@ -2035,6 +2132,116 @@ finally {
     }
 }
 
+# The mapped-input denial contract admits only the exact two-node PowerShell 5.1
+# wrapper observed around Win32 access denied. Every other wrapper, HRESULT, inner
+# type, or deeper chain remains inconclusive in both guest and host derivation.
+$accessDenialCases = @(
+    [pscustomobject]@{ name = 'exact'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -2146233087; inner = 'System.UnauthorizedAccessException'; innerHResult = -2147024891; deeper = $false; expected = $true },
+    [pscustomobject]@{ name = 'wrong outer'; outer = 'System.Reflection.TargetInvocationException'; outerHResult = -2146233087; inner = 'System.UnauthorizedAccessException'; innerHResult = -2147024891; deeper = $false; expected = $false },
+    [pscustomobject]@{ name = 'wrong outer hresult'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -1; inner = 'System.UnauthorizedAccessException'; innerHResult = -2147024891; deeper = $false; expected = $false },
+    [pscustomobject]@{ name = 'wrong inner'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -2146233087; inner = 'System.IO.IOException'; innerHResult = -2147024891; deeper = $false; expected = $false },
+    [pscustomobject]@{ name = 'wrong inner hresult'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -2146233087; inner = 'System.UnauthorizedAccessException'; innerHResult = -1; deeper = $false; expected = $false },
+    [pscustomobject]@{ name = 'deeper chain'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -2146233087; inner = 'System.UnauthorizedAccessException'; innerHResult = -2147024891; deeper = $true; expected = $false },
+    [pscustomobject]@{ name = 'missing inner'; outer = 'System.Management.Automation.MethodInvocationException'; outerHResult = -2146233087; inner = ''; innerHResult = 0; deeper = $false; expected = $false },
+    [pscustomobject]@{ name = 'direct unauthorized'; outer = 'System.UnauthorizedAccessException'; outerHResult = -2147024891; inner = ''; innerHResult = 0; deeper = $false; expected = $false }
+)
+foreach ($accessDenialCase in $accessDenialCases) {
+    $invocation = "Test-Cx004FileAccessDeniedFacts -ErrorType '$($accessDenialCase.outer)' -ErrorHResult $($accessDenialCase.outerHResult) -ErrorInnerType '$($accessDenialCase.inner)' -ErrorInnerHResult $($accessDenialCase.innerHResult) -ErrorInnerHasInnerException ([bool]::Parse('$($accessDenialCase.deeper)'))"
+    foreach ($predicateSource in @($guestFileAccessDeniedRaw, $hostFileAccessDeniedRaw)) {
+        $actual = Invoke-Cx004ExtractedFunction -FunctionSource $predicateSource -Invocation $invocation
+        Assert-Cx004Equal -Actual $actual -Expected $accessDenialCase.expected `
+            -Message "closed access-denial predicate case must agree: $($accessDenialCase.name)"
+    }
+}
+
+$gitBlobFixture = {
+    param([byte[]] $Bytes)
+    Get-Cx004GitBlobIdFromBytes -Bytes $Bytes
+}
+$helloBlobBytes = [System.Text.Encoding]::UTF8.GetBytes("hello`n")
+Assert-Cx004Equal -Actual (& $sandboxModule $gitBlobFixture $helloBlobBytes) `
+    -Expected 'ce013625030ba8dba906f756967f9e9ca394464a' `
+    -Message 'Git blob-id helper must reproduce the canonical SHA-1 object id for exact retained bytes'
+$integralPrimitiveFixture = {
+    param([AllowNull()] [object] $Value)
+    Test-Cx004IntegralPrimitive -Value $Value
+}
+Assert-Cx004Equal -Actual (& $sandboxModule $integralPrimitiveFixture ([long] 209506)) -Expected $true `
+    -Message 'a manifest-sized Int64 must satisfy the closed integral primitive predicate'
+Assert-Cx004Equal -Actual (& $sandboxModule $integralPrimitiveFixture ([double] 209505.6)) -Expected $false `
+    -Message 'a fractional manifest length must be rejected before rounding to Int64'
+$exponentLength = ('{"length":209506e0}' | ConvertFrom-Json).length
+Assert-Cx004Equal -Actual (& $sandboxModule $integralPrimitiveFixture $exponentLength) -Expected $false `
+    -Message 'an exponent-form JSON manifest length must remain a rejected floating CLR value'
+Assert-Cx004Equal -Actual (& $sandboxModule $integralPrimitiveFixture $null) -Expected $false `
+    -Message 'a null JSON manifest length must be rejected as a typed invalid source-manifest entry'
+
+$guestIdentityFixture = {
+    param([string] $RawJson)
+    $document = [System.Text.Json.JsonDocument]::Parse($RawJson)
+    try {
+        return [bool] (Test-Cx004GuestIdentityFacts -Guest $document.RootElement)
+    }
+    finally {
+        $document.Dispose()
+    }
+}
+$exactGuestIdentity = [ordered]@{
+    productName = 'Windows 10 Enterprise'
+    displayVersion = '24H2'
+    editionId = 'Enterprise'
+    installationType = 'Client'
+    productType = 1
+    version = '10.0.26100'
+    buildNumber = '26100'
+    ubr = 8655
+    fullBuild = '26100.8655'
+    architecture = 'AMD64'
+    processArchitecture = 'AMD64'
+}
+$exactGuestIdentityRaw = $exactGuestIdentity | ConvertTo-Json -Compress
+Assert-Cx004Equal -Actual (& $sandboxModule $guestIdentityFixture $exactGuestIdentityRaw) -Expected $true `
+    -Message 'the exact observed guest tuple must satisfy the closed identity predicate'
+$guestIdentityMutations = [ordered]@{
+    productName = 'Windows 11 Enterprise'
+    displayVersion = '25H2'
+    editionId = 'Professional'
+    installationType = 'Server'
+    productType = 3
+    version = '10.0.26200'
+    buildNumber = '26200'
+    ubr = 8654
+    fullBuild = '26100.8654'
+    architecture = 'ARM64'
+    processArchitecture = 'x86'
+}
+foreach ($mutation in $guestIdentityMutations.GetEnumerator()) {
+    $mutatedGuestIdentity = [ordered]@{}
+    foreach ($fact in $exactGuestIdentity.GetEnumerator()) {
+        $mutatedGuestIdentity[$fact.Key] = $fact.Value
+    }
+    $mutatedGuestIdentity[$mutation.Key] = $mutation.Value
+    $mutatedGuestIdentityRaw = $mutatedGuestIdentity | ConvertTo-Json -Compress
+    Assert-Cx004Equal -Actual (& $sandboxModule $guestIdentityFixture $mutatedGuestIdentityRaw) -Expected $false `
+        -Message "guest identity predicate must reject an independent $($mutation.Key) drift"
+}
+
+$freshSessionFixture = {
+    param([string]$FirstSessionId, [string]$SecondSessionId)
+    Assert-Cx004FreshSessionIds -FirstSessionId $FirstSessionId -SecondSessionId $SecondSessionId
+}
+$freshFirstId = '11111111-1111-4111-8111-111111111111'
+$freshSecondId = 'aaaaaaaa-2222-4222-8222-222222222222'
+$null = & $sandboxModule $freshSessionFixture $freshFirstId $freshSecondId
+Assert-Cx004Throws -Action {
+    & $sandboxModule $freshSessionFixture $freshFirstId $freshFirstId
+} -MessagePattern 'nonfresh-second-session' `
+    -Message 'reusing the first returned Sandbox id must fail freshness'
+Assert-Cx004Throws -Action {
+    & $sandboxModule $freshSessionFixture $freshFirstId $freshSecondId.ToUpperInvariant()
+} -MessagePattern 'nonfresh-second-session' `
+    -Message 'a noncanonical second Sandbox id must fail freshness'
+
 # Integrity is normalized from the mandatory-label SID. The localized whoami
 # label remains local evidence and never becomes the tracked semantic value.
 $integrityFunctionRaw = Get-Cx004FunctionSource `
@@ -2115,6 +2322,7 @@ foreach (`$path in @($($parsePathLiterals -join ', '))) {
 $integrityFunctionRaw
 $routableFunctionRaw
 $hostCanaryEndpointFunctionRaw
+$guestFileAccessDeniedRaw
 if ((ConvertTo-Cx004IntegrityAlias -Sid 'S-1-16-12288') -cne 'high') {
     throw 'integrity-runtime-fixture-failed'
 }
@@ -2122,6 +2330,9 @@ if (-not (Test-Cx004RoutableAddress -Address ([System.Net.IPAddress]::Parse('fec
     throw 'ipv6-runtime-fixture-failed'
 }
 [void](Assert-Cx004HostCanaryEndpoint -Address '192.168.86.55' -Port 54321 -Context 'fixture')
+if (-not (Test-Cx004FileAccessDeniedFacts -ErrorType 'System.Management.Automation.MethodInvocationException' -ErrorHResult -2146233087 -ErrorInnerType 'System.UnauthorizedAccessException' -ErrorInnerHResult -2147024891 -ErrorInnerHasInnerException `$false)) {
+    throw 'access-denial-runtime-fixture-failed'
+}
 [Console]::Out.Write('cx004-ps51-ok')
 "@
 $encodedPs51Fixture = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ps51Fixture))
@@ -2337,9 +2548,9 @@ $safeSemanticFacts = [ordered]@{
     sandboxPackageFullName = 'MicrosoftWindows.WindowsSandbox_0.5.3.0_x64__cw5n1h2txyewy'
     sandboxPackageVersion = '0.5.3.0'
     cliVersion = '0.5.3.0'
-    guestFullBuild = '26200.1000'
-    guestDisplayVersion = '25H2'
-    guestEditionId = 'Professional'
+    guestFullBuild = '26100.8655'
+    guestDisplayVersion = '24H2'
+    guestEditionId = 'Enterprise'
     guestInstallationType = 'Client'
     guestProductType = 1
     guestArchitecture = 'AMD64'
@@ -2448,6 +2659,25 @@ Assert-Cx004Throws -Action {
 } -MessagePattern 'CX004\[invalid-tracked-value\]' `
     -Message 'tracked integrity level must reject localized raw whoami text'
 
+foreach ($guestPinMutation in @(
+    [pscustomobject]@{ field = 'guestFullBuild'; value = '26200.8655'; name = 'host build substituted for guest' },
+    [pscustomobject]@{ field = 'guestFullBuild'; value = '26100.8654'; name = 'guest UBR drift' },
+    [pscustomobject]@{ field = 'guestDisplayVersion'; value = '25H2'; name = 'guest display-version drift' },
+    [pscustomobject]@{ field = 'guestEditionId'; value = 'Professional'; name = 'guest edition drift' }
+)) {
+    $mutatedGuestPinFacts = [ordered]@{}
+    foreach ($entry in $safeSemanticFacts.GetEnumerator()) {
+        $mutatedGuestPinFacts[$entry.Key] = $entry.Value
+    }
+    $mutatedGuestPinFacts[$guestPinMutation.field] = $guestPinMutation.value
+    Assert-Cx004Throws -Action {
+        New-Cx004TrackedReceipt `
+            -LocalEvidenceBundleSha256 $localEvidenceBundleSha256 `
+            -SemanticFacts $mutatedGuestPinFacts
+    } -MessagePattern 'CX004\[invalid-tracked-value\]' `
+        -Message "tracked receipt must reject $($guestPinMutation.name)"
+}
+
 # PowerShell Boolean and enum values implement ValueType; accepting ValueType as
 # an integer contract would silently serialize true as 1. Numeric fields admit
 # only exact integral primitives within their semantic bounds.
@@ -2508,6 +2738,9 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $labRoot '..\..\..'))
 $sourceSealManifestPath = Join-Path $repoRoot 'docs\execution\manifests\CX-004-sandbox-runner.json'
 Assert-Cx004True -Condition (Test-Path -LiteralPath $sourceSealManifestPath -PathType Leaf) `
     -Message 'tracked S0 runner source manifest must exist'
+Assert-Cx004Equal -Actual (git -C $repoRoot check-attr eol -- 'docs/execution/manifests/CX-004-sandbox-runner.json') `
+    -Expected 'docs/execution/manifests/CX-004-sandbox-runner.json: eol: lf' `
+    -Message 'tracked S0 runner source manifest must be pinned to LF worktree bytes'
 $sourceSealManifest = Get-Content -LiteralPath $sourceSealManifestPath -Raw |
     ConvertFrom-Json -AsHashtable -Depth 16
 Assert-Cx004Equal -Actual (($sourceSealManifest.Keys | ForEach-Object { [string] $_ }) -join ',') `
@@ -2540,6 +2773,8 @@ for ($index = 0; $index -lt $expectedSealedSourcePaths.Count; $index++) {
         -Message "tracked S0 source entry $index must have the exact ordered schema"
     Assert-Cx004Equal -Actual ([string] $entry.relativePath) -Expected $expectedRelativePath `
         -Message "tracked S0 source entry $index must be ordinal-path sorted"
+    Assert-Cx004Equal -Actual ($entry.length -is [int64]) -Expected $true `
+        -Message "tracked S0 source length must be an exact JSON integer for $expectedRelativePath"
     $sourcePath = Join-Path $repoRoot $expectedRelativePath
     $sourceItem = Get-Item -LiteralPath $sourcePath
     Assert-Cx004Equal -Actual ([string] $entry.sha256) `
