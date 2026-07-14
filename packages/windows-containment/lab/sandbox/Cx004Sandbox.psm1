@@ -2562,8 +2562,18 @@ function Invoke-Cx004SandboxSession {
         if ((Get-Cx004Sha256 -LiteralPath $Stage.RenderedConfigPath) -cne $Stage.RenderedConfigSha256) {
             Throw-Cx004 'rendered-config-mutated' 'The rendered configuration changed immediately before Sandbox start.'
         }
+        [byte[]] $renderedConfigArgumentBytes = [System.Text.UTF8Encoding]::new($false, $true).GetBytes(
+            [string] $Stage.RenderedConfig
+        )
+        $renderedConfigArgumentSha256 = [System.Convert]::ToHexString(
+            [System.Security.Cryptography.SHA256]::HashData($renderedConfigArgumentBytes)
+        ).ToLowerInvariant()
+        if ($renderedConfigArgumentSha256 -cne $Stage.RenderedConfigSha256 -or
+            [long] $renderedConfigArgumentBytes.LongLength -ne [long] (Get-Item -LiteralPath $Stage.RenderedConfigPath).Length) {
+            Throw-Cx004 'rendered-config-mutated' 'The exact XML argument differs from the sealed rendered configuration bytes.'
+        }
         Write-Cx004JsonFile -LiteralPath (Join-Path $Stage.RunRoot 'input-snapshot-immediately-before-start.json') -InputObject $immediateInput -Depth 32
-        $startReceipt = Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @('start', '--config', $Stage.RenderedConfigPath, '--raw') -TimeoutSeconds 120
+        $startReceipt = Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @('start', '--config', $Stage.RenderedConfig, '--raw') -TimeoutSeconds 120
         Write-Cx004JsonFile -LiteralPath (Join-Path $Stage.RunRoot 'cli-start.json') -InputObject $startReceipt -Depth 8
         Assert-Cx004WsbNativeComplete -Receipt $startReceipt
         if ($startReceipt.ExitCode -ne 0) {
