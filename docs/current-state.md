@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-14 after CX-004 Q0S run-evidence `R0` guarded-landed, passed
-post-merge verification, and was pushed/re-fetched exactly. CX-003 remains fully
-closed. The final S0 correction guarded-landed as
+Last updated: 2026-07-14 after CX-004 Q0S closeout `R1` guarded-landed, passed
+post-merge verification, was pushed/re-fetched exactly, and was cleaned up. CX-003
+remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
 `dd17bb6a67e44d2b8fef6a7f6dab1a63`, aggregate SHA-256
@@ -12,10 +12,12 @@ network isolation, persistence reset, exact teardown, final empty inventory, sta
 source seals, and bounded host smoke. R0 feature commit
 `6f275d2a1eae870abf4a48d481b925b43997c5bd` guarded-landed as
 `fdf3163e2013a808a1a5d681d29ea3d5ee9f766f`, exact tree
-`f3872b746dcbf0cb10cb775f3a37278f3aa35550`; only its separate documentation-only
-post-landing closeout `R1` still blocks native/TypeScript product implementation. No
-provider process, provider login, credential home, real project, or project data was
-accessed.
+`f3872b746dcbf0cb10cb775f3a37278f3aa35550`. R1 feature commit
+`a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1` guarded-landed as
+`7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f`, exact tree
+`96ccca7dd83da9abe75fcdbcf6db7c917a386f75`; fake-product implementation is
+unblocked after the bounded pre-code path amendment. No provider process, provider
+login, credential home, real project, or project data was accessed.
 
 ## Preserved baseline
 
@@ -253,8 +255,17 @@ only in PC-SDK Next.
 - CX-004 R0 branch: `codex/cx-004-windows-containment` preserved at the feature
   commit; worktree and guarded dependency residue removed
 - CX-004 R1 branch: `codex/cx-004-q0s-closeout`
-- CX-004 status: Q0S and R0 passed; product code remains blocked only while the
-  separate documentation-only `R1` is verified, landed, and pushed/re-fetched exactly
+- CX-004 R1 feature commit:
+  `a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1`
+- CX-004 R1 guarded landing:
+  `7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f`, exact tree
+  `96ccca7dd83da9abe75fcdbcf6db7c917a386f75`, ordered parents
+  `[fdf3163e2013a808a1a5d681d29ea3d5ee9f766f,
+  a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1]`
+- CX-004 R1 branch/worktree: branch preserved at the feature commit; worktree and
+  byte-audited dependency/build residue removed
+- CX-004 status: Q0S/R0/R1 passed; bounded pre-code path amendment active before
+  fake-product source implementation
 
 Isolation defaults in the planning slice:
 
@@ -998,7 +1009,7 @@ Detailed decision evidence is in
 `docs/decisions/0002-codex-native-execution-safety.md`. The decision receipt is
 `docs/execution/receipts/CX-003.md`.
 
-## Positive N5 Windows Sandbox readiness; R1 closeout blocks product
+## Positive N5 Windows Sandbox readiness; fake-product implementation unblocked
 
 CX-004's governing amendment and final S0 runner correction are landed, post-merge
 verified, pushed, and re-fetched through exact merge
@@ -1042,11 +1053,22 @@ pre/post-merge `pnpm ci:check` gates passed. Main/origin/live remote equality wa
 re-proved after push/re-fetch. The feature branch remains preserved; its worktree and
 guarded dependency residue are removed.
 
+R1 feature commit `a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1` guarded-landed
+as `7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f`, exact tree
+`96ccca7dd83da9abe75fcdbcf6db7c917a386f75`, with ordered R0/R1 parents. The final
+four-document bytes passed the 981-assertion contract, bounded host smoke, scope/
+privacy/source-byte checks, two independent reviews, and full pre/post-merge
+`pnpm ci:check` with 660/660 server tests plus the dead-import guard. Main/origin/live
+remote equality was re-proved after push/re-fetch. The R1 branch is preserved; its
+worktree and byte-audited dependency/build residue are removed under exact guards.
+
 No native or TypeScript product containment implementation has begun. The next safe
-action is to verify, guarded-land, and push/re-fetch the separate documentation-only
-`R1`. Exact `R1` opens the sealed post-Q0S fake-product implementation sequence; the
+action is to verify, guarded-land, and push/re-fetch this bounded pre-code amendment,
+which adds `apps/server/test/data-dir-admission.test.ts` to the authorized product path
+set. Then pin the exact native toolchain/boot bundler, seal the native-build-input
+manifest against that exact base, and begin the sealed fake-product sequence. The
 complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
-Q0S/R0 promote no requirement. Production/provider execution remains unavailable
+Q0S/R0/R1 promote no requirement. Production/provider execution remains unavailable
 throughout CX-004.
 
 ## Known architectural gaps
