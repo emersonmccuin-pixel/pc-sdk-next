@@ -1,16 +1,16 @@
 # Current execution handoff
 
-Updated: 2026-07-14 after the third sealed CX-004 Windows Sandbox Q0S attempt. CX-003
-remains fully closed. Windows Sandbox, application package `0.5.3.0`, the modern `wsb`
-CLI, and the provider-free runner are host-ready. Three guarded S0 correction landings
-through `a77268b9ffc47f8235589666a6a462ddabc2fd6d` are pushed/re-fetched exactly. The
-latest immutable bundle proves bounded logon, challenge-bound guest output, exact-ID
-stop, empty terminal inventory, mapping release, host-canary isolation, and stable
-source seals. It remains inconclusive only because the runner had not pinned the actual
-24H2 Enterprise guest tuple or retained PowerShell's exact two-node access-denial
-exception chain. Correct those fail-closed interpretations, prove a distinct second
-session ID, re-seal/land S0, and rerun Q0S. Native/TypeScript product code remains
-blocked. No provider process, login, credential home, or project data was accessed.
+Updated: 2026-07-14 after CX-004 Windows Sandbox gate Q0S passed. CX-003 remains fully
+closed. Final S0 correction merge `4fd90a4c9647af000d051beb59c3013222d22461`, tree
+`91281255c85ce84ae44046185b548a5183cb0c74`, passed focused and full pre/post-merge
+gates and was pushed/re-fetched exactly before Q0S. Closed bundle id
+`dd17bb6a67e44d2b8fef6a7f6dab1a63`, aggregate SHA-256
+`e7aa3420516490e154c649313c562e399b5c6bbc658440fd0bc5729d65345025`, positively
+proved the exact host/guest, two fresh sessions, read-only mappings, network isolation,
+persistence reset, exact teardown, stable source seals, and bounded host smoke. Land
+run-evidence receipt `R0`, push/re-fetch it, then land the separate documentation-only
+`R1`; product code remains blocked until `R1`. No provider process, login, credential
+home, real project, or project data was accessed.
 
 ## Repository
 
@@ -414,18 +414,15 @@ branch is preserved.
 
 ## Active action
 
-CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`. Freeze and test
-the correction that pins the official dynamic-base guest to Windows 11 24H2 Enterprise
-AMD64 `10.0.26100.8655` (raw compatibility registry `ProductName="Windows 10
-Enterprise"`), requires the exact `MethodInvocationException ->
-UnauthorizedAccessException` access-denial chain and HRESULTs, and proves the second
-canonical Sandbox session ID differs from the first. It also closes hostile-review
-findings by requiring ordinary index state, strict integral manifest lengths, and exact
-retained manifest/source Git blob equality with caller-pinned `HEAD`. Update the source manifest, run
-focused/host/full gates, independently review, guarded-land a clean new S0, run the same
-gates on main, push/re-fetch exactly, and only then launch a fresh Q0S. Preserve every
-old bundle as immutable inconclusive evidence. A positive Q0S run receipt `R0` and
-post-landing closeout `R1` must land before native/TypeScript product implementation.
+CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`; Q0S passed from
+the exact fetched S0 merge/tree above. Review the redacted tracked receipt
+`docs/execution/receipts/CX-004-Q0S.md`, prove its aggregate and semantic facts against
+the immutable local bundle without tracking raw identity/session material, run the
+documentation/path/secret and proportional full gates, then guarded-land it as `R0`.
+Push/re-fetch exact R0 before creating a separate documentation-only closeout worktree.
+That `R1` records R0 commit/tree/parents/landing/remote equality and itself guarded-
+lands/pushes/re-fetches. Only exact `R1` opens native/TypeScript product implementation.
+The tracked S0 source manifest remains unchanged because Q0S ran those exact bytes.
 Q0S is runner readiness, not the final product matrix; no provider access is authorized.
 
 The stable-0.144.1 policy audit and Windows containment/toolchain design are complete.
@@ -591,14 +588,13 @@ fallback is authorized.
 - CX-004 amendment landing:
   `320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`
 - CX-004 latest published S0 landing:
-  `a77268b9ffc47f8235589666a6a462ddabc2fd6d`, tree
-  `5bd77e2b400b78f05dfc31dff1f465de0978ea81`
-- CX-004 latest immutable Q0S bundle:
-  `C:\Users\emers\AppData\Local\PC-SDK-Next\cx-004-runs\e74bd210cab64c55937754bc6ca51bcb`,
-  manifest SHA-256 `cf189cdf6cc9897b1246f0c6632a6a2265f3988e08612c35a8a5165186ac16e6`
-- CX-004 status: feature, application, CLI, and runner are ready; product code is
-  blocked while the latest safely inconclusive Q0S observations are corrected,
-  re-sealed, independently reviewed, landed, and rerun
+  `4fd90a4c9647af000d051beb59c3013222d22461`, tree
+  `91281255c85ce84ae44046185b548a5183cb0c74`
+- CX-004 positive Q0S bundle id: `dd17bb6a67e44d2b8fef6a7f6dab1a63`;
+  aggregate SHA-256 `e7aa3420516490e154c649313c562e399b5c6bbc658440fd0bc5729d65345025`
+- CX-004 Q0S receipt: `docs/execution/receipts/CX-004-Q0S.md`
+- CX-004 status: Q0S passed; exact `R0` and documentation-only `R1` closeouts block
+  product implementation
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -674,9 +670,9 @@ git log --oneline --decorate -8
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are removed.
 Both CX-003 worktrees and guarded residuals are removed; both branches are preserved.
 Main and the isolated CX-004 worktree are the only registered worktrees. Main,
-`origin/main`, the remote main ref, and the feature worktree were equal to
-`a77268b9ffc47f8235589666a6a462ddabc2fd6d` before the current fail-closed S0 correction
-began; the feature worktree now contains only that bounded tracked correction.
+`origin/main`, the remote main ref, and the feature worktree were equal to exact S0
+merge `4fd90a4c9647af000d051beb59c3013222d22461` before the R0 documentation mutation;
+the feature worktree now contains only the bounded Q0S receipt/handoff closeout.
 
 ## Known blockers
 
@@ -690,15 +686,13 @@ landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
 documentation-closeout blocker. CX-003's evidence, decision, feature landing, push,
 re-fetch, final-receipt closeout, post-merge gate, and both teardowns have no blocker.
-CX-004 has no remaining environment prerequisite: Windows Sandbox, package `0.5.3.0`,
-and the modern CLI are ready. Q0S remains the sole product-code blocker. Its latest
-immutable attempt is safely inconclusive because the prior runner expected guest
-25H2/build 26200 instead of the observed official 24H2/build 26100 dynamic base and did
-not retain the inner exception facts necessary to prove read-only mapped inputs. Land
-the exact bounded correction and obtain a positive fresh Q0S plus closeout `R1`. These
-are fake runner readiness only; the final complete fake matrix still must pass, and
-provider/production execution requires independent later current-host receipts. Stable
-app-server 0.144.1 separately has a
+CX-004 has no remaining environment or Q0S blocker: Windows Sandbox, package `0.5.3.0`,
+the modern CLI, the exact two-session guest/readiness matrix, source seals, teardown,
+and bounded host smoke passed. Product implementation remains procedurally blocked only
+until exact R0 run evidence and its separate post-landing R1 closeout are pushed/re-
+fetched. These are fake runner readiness only; the final complete fake matrix still
+must pass, and provider/production execution requires independent later current-host
+receipts. Stable app-server 0.144.1 separately has a
 confirmed effective-policy receipt blocker, so it cannot start a native thread
 or turn. Waiting for/upgrading to a qualifying stable release is recommended;
 experimental, forked, alternate-wire, API-billed, or weaker routes cannot
