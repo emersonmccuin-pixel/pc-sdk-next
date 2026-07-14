@@ -339,7 +339,7 @@ $expectedConfigurationElements = @(
     'Networking',
     'PrinterRedirection',
     'ProtectedClient',
-    'VGpu',
+    'vGPU',
     'VideoInput'
 )
 $actualConfigurationElements = @(
@@ -353,7 +353,7 @@ Assert-Cx004Equal -Actual ($actualConfigurationElements -join ',') `
     -Message 'template must contain only the sealed top-level configuration elements'
 
 $requiredSettings = [ordered]@{
-    VGpu = 'Disable'
+    vGPU = 'Disable'
     Networking = 'Disable'
     AudioInput = 'Disable'
     VideoInput = 'Disable'
@@ -483,12 +483,15 @@ Assert-Cx004Equal -Actual $nativeWsbCallCount -Expected 3 `
     -Message 'the module must have exactly three closed direct wsb action call sites'
 foreach ($closedCallPattern in @(
     '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''list'',\s*''--raw''\)',
-    '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''start'',\s*''--config'',\s*\$Stage\.RenderedConfig(?:Path)?,\s*''--raw''\)',
+    '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''start'',\s*''--config'',\s*\$Stage\.RenderedConfig,\s*''--raw''\)',
     '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''stop'',\s*''--id'',\s*\$sessionId,\s*''--raw''\)'
 )) {
     Assert-Cx004Equal -Actual ([regex]::Matches($moduleRaw, $closedCallPattern).Count) -Expected 1 `
         -Message 'each allowed list/start/stop native wsb call must occur exactly once'
 }
+Assert-Cx004NotMatches -Actual $moduleRaw `
+    -Pattern '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''start'',\s*''--config'',\s*\$Stage\.RenderedConfigPath\b' `
+    -Message 'modern wsb start must receive the exact XML argument, never a .wsb filesystem path'
 # Every native process, including doctor observations and source-seal Git reads, is
 # launched by the one bounded process runner. Bare invocation would reintroduce
 # unbounded output allocation and an unbounded wait.
@@ -1177,9 +1180,12 @@ Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     '$immediateInput = Get-Cx004DirectorySnapshot',
     'Assert-Cx004InputSnapshotUnchanged -Before $Stage.InitialInputSnapshot -After $immediateInput',
     'Get-Cx004Sha256 -LiteralPath $Stage.RenderedConfigPath',
+    '$renderedConfigArgumentBytes = [System.Text.UTF8Encoding]',
+    '$renderedConfigArgumentSha256 = [System.Convert]::ToHexString',
+    '$renderedConfigArgumentSha256 -cne $Stage.RenderedConfigSha256',
     'input-snapshot-immediately-before-start.json',
     '$startReceipt = Invoke-Cx004WsbNative'
-) -Message 'source, staged inputs, and rendered config must be re-proved immediately before Sandbox start'
+) -Message 'source, staged inputs, and the exact XML argument must be re-proved immediately before Sandbox start'
 Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     'Get-Cx004SourceSeal',
     'ConvertFrom-Cx004WsbStartRaw',
