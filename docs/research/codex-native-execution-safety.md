@@ -2,10 +2,10 @@
 
 Date: 2026-07-13
 
-Status: accepted-decision feature complete — ADR-0002 guarded-landed, post-merge
-verified, pushed/re-fetched exactly, and the feature worktree removed. The transient
-final-receipt closeout is active. No native Codex process, thread, turn, credential
-access, or provider call was made
+Status: complete — ADR-0002 and the separate final receipt guarded-landed,
+post-merge verified, pushed/re-fetched exactly, and both transient worktrees removed
+under positive guards. No native Codex process, thread, turn, credential access, or
+provider call was made
 
 ## Decision closeout
 
@@ -15,9 +15,15 @@ base→proposal→decision ancestry. The decision guarded-landed as
 `e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; decision and merge resolve to
 exact tree `5b926bbf73ecfc1819386c16a287125d74669c69`. The exact parent vector,
 six-document scope, full post-merge gate, push/re-fetch, preserved feature branch,
-and guarded feature-worktree cleanup are positive. The transient five-document final
-receipt must itself be guarded-landed, post-merge verified, pushed/re-fetched exactly,
-and removed before fake-only CX-004 begins.
+and guarded feature-worktree cleanup are positive. Final receipt
+`23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f` guarded-landed as
+`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc` with exact ordered parents
+`[e8a1c6d0aa13520b1ab0037af02006cb9a283b91,
+23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f]` and exact receipt/merge tree
+`ec9af29551d91e41571d13add210f6025e011ec8`. Its pre/post full gates each passed
+660/660 server tests plus the dead-import guard; exact push/re-fetch and guarded
+final-worktree/residual teardown passed. Both branches are preserved. CX-003 is
+complete and fake-only CX-004 is authorized subject to its own pre-code gates.
 
 ## Result
 
