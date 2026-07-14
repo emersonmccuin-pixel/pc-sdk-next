@@ -1,7 +1,40 @@
 # ADR-0002: Codex native-execution safety boundary
 
-Status: accepted, 2026-07-13; explicitly approved by the product owner after
-proposal checkpoint `4fbbdf0f77b447e78f4218816e90d553ed93145a`.
+Status: accepted, 2026-07-13; CX-004 qualification-runner method amended
+2026-07-13 with explicit product-owner approval. The original decision was approved
+after proposal checkpoint `4fbbdf0f77b447e78f4218816e90d553ed93145a`.
+
+## 2026-07-13 Windows Sandbox qualification amendment
+
+For prospective CX-004 work, this amendment is authoritative wherever the pre-amendment
+decision preserved at `6061ad5b817af13077cf4f9358b3f351c83699dd` requires a pinned
+disposable VM, immutable image/VHDX provenance,
+custom Hyper-V lifecycle, guest agent, protected-install lab receipt, or virtual power-
+cut injection. CX-004 instead runs only deterministic fake-process qualification in a
+fresh Windows Sandbox instance and one bounded fake-only Job Object smoke on the exact
+physical host. Evidence binds exact observed host and guest Windows identities, Sandbox
+feature/application/CLI and canonical configuration, sealed harness/input/native-
+artifact digests, disabled network and device redirection, the read-only input and
+dedicated empty evidence-output mappings, challenge-bound test evidence, client/session
+closure, unchanged input, and clean-relaunch non-persistence. Any bound OS, Sandbox,
+configuration, harness, or runner-probe delta requires a fresh Q0S run; a later product-
+artifact delta requires a fresh final fake-lab run.
+
+Windows Sandbox is host-derived and disposable, not an immutable attested image. Its
+writable evidence mapping is a narrow residual and every returned byte is untrusted.
+Q0S may prove only runner readiness. The later final CX-004 fake-lab run may prove
+deterministic fake lifecycle behavior and abrupt process-loss recovery. It does not
+prove physical power loss, storage-cache barriers, hidden VM
+or disk identity/destruction, protected installation, code-integrity/postmortem policy,
+production launch topology, provider behavior, or credential isolation. Those claims
+remain unavailable until their existing separate production decisions and receipts.
+For this personal daily driver, independent physical-power-loss/storage-cache fault
+injection is an owner-accepted unclaimed residual, not a production blocker: code must
+still use documented durable-write/flush semantics and reconcile conservatively after
+restart, but no lab receipt claims a real power cut. A future stronger claim requires a
+new explicit environment decision. The core containment design, toolchain hardening,
+provider-policy requirements, and other production blockers below remain accepted and
+unchanged.
 
 ## Context
 
@@ -122,8 +155,8 @@ The accepted bundle is:
    every prepared/committed/aborted/completed/reconciled/attention transition commits
    its canonical outbox/control event in the same product-DB transaction with replay-
    safe identity. CX-004 seals SQLite journal/`synchronous`/checkpoint/flush/close-
-   reopen semantics and uses abrupt-process plus disposable power-reset injection;
-   read-back alone is not a power-loss receipt. Bootstrap
+   reopen semantics and uses abrupt fake-process injection on guest-local storage;
+   this is not a physical-power-loss or storage-barrier receipt. Bootstrap
    proves old-owner absence, creates new Node by implicit inheritance of that same
    job using the exact cold-owner distinct-broad-source derivation/retirement/resume-
    close rule, and transfers the exact nonsecret committed nonce/old-generation/new-
@@ -220,10 +253,10 @@ The accepted bundle is:
    dependency needs its own manifest and affected requalification. The addon loads while the owner contains
    no DB/vault/provider secret or untrusted project/process capability, then before
    exposing spawn exports seals the owner's effective WER/dump/JIT/monitor/recovery/
-   restart posture. Disposable qualification injects addon-load and initialized-
+   restart posture. Windows Sandbox qualification injects addon-load and initialized-
    owner crash/hang cases; production boot records a non-destructive receipt. CX-004
-   may fake-provision the protected OS/image/install/postmortem baseline only in its
-   pinned disposable runner. Production native admission remains unavailable until a
+   does not qualify a protected OS/image/install/postmortem baseline. Production native
+   admission remains unavailable until a
    separate approved provisioning/packaging/N7-launcher-lifecycle decision supplies the exact baseline;
    this ADR authorizes no installer, elevation, WDAC/AppLocker mutation, or runtime
    self-ACL seal. If the lab cannot cover both bootstrap and addon-load windows,
@@ -357,15 +390,16 @@ The accepted bundle is:
    hostile same-user owner/job-handle acquisition. CX-005 must prove every provider-
    root-to-owner/outside denial before credentials; CX-008 revalidates it and adds
    lower/sibling/cross-tier directions.
-2. Initial support is one qualified Windows 11 25H2 x64 client tuple within base
-   build `10.0.26200`. The full
-   admitted-path source-build and hard-kill matrix is mandatory on a pinned
-   disposable runner whose native probe matches `VER_NT_WORKSTATION`, AMD64, and
-   build `10.0.26200`; the CX-004 contract pins its exact full revision/UBR and
-   immutable image provenance/digest before implementation. Production runtime
-   admission must equal that sealed full revision/UBR and admission-checkable
-   native OS/security-component identity/provenance; any delta is typed unsupported
-   until a full CX-004 rerun requalifies and seals a replacement tuple. CI fails
+2. Initial fake-lab support is one qualified Windows 11 25H2 x64 client tuple within
+   base build `10.0.26200`. Source build occurs on the exact sealed host; runtime and
+   the hard-kill matrix are mandatory in fresh Windows Sandbox sessions. The CX-004 Q0S
+   receipt pins the exact host and
+   observed guest full revision/UBR, native identity, Sandbox feature/application/CLI,
+   canonical configuration, and sealed harness/input/artifact digests. Production
+   runtime admission is separate and must bind the exact current host plus its native
+   OS/security-component and protected-install evidence; it never equals or inherits
+   a Sandbox image. Any Q0S-bound delta is typed unsupported until a fresh fake-only
+   Q0S run qualifies the replacement tuple. CI fails
    on mismatch. `windows-latest` is an independently observed, always non-admitted
    lane that may source-build and proves the public typed-unsupported path, but
    contributes no containment or admission evidence; an identity match fails for
@@ -415,8 +449,8 @@ The accepted bundle is:
    containment: exact plain-Node compiled boot, both repository PEs and the pinned
    SQLite PE/factory/load closure, closed native/process-spawn inventories, protected
    SF-001 pipe, cold/restart outer-job handoffs, full-spawn family, hardening/bounds,
-   load/postmortem, and exhaustive failure matrices;
-   its fake protected-install receipt permits offline CX-005 source review only.
+   load behavior, and exhaustive failure matrices. Its fake Windows Sandbox lab receipt
+   permits offline CX-005 source review only and supplies no protected-install receipt.
    Before any provider process, login-home access, or credential-bearing invocation,
    a separately approved fresh production bootstrap/protected-install admission for
    the exact host/build is mandatory; it includes exact compiled-boot/addon/SQLite/
@@ -478,10 +512,10 @@ The accepted bundle is:
    lower template is leaf-only with empty raw Winsock/network capability. Process-
    spawning parity needs a separate mediated-child or stronger-isolation decision
    and independent receipt for every process; job inheritance never substitutes.
-   Disposable pinned VMs use matched differential or positive ambient-
-   inaccessibility evidence, except the exact option-(a) root TCB residual, and
-   rerun the full CX-004 matrix under the composition. Any effect, unlisted delta,
-   cleanup/recovery uncertainty, or VM teardown uncertainty blocks CX-009. Contract-
+   Future isolated qualification uses a fresh Windows Sandbox run where its reduced
+   evidence is sufficient. A test requiring real power-cut, stronger isolation, or
+   exact VM/disk teardown first needs a separate explicit environment decision.
+   Any effect, unlisted delta, or cleanup/recovery uncertainty blocks CX-009. Contract-
    defined preparation/readiness/verification/cleanup always uses the standalone
    transition lane with its own generation/job/receipt/recovery, never owner/provider
    authority.
@@ -570,7 +604,8 @@ evidence and primary references are in
   protected provenance/load closure, final-PE disposition, substitution/crash
   qualification, and verified prebuild or source-build evidence are required before
   admission SQLite can open. Optional `ws` native accelerators are excluded.
-- CX-004 is fake-only lab qualification. Production native admission remains blocked
+- CX-004 is fresh-Windows-Sandbox fake-only qualification plus a bounded fake-only
+  host Job Object smoke. Production native admission remains blocked
   until a separate product decision provisions an OS code-integrity rule, owner-
   nonwritable install and postmortem baseline. This ADR does not authorize an
   installer, elevation, WDAC/AppLocker change, or runtime self-ACL seal.
@@ -590,9 +625,10 @@ evidence and primary references are in
 - Native-mode one-click restart changes from the current detached replacement to the
   same transient bootstrap's in-outer-job old-owner→bootstrap→new-owner handoff. Its
   durable restart record, exact memberships/generations/zero-overlap, two handle-
-  transfer matrices, SQLite reacquisition, component-owned row/outbox atomicity and
-  power-loss durability, and stranded-record recovery are owner-TCB
-  obligations; no long-lived restart helper is introduced.
+   transfer matrices, SQLite reacquisition, component-owned row/outbox atomicity,
+   documented durable-write/flush policy, and stranded-record recovery are owner-TCB
+   obligations. Independent physical-power-loss injection is the accepted unclaimed
+   residual above; no long-lived restart helper is introduced.
 - The native primitive remains adapter-neutral and testable without provider
   credentials, quota, or repository mutation, including byte-exact full-duplex
   stdio, bounded output backpressure, high-volume progress, pending-I/O
@@ -615,11 +651,11 @@ evidence and primary references are in
   bootstrap or owner startup. Selecting that broader threat later requires a
   separately approved OS-trusted pre-first-instruction launch anchor; protected
   install/code integrity or runtime self-DACL changes cannot substitute.
-- Codex capability is explicitly unavailable outside the one sealed Windows 11
-  25H2 x64 client full-revision/UBR/identity tuple within base build
-  `10.0.26200`; any delta needs full requalification. The exact tuple itself remains
-  production-unavailable until the separately approved protected-install/OS-policy
-  receipt exists. The rest of the app remains provider-neutral.
+- Codex capability remains production-unavailable until a fresh admission binds the
+  exact current Windows 11 25H2 x64 client host identity within base build
+  `10.0.26200`, its native/security-component identity, and the separately approved
+  protected-install/OS-policy receipt. A Q0S Sandbox tuple never supplies or inherits
+  that production admission. The rest of the app remains provider-neutral.
 - Codex native execution may wait on upstream stable protocol support. This is
   preferred to presenting an unverified runtime as safe.
 - N5 remains open until exact subscription/no-API-billing provenance, account/
@@ -629,10 +665,11 @@ evidence and primary references are in
   process execution-read-token-security denial, process-capable parity, fresh
   real-fix admission, and one real specialist fix all pass.
 
-## Accepted decision
+## Accepted decision, current as amended 2026-07-13
 
-On 2026-07-13 the product owner explicitly approved ADR-0002 as proposed and
-accepted all three product-level choices together:
+On 2026-07-13 the product owner initially approved ADR-0002 as proposed, then later the
+same day approved the scoped Windows Sandbox amendment above. The current three product-
+level choices are:
 
 1. the exact repository-owned transient native cold-start/controlled-restart
    bootstrap plus C++ Node-API addon and the separately admitted pinned
@@ -668,19 +705,22 @@ accepted all three product-level choices together:
    the protected no-client SF-001 pipe, gapless cold-start witness/outer-owner-job
    handoff/lifetime, and in-job old-owner→bootstrap→new-owner restart state machine
    with exact committed-tuple binding, component-owned row-plus-outbox atomicity, and
-   sealed SQLite power-loss semantics; full-lifetime native-load closure permitting
+   sealed SQLite process-loss semantics and conservative restart reconciliation, with
+   independent physical power loss retained as an accepted unclaimed residual; full-
+   lifetime native-load closure permitting
    the exact sealed Node/system set and, among optional non-host/non-system/application-
    native mappings, only owner addon then SQLite; one injected SQLite factory on every constructor,
    extension-load denial, exact package/lock/store/integrity pins, and `ws` optional-
    native exclusion; final-PE hardening, checked input/failure matrices, mandatory
-   Windows CI, and future prebuild ownership; with CX-004 limited to disposable fake
-   provisioning and production unavailable until a separately approved protected-
+   Windows CI, and future prebuild ownership; with CX-004 limited to fresh Windows
+   Sandbox fake qualification plus bounded host smoke and production unavailable until
+   a separately approved protected-
    install/OS-policy packaging/N7-launcher-lifecycle decision (no installer, elevation, WDAC/AppLocker
    mutation, self-ACL seal, or long-lived helper here);
-2. one exact qualified Windows 11 25H2 x64 client full-revision/UBR/identity tuple
-   within build 26200, a pinned native-identity/image-provenance runner,
-   independently observed `windows-latest` non-admitted build/unsupported proof,
-   and typed unsupported behavior on every identity delta/other host; and
+2. one exact fake-qualified Windows 11 25H2 x64 client host/Windows-Sandbox-guest
+   identity tuple within build 26200, sealed Sandbox configuration/input/artifact
+   provenance, independently observed `windows-latest` non-admitted build/unsupported
+   proof, and typed unsupported behavior on every bound delta/other host; and
 3. stable-upgrade/wait with full version requalification, quiescent two-step
    admission, immutable policy epochs, and an all-origin empty external-action
    first gate, rejecting fork/experimental/wire/API bypasses and weaker policy.
@@ -690,3 +730,7 @@ CX-003 landings and teardowns are positively proved, provider-neutral fake-proce
 fake-principal CX-004. It does not authorize a Codex process, provider/login-home
 access, production native admission, or any separately blocked provisioning,
 packaging, OS-policy, or N7 launcher choice.
+
+The product owner amended accepted-decision item 2 and only the disposable-runner/
+provenance, fake protected-install, and power-reset portions of item 1 on 2026-07-13
+to the Windows Sandbox method above. Every other accepted choice remains binding.

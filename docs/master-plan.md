@@ -178,6 +178,16 @@ Expose orchestrator model/effort switching only after both adapters pass.
 *Gate:* one real end-to-end specialist fix lands through each runtime, and prior
 sessions resume only through their original stamped adapter/account.
 
+CX-004 uses a fresh Windows Sandbox instance only for deterministic fake-process
+qualification, plus one bounded fake-only host Job Object smoke. The receipt binds
+the exact host and guest identities, Sandbox feature/configuration, sealed input and
+artifact digests, positive evidence, closure, and clean-relaunch non-persistence.
+This removes the custom licensed VM/image factory; it does not authorize a provider,
+claim immutable-image or physical-power-loss evidence, or weaken the separate current-
+host protected-install, runtime-policy, and provider gates required later in N5.
+Independent physical-power-loss fault injection is an accepted unclaimed residual for
+this personal daily driver, not a hidden future VM prerequisite.
+
 **N6 — AInativePM, MCP manager, and operational policy.** Implement only the
 approved PM seam; deliver reliable MCP registration/health/vault/attachment UI;
 add policy UX over the fixed lifecycle and complete provider-aware usage views.

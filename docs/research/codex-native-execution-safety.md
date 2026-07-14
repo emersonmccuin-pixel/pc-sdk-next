@@ -7,6 +7,14 @@ post-merge verified, pushed/re-fetched exactly, and both transient worktrees rem
 under positive guards. No native Codex process, thread, turn, credential access, or
 provider call was made
 
+Historical addendum, 2026-07-13: this evidence remains unchanged, but its prospective
+pinned-VM/image-provenance, fake protected-install, VM-teardown, and virtual power-reset
+recommendations for CX-004—and every downstream clause that depended on equality with
+that image or disposable physical-power-loss injection—are superseded by ADR-0002's
+product-owner-approved Windows Sandbox qualification amendment. The active CX-004
+contract is authoritative; all core containment, provider-policy, and other production-
+gate findings here remain binding.
+
 ## Decision closeout
 
 Proposal checkpoint `4fbbdf0f77b447e78f4218816e90d553ed93145a` and accepted

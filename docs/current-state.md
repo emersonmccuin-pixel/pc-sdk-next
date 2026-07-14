@@ -1,13 +1,14 @@
 # Current state
 
-Last updated: 2026-07-13 at the CX-004 pre-code gate. CX-003 is fully closed:
+Last updated: 2026-07-13 at the CX-004 Windows Sandbox runner amendment. CX-003 is fully closed:
 its accepted decision and separate final receipt guarded-landed, each passed the
 post-merge gate, the exact final merge was pushed/re-fetched, and both transient
-worktrees were removed under positive guards. Fake-only CX-004 has an exact blocked
-contract. Qualification bootstrap cannot begin until an accessible sealed generalized
-Windows source VHDX and VM lifecycle authority exist; that bootstrap must produce the
-complete image/store/build/security/controller/wire-schema/attestation vector before
-native product implementation. No
+worktrees were removed under positive guards. The product owner replaced CX-004's
+custom licensed VM/image factory with fresh Windows Sandbox fake-only qualification
+plus a bounded fake-only host Job Object smoke. The governing amendment is active;
+Sandbox is not yet enabled and product code remains blocked at runner-readiness gate
+Q0S. No ISO, product key, Microsoft account, custom VM, or provider access is required.
+No
 native Codex process, thread, turn, provider login, or credential access occurred.
 
 ## Preserved baseline
@@ -227,9 +228,9 @@ only in PC-SDK Next.
 - CX-004 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
 - CX-004 contract: `docs/execution/slices/CX-004.md`
-- CX-004 status: blocked at Q0 by the missing sealed generalized source VHDX/offline
-  inputs and Hyper-V lifecycle authority; Q1 must build the final immutable-runner
-  manifest/key/provenance vector before product code; the physical host is non-admitted
+- CX-004 status: Windows Sandbox amendment active; product code blocked at Q0S while
+  the feature/modern-CLI surface is enabled and discovered, then the provider-free
+  harness/fixed probes are implemented and sealed
 
 Isolation defaults in the planning slice:
 
@@ -890,7 +891,9 @@ exact committed nonce/generation/digest, acknowledges the lease, then bootstrap 
 before product DB open and the new owner performs the exact completion CAS. One
 owner-lifecycle component commits every
 restart row plus canonical outbox/control event atomically and must survive abrupt
-process and VM power loss without inferring success.
+process loss without inferring success. Documented SQLite durable-write/flush semantics
+and conservative restart reconciliation remain mandatory; independent physical-power-
+loss injection is the owner-accepted unclaimed daily-driver residual.
 
 The owner addon is the first optional non-host/non-system native mapping. A full-
 lifetime load gate admits the exact sealed Node host/system/KnownDLL import/delay/
@@ -928,18 +931,19 @@ not an escape or exact topology claim. Job Objects remain lifecycle containment,
 filesystem/network/security sandbox; hostile cross-process handle acquisition needs a
 separately proven OS boundary.
 
-The accepted decision qualifies one exact Windows 11 25H2 x64 client full-revision/UBR/
-identity tuple within base build `10.0.26200`, using a pinned disposable runner with
-native identity and immutable image provenance. Any delta is typed unsupported until
-the full matrix requalifies. `windows-latest` is independently observed and always
-non-admitted. CX-004 may fake-provision the protected OS/image/install/postmortem
-baseline only in its disposable VM. Production native admission stays unavailable
-until a separate approved provisioning/packaging/OS-policy/N7-launcher-lifecycle
-decision supplies a real
-receipt; CX-003 authorizes no installer, elevation, WDAC/AppLocker mutation, or
-runtime self-ACL seal.
+ADR-0002's prospective CX-004 runner method was owner-amended on 2026-07-13. Q0S binds
+the exact Windows 11 Pro host, discovered Windows Sandbox guest build/identity, Sandbox
+feature/application/CLI/configuration, sealed harness/input/probe artifacts, positive
+exact-ID stop, and clean-relaunch non-persistence. A later final fake-lab run binds the
+implemented product artifacts and complete matrix. Neither is immutable-image,
+protected-install, physical-power-loss, or production admission evidence.
+`windows-latest` remains independently observed and always non-admitted. Production
+native admission still needs its separate current-host provisioning/packaging/OS-policy/
+N7-launcher-lifecycle receipt; CX-003 authorizes no installer, elevation,
+WDAC/AppLocker mutation, or runtime self-ACL seal.
 
-ADR-0002 was explicitly approved as proposed by the product owner on 2026-07-13. The
+ADR-0002 was initially approved as proposed and received the scoped owner-approved
+Windows Sandbox amendment on 2026-07-13. The
 accepted native/platform bundle requires waiting for a later stable app-server that provides a complete
 independently verifiable effective-policy receipt, quiescent two-step admission
 barrier, and immutable epoch. Fork, experimental, alternate-wire, raw-API, and
@@ -954,7 +958,8 @@ provider process, login-home access, or CX-005 invocation, a separately approved
 fresh production receipt and explicit
 provider-root TCB-versus-opaque-broker choice must positively qualify every root-
 applicable invariant/canary, including bootstrap/load/process closure, SF-001,
-restart/outbox/power-loss recovery, full-spawn/UI/job/token/IPC/access, protected
+restart/outbox durable-write and conservative-reconciliation behavior, full-spawn/UI/
+job/token/IPC/access, protected
 install/postmortem policy, shared-home/export boundaries, preventive resources, and
 the exact composed template matrix; none is deferred to CX-008. CX-006 then proves
 subscription/session/dispatch/context/usage; CX-007 compiles inert provider-free
@@ -969,30 +974,35 @@ Detailed decision evidence is in
 `docs/decisions/0002-codex-native-execution-safety.md`. The decision receipt is
 `docs/execution/receipts/CX-003.md`.
 
-## Blocked N5 fake-only Windows containment qualification
+## Active N5 Windows Sandbox readiness; product implementation blocked
 
-CX-004 is authorized but blocked at external qualification-bootstrap prerequisite Q0.
-ADR-0002 requires the exact Windows 11 25H2 workstation/AMD64/full-revision tuple and
-immutable disposable final-image provenance before product code. Q1 first needs an
-accessible provenance-sealed generalized source VHDX, offline provisioning inputs, and
-authority to build/freeze/destroy derived Hyper-V VMs. The observed physical workstation matches
-`10.0.26200.8655` and the pinned Node 22.13.0/Python 3.13.1 line, but it is mutable,
-credential-bearing, and not disposable. The current account cannot enumerate or
-create Hyper-V VMs, and Windows Sandbox is not installed. Rolling hosted-runner
-labels cannot substitute for an immutable parent-image digest.
+CX-004 is authorized only for the governing amendment and Q0S harness/readiness work.
+The exact host is Windows 11 Pro 25H2 AMD64 `10.0.26200.8655`; Sandbox is currently
+absent. The built-in `Containers-DisposableClientVM` feature is the anticipated
+environment prerequisite. After this amendment lands it will be enabled through one
+announced UAC action, followed by a restart only if Windows reports one required. A
+host-only doctor must then find the modern Store-delivered `wsb` CLI; legacy/no-CLI
+state is unsupported, and any still-needed official Store/update action is announced
+separately. No separate Windows license, ISO, account sign-in, custom switch/disk/VM,
+or Hyper-V group membership is part of the accepted path.
 
-The exact fake-only scope, ownership, toolchain hardening, numeric bounds, failure
-matrix, receipt requirements, and deferred decisions are sealed in
-`docs/execution/slices/CX-004.md`. No qualification-bootstrap, native, or TypeScript
-containment implementation has begun. The next safe action is to supply the exact Q0
-source VHDX/offline inputs plus noninteractive Hyper-V lifecycle authority. Q1 then
-freezes the dependency/importer/node-gyp/lock/store scaffold and authors only the
-sealed wire/controller/guest-agent/provisioning infrastructure, then
-uses it to produce the read-only parent and complete VHDX/provisioning/store/build/
-security/controller/wire-schema/attestation-key/admission-root vector. Every child
-must start credential-free and be positively destroyed after the run. Until that evidence is
-available, the feature branch/worktree remain preserved and production native
-execution remains unavailable.
+Q0S is deliberately runner readiness rather than the future product matrix. It records
+the exact host and discovered guest build/identity, Sandbox feature/application/CLI,
+stable template plus rendered XML, sealed read-only input and empty evidence-output
+mappings, requested network/device restrictions plus observable negative probes, fixed
+bootstrap/probe evidence, positive exact-ID stop, and clean-relaunch non-persistence.
+It also runs one tightly bounded cooperative host smoke.
+The writable evidence mapping is a narrow residual; returned bytes are untrusted.
+
+The exact scope, ownership, hardening, numeric bounds, final fake matrix, receipt
+requirements, and deferred production decisions are sealed in
+`docs/execution/slices/CX-004.md`. No native or TypeScript product containment
+implementation has begun. The next safe action is to land this governing amendment,
+announce feature enablement, perform host-only modern-CLI discovery, then implement/
+review/land the restricted provider-free Q0S harness and probes as `S0`. Q0S run
+evidence `R0` plus post-landing closeout `R1` permit product implementation; the
+complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
+Production native execution remains unavailable throughout CX-004.
 
 ## Known architectural gaps
 
