@@ -4,8 +4,8 @@
   "sourceFiles": [
     {
       "relativePath": "packages/windows-containment/lab/sandbox/Cx004Sandbox.psm1",
-      "sha256": "767e28fa492b70d9e0c8f854af86d973625d47ca145656916731541dac3cf5ed",
-      "length": 205663
+      "sha256": "31f817f17c59eaf4fd94deac048594609029983a98abe41a98b0f6aa75334503",
+      "length": 212708
     },
     {
       "relativePath": "packages/windows-containment/lab/sandbox/guest-bootstrap.ps1",
@@ -14,8 +14,8 @@
     },
     {
       "relativePath": "packages/windows-containment/lab/sandbox/guest-probe.ps1",
-      "sha256": "637aee7858a7227223f56eb978eb3018db9919d1b0d63bcea09a59206a919480",
-      "length": 34064
+      "sha256": "ec3ca97e0a9ea9d429c0ecf6a1d16decfa83395a07cb954797d2a031d39566c1",
+      "length": 37090
     },
     {
       "relativePath": "packages/windows-containment/lab/sandbox/host-job-smoke.cs",
@@ -34,8 +34,8 @@
     },
     {
       "relativePath": "packages/windows-containment/lab/test/sandbox-contract.test.ps1",
-      "sha256": "4043a42548d430276976392031cbce66d2cf99cb962ba9579f3d7138badf244f",
-      "length": 136494
+      "sha256": "4cd7e1d2a465fc9aa17ea6a68c1ea452009825e860194b92896f67d861f9e4af",
+      "length": 151248
     },
     {
       "relativePath": "packages/windows-containment/lab/test/sandbox-host-smoke.test.ps1",

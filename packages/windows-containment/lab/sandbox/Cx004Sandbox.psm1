@@ -302,7 +302,56 @@ function Throw-Cx004 {
 function Test-Cx004PositiveIntegrityError {
     param([Parameter(Mandatory)] [string] $Message)
 
-    return $Message -match '^CX004\[(stage-source-seal-drift|rendered-config-mutated|input-mutated|unexpected-directory-surface|missing-fixed-input|staged-source-mismatch|template-source-mismatch|unexpected-harness-source|dirty-source-tree|source-seal-mismatch|source-seal-manifest-missing|source-seal-manifest-untracked|source-seal-manifest-invalid|source-worktree-byte-mismatch|source-eol-policy-mismatch|source-blob-mismatch|host-smoke-source-missing|host-smoke-staged-source-mismatch)\]'
+    return $Message -match '^CX004\[(stage-source-seal-drift|rendered-config-mutated|input-mutated|unexpected-directory-surface|missing-fixed-input|staged-source-mismatch|template-source-mismatch|unexpected-harness-source|dirty-source-tree|source-index-flags|source-seal-mismatch|source-seal-manifest-missing|source-seal-manifest-untracked|source-seal-manifest-invalid|source-worktree-byte-mismatch|source-eol-policy-mismatch|source-blob-mismatch|host-smoke-source-missing|host-smoke-staged-source-mismatch)\]'
+}
+
+function Test-Cx004FileAccessDeniedFacts {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $ErrorType,
+        [Parameter(Mandatory)] [long] $ErrorHResult,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $ErrorInnerType,
+        [Parameter(Mandatory)] [long] $ErrorInnerHResult,
+        [Parameter(Mandatory)] [bool] $ErrorInnerHasInnerException
+    )
+
+    return $ErrorType -ceq 'System.Management.Automation.MethodInvocationException' -and
+        $ErrorHResult -eq -2146233087 -and
+        $ErrorInnerType -ceq 'System.UnauthorizedAccessException' -and
+        $ErrorInnerHResult -eq -2147024891 -and
+        (-not $ErrorInnerHasInnerException)
+}
+
+function Test-Cx004GuestIdentityFacts {
+    param([Parameter(Mandatory)] [System.Text.Json.JsonElement] $Guest)
+
+    return (Get-Cx004JsonString -Object $Guest -Name 'productName') -ceq 'Windows 10 Enterprise' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'displayVersion') -ceq '24H2' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'editionId') -ceq 'Enterprise' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'installationType') -ceq 'Client' -and
+        (Get-Cx004JsonInt64 -Object $Guest -Name 'productType') -eq 1 -and
+        (Get-Cx004JsonString -Object $Guest -Name 'version') -ceq '10.0.26100' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'buildNumber') -ceq '26100' -and
+        (Get-Cx004JsonInt64 -Object $Guest -Name 'ubr') -eq 8655 -and
+        (Get-Cx004JsonString -Object $Guest -Name 'fullBuild') -ceq '26100.8655' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'architecture') -ceq 'AMD64' -and
+        (Get-Cx004JsonString -Object $Guest -Name 'processArchitecture') -ceq 'AMD64'
+}
+
+function Assert-Cx004FreshSessionIds {
+    param(
+        [Parameter(Mandatory)] [string] $FirstSessionId,
+        [Parameter(Mandatory)] [string] $SecondSessionId
+    )
+
+    $firstGuid = [guid]::Empty
+    $secondGuid = [guid]::Empty
+    if (-not [guid]::TryParseExact($FirstSessionId, 'D', [ref] $firstGuid) -or
+        -not [guid]::TryParseExact($SecondSessionId, 'D', [ref] $secondGuid) -or
+        $firstGuid.ToString('D') -cne $FirstSessionId -or
+        $secondGuid.ToString('D') -cne $SecondSessionId -or
+        $FirstSessionId -ceq $SecondSessionId) {
+        Throw-Cx004 'nonfresh-second-session' 'The clean-relaunch session did not return a distinct canonical Sandbox session id.'
+    }
 }
 
 function Invoke-Cx004BoundedNative {
@@ -2391,13 +2440,8 @@ function Test-Cx004GuestOutput {
         foreach ($name in @('isAuthenticated', 'isAnonymous', 'isGuest', 'isSystem', 'isAdministrator')) {
             [void] (Get-Cx004JsonBoolean -Object $guest -Name $name)
         }
-        if ((Get-Cx004JsonString -Object $guest -Name 'displayVersion') -cne '25H2' -or
-            (Get-Cx004JsonString -Object $guest -Name 'installationType') -cne 'Client' -or
-            (Get-Cx004JsonInt64 -Object $guest -Name 'productType') -ne 1 -or
-            (Get-Cx004JsonString -Object $guest -Name 'buildNumber') -cne '26200' -or
-            (Get-Cx004JsonString -Object $guest -Name 'architecture') -cne 'AMD64' -or
-            (Get-Cx004JsonString -Object $guest -Name 'processArchitecture') -cne 'AMD64') {
-            Throw-Cx004 'unsupported-guest' 'The guest is not the required Windows 11 25H2 client/workstation AMD64 base build.'
+        if (-not (Test-Cx004GuestIdentityFacts -Guest $guest)) {
+            Throw-Cx004 'unsupported-guest' 'The guest is not the exact discovered Windows 11 24H2 Enterprise AMD64 build 26100.8655 tuple (whose raw registry ProductName is Windows 10 Enterprise).'
         }
         Assert-Cx004IdentityEntry -Entry $guest.GetProperty('integrity') -Context 'guest integrity'
         $groups = $guest.GetProperty('groups')
@@ -2418,19 +2462,31 @@ function Test-Cx004GuestOutput {
         Assert-Cx004JsonObjectKeys -Element $probes -ExpectedKeys @('inputMapping', 'network', 'persistence') -Context 'guest probes'
         $inputMapping = $probes.GetProperty('inputMapping')
         Assert-Cx004JsonObjectKeys -Element $inputMapping -ExpectedKeys @(
-            'writeAttempted', 'writeSucceeded', 'artifactPresent', 'errorType',
+            'writeAttempted', 'writeSucceeded', 'artifactPresent', 'errorType', 'errorHResult',
+            'errorInnerType', 'errorInnerHResult', 'errorInnerHasInnerException',
             'existingFileRelativePath', 'existingFileWriteOpenAttempted', 'existingFileWriteOpenSucceeded',
-            'existingFileWriteOpenErrorType', 'existingFileSha256Before', 'existingFileSha256After',
+            'existingFileWriteOpenErrorType', 'existingFileWriteOpenErrorHResult',
+            'existingFileWriteOpenErrorInnerType', 'existingFileWriteOpenErrorInnerHResult',
+            'existingFileWriteOpenErrorInnerHasInnerException',
+            'existingFileSha256Before', 'existingFileSha256After',
             'existingFileUnmodified', 'readOnly'
         ) -Context 'input mapping probe'
         $writeAttempted = Get-Cx004JsonBoolean -Object $inputMapping -Name 'writeAttempted'
         $writeSucceeded = Get-Cx004JsonBoolean -Object $inputMapping -Name 'writeSucceeded'
         $artifactPresent = Get-Cx004JsonBoolean -Object $inputMapping -Name 'artifactPresent'
         $createErrorType = Get-Cx004JsonString -Object $inputMapping -Name 'errorType' -MaximumLength 256
+        $createErrorHResult = Get-Cx004JsonInt64 -Object $inputMapping -Name 'errorHResult'
+        $createErrorInnerType = Get-Cx004JsonString -Object $inputMapping -Name 'errorInnerType' -MaximumLength 256
+        $createErrorInnerHResult = Get-Cx004JsonInt64 -Object $inputMapping -Name 'errorInnerHResult'
+        $createErrorInnerHasInnerException = Get-Cx004JsonBoolean -Object $inputMapping -Name 'errorInnerHasInnerException'
         $existingRelative = Get-Cx004JsonString -Object $inputMapping -Name 'existingFileRelativePath' -MaximumLength 64
         $existingAttempted = Get-Cx004JsonBoolean -Object $inputMapping -Name 'existingFileWriteOpenAttempted'
         $existingSucceeded = Get-Cx004JsonBoolean -Object $inputMapping -Name 'existingFileWriteOpenSucceeded'
         $existingErrorType = Get-Cx004JsonString -Object $inputMapping -Name 'existingFileWriteOpenErrorType' -MaximumLength 256
+        $existingErrorHResult = Get-Cx004JsonInt64 -Object $inputMapping -Name 'existingFileWriteOpenErrorHResult'
+        $existingErrorInnerType = Get-Cx004JsonString -Object $inputMapping -Name 'existingFileWriteOpenErrorInnerType' -MaximumLength 256
+        $existingErrorInnerHResult = Get-Cx004JsonInt64 -Object $inputMapping -Name 'existingFileWriteOpenErrorInnerHResult'
+        $existingErrorInnerHasInnerException = Get-Cx004JsonBoolean -Object $inputMapping -Name 'existingFileWriteOpenErrorInnerHasInnerException'
         $existingBefore = Get-Cx004JsonString -Object $inputMapping -Name 'existingFileSha256Before' -MaximumLength 64
         $existingAfter = Get-Cx004JsonString -Object $inputMapping -Name 'existingFileSha256After' -MaximumLength 64
         $existingUnmodified = Get-Cx004JsonBoolean -Object $inputMapping -Name 'existingFileUnmodified'
@@ -2440,10 +2496,21 @@ function Test-Cx004GuestOutput {
             $existingBefore -cnotmatch '^[0-9a-f]{64}$' -or $existingAfter -cnotmatch '^[0-9a-f]{64}$') {
             Throw-Cx004 'input-mapping-schema' 'The existing-file mapping probe is not bound to the sealed guest-probe.ps1 input.'
         }
+        $createDenied = Test-Cx004FileAccessDeniedFacts `
+            -ErrorType $createErrorType `
+            -ErrorHResult $createErrorHResult `
+            -ErrorInnerType $createErrorInnerType `
+            -ErrorInnerHResult $createErrorInnerHResult `
+            -ErrorInnerHasInnerException $createErrorInnerHasInnerException
+        $existingDenied = Test-Cx004FileAccessDeniedFacts `
+            -ErrorType $existingErrorType `
+            -ErrorHResult $existingErrorHResult `
+            -ErrorInnerType $existingErrorInnerType `
+            -ErrorInnerHResult $existingErrorInnerHResult `
+            -ErrorInnerHasInnerException $existingErrorInnerHasInnerException
         $inputMappingReadOnlyDerived = $writeAttempted -and (-not $writeSucceeded) -and (-not $artifactPresent) -and
-            $createErrorType -ceq 'System.UnauthorizedAccessException' -and
-            $existingAttempted -and (-not $existingSucceeded) -and
-            $existingErrorType -ceq 'System.UnauthorizedAccessException' -and
+            $createDenied -and $existingAttempted -and (-not $existingSucceeded) -and
+            $existingDenied -and
             $existingBefore -ceq [string] $expectedGuestProbe[0].sha256 -and
             $existingAfter -ceq $existingBefore -and $existingUnmodified
         $inputMappingViolation = $writeSucceeded -or $artifactPresent -or $existingSucceeded -or (-not $existingUnmodified)
@@ -2602,7 +2669,7 @@ function Test-Cx004GuestOutput {
             stableInputsVerified = $true
             outputWasEmpty = [bool] $outputWasEmpty
             inputMappingReadOnly = [bool] $inputMappingReadOnlyDerived
-            inputMappingExistingFileWriteOpenDenied = [bool] ($existingAttempted -and (-not $existingSucceeded) -and $existingErrorType -ceq 'System.UnauthorizedAccessException')
+            inputMappingExistingFileWriteOpenDenied = [bool] ($existingAttempted -and (-not $existingSucceeded) -and $existingDenied)
             inputMappingExistingFileUnmodified = [bool] $existingUnmodified
             networkObservationAvailable = [bool] $networkObservationAvailable
             networkIsolation = [bool] $networkIsolationDerived
@@ -2886,9 +2953,9 @@ function Invoke-Cx004SandboxSession {
 }
 
 function Test-Cx004IntegralPrimitive {
-    param([Parameter(Mandatory)] [object] $Value)
+    param([Parameter(Mandatory)] [AllowNull()] [object] $Value)
 
-    if ($Value -is [bool] -or $Value.GetType().IsEnum) { return $false }
+    if ($null -eq $Value -or $Value -is [bool] -or $Value.GetType().IsEnum) { return $false }
     return $Value -is [byte] -or $Value -is [sbyte] -or
         $Value -is [int16] -or $Value -is [uint16] -or
         $Value -is [int32] -or $Value -is [uint32] -or
@@ -2958,13 +3025,13 @@ function New-Cx004TrackedReceipt {
                     Throw-Cx004 'invalid-tracked-value' "$key is not a four-part version."
                 }
             }
-            'guestFullBuild' { if ($value -isnot [string] -or [string] $value -cnotmatch '^26200\.[0-9]+$') { Throw-Cx004 'invalid-tracked-value' 'guestFullBuild is outside the required base build.' } }
-            'guestDisplayVersion' { if ([string] $value -cne '25H2') { Throw-Cx004 'invalid-tracked-value' 'guestDisplayVersion is outside the Q0S pin.' } }
+            'guestFullBuild' { if ([string] $value -cne '26100.8655') { Throw-Cx004 'invalid-tracked-value' 'guestFullBuild is outside the exact discovered Sandbox pin.' } }
+            'guestDisplayVersion' { if ([string] $value -cne '24H2') { Throw-Cx004 'invalid-tracked-value' 'guestDisplayVersion is outside the exact discovered Sandbox pin.' } }
             'guestInstallationType' { if ([string] $value -cne 'Client') { Throw-Cx004 'invalid-tracked-value' 'guestInstallationType is outside the Q0S pin.' } }
             { $_ -in @('guestArchitecture', 'guestProcessArchitecture') } { if ([string] $value -cne 'AMD64') { Throw-Cx004 'invalid-tracked-value' "$key must be AMD64." } }
             'guestEditionId' {
-                if ($value -isnot [string] -or [string] $value -cnotmatch '^[A-Za-z0-9 .()_-]{1,128}$') {
-                    Throw-Cx004 'invalid-tracked-value' "$key contains a nonsemantic or unbounded value."
+                if ([string] $value -cne 'Enterprise') {
+                    Throw-Cx004 'invalid-tracked-value' 'guestEditionId is outside the exact discovered Sandbox pin.'
                 }
             }
             'guestIntegrityLevel' {
@@ -3464,6 +3531,25 @@ function Get-Cx004SingleLine {
     return $line
 }
 
+function Get-Cx004GitBlobIdFromBytes {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [byte[]] $Bytes
+    )
+
+    [byte[]] $header = [System.Text.Encoding]::ASCII.GetBytes("blob $($Bytes.LongLength)`0")
+    $hasher = [System.Security.Cryptography.IncrementalHash]::CreateHash(
+        [System.Security.Cryptography.HashAlgorithmName]::SHA1
+    )
+    try {
+        $hasher.AppendData($header)
+        $hasher.AppendData($Bytes)
+        return [Convert]::ToHexString($hasher.GetHashAndReset()).ToLowerInvariant()
+    }
+    finally {
+        $hasher.Dispose()
+    }
+}
+
 function Get-Cx004SourceSeal {
     [CmdletBinding()]
     param(
@@ -3482,6 +3568,9 @@ function Get-Cx004SourceSeal {
         'packages/windows-containment/lab/test/sandbox-contract.test.ps1',
         'packages/windows-containment/lab/test/sandbox-host-smoke.test.ps1'
     )
+    $manifestRelativePath = 'docs/execution/manifests/CX-004-sandbox-runner.json'
+    [string[]] $sealedRelativePaths = @($manifestRelativePath) + $expectedRelativePaths
+    [Array]::Sort($sealedRelativePaths, [StringComparer]::Ordinal)
     $actualRelativePaths = [System.Collections.Generic.List[string]]::new()
     foreach ($sourceDirectory in @(
         [ordered]@{ path = (Join-Path $repoRoot 'packages\windows-containment\lab\sandbox'); maximumEntries = 7 },
@@ -3512,6 +3601,15 @@ function Get-Cx004SourceSeal {
     if ($status.Length -ne 0) {
         Throw-Cx004 'dirty-source-tree' 'Q0S requires a clean source worktree.'
     }
+    $indexStateRaw = Invoke-Cx004Git `
+        -GitPath $gitPath `
+        -RepoRoot $repoRoot `
+        -Arguments (@('ls-files', '-v', '--') + $sealedRelativePaths)
+    $indexStateLines = @($indexStateRaw.TrimEnd("`r", "`n") -split '\r?\n')
+    $expectedIndexStateLines = @($sealedRelativePaths | ForEach-Object { "H $_" })
+    if (($indexStateLines -join "`n") -cne ($expectedIndexStateLines -join "`n")) {
+        Throw-Cx004 'source-index-flags' 'Every sealed S0 path must be one ordinary tracked index entry without assume-unchanged or skip-worktree flags.'
+    }
     $branch = Get-Cx004SingleLine -Text (Invoke-Cx004Git -GitPath $gitPath -RepoRoot $repoRoot -Arguments @('symbolic-ref', '--short', 'HEAD')) -Context 'source branch'
     $head = Get-Cx004SingleLine -Text (Invoke-Cx004Git -GitPath $gitPath -RepoRoot $repoRoot -Arguments @('rev-parse', 'HEAD')) -Context 'source HEAD'
     $tree = Get-Cx004SingleLine -Text (Invoke-Cx004Git -GitPath $gitPath -RepoRoot $repoRoot -Arguments @('rev-parse', 'HEAD^{tree}')) -Context 'source tree'
@@ -3525,7 +3623,6 @@ function Get-Cx004SourceSeal {
     }
 
     $manifestPath = Join-Path $repoRoot 'docs\execution\manifests\CX-004-sandbox-runner.json'
-    $manifestRelativePath = 'docs/execution/manifests/CX-004-sandbox-runner.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
         Throw-Cx004 'source-seal-manifest-missing' 'The tracked S0 worktree-byte manifest is absent.'
     }
@@ -3534,8 +3631,33 @@ function Get-Cx004SourceSeal {
         Throw-Cx004 'source-seal-manifest-untracked' 'The S0 worktree-byte manifest is not one exact regular Git blob at HEAD.'
     }
     $manifestGitBlob = [string] $Matches[1]
-    $sourceManifest = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) |
-        ConvertFrom-Json -AsHashtable -Depth 16
+    $manifestAttribute = Get-Cx004SingleLine -Text (Invoke-Cx004Git -GitPath $gitPath -RepoRoot $repoRoot -Arguments @('check-attr', 'eol', '--', $manifestRelativePath)) -Context 'S0 source manifest eol attribute'
+    if ($manifestAttribute -cne "$manifestRelativePath`: eol: lf") {
+        Throw-Cx004 'source-eol-policy-mismatch' 'The tracked S0 source manifest is not pinned to LF checkout bytes.'
+    }
+    try {
+        Initialize-Cx004NativeFileInfo
+        $manifestRead = [Cx004NativeFileInfo]::ReadBoundedRegularFile($manifestPath, 1MB)
+    }
+    catch {
+        Throw-Cx004 'source-worktree-byte-mismatch' 'The tracked S0 source manifest could not be retained as one bounded regular file.'
+    }
+    if ((Get-Cx004GitBlobIdFromBytes -Bytes $manifestRead.Bytes) -cne $manifestGitBlob) {
+        Throw-Cx004 'source-blob-mismatch' 'The retained S0 source-manifest bytes differ from its caller-pinned HEAD blob.'
+    }
+    try {
+        [byte[]] $manifestBytes = $manifestRead.Bytes
+        if (($manifestBytes.Length -ge 3 -and $manifestBytes[0] -eq 0xef -and
+                $manifestBytes[1] -eq 0xbb -and $manifestBytes[2] -eq 0xbf) -or
+            [Array]::IndexOf($manifestBytes, [byte] 0) -ge 0) {
+            throw 'The source manifest contains a BOM or NUL.'
+        }
+        $manifestText = [System.Text.UTF8Encoding]::new($false, $true).GetString($manifestBytes)
+        $sourceManifest = $manifestText | ConvertFrom-Json -AsHashtable -Depth 16
+    }
+    catch {
+        Throw-Cx004 'source-seal-manifest-invalid' 'The tracked S0 worktree-byte manifest is not strict BOM-free UTF-8 JSON.'
+    }
     if (@($sourceManifest.Keys).Count -ne 3 -or
         -not $sourceManifest.Contains('schemaVersion') -or
         -not $sourceManifest.Contains('classification') -or
@@ -3557,7 +3679,7 @@ function Get-Cx004SourceSeal {
         if (@($manifestFile.Keys).Count -ne 3 -or
             [string] $manifestFile.relativePath -cne $relativePath -or
             [string] $manifestFile.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-            $manifestFile.length -is [bool] -or $manifestFile.length -isnot [ValueType] -or
+            -not (Test-Cx004IntegralPrimitive -Value $manifestFile.length) -or
             [long] $manifestFile.length -lt 1 -or [long] $manifestFile.length -gt 4MB) {
             Throw-Cx004 'source-seal-manifest-invalid' "The tracked S0 source entry is invalid or unsorted: $relativePath"
         }
@@ -3581,11 +3703,15 @@ function Get-Cx004SourceSeal {
         if ($treeLine -cnotmatch '^100644 blob ([0-9a-f]{40})\t(.+)$' -or $Matches[2] -cne $relativePath) {
             Throw-Cx004 'source-blob-mismatch' "The S0 source path is not one exact regular Git blob: $relativePath"
         }
+        $sourceGitBlob = [string] $Matches[1]
+        if ((Get-Cx004GitBlobIdFromBytes -Bytes $sourceRead.Bytes) -cne $sourceGitBlob) {
+            Throw-Cx004 'source-blob-mismatch' "Retained worktree bytes differ from the caller-pinned HEAD blob: $relativePath"
+        }
         $files.Add([ordered]@{
             relativePath = $relativePath
             sha256 = [string] $manifestFile.sha256
             length = [long] $manifestFile.length
-            gitBlob = [string] $Matches[1]
+            gitBlob = $sourceGitBlob
         })
     }
     return [ordered]@{
@@ -3598,8 +3724,8 @@ function Get-Cx004SourceSeal {
         git = Get-Cx004GitIdentity -GitPath $gitPath
         sourceManifest = [ordered]@{
             relativePath = $manifestRelativePath
-            sha256 = Get-Cx004Sha256 -LiteralPath $manifestPath
-            length = [long] (Get-Item -LiteralPath $manifestPath).Length
+            sha256 = [string] $manifestRead.Sha256
+            length = [long] $manifestRead.Bytes.Length
             gitBlob = $manifestGitBlob
         }
         files = @($files)
@@ -3859,6 +3985,9 @@ function Invoke-Cx004Q0S {
                     -ExpectedS0Commit $ExpectedS0Commit `
                     -ExpectedS0Tree $ExpectedS0Tree
                 $secondCanary = $null
+                Assert-Cx004FreshSessionIds `
+                    -FirstSessionId ([string] $firstSession.sessionId) `
+                    -SecondSessionId ([string] $secondSession.sessionId)
             }
             finally {
                 if ($null -ne $secondCanary) {

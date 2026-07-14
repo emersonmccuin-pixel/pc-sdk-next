@@ -1,16 +1,16 @@
 # Current execution handoff
 
-Updated: 2026-07-13 after the CX-004 Windows Sandbox runner amendment landed. CX-003 is fully closed at
-`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`; its accepted decision and separate
-final receipt guarded-landed, passed their post-merge gates, were pushed/re-fetched
-exactly, and both worktrees were removed under positive guards. CX-004 is the active
-fake-only slice. The product owner replaced its custom licensed VM/image factory with
-fresh Windows Sandbox qualification plus a bounded fake-only host smoke. Amendment
-commit `1a30458628a58905bb6d2ba496531f14503ae5ec` guarded-landed as
-`320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`, passed its full post-merge gate, and was
-pushed/re-fetched exactly. Only Q0S environment/harness work may proceed now; Sandbox
-is not enabled and native/TypeScript product code remains blocked. No native
-Codex process, thread, turn, provider login, or credential access occurred.
+Updated: 2026-07-14 after the third sealed CX-004 Windows Sandbox Q0S attempt. CX-003
+remains fully closed. Windows Sandbox, application package `0.5.3.0`, the modern `wsb`
+CLI, and the provider-free runner are host-ready. Three guarded S0 correction landings
+through `a77268b9ffc47f8235589666a6a462ddabc2fd6d` are pushed/re-fetched exactly. The
+latest immutable bundle proves bounded logon, challenge-bound guest output, exact-ID
+stop, empty terminal inventory, mapping release, host-canary isolation, and stable
+source seals. It remains inconclusive only because the runner had not pinned the actual
+24H2 Enterprise guest tuple or retained PowerShell's exact two-node access-denial
+exception chain. Correct those fail-closed interpretations, prove a distinct second
+session ID, re-seal/land S0, and rerun Q0S. Native/TypeScript product code remains
+blocked. No provider process, login, credential home, or project data was accessed.
 
 ## Repository
 
@@ -414,19 +414,19 @@ branch is preserved.
 
 ## Active action
 
-CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`; its governing
-amendment is landed/pushed. Next announce and enable built-in
-`Containers-DisposableClientVM`, restarting only if Windows requires it. Host-only
-discovery must then find the modern Store-delivered `wsb` CLI; legacy/no-
-CLI is unsupported and any additional official Store/update action is announced
-separately. Implement/review/guarded-land the provider-free Sandbox harness, canonical
-template, fixed bootstrap, deterministic lifecycle probe, tests, and receipt schemas as
-clean commit/tree `S0`. Run no Sandbox session before re-fetching `S0`. Q0S run evidence
-`R0` and post-landing closeout `R1` must land before native/TypeScript product
-implementation. Q0S is runner readiness, not the final product matrix. The complete
-implemented fake matrix later runs in fresh Q0S-revalidated sessions. No ISO, product
-key, Microsoft account, custom VM, switch, disk, or provider access is needed. Rolling
-hosted labels remain non-admitted.
+CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`. Freeze and test
+the correction that pins the official dynamic-base guest to Windows 11 24H2 Enterprise
+AMD64 `10.0.26100.8655` (raw compatibility registry `ProductName="Windows 10
+Enterprise"`), requires the exact `MethodInvocationException ->
+UnauthorizedAccessException` access-denial chain and HRESULTs, and proves the second
+canonical Sandbox session ID differs from the first. It also closes hostile-review
+findings by requiring ordinary index state, strict integral manifest lengths, and exact
+retained manifest/source Git blob equality with caller-pinned `HEAD`. Update the source manifest, run
+focused/host/full gates, independently review, guarded-land a clean new S0, run the same
+gates on main, push/re-fetch exactly, and only then launch a fresh Q0S. Preserve every
+old bundle as immutable inconclusive evidence. A positive Q0S run receipt `R0` and
+post-landing closeout `R1` must land before native/TypeScript product implementation.
+Q0S is runner readiness, not the final product matrix; no provider access is authorized.
 
 The stable-0.144.1 policy audit and Windows containment/toolchain design are complete.
 The product owner explicitly accepted
@@ -491,7 +491,9 @@ scrub invocation/lifecycle wait/terminate/close is constrained, but that process
 is not the required crash-safe anchor; the browser is never placed in the owner job.
 
 The accepted fake-lab platform is the exact Windows 11 Pro 25H2 AMD64 host
-`10.0.26200.8655` plus a fresh discovered Windows Sandbox guest build/identity, sealed
+`10.0.26200.8655` plus the exact official Windows Sandbox dynamic-base Windows 11 24H2
+Enterprise AMD64 guest `10.0.26100.8655` (raw registry compatibility label
+`ProductName="Windows 10 Enterprise"`), sealed
 Sandbox configuration/harness/input/artifact evidence, and typed unsupported on any
 bound delta until affected requalification. `windows-latest` remains independently
 observed and non-admitted. CX-004 supplies neither immutable-image nor physical-power-
@@ -588,9 +590,15 @@ fallback is authorized.
   `1a30458628a58905bb6d2ba496531f14503ae5ec`
 - CX-004 amendment landing:
   `320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`
-- CX-004 status: amendment landed/pushed; product code blocked at Q0S; feature enablement
-  and host-only modern-CLI discovery precede the provider-free harness/fixed-probe `S0`
-  implementation slice
+- CX-004 latest published S0 landing:
+  `a77268b9ffc47f8235589666a6a462ddabc2fd6d`, tree
+  `5bd77e2b400b78f05dfc31dff1f465de0978ea81`
+- CX-004 latest immutable Q0S bundle:
+  `C:\Users\emers\AppData\Local\PC-SDK-Next\cx-004-runs\e74bd210cab64c55937754bc6ca51bcb`,
+  manifest SHA-256 `cf189cdf6cc9897b1246f0c6632a6a2265f3988e08612c35a8a5165186ac16e6`
+- CX-004 status: feature, application, CLI, and runner are ready; product code is
+  blocked while the latest safely inconclusive Q0S observations are corrected,
+  re-sealed, independently reviewed, landed, and rerun
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -663,12 +671,12 @@ git remote -v
 git log --oneline --decorate -8
 ```
 
-All completed CX-001 and CX-002 feature/closeout worktrees and residuals are
-removed. Both CX-003 worktrees and guarded residuals are removed; both branches are
-preserved. Main and the isolated CX-004 worktree are the only registered worktrees.
-Main, `origin/main`, and the remote main ref were equal to
-`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc` at CX-004 startup. The feature worktree
-was clean at that exact base before this blocked contract checkpoint.
+All completed CX-001 and CX-002 feature/closeout worktrees and residuals are removed.
+Both CX-003 worktrees and guarded residuals are removed; both branches are preserved.
+Main and the isolated CX-004 worktree are the only registered worktrees. Main,
+`origin/main`, the remote main ref, and the feature worktree were equal to
+`a77268b9ffc47f8235589666a6a462ddabc2fd6d` before the current fail-closed S0 correction
+began; the feature worktree now contains only that bounded tracked correction.
 
 ## Known blockers
 
@@ -682,17 +690,15 @@ landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
 documentation-closeout blocker. CX-003's evidence, decision, feature landing, push,
 re-fetch, final-receipt closeout, post-merge gate, and both teardowns have no blocker.
-CX-004's anticipated environment prerequisite is not yet present: enable Windows
-Sandbox through one announced UAC action, restarting only if Windows requires it, then
-run host-only modern-CLI discovery. Legacy/no-CLI state is unsupported; any additional
-official Store/update action is announced separately. The provider-free harness/fixed
-probes then land as `S0`. Q0S positively records exact host/discovered guest build/
-identity, Sandbox feature/application/CLI/template/rendered config, sealed mappings/
-probes, exact-ID stop, and non-persistence before product code. No ISO, separate license,
-account sign-in, custom VM/switch/disk, or Hyper-V group grant remains. A positive Q0S
-and closeout `R1` are fake runner readiness only; the final complete fake matrix still
-must pass, and provider/production execution requires its independent later current-
-host receipts. Stable app-server 0.144.1 separately has a
+CX-004 has no remaining environment prerequisite: Windows Sandbox, package `0.5.3.0`,
+and the modern CLI are ready. Q0S remains the sole product-code blocker. Its latest
+immutable attempt is safely inconclusive because the prior runner expected guest
+25H2/build 26200 instead of the observed official 24H2/build 26100 dynamic base and did
+not retain the inner exception facts necessary to prove read-only mapped inputs. Land
+the exact bounded correction and obtain a positive fresh Q0S plus closeout `R1`. These
+are fake runner readiness only; the final complete fake matrix still must pass, and
+provider/production execution requires independent later current-host receipts. Stable
+app-server 0.144.1 separately has a
 confirmed effective-policy receipt blocker, so it cannot start a native thread
 or turn. Waiting for/upgrading to a qualifying stable release is recommended;
 experimental, forked, alternate-wire, API-billed, or weaker routes cannot
