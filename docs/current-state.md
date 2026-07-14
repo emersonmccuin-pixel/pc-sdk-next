@@ -1,15 +1,19 @@
 # Current state
 
-Last updated: 2026-07-14 after CX-004 Windows Sandbox gate Q0S passed. CX-003 remains
-fully closed. The final S0 correction guarded-landed as
+Last updated: 2026-07-14 after CX-004 Q0S run-evidence `R0` guarded-landed, passed
+post-merge verification, and was pushed/re-fetched exactly. CX-003 remains fully
+closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
 `dd17bb6a67e44d2b8fef6a7f6dab1a63`, aggregate SHA-256
 `e7aa3420516490e154c649313c562e399b5c6bbc658440fd0bc5729d65345025`, positively
 proved two fresh sessions, the exact 24H2 Enterprise guest, read-only mappings,
 network isolation, persistence reset, exact teardown, final empty inventory, stable
-source seals, and bounded host smoke. Run-evidence receipt `R0` and its separate
-post-landing closeout `R1` still block native/TypeScript product implementation. No
+source seals, and bounded host smoke. R0 feature commit
+`6f275d2a1eae870abf4a48d481b925b43997c5bd` guarded-landed as
+`fdf3163e2013a808a1a5d681d29ea3d5ee9f766f`, exact tree
+`f3872b746dcbf0cb10cb775f3a37278f3aa35550`; only its separate documentation-only
+post-landing closeout `R1` still blocks native/TypeScript product implementation. No
 provider process, provider login, credential home, real project, or project data was
 accessed.
 
@@ -226,9 +230,8 @@ only in PC-SDK Next.
   residual cleanup; final-receipt branch preserved
 - CX-003 status: complete
 - CX-004 base: `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`
-- CX-004 branch: `codex/cx-004-windows-containment`
-- CX-004 worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
+- CX-004 R0 branch: `codex/cx-004-windows-containment` (preserved)
+- CX-004 R0 worktree: removed after guarded landing/publication proof
 - CX-004 contract: `docs/execution/slices/CX-004.md`
 - CX-004 amendment commit:
   `1a30458628a58905bb6d2ba496531f14503ae5ec`
@@ -240,8 +243,18 @@ only in PC-SDK Next.
 - CX-004 positive Q0S bundle id: `dd17bb6a67e44d2b8fef6a7f6dab1a63`;
   aggregate SHA-256 `e7aa3420516490e154c649313c562e399b5c6bbc658440fd0bc5729d65345025`
 - CX-004 Q0S receipt: `docs/execution/receipts/CX-004-Q0S.md`
-- CX-004 status: Q0S passed; product code remains blocked only while the exact `R0`
-  run evidence and separate post-landing `R1` closeout are landed/pushed/re-fetched
+- CX-004 R0 feature commit:
+  `6f275d2a1eae870abf4a48d481b925b43997c5bd`
+- CX-004 R0 guarded landing:
+  `fdf3163e2013a808a1a5d681d29ea3d5ee9f766f`, exact tree
+  `f3872b746dcbf0cb10cb775f3a37278f3aa35550`, ordered parents
+  `[4fd90a4c9647af000d051beb59c3013222d22461,
+  6f275d2a1eae870abf4a48d481b925b43997c5bd]`
+- CX-004 R0 branch: `codex/cx-004-windows-containment` preserved at the feature
+  commit; worktree and guarded dependency residue removed
+- CX-004 R1 branch: `codex/cx-004-q0s-closeout`
+- CX-004 status: Q0S and R0 passed; product code remains blocked only while the
+  separate documentation-only `R1` is verified, landed, and pushed/re-fetched exactly
 
 Isolation defaults in the planning slice:
 
@@ -985,7 +998,7 @@ Detailed decision evidence is in
 `docs/decisions/0002-codex-native-execution-safety.md`. The decision receipt is
 `docs/execution/receipts/CX-003.md`.
 
-## Positive N5 Windows Sandbox readiness; receipt closeout blocks product
+## Positive N5 Windows Sandbox readiness; R1 closeout blocks product
 
 CX-004's governing amendment and final S0 runner correction are landed, post-merge
 verified, pushed, and re-fetched through exact merge
@@ -1017,12 +1030,23 @@ personal/session facts remain only in that closed local bundle.
 
 The exact scope, ownership, hardening, numeric bounds, final fake matrix, receipt
 requirements, and deferred production decisions are sealed in
-`docs/execution/slices/CX-004.md`. No native or TypeScript product containment
-implementation has begun. The next safe action is to review/guarded-land the tracked
-Q0S receipt as `R0`, push/re-fetch it exactly, then create and land the separate
-documentation-only `R1` with positive R0 ancestry/tree/remote facts. Exact `R1` permits
-product implementation; the complete product fake matrix must later pass in fresh
-Q0S-revalidated Sandbox sessions. Production native execution remains unavailable
+`docs/execution/slices/CX-004.md`. R0 changed only that slice, the tracked Q0S receipt,
+this document, and `docs/execution/current.md`; S0 runner sources remained byte-
+identical. Its feature commit `6f275d2a1eae870abf4a48d481b925b43997c5bd`
+guarded-landed as `fdf3163e2013a808a1a5d681d29ea3d5ee9f766f`, exact tree
+`f3872b746dcbf0cb10cb775f3a37278f3aa35550`, with ordered parents
+`[4fd90a4c9647af000d051beb59c3013222d22461,
+6f275d2a1eae870abf4a48d481b925b43997c5bd]`. Focused 981-assertion/static,
+bounded host-smoke, four-path/privacy/source-byte, independent-review, and full
+pre/post-merge `pnpm ci:check` gates passed. Main/origin/live remote equality was
+re-proved after push/re-fetch. The feature branch remains preserved; its worktree and
+guarded dependency residue are removed.
+
+No native or TypeScript product containment implementation has begun. The next safe
+action is to verify, guarded-land, and push/re-fetch the separate documentation-only
+`R1`. Exact `R1` opens the sealed post-Q0S fake-product implementation sequence; the
+complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
+Q0S/R0 promote no requirement. Production/provider execution remains unavailable
 throughout CX-004.
 
 ## Known architectural gaps
