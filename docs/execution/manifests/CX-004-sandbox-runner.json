@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "cx004-s0-source-seal-v1",
+  "classification": "tracked-source-seal",
+  "sourceFiles": [
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/Cx004Sandbox.psm1",
+      "sha256": "263dda47d1c5243e7f8143cb3033fdf05b6fb0b95d9ddd4986750c63ed2a2f60",
+      "length": 197514
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/guest-bootstrap.ps1",
+      "sha256": "d1a21b679b37cfbe6d92494dfade54917f1e7ae6ff02ea0502eff7f5a1737350",
+      "length": 16618
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/guest-probe.ps1",
+      "sha256": "637aee7858a7227223f56eb978eb3018db9919d1b0d63bcea09a59206a919480",
+      "length": 34064
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/host-job-smoke.cs",
+      "sha256": "181e870b357e61143caaaaede209882fa97f2370e8c5ab77410885223e7925a0",
+      "length": 35437
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/Invoke-Cx004Q0S.ps1",
+      "sha256": "7a7afd4bc307584a6f8a30ebead747bd4be13f19f017653f8e59765732b3e4a2",
+      "length": 1258
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/sandbox/sandbox.template.wsb",
+      "sha256": "44caace3b318745ade2773101d6ef9ded627fa24fab29be869dd0c925786e501",
+      "length": 947
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/test/sandbox-contract.test.ps1",
+      "sha256": "81c9f360c48175de3f009dcb1a25e9c3fb0c96a559f7a3042f740b77f94dc5fe",
+      "length": 115111
+    },
+    {
+      "relativePath": "packages/windows-containment/lab/test/sandbox-host-smoke.test.ps1",
+      "sha256": "cbc7bcbbb487d264a405902dfd80efda6abf8a3674e0d4f98c7449384b62e445",
+      "length": 26728
+    }
+  ]
+}
