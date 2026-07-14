@@ -25,6 +25,7 @@ $script:Cx004ExpectedPackageHashes = [ordered]@{
     'wsb.dll' = '7326fc0c64bdedcaa01ae3d63165f51b8ec35769aee84c9a9e2b1d4ead0c2a90'
     'WindowsSandboxServer.exe' = '945dd1caa8aa6d594e1ab73cf774bf5b76d6d890cd7f222593705ddf6acd2729'
     'WindowsSandboxRemoteSession.exe' = '9d955cbcc3db3584e2b35bfcd74969d98b78ac32ba57753e27a62acea7d18e61'
+    'WindowsSandboxRemoteSession.dll' = '5f8982c27861e12914b0b4bb4fa0d9cdd866d302a131cefbe0a97329b517bfe9'
 }
 $script:Cx004ExpectedRoslynClosure = [ordered]@{
     'csc.exe' = [ordered]@{ sha256 = '7788f58659ac4c1a35ccd80e36ea4b3eeb51836678d0ffa3d55c2d9521f5ae49'; length = 60184L }
@@ -84,6 +85,11 @@ public sealed class Cx004BoundedProcessResult
     public bool KillSucceeded { get; set; }
     public bool ProcessExited { get; set; }
     public bool CaptureCompleted { get; set; }
+    public bool CaptureReadersSettled { get; set; }
+    public bool CaptureDiscarded { get; set; }
+    public bool CaptureFaulted { get; set; }
+    public bool CaptureCloseFaulted { get; set; }
+    public bool CaptureByteCountsAvailable { get; set; }
     public long ElapsedMilliseconds { get; set; }
 }
 
@@ -96,20 +102,48 @@ public static class Cx004BoundedProcess
         internal volatile bool Exceeded;
     }
 
-    private static async Task CaptureAsync(Stream stream, Capture capture, int maximumBytes)
+    private static async Task CaptureAsync(
+        Stream stream,
+        Capture capture,
+        int maximumBytes,
+        CancellationToken cancellationToken)
     {
-        byte[] buffer = new byte[4096];
-        while (true)
+        try
         {
-            int read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
-            if (read == 0) return;
-            long prior = Interlocked.Add(ref capture.Total, read) - read;
-            if (prior < maximumBytes)
+            byte[] buffer = new byte[4096];
+            while (true)
             {
-                int keep = (int)Math.Min((long)read, maximumBytes - prior);
-                if (keep > 0) capture.Bytes.Write(buffer, 0, keep);
+                int read = await stream.ReadAsync(
+                    buffer,
+                    0,
+                    buffer.Length,
+                    cancellationToken).ConfigureAwait(false);
+                if (read == 0) return;
+                long prior = Interlocked.Add(ref capture.Total, read) - read;
+                if (prior < maximumBytes)
+                {
+                    int keep = (int)Math.Min((long)read, maximumBytes - prior);
+                    if (keep > 0) capture.Bytes.Write(buffer, 0, keep);
+                }
+                if (prior + read > maximumBytes) capture.Exceeded = true;
             }
-            if (prior + read > maximumBytes) capture.Exceeded = true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
+        catch (IOException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private static bool WaitForCaptureTasks(Task stdoutTask, Task stderrTask, int timeoutMilliseconds)
+    {
+        try
+        {
+            return Task.WaitAll(new[] { stdoutTask, stderrTask }, timeoutMilliseconds);
+        }
+        catch (AggregateException)
+        {
+            if (stdoutTask.IsFaulted) { var ignored = stdoutTask.Exception; }
+            if (stderrTask.IsFaulted) { var ignored = stderrTask.Exception; }
+            return stdoutTask.IsCompleted && stderrTask.IsCompleted;
         }
     }
 
@@ -158,6 +192,7 @@ public static class Cx004BoundedProcess
             start.Environment.Remove("PC_DATA_DIR");
         }
 
+        using (var captureCancellation = new CancellationTokenSource())
         using (var process = new Process { StartInfo = start, EnableRaisingEvents = true })
         {
             var stdout = new Capture();
@@ -165,8 +200,16 @@ public static class Cx004BoundedProcess
             var stopwatch = Stopwatch.StartNew();
             if (!process.Start()) throw new InvalidOperationException("The retained native process did not start.");
             result.ProcessId = process.Id;
-            Task stdoutTask = CaptureAsync(process.StandardOutput.BaseStream, stdout, maximumStdoutBytes);
-            Task stderrTask = CaptureAsync(process.StandardError.BaseStream, stderr, maximumStderrBytes);
+            Task stdoutTask = CaptureAsync(
+                process.StandardOutput.BaseStream,
+                stdout,
+                maximumStdoutBytes,
+                captureCancellation.Token);
+            Task stderrTask = CaptureAsync(
+                process.StandardError.BaseStream,
+                stderr,
+                maximumStderrBytes,
+                captureCancellation.Token);
 
             while (!process.WaitForExit(20))
             {
@@ -197,15 +240,49 @@ public static class Cx004BoundedProcess
             {
                 result.ExitCode = -1;
             }
-            result.CaptureCompleted = Task.WaitAll(new[] { stdoutTask, stderrTask }, 5000);
+            bool initialCaptureWait = WaitForCaptureTasks(stdoutTask, stderrTask, 5000);
+            result.CaptureReadersSettled = stdoutTask.IsCompleted && stderrTask.IsCompleted;
+            result.CaptureFaulted = stdoutTask.IsFaulted || stderrTask.IsFaulted;
+            result.CaptureCompleted = initialCaptureWait &&
+                result.CaptureReadersSettled &&
+                !result.CaptureFaulted &&
+                stdoutTask.Status == TaskStatus.RanToCompletion &&
+                stderrTask.Status == TaskStatus.RanToCompletion;
+
+            if (!result.CaptureReadersSettled)
+            {
+                result.CaptureDiscarded = true;
+                captureCancellation.Cancel();
+                try { process.StandardOutput.Close(); }
+                catch { result.CaptureCloseFaulted = true; }
+                try { process.StandardError.Close(); }
+                catch { result.CaptureCloseFaulted = true; }
+                WaitForCaptureTasks(stdoutTask, stderrTask, 5000);
+                result.CaptureReadersSettled = stdoutTask.IsCompleted && stderrTask.IsCompleted;
+                result.CaptureFaulted = stdoutTask.IsFaulted || stderrTask.IsFaulted;
+            }
+
             stopwatch.Stop();
             result.ElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
-            result.StdoutBytes = stdout.Total;
-            result.StderrBytes = stderr.Total;
-            result.OutputExceeded = result.OutputExceeded || stdout.Exceeded || stderr.Exceeded;
-            var utf8 = new UTF8Encoding(false, true);
-            result.Stdout = utf8.GetString(stdout.Bytes.ToArray());
-            result.Stderr = utf8.GetString(stderr.Bytes.ToArray());
+            result.CaptureByteCountsAvailable = result.CaptureReadersSettled;
+            if (result.CaptureByteCountsAvailable)
+            {
+                result.StdoutBytes = Interlocked.Read(ref stdout.Total);
+                result.StderrBytes = Interlocked.Read(ref stderr.Total);
+                result.OutputExceeded = result.OutputExceeded || stdout.Exceeded || stderr.Exceeded;
+                if (result.CaptureCompleted)
+                {
+                    var utf8 = new UTF8Encoding(false, true);
+                    result.Stdout = utf8.GetString(stdout.Bytes.ToArray());
+                    result.Stderr = utf8.GetString(stderr.Bytes.ToArray());
+                }
+            }
+            else
+            {
+                result.StdoutBytes = -1;
+                result.StderrBytes = -1;
+                result.OutputExceeded = result.OutputExceeded || stdout.Exceeded || stderr.Exceeded;
+            }
             return result;
         }
     }
@@ -947,7 +1024,13 @@ function Get-Cx004HostDoctor {
     }
 
     [xml] $blockMapXml = [System.IO.File]::ReadAllText($blockMapPath, [System.Text.Encoding]::UTF8)
-    $packagedRoles = @('wsb.exe', 'wsb.dll', 'WindowsSandboxServer.exe', 'WindowsSandboxRemoteSession.exe')
+    $packagedRoles = @(
+        'wsb.exe',
+        'wsb.dll',
+        'WindowsSandboxServer.exe',
+        'WindowsSandboxRemoteSession.exe',
+        'WindowsSandboxRemoteSession.dll'
+    )
     $launchers = [System.Collections.Generic.List[object]]::new()
     foreach ($role in $packagedRoles) {
         $blockEntries = @($blockMapXml.BlockMap.File | Where-Object { [string] $_.Name -ceq $role })
@@ -1767,6 +1850,11 @@ function Invoke-Cx004WsbNative {
         KillSucceeded = [bool] $native.KillSucceeded
         ProcessExited = [bool] $native.ProcessExited
         CaptureCompleted = [bool] $native.CaptureCompleted
+        CaptureReadersSettled = [bool] $native.CaptureReadersSettled
+        CaptureDiscarded = [bool] $native.CaptureDiscarded
+        CaptureFaulted = [bool] $native.CaptureFaulted
+        CaptureCloseFaulted = [bool] $native.CaptureCloseFaulted
+        CaptureByteCountsAvailable = [bool] $native.CaptureByteCountsAvailable
         BindingStable = [bool] $bindingStable
         BindingBefore = $bindingBefore
         BindingAfter = $bindingAfter
@@ -1774,11 +1862,22 @@ function Invoke-Cx004WsbNative {
     }
 }
 
-function Assert-Cx004WsbNativeComplete {
+function Assert-Cx004WsbNativeEnvelope {
     param([Parameter(Mandatory)] [object] $Receipt)
 
     if ($Receipt.TimedOut) {
         Throw-Cx004 'native-process-timeout' 'The retained wsb CLI process exceeded its finite deadline and was killed without inferring operation success.'
+    }
+    if (-not $Receipt.CaptureReadersSettled) {
+        Throw-Cx004 'native-capture-unproven' 'The retained wsb CLI output collectors did not settle after bounded EOF or explicit cancellation and reader closure.'
+    }
+    if (-not $Receipt.CaptureByteCountsAvailable) {
+        Throw-Cx004 'native-capture-unproven' 'The retained wsb CLI output byte counts are unavailable because its collectors did not settle.'
+    }
+    if ($Receipt.OutputExceeded -and
+        $Receipt.StdoutBytes -le $script:Cx004MaxJsonBytes -and
+        $Receipt.StderrBytes -le $script:Cx004MaxJsonBytes) {
+        Throw-Cx004 'native-output-overflow' 'The retained wsb CLI exceeded a bounded output cap without a trustworthy stream attribution.'
     }
     if ($Receipt.StdoutBytes -gt $script:Cx004MaxJsonBytes) {
         Throw-Cx004 'native-stdout-overflow' 'The retained wsb CLI process exceeded the stdout cap and was killed without inferring operation success.'
@@ -1789,11 +1888,46 @@ function Assert-Cx004WsbNativeComplete {
     if (-not $Receipt.ProcessExited) {
         Throw-Cx004 'native-process-unproven' 'The retained wsb CLI process did not positively exit after bounded handling.'
     }
-    if (-not $Receipt.CaptureCompleted) {
-        Throw-Cx004 'native-capture-unproven' 'The retained wsb CLI output collectors did not positively reach EOF.'
+    if ($Receipt.ProcessId -le 0 -or $Receipt.KillAttempted -or
+        ($Receipt.KillSucceeded -and -not $Receipt.KillAttempted)) {
+        Throw-Cx004 'native-process-unproven' 'The retained wsb CLI receipt lacks one positive, naturally exited launcher process.'
+    }
+    if ($Receipt.CaptureCloseFaulted -or $Receipt.CaptureFaulted) {
+        Throw-Cx004 'native-capture-unproven' 'The retained wsb CLI output collectors faulted or could not close cleanly during bounded handling.'
     }
     if (-not $Receipt.BindingStable) {
         Throw-Cx004 'wsb-alias-binding-drift' 'The wsb AppExecLink/package identity changed across native execution.'
+    }
+}
+
+function Assert-Cx004WsbNativeComplete {
+    param([Parameter(Mandatory)] [object] $Receipt)
+
+    Assert-Cx004WsbNativeEnvelope -Receipt $Receipt
+    if (-not $Receipt.CaptureCompleted -or $Receipt.CaptureDiscarded) {
+        Throw-Cx004 'native-capture-unproven' 'The retained wsb CLI output collectors did not positively reach EOF without discarding output.'
+    }
+}
+
+function Assert-Cx004WsbConnectNativeComplete {
+    param([Parameter(Mandatory)] [object] $Receipt)
+
+    Assert-Cx004WsbNativeEnvelope -Receipt $Receipt
+    $captureDispositionValid =
+        ($Receipt.CaptureCompleted -and -not $Receipt.CaptureDiscarded) -or
+        (-not $Receipt.CaptureCompleted -and $Receipt.CaptureDiscarded)
+    if (-not $captureDispositionValid) {
+        Throw-Cx004 'native-capture-unproven' 'Exact-ID connect lacks exactly one complete-EOF or settled-discard capture disposition.'
+    }
+    if ($Receipt.CaptureDiscarded -and
+        ($Receipt.Raw.Length -ne 0 -or $Receipt.Stderr.Length -ne 0)) {
+        Throw-Cx004 'native-capture-unproven' 'Discarded exact-ID connect output was incorrectly retained as interpretable text.'
+    }
+    if ($Receipt.ExitCode -ne 0) {
+        Throw-Cx004 'unknown-connect-result' "Exact-ID wsb connect returned nonzero exit $($Receipt.ExitCode)."
+    }
+    if ($Receipt.StderrBytes -ne 0) {
+        Throw-Cx004 'unknown-connect-result' 'Exact-ID wsb connect produced observed stderr bytes; its opaque result is not accepted.'
     }
 }
 
@@ -2531,6 +2665,7 @@ function Invoke-Cx004SandboxSession {
     $sessionId = $null
     $startReceipt = $null
     $runningList = $null
+    $connectReceipt = $null
     $terminal = $null
     $guestValidation = $null
     $stopReceipt = $null
@@ -2597,6 +2732,9 @@ function Invoke-Cx004SandboxSession {
             -ExpectedRunning $true `
             -NativeReceiptPath (Join-Path $Stage.RunRoot 'cli-running-list-last-native.json')
         Write-Cx004JsonFile -LiteralPath (Join-Path $Stage.RunRoot 'cli-running-list.json') -InputObject $runningList.Native -Depth 8
+        $connectReceipt = Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @('connect', '--id', $sessionId, '--raw') -TimeoutSeconds 120
+        Write-Cx004JsonFile -LiteralPath (Join-Path $Stage.RunRoot 'cli-connect-native.json') -InputObject $connectReceipt -Depth 8
+        Assert-Cx004WsbConnectNativeComplete -Receipt $connectReceipt
         $terminal = Wait-Cx004GuestTerminalFiles -OutputPath $Stage.OutputPath -Challenge $Stage.Challenge
     }
     catch {
@@ -2665,7 +2803,7 @@ function Invoke-Cx004SandboxSession {
                 $positiveBoundaryFailure = $true
             }
             $uncertainTeardownError = -not $exactStopProved -or
-                $_.Exception.Message -match 'CX004\[(native-launch-failed|native-process-timeout|native-stdout-overflow|native-stderr-overflow|native-process-unproven|native-capture-unproven|wsb-alias-binding-drift|unknown-stop-shape|session-state-timeout|mapping-release|host-canary-observation-uncertain)\]'
+                $_.Exception.Message -match 'CX004\[(native-launch-failed|native-process-timeout|native-output-overflow|native-stdout-overflow|native-stderr-overflow|native-process-unproven|native-capture-unproven|wsb-alias-binding-drift|unknown-stop-shape|session-state-timeout|mapping-release|host-canary-observation-uncertain)\]'
             if ($uncertainTeardownError) {
                 $teardownError = $_
                 $teardownUncertain = $true
@@ -2718,6 +2856,13 @@ function Invoke-Cx004SandboxSession {
             startExitCode = if ($null -ne $startReceipt) { $startReceipt.ExitCode } else { $null }
             startRaw = if ($null -ne $startReceipt) { $startReceipt.Raw } else { $null }
             runningListRaw = if ($null -ne $runningList) { $runningList.Raw } else { $null }
+            connectExitCode = if ($null -ne $connectReceipt) { $connectReceipt.ExitCode } else { $null }
+            connectOutputDisposition = if ($null -ne $connectReceipt) { 'opaque-non-evidence' } else { $null }
+            connectCaptureCompleted = if ($null -ne $connectReceipt) { $connectReceipt.CaptureCompleted } else { $null }
+            connectCaptureReadersSettled = if ($null -ne $connectReceipt) { $connectReceipt.CaptureReadersSettled } else { $null }
+            connectCaptureDiscarded = if ($null -ne $connectReceipt) { $connectReceipt.CaptureDiscarded } else { $null }
+            connectObservedStdoutBytes = if ($null -ne $connectReceipt) { $connectReceipt.StdoutBytes } else { $null }
+            connectObservedStderrBytes = if ($null -ne $connectReceipt) { $connectReceipt.StderrBytes } else { $null }
             stopExitCode = if ($null -ne $stopReceipt) { $stopReceipt.ExitCode } else { $null }
             stopRaw = if ($null -ne $stopReceipt) { $stopReceipt.Raw } else { $null }
             stoppedListRaw = if ($null -ne $stoppedList) { $stoppedList.Raw } else { $null }

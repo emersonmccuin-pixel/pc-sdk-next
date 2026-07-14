@@ -154,6 +154,45 @@ function Get-Cx004FunctionSource {
     return $matches[0].Extent.Text
 }
 
+function Get-Cx004CommandCallFacts {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$CommandName
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if ($parseErrors.Count -ne 0) {
+        throw "Cannot inspect command '$CommandName' because '$Path' does not parse."
+    }
+
+    $calls = @($ast.FindAll({
+        param($candidate)
+        $candidate -is [System.Management.Automation.Language.CommandAst] -and
+            $candidate.GetCommandName() -ceq $CommandName
+    }, $true))
+    foreach ($call in $calls) {
+        $owner = $call.Parent
+        while ($null -ne $owner -and
+            $owner -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+            $owner = $owner.Parent
+        }
+        [pscustomobject]@{
+            FunctionName = if ($null -ne $owner) { $owner.Name } else { $null }
+            Text = $call.Extent.Text
+            NormalizedText = (($call.Extent.Text -replace '(?m)`\r?\n', ' ') -replace '\s+', ' ').Trim()
+        }
+    }
+}
+
 function Invoke-Cx004ExtractedFunction {
     param(
         [Parameter(Mandatory)]
@@ -475,20 +514,45 @@ Assert-Cx004NotMatches -Actual $hostHarnessRaw `
 Assert-Cx004NotMatches -Actual $hostHarnessRaw -Pattern '(?i)Invoke-Expression|ScriptBlock\s*::\s*Create' `
     -Message 'the harness must not expose dynamic command evaluation'
 
-$nativeWsbCallCount = [regex]::Matches(
-    $moduleRaw,
-    '(?m)\bInvoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\('
-).Count
-Assert-Cx004Equal -Actual $nativeWsbCallCount -Expected 3 `
-    -Message 'the module must have exactly three closed direct wsb action call sites'
-foreach ($closedCallPattern in @(
-    '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''list'',\s*''--raw''\)',
-    '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''start'',\s*''--config'',\s*\$Stage\.RenderedConfig,\s*''--raw''\)',
-    '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''stop'',\s*''--id'',\s*\$sessionId,\s*''--raw''\)'
-)) {
-    Assert-Cx004Equal -Actual ([regex]::Matches($moduleRaw, $closedCallPattern).Count) -Expected 1 `
-        -Message 'each allowed list/start/stop native wsb call must occur exactly once'
+$nativeWsbCalls = @(Get-Cx004CommandCallFacts -Path $modulePath -CommandName 'Invoke-Cx004WsbNative')
+Assert-Cx004Equal -Actual $nativeWsbCalls.Count -Expected 5 `
+    -Message 'the module AST must contain exactly the five reviewed direct wsb call sites'
+$expectedNativeWsbCalls = @(
+    [pscustomobject]@{
+        FunctionName = 'Get-Cx004HostDoctor'
+        Text = 'Invoke-Cx004WsbNative -WsbPath $expectedAlias -Arguments @(''--version'') -TimeoutSeconds 30'
+    },
+    [pscustomobject]@{
+        FunctionName = 'Get-Cx004WsbListReceipt'
+        Text = 'Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @(''list'', ''--raw'') -TimeoutSeconds 30'
+    },
+    [pscustomobject]@{
+        FunctionName = 'Invoke-Cx004SandboxSession'
+        Text = 'Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @(''start'', ''--config'', $Stage.RenderedConfig, ''--raw'') -TimeoutSeconds 120'
+    },
+    [pscustomobject]@{
+        FunctionName = 'Invoke-Cx004SandboxSession'
+        Text = 'Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @(''connect'', ''--id'', $sessionId, ''--raw'') -TimeoutSeconds 120'
+    },
+    [pscustomobject]@{
+        FunctionName = 'Invoke-Cx004SandboxSession'
+        Text = 'Invoke-Cx004WsbNative -WsbPath $WsbPath -Arguments @(''stop'', ''--id'', $sessionId, ''--raw'') -TimeoutSeconds 60'
+    }
+)
+foreach ($expectedCall in $expectedNativeWsbCalls) {
+    $matches = @($nativeWsbCalls | Where-Object {
+        $_.FunctionName -ceq $expectedCall.FunctionName -and
+            $_.NormalizedText -ceq $expectedCall.Text
+    })
+    Assert-Cx004Equal -Actual $matches.Count -Expected 1 `
+        -Message "reviewed wsb call must occur exactly once in $($expectedCall.FunctionName): $($expectedCall.Text)"
 }
+$directBoundedWsbCalls = @(Get-Cx004CommandCallFacts -Path $modulePath -CommandName 'Invoke-Cx004BoundedNative' |
+    Where-Object { $_.NormalizedText -match '(?i)-ExecutablePath\s+\$WsbPath(?:\s|$)' })
+Assert-Cx004Equal -Actual $directBoundedWsbCalls.Count -Expected 1 `
+    -Message 'only one direct bounded-native call may receive the sealed wsb path'
+Assert-Cx004Equal -Actual $directBoundedWsbCalls[0].FunctionName -Expected 'Invoke-Cx004WsbNative' `
+    -Message 'every wsb process launch must pass through the alias-binding wrapper'
 Assert-Cx004NotMatches -Actual $moduleRaw `
     -Pattern '(?m)Invoke-Cx004WsbNative\s+-WsbPath\s+\$WsbPath\s+-Arguments\s+@\(''start'',\s*''--config'',\s*\$Stage\.RenderedConfigPath\b' `
     -Message 'modern wsb start must receive the exact XML argument, never a .wsb filesystem path'
@@ -519,6 +583,7 @@ Assert-Cx004NotMatches -Actual $moduleRaw -Pattern '(?i)\.ReadToEnd(?:Async)?\('
     -Message 'native output must be capped while streaming, before unbounded allocation'
 foreach ($nativeFailureMarker in @(
     'native-process-timeout',
+    'native-output-overflow',
     'native-stdout-overflow',
     'native-stderr-overflow'
 )) {
@@ -620,6 +685,7 @@ foreach ($identityMarker in @(
     'System32\WindowsSandbox.exe',
     'WindowsSandboxServer.exe',
     'WindowsSandboxRemoteSession.exe',
+    'WindowsSandboxRemoteSession.dll',
     'wsb.dll'
 )) {
     Assert-Cx004Matches -Actual $moduleRaw -Pattern ([regex]::Escape($identityMarker)) `
@@ -687,7 +753,9 @@ $pathOverlapRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Test-Cx004Pat
 $protectedRootsRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004ProtectedRoots'
 $wsbAliasBindingRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004WsbAliasBinding'
 $wsbNativeRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Invoke-Cx004WsbNative'
+$wsbNativeEnvelopeRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Assert-Cx004WsbNativeEnvelope'
 $wsbNativeCompleteRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Assert-Cx004WsbNativeComplete'
+$wsbConnectNativeCompleteRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Assert-Cx004WsbConnectNativeComplete'
 $wsbListReceiptRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Get-Cx004WsbListReceipt'
 $sessionListWaitRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Wait-Cx004SessionListState'
 $hostCanaryCompleteRaw = Get-Cx004FunctionSource -Path $modulePath -Name 'Complete-Cx004HostCanary'
@@ -871,9 +939,41 @@ Assert-Cx004Matches -Actual $wsbNativeRaw `
 Assert-Cx004Matches -Actual $wsbNativeRaw `
     -Pattern '(?is)\$bindingStable\s*=\s*\$null\s+-eq\s+\$bindingAfterError\s+-and\s*\r?\n\s*\(ConvertTo-Cx004CanonicalJson\s+-InputObject\s+\$bindingBefore.*?\)\s+-ceq\s*\r?\n\s*\(ConvertTo-Cx004CanonicalJson\s+-InputObject\s+\$bindingAfter' `
     -Message 'AppExecLink binding stability must require no post-proof error and exact canonical before/after identity'
-Assert-Cx004Matches -Actual $wsbNativeCompleteRaw `
+Assert-Cx004Matches -Actual $wsbNativeEnvelopeRaw `
     -Pattern '(?is)if\s*\(\s*-not\s+\$Receipt\.BindingStable\s*\).*wsb-alias-binding-drift' `
     -Message 'a changed or unproved post-use AppExecLink binding must fail closed'
+foreach ($captureLifecycleMarker in @(
+    'CaptureReadersSettled',
+    'CaptureDiscarded',
+    'CaptureFaulted',
+    'CaptureCloseFaulted',
+    'CaptureByteCountsAvailable',
+    'CancellationTokenSource',
+    'captureCancellation.Cancel()',
+    'StandardOutput.Close()',
+    'StandardError.Close()',
+    'Interlocked.Read',
+    'WaitForCaptureTasks'
+)) {
+    Assert-Cx004Matches -Actual $moduleRaw -Pattern ([regex]::Escape($captureLifecycleMarker)) `
+        -Message "bounded native capture must retain lifecycle marker $captureLifecycleMarker"
+}
+Assert-Cx004Matches -Actual $wsbNativeCompleteRaw `
+    -Pattern '(?is)Assert-Cx004WsbNativeEnvelope.*?-not\s+\$Receipt\.CaptureCompleted\s+-or\s+\$Receipt\.CaptureDiscarded' `
+    -Message 'strict wsb operations must require settled EOF without discarded output'
+foreach ($connectCaptureMarker in @(
+    'Assert-Cx004WsbNativeEnvelope',
+    'CaptureCompleted',
+    'CaptureDiscarded',
+    'CaptureReadersSettled',
+    'ExitCode',
+    'StderrBytes',
+    'unknown-connect-result'
+)) {
+    Assert-Cx004Matches -Actual "$wsbNativeEnvelopeRaw`n$wsbConnectNativeCompleteRaw" `
+        -Pattern ([regex]::Escape($connectCaptureMarker)) `
+        -Message "connect capture classifier must retain marker $connectCaptureMarker"
+}
 
 # Source sealing uses one reviewed Git-for-Windows engine by exact path and
 # byte identity. PATH discovery is forbidden, and each Git command re-proves
@@ -1142,6 +1242,15 @@ Assert-Cx004SourceOrder -Source $wsbListReceiptRaw -Markers @(
 Assert-Cx004Matches -Actual $sessionListWaitRaw `
     -Pattern '(?i)Get-Cx004WsbListReceipt\s+-WsbPath\s+\$WsbPath\s+-NativeReceiptPath\s+\$NativeReceiptPath' `
     -Message 'each list-state poll must immediately overwrite its retained raw native receipt'
+Assert-Cx004Matches -Actual $sessionFunctionRaw `
+    -Pattern '(?is)\$runningList\s*=\s*Wait-Cx004SessionListState.*?-SessionId\s+\$sessionId.*?-ExpectedRunning\s+\$true' `
+    -Message 'pre-connect running proof must bind the retained exact session id and require it running'
+Assert-Cx004Matches -Actual $sessionListWaitRaw `
+    -Pattern '(?is)if\s*\(\$ExpectedRunning\).*?\$ids\.Count\s+-eq\s+1\s+-and\s+\$ids\[0\]\s+-ceq\s+\$SessionId.*?return\s+\$lastReceipt' `
+    -Message 'running-state acceptance must require the retained id as the sole case-exact identity'
+Assert-Cx004Matches -Actual $sessionListWaitRaw `
+    -Pattern '(?is)\$ids\.Count\s+-gt\s+0\s+-and\s+-not\s*\(\$ids\.Count\s+-eq\s+1\s+-and\s+\$ids\[0\]\s+-ceq\s+\$SessionId\).*?foreign-running-session' `
+    -Message 'any nonempty running-list shape other than the sole retained id must fail closed'
 Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     '$startReceipt = Invoke-Cx004WsbNative',
     'cli-start.json',
@@ -1150,6 +1259,28 @@ Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     '$startReceipt.Stderr.Length',
     'ConvertFrom-Cx004WsbStartRaw'
 ) -Message 'raw start receipt must persist before completion, binding, and schema acceptance'
+Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
+    '$connectReceipt = Invoke-Cx004WsbNative',
+    "Write-Cx004JsonFile -LiteralPath (Join-Path `$Stage.RunRoot 'cli-connect-native.json') -InputObject `$connectReceipt",
+    'Assert-Cx004WsbConnectNativeComplete -Receipt $connectReceipt',
+    'Wait-Cx004GuestTerminalFiles'
+) -Message 'bounded opaque connect receipt must persist and validate before guest terminal polling'
+$connectStartIndex = $sessionFunctionRaw.IndexOf('$connectReceipt = Invoke-Cx004WsbNative', [StringComparison]::Ordinal)
+$connectTerminalIndex = if ($connectStartIndex -ge 0) {
+    $sessionFunctionRaw.IndexOf('Wait-Cx004GuestTerminalFiles', $connectStartIndex, [StringComparison]::Ordinal)
+}
+else {
+    -1
+}
+Assert-Cx004True -Condition ($connectStartIndex -ge 0 -and $connectTerminalIndex -gt $connectStartIndex) `
+    -Message 'the exact-ID connect-to-terminal source slice must be present'
+$connectToTerminalRaw = $sessionFunctionRaw.Substring(
+    $connectStartIndex,
+    $connectTerminalIndex - $connectStartIndex
+)
+Assert-Cx004NotMatches -Actual $connectToTerminalRaw `
+    -Pattern '(?i)\$connectReceipt\.(?:Raw|Stdout)\b' `
+    -Message 'connect stdout must remain opaque and cannot drive terminal polling or acceptance'
 Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     '$stopReceipt = Invoke-Cx004WsbNative',
     'cli-stop.json',
@@ -1189,6 +1320,9 @@ Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
 Assert-Cx004SourceOrder -Source $sessionFunctionRaw -Markers @(
     'Get-Cx004SourceSeal',
     'ConvertFrom-Cx004WsbStartRaw',
+    'Wait-Cx004SessionListState',
+    '$connectReceipt = Invoke-Cx004WsbNative',
+    'cli-connect-native.json',
     'Wait-Cx004GuestTerminalFiles',
     'ConvertFrom-Cx004WsbStopRaw',
     'Wait-Cx004SessionListState',
@@ -1210,7 +1344,9 @@ Assert-Cx004Matches -Actual $sessionFunctionRaw -Pattern '(?i)\$operationUncerta
     -Message 'session classification must explicitly retain operation uncertainty'
 foreach ($uncertainOperationCode in @(
     'unknown-start-shape',
+    'unknown-connect-result',
     'native-process-timeout',
+    'native-output-overflow',
     'native-stdout-overflow',
     'native-stderr-overflow',
     'unknown-stop-shape',
@@ -1658,6 +1794,246 @@ Assert-Cx004Equal -Actual $stderrOverflowReceipt.KillSucceeded -Expected $true `
     -Message 'stderr overflow must positively report retained-child termination'
 Assert-Cx004Equal -Actual $stderrOverflowReceipt.ProcessExited -Expected $true `
     -Message 'stderr overflow must positively observe child process exit'
+
+# Reproduce the exact inherited-pipe lifecycle without starting Sandbox: a short-lived
+# retained launcher starts one long-lived child with inherited stdout/stderr writers.
+# The runner must cancel/close and settle only its reader side, discard incomplete text,
+# return while the exact child remains alive, and scope that disposition to connect.
+$inheritedPipeFixtureId = [guid]::NewGuid().ToString('D')
+$inheritedPipeBase = [System.IO.Path]::GetFullPath((Join-Path `
+    ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)) `
+    'PC-SDK-Next\cx-004-contract-tests\inherited-pipe'))
+$inheritedPipeRoot = [System.IO.Path]::GetFullPath((Join-Path $inheritedPipeBase $inheritedPipeFixtureId))
+$childIdentityPath = Join-Path $inheritedPipeRoot 'retained-child.json'
+$null = New-Item -ItemType Directory -Path $inheritedPipeRoot -Force
+$retainedChildProcess = $null
+$retainedChildIdentity = $null
+$childIdentityLiteral = $childIdentityPath.Replace("'", "''")
+$pwshLiteral = $pwshPath.Replace("'", "''")
+$childScript = @'
+[Console]::Out.Write('cx004-inherited-writer')
+[Console]::Out.Flush()
+[Threading.Thread]::Sleep(60000)
+'@
+$encodedChildScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+$parentScript = @"
+`$start = [Diagnostics.ProcessStartInfo]::new()
+`$start.FileName = '$pwshLiteral'
+`$start.UseShellExecute = `$false
+`$start.CreateNoWindow = `$true
+[void]`$start.ArgumentList.Add('-NoLogo')
+[void]`$start.ArgumentList.Add('-NoProfile')
+[void]`$start.ArgumentList.Add('-NonInteractive')
+[void]`$start.ArgumentList.Add('-EncodedCommand')
+[void]`$start.ArgumentList.Add('$encodedChildScript')
+`$child = [Diagnostics.Process]::Start(`$start)
+try {
+    `$identity = [ordered]@{
+        processId = [int]`$child.Id
+        startTimeUtcTicks = [long]`$child.StartTime.ToUniversalTime().Ticks
+        expectedPath = '$pwshLiteral'
+    }
+    `$json = `$identity | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText('$childIdentityLiteral', `$json, [Text.UTF8Encoding]::new(`$false))
+    [Console]::Out.Write('cx004-incomplete-launcher-output')
+    [Console]::Out.Flush()
+}
+catch {
+    `$parentError = `$_
+    if (-not `$child.HasExited) {
+        `$child.Kill(`$false)
+        if (-not `$child.WaitForExit(5000)) {
+            throw 'cx004-parent-child-cleanup-timeout'
+        }
+    }
+    throw `$parentError
+}
+finally {
+    `$child.Dispose()
+}
+"@
+$encodedParentScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($parentScript))
+$connectClassifierFixture = {
+    param([object]$Receipt)
+    Assert-Cx004WsbConnectNativeComplete -Receipt $Receipt
+}
+$strictClassifierFixture = {
+    param([object]$Receipt)
+    Assert-Cx004WsbNativeComplete -Receipt $Receipt
+}
+$copyReceiptFixture = {
+    param(
+        [object]$Receipt,
+        [hashtable]$Overrides
+    )
+    $copy = [ordered]@{}
+    foreach ($property in $Receipt.PSObject.Properties) {
+        $copy[$property.Name] = $property.Value
+    }
+    foreach ($override in $Overrides.GetEnumerator()) {
+        $copy[$override.Key] = $override.Value
+    }
+    return [pscustomobject]$copy
+}
+try {
+    $inheritedPipeReceipt = & $sandboxModule $boundedNativeFixture @{
+        ExecutablePath = $pwshPath
+        Arguments = [string[]] @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-EncodedCommand',
+            $encodedParentScript
+        )
+        WorkingDirectory = $inheritedPipeRoot
+        TimeoutSeconds = 20
+        MaxStdoutBytes = 4096
+        MaxStderrBytes = 4096
+        ScrubEnvironment = $true
+    }
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.ProcessExited -Expected $true `
+        -Message 'the inherited-pipe launcher must positively exit'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.ExitCode -Expected 0 `
+        -Message 'the inherited-pipe launcher must exit zero'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.TimedOut -Expected $false `
+        -Message 'inherited pipe writers must not be mislabeled as launcher timeout'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.OutputExceeded -Expected $false `
+        -Message 'the bounded inherited-pipe fixture must stay below both output caps'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.KillAttempted -Expected $false `
+        -Message 'reader settlement must not kill the retained launcher or its child'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureCompleted -Expected $false `
+        -Message 'inherited pipe writers must prevent a false complete-EOF claim'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureDiscarded -Expected $true `
+        -Message 'incomplete inherited-pipe text must have the explicit discarded disposition'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureReadersSettled -Expected $true `
+        -Message 'both canceled/closed inherited-pipe readers must settle before return'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureFaulted -Expected $false `
+        -Message 'expected cancellation/closure must be observed without a collector fault'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureCloseFaulted -Expected $false `
+        -Message 'both inherited-pipe readers must close without an unobserved fault'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.CaptureByteCountsAvailable -Expected $true `
+        -Message 'settled collectors must expose bounded observed byte counts'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.Stdout -Expected '' `
+        -Message 'discarded incomplete stdout must not be returned as interpretable text'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.Stderr -Expected '' `
+        -Message 'discarded incomplete stderr must not be returned as interpretable text'
+    Assert-Cx004True -Condition ([long]$inheritedPipeReceipt.StdoutBytes -gt 0) `
+        -Message 'the fixture must observe bounded launcher stdout before the inherited writer prevents EOF'
+    Assert-Cx004Equal -Actual $inheritedPipeReceipt.StderrBytes -Expected 0 `
+        -Message 'the accepted synthetic connect shape must have no observed stderr bytes'
+
+    Assert-Cx004True -Condition (Test-Path -LiteralPath $childIdentityPath -PathType Leaf) `
+        -Message 'the parent fixture must retain the exact child identity before exiting'
+    $retainedChildIdentity = Get-Content -LiteralPath $childIdentityPath -Raw | ConvertFrom-Json
+    $retainedChildProcess = Get-Process -Id ([int]$retainedChildIdentity.processId) -ErrorAction Stop
+    Assert-Cx004Equal -Actual ([System.IO.Path]::GetFullPath($retainedChildProcess.Path)) `
+        -Expected ([System.IO.Path]::GetFullPath($pwshPath)) `
+        -Message 'the still-running inherited-writer child must be the exact fixture executable'
+    Assert-Cx004Equal -Actual ([long]$retainedChildProcess.StartTime.ToUniversalTime().Ticks) `
+        -Expected ([long]$retainedChildIdentity.startTimeUtcTicks) `
+        -Message 'the still-running inherited-writer child must match the exact retained creation time'
+    Assert-Cx004Equal -Actual $retainedChildProcess.HasExited -Expected $false `
+        -Message 'reader settlement must return while the long-lived inherited-writer child remains alive'
+
+    $connectReceiptFixture = [pscustomobject][ordered]@{
+        ExitCode = [int]$inheritedPipeReceipt.ExitCode
+        Raw = [string]$inheritedPipeReceipt.Stdout
+        Stderr = [string]$inheritedPipeReceipt.Stderr
+        ProcessId = [int]$inheritedPipeReceipt.ProcessId
+        StdoutBytes = [long]$inheritedPipeReceipt.StdoutBytes
+        StderrBytes = [long]$inheritedPipeReceipt.StderrBytes
+        ElapsedMilliseconds = [long]$inheritedPipeReceipt.ElapsedMilliseconds
+        TimedOut = [bool]$inheritedPipeReceipt.TimedOut
+        OutputExceeded = [bool]$inheritedPipeReceipt.OutputExceeded
+        KillAttempted = [bool]$inheritedPipeReceipt.KillAttempted
+        KillSucceeded = [bool]$inheritedPipeReceipt.KillSucceeded
+        ProcessExited = [bool]$inheritedPipeReceipt.ProcessExited
+        CaptureCompleted = [bool]$inheritedPipeReceipt.CaptureCompleted
+        CaptureReadersSettled = [bool]$inheritedPipeReceipt.CaptureReadersSettled
+        CaptureDiscarded = [bool]$inheritedPipeReceipt.CaptureDiscarded
+        CaptureFaulted = [bool]$inheritedPipeReceipt.CaptureFaulted
+        CaptureCloseFaulted = [bool]$inheritedPipeReceipt.CaptureCloseFaulted
+        CaptureByteCountsAvailable = [bool]$inheritedPipeReceipt.CaptureByteCountsAvailable
+        BindingStable = $true
+    }
+    $null = & $sandboxModule $connectClassifierFixture $connectReceiptFixture
+    $completeConnectReceipt = & $copyReceiptFixture $connectReceiptFixture @{
+        CaptureCompleted = $true
+        CaptureDiscarded = $false
+        Raw = 'opaque-complete-connect-output'
+        StdoutBytes = 30
+    }
+    $null = & $sandboxModule $connectClassifierFixture $completeConnectReceipt
+    Assert-Cx004Throws -Action {
+        & $sandboxModule $strictClassifierFixture $connectReceiptFixture
+    } -MessagePattern 'native-capture-unproven' `
+        -Message 'only the connect classifier may accept settled discarded output'
+
+    $connectMutationCases = @(
+        [pscustomobject]@{ name = 'timeout'; overrides = @{ TimedOut = $true }; pattern = 'native-process-timeout' },
+        [pscustomobject]@{ name = 'overflow'; overrides = @{ OutputExceeded = $true }; pattern = 'native-output-overflow' },
+        [pscustomobject]@{ name = 'kill'; overrides = @{ KillAttempted = $true; KillSucceeded = $true }; pattern = 'native-process-unproven' },
+        [pscustomobject]@{ name = 'inconsistent kill'; overrides = @{ KillSucceeded = $true }; pattern = 'native-process-unproven' },
+        [pscustomobject]@{ name = 'process exit'; overrides = @{ ProcessExited = $false }; pattern = 'native-process-unproven' },
+        [pscustomobject]@{ name = 'process id'; overrides = @{ ProcessId = 0 }; pattern = 'native-process-unproven' },
+        [pscustomobject]@{ name = 'reader settlement'; overrides = @{ CaptureReadersSettled = $false }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'byte-count availability'; overrides = @{ CaptureByteCountsAvailable = $false }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'reader close'; overrides = @{ CaptureCloseFaulted = $true }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'reader fault'; overrides = @{ CaptureFaulted = $true }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'binding'; overrides = @{ BindingStable = $false }; pattern = 'wsb-alias-binding-drift' },
+        [pscustomobject]@{ name = 'missing disposition'; overrides = @{ CaptureDiscarded = $false }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'conflicting disposition'; overrides = @{ CaptureCompleted = $true }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'retained discarded stdout'; overrides = @{ Raw = 'must-not-be-retained' }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'retained discarded stderr'; overrides = @{ Stderr = 'must-not-be-retained' }; pattern = 'native-capture-unproven' },
+        [pscustomobject]@{ name = 'exit code'; overrides = @{ ExitCode = 1 }; pattern = 'unknown-connect-result' },
+        [pscustomobject]@{ name = 'observed stderr'; overrides = @{ StderrBytes = 1 }; pattern = 'unknown-connect-result' }
+    )
+    foreach ($mutationCase in $connectMutationCases) {
+        $mutatedReceipt = & $copyReceiptFixture $connectReceiptFixture $mutationCase.overrides
+        Assert-Cx004Throws -Action {
+            & $sandboxModule $connectClassifierFixture $mutatedReceipt
+        } -MessagePattern $mutationCase.pattern `
+            -Message "connect classifier must reject mutated $($mutationCase.name) evidence"
+    }
+}
+finally {
+    if ($null -eq $retainedChildIdentity -and
+        (Test-Path -LiteralPath $childIdentityPath -PathType Leaf)) {
+        $retainedChildIdentity = Get-Content -LiteralPath $childIdentityPath -Raw | ConvertFrom-Json
+    }
+    if ($null -eq $retainedChildProcess -and $null -ne $retainedChildIdentity) {
+        $retainedChildProcess = Get-Process -Id ([int]$retainedChildIdentity.processId) -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $retainedChildProcess) {
+        $retainedChildProcess.Refresh()
+        if (-not $retainedChildProcess.HasExited) {
+            Assert-Cx004Equal -Actual ([System.IO.Path]::GetFullPath($retainedChildProcess.Path)) `
+                -Expected ([System.IO.Path]::GetFullPath($pwshPath)) `
+                -Message 'cleanup refuses to terminate a child whose executable identity drifted'
+            Assert-Cx004Equal -Actual ([long]$retainedChildProcess.StartTime.ToUniversalTime().Ticks) `
+                -Expected ([long]$retainedChildIdentity.startTimeUtcTicks) `
+                -Message 'cleanup refuses to terminate a reused or mismatched process id'
+            $retainedChildProcess.Kill($false)
+            Assert-Cx004Equal -Actual ($retainedChildProcess.WaitForExit(5000)) -Expected $true `
+                -Message 'the exact synthetic inherited-writer child must exit during bounded cleanup'
+        }
+        $retainedChildProcess.Dispose()
+        Assert-Cx004True -Condition ($null -eq (Get-Process -Id ([int]$retainedChildIdentity.processId) -ErrorAction SilentlyContinue)) `
+            -Message 'synthetic inherited-writer cleanup must leave no exact retained child'
+    }
+    if (Test-Path -LiteralPath $inheritedPipeRoot) {
+        $rootItem = Get-Item -LiteralPath $inheritedPipeRoot -Force
+        Assert-Cx004Equal -Actual $rootItem.Name -Expected $inheritedPipeFixtureId `
+            -Message 'inherited-pipe cleanup must target only its exact fresh fixture id'
+        Assert-Cx004Equal -Actual ([bool]($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) -Expected $false `
+            -Message 'inherited-pipe cleanup refuses a reparse-point fixture root'
+        Assert-Cx004True -Condition $inheritedPipeRoot.StartsWith(
+            "$($inheritedPipeBase.TrimEnd([IO.Path]::DirectorySeparatorChar))$([IO.Path]::DirectorySeparatorChar)",
+            [StringComparison]::OrdinalIgnoreCase
+        ) -Message 'inherited-pipe cleanup must remain beneath its dedicated local test root'
+        Remove-Item -LiteralPath $inheritedPipeRoot -Recurse -Force
+    }
+}
 
 # Integrity is normalized from the mandatory-label SID. The localized whoami
 # label remains local evidence and never becomes the tracked semantic value.
