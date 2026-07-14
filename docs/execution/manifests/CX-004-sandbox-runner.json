@@ -4,8 +4,8 @@
   "sourceFiles": [
     {
       "relativePath": "packages/windows-containment/lab/sandbox/Cx004Sandbox.psm1",
-      "sha256": "e8c99b638b09457e233e14014e62d79e26699acc97ea01509b3a6faf65a196bd",
-      "length": 198206
+      "sha256": "767e28fa492b70d9e0c8f854af86d973625d47ca145656916731541dac3cf5ed",
+      "length": 205663
     },
     {
       "relativePath": "packages/windows-containment/lab/sandbox/guest-bootstrap.ps1",
@@ -34,8 +34,8 @@
     },
     {
       "relativePath": "packages/windows-containment/lab/test/sandbox-contract.test.ps1",
-      "sha256": "b553df832c9a7bdd64155fecca692e68f06e437b659144f50e6c52e08041092c",
-      "length": 115598
+      "sha256": "4043a42548d430276976392031cbce66d2cf99cb962ba9579f3d7138badf244f",
+      "length": 136494
     },
     {
       "relativePath": "packages/windows-containment/lab/test/sandbox-host-smoke.test.ps1",
