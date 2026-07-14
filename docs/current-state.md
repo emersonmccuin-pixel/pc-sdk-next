@@ -1,8 +1,8 @@
 # Current state
 
-Last updated: 2026-07-14 after CX-004 Q0S closeout `R1` guarded-landed, passed
-post-merge verification, was pushed/re-fetched exactly, and was cleaned up. CX-003
-remains fully closed. The final S0 correction guarded-landed as
+Last updated: 2026-07-14 after the CX-004 pre-code path amendment guarded-landed,
+passed post-merge verification, was pushed/re-fetched exactly, and was cleaned up.
+CX-003 remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
 `dd17bb6a67e44d2b8fef6a7f6dab1a63`, aggregate SHA-256
@@ -15,9 +15,13 @@ source seals, and bounded host smoke. R0 feature commit
 `f3872b746dcbf0cb10cb775f3a37278f3aa35550`. R1 feature commit
 `a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1` guarded-landed as
 `7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f`, exact tree
-`96ccca7dd83da9abe75fcdbcf6db7c917a386f75`; fake-product implementation is
-unblocked after the bounded pre-code path amendment. No provider process, provider
-login, credential home, real project, or project data was accessed.
+`96ccca7dd83da9abe75fcdbcf6db7c917a386f75`. Pre-code amendment feature
+`5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda` guarded-landed as
+`0b51c1e8751516686ec3d140451a2e95480f3b20`, exact tree
+`01ddba90791aaade4b4ffbf3382d71175d2cc5a0`. Fake-product implementation is
+authorized, while product source remains held for the native toolchain/input seal. No
+provider process, provider login, credential home, real project, or project data was
+accessed.
 
 ## Preserved baseline
 
@@ -264,8 +268,17 @@ only in PC-SDK Next.
   a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1]`
 - CX-004 R1 branch/worktree: branch preserved at the feature commit; worktree and
   byte-audited dependency/build residue removed
-- CX-004 status: Q0S/R0/R1 passed; bounded pre-code path amendment active before
-  fake-product source implementation
+- CX-004 pre-code amendment feature commit:
+  `5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda`
+- CX-004 pre-code amendment guarded landing:
+  `0b51c1e8751516686ec3d140451a2e95480f3b20`, exact tree
+  `01ddba90791aaade4b4ffbf3382d71175d2cc5a0`, ordered parents
+  `[7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f,
+  5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda]`
+- CX-004 pre-code amendment branch/worktree: branch preserved at the feature commit;
+  worktree and byte-audited dependency/build residue removed
+- CX-004 status: Q0S/R0/R1/amendment passed; native toolchain pin/input-seal checkpoint
+  active before fake-product source implementation
 
 Isolation defaults in the planning slice:
 
@@ -1062,14 +1075,23 @@ privacy/source-byte checks, two independent reviews, and full pre/post-merge
 remote equality was re-proved after push/re-fetch. The R1 branch is preserved; its
 worktree and byte-audited dependency/build residue are removed under exact guards.
 
+The pre-code path-amendment feature commit
+`5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda` guarded-landed as
+`0b51c1e8751516686ec3d140451a2e95480f3b20`, exact tree
+`01ddba90791aaade4b4ffbf3382d71175d2cc5a0`, with ordered R1/amendment parents.
+Focused/full pre/post gates, independent review, exact push/re-fetch, preserved branch,
+and guarded worktree/residue removal passed.
+
 No native or TypeScript product containment implementation has begun. The next safe
-action is to verify, guarded-land, and push/re-fetch this bounded pre-code amendment,
-which adds `apps/server/test/data-dir-admission.test.ts` to the authorized product path
-set. Then pin the exact native toolchain/boot bundler, seal the native-build-input
-manifest against that exact base, and begin the sealed fake-product sequence. The
+action is to exact-pin Node/pnpm, `node-gyp`, esbuild, SQLite, and `ws`, then verify/
+land/push/re-fetch that toolchain checkpoint. Acquire and signature/hash-verify the
+official Node 22.13.0 and LLVM 19.1.7 offline inputs and seal the native-build-input
+manifest against that exact landing before source. The installed upstream SQLite input
+is explicitly non-admitted because final CFG function-table and CET evidence are
+missing; the accepted hardened pinned source-build path proceeds autonomously. The
 complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
-Q0S/R0/R1 promote no requirement. Production/provider execution remains unavailable
-throughout CX-004.
+Q0S/R0/R1/amendment promote no requirement. Production/provider execution remains
+unavailable throughout CX-004.
 
 ## Known architectural gaps
 
