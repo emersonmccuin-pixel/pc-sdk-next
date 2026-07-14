@@ -1,10 +1,14 @@
 # Current state
 
-Last updated: 2026-07-13 during the CX-003 final-receipt closeout. The accepted
-ADR-0002 decision feature guarded-landed, passed its post-merge gate, was pushed and
-re-fetched exactly, and its feature worktree was removed under positive guards. This
-transient final-receipt worktree records that proof before fake-only CX-004 begins. No
-native Codex process, thread, turn, or credential access occurred.
+Last updated: 2026-07-13 at the CX-004 pre-code gate. CX-003 is fully closed:
+its accepted decision and separate final receipt guarded-landed, each passed the
+post-merge gate, the exact final merge was pushed/re-fetched, and both transient
+worktrees were removed under positive guards. Fake-only CX-004 has an exact blocked
+contract. Qualification bootstrap cannot begin until an accessible sealed generalized
+Windows source VHDX and VM lifecycle authority exist; that bootstrap must produce the
+complete image/store/build/security/controller/wire-schema/attestation vector before
+native product implementation. No
+native Codex process, thread, turn, provider login, or credential access occurred.
 
 ## Preserved baseline
 
@@ -207,11 +211,25 @@ only in PC-SDK Next.
 - CX-003 exact decision/merge tree:
   `5b926bbf73ecfc1819386c16a287125d74669c69`
 - CX-003 final-receipt branch: `codex/cx-003-final-receipt`
-- CX-003 final-receipt worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003-final-receipt`
-- CX-003 status: accepted decision feature closeout complete; the transient final-
-  receipt closeout must itself be guarded-landed, post-merge verified,
-  pushed/re-fetched, and removed before fake-only CX-004 begins
+- CX-003 final-receipt commit:
+  `23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f`
+- CX-003 final-receipt tree:
+  `ec9af29551d91e41571d13add210f6025e011ec8`
+- CX-003 final closeout merge:
+  `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`
+- CX-003 final closeout parents: exact ordered decision landing then final receipt
+- CX-003 final-receipt worktree: removed after guarded landing, post-merge
+  660/660 server tests plus dead-import guard, exact push/re-fetch, and guarded
+  residual cleanup; final-receipt branch preserved
+- CX-003 status: complete
+- CX-004 base: `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`
+- CX-004 branch: `codex/cx-004-windows-containment`
+- CX-004 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
+- CX-004 contract: `docs/execution/slices/CX-004.md`
+- CX-004 status: blocked at Q0 by the missing sealed generalized source VHDX/offline
+  inputs and Hyper-V lifecycle authority; Q1 must build the final immutable-runner
+  manifest/key/provenance vector before product code; the physical host is non-admitted
 
 Isolation defaults in the planning slice:
 
@@ -821,7 +839,7 @@ and the real-fix gate remain open. Detailed evidence is in
 `docs/research/codex-runtime-adapter.md` and
 `docs/execution/receipts/CX-002.md`.
 
-## Active N5 native-execution safety decision
+## Completed N5 native-execution safety decision
 
 CX-003 has completed its accepted decision evidence without starting Codex or touching a
 credential home. Stable app-server 0.144.1 can echo the resolved sandbox and
@@ -930,8 +948,8 @@ origin empty external-action inventory, approval requests disabled, unknown acti
 always denied, and exact sandbox/filesystem/network evidence.
 
 This acceptance authorizes only fake-process/fake-principal CX-004 after the feature and
-separate final-receipt closeouts. The feature closeout is positive; the transient
-final-receipt closeout is the only remaining CX-003 lifecycle gate. Before any
+separate final-receipt closeouts. Both closeouts are now positive at final merge
+`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`. Before any
 provider process, login-home access, or CX-005 invocation, a separately approved
 fresh production receipt and explicit
 provider-root TCB-versus-opaque-broker choice must positively qualify every root-
@@ -945,11 +963,36 @@ isolation and the restricted-candidate→owner-verifier→owner-promotion/ref-CA
 CX-009 and CX-010 each require matching fresh provider/OS receipts and a challenge-
 bound composite CAS before disposable parity and the real fix.
 
-Detailed evidence is in
-`docs/research/codex-native-execution-safety.md`, the active contract is
+Detailed decision evidence is in
+`docs/research/codex-native-execution-safety.md`, the completed decision contract is
 `docs/execution/slices/CX-003.md`, and the accepted decision is
-`docs/decisions/0002-codex-native-execution-safety.md`. The active decision
-receipt is `docs/execution/receipts/CX-003.md`.
+`docs/decisions/0002-codex-native-execution-safety.md`. The decision receipt is
+`docs/execution/receipts/CX-003.md`.
+
+## Blocked N5 fake-only Windows containment qualification
+
+CX-004 is authorized but blocked at external qualification-bootstrap prerequisite Q0.
+ADR-0002 requires the exact Windows 11 25H2 workstation/AMD64/full-revision tuple and
+immutable disposable final-image provenance before product code. Q1 first needs an
+accessible provenance-sealed generalized source VHDX, offline provisioning inputs, and
+authority to build/freeze/destroy derived Hyper-V VMs. The observed physical workstation matches
+`10.0.26200.8655` and the pinned Node 22.13.0/Python 3.13.1 line, but it is mutable,
+credential-bearing, and not disposable. The current account cannot enumerate or
+create Hyper-V VMs, and Windows Sandbox is not installed. Rolling hosted-runner
+labels cannot substitute for an immutable parent-image digest.
+
+The exact fake-only scope, ownership, toolchain hardening, numeric bounds, failure
+matrix, receipt requirements, and deferred decisions are sealed in
+`docs/execution/slices/CX-004.md`. No qualification-bootstrap, native, or TypeScript
+containment implementation has begun. The next safe action is to supply the exact Q0
+source VHDX/offline inputs plus noninteractive Hyper-V lifecycle authority. Q1 then
+freezes the dependency/importer/node-gyp/lock/store scaffold and authors only the
+sealed wire/controller/guest-agent/provisioning infrastructure, then
+uses it to produce the read-only parent and complete VHDX/provisioning/store/build/
+security/controller/wire-schema/attestation-key/admission-root vector. Every child
+must start credential-free and be positively destroyed after the run. Until that evidence is
+available, the feature branch/worktree remain preserved and production native
+execution remains unavailable.
 
 ## Known architectural gaps
 

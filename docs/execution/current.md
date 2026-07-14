@@ -1,11 +1,13 @@
 # Current execution handoff
 
-Updated: 2026-07-13 during CX-003's docs-only final-receipt closeout. CX-002 is
-complete and main remains clean. The accepted ADR-0002 decision guarded-landed,
-passed the post-merge gate, was pushed/re-fetched exactly, and its feature worktree
-was removed under positive guards. This transient final-receipt worktree records
-that proof before fake-only CX-004 begins. No native Codex process, thread, turn,
-or credential access occurred.
+Updated: 2026-07-13 at the CX-004 pre-code gate. CX-003 is fully closed at
+`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`; its accepted decision and separate
+final receipt guarded-landed, passed their post-merge gates, were pushed/re-fetched
+exactly, and both worktrees were removed under positive guards. CX-004 is the active
+fake-only slice, but qualification-bootstrap prerequisite Q0 is blocked by the absence
+of a sealed generalized Windows source VHDX/offline inputs and authorized Hyper-V
+lifecycle. Q1 must build the final immutable runner/vector before product code. No native
+Codex process, thread, turn, provider login, or credential access occurred.
 
 ## Repository
 
@@ -409,9 +411,22 @@ branch is preserved.
 
 ## Active action
 
-CX-003's accepted-decision feature closeout is complete, and its isolated docs-only
-final-receipt worktree is active. The stable-0.144.1 policy audit and Windows
-containment/toolchain design are complete. The product owner explicitly accepted
+CX-004 is authorized and its exact fake-only contract is
+`docs/execution/slices/CX-004.md`, but qualification bootstrap is blocked at Q0. Supply
+an accessible provenance-sealed read-only generalized source VHDX at exact Windows
+workstation/AMD64 revision `10.0.26200.8655`, its offline provisioning inputs, and
+noninteractive authority to create/provision/freeze/destroy Hyper-V Generation 2 VMs.
+Q1 may then freeze the dependency/importer/node-gyp/lock/store scaffold, author only
+the wire/controller/guest-agent/provisioning infrastructure, freeze the final parent,
+and seal the complete vector; native/TypeScript product code
+still waits for Q2. The
+physical host matches the OS tuple but is mutable and credential-bearing; the current
+account cannot enumerate or create its Hyper-V VMs, and Windows Sandbox is absent.
+Rolling hosted labels are non-admitted. Do not begin Q1 or product implementation until
+its corresponding gate passes.
+
+The stable-0.144.1 policy audit and Windows containment/toolchain design are complete.
+The product owner explicitly accepted
 ADR-0002's two
 repository-owned native artifacts—the transient cold-start/controlled-restart PE and
 C++ Node-API full-spawn addon—plus explicit admission of pinned
@@ -487,17 +502,17 @@ three independent no-P0/P1/P2 reviews. Accepted decision
 `6061ad5b817af13077cf4f9358b3f351c83699dd` guarded-landed as
 `e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; exact parent vector, ancestry,
 decision/merge tree, six-document scope, post-merge `pnpm ci:check`, push/re-fetch,
-preserved feature-branch tip, and guarded feature-worktree removal are positive. Record
-those facts in this final receipt; verify its exact five-path scope and clean diff; run
-the full gate; seal its clean tip; revalidate unchanged clean main/remote at
-`e8a1c6d0aa13520b1ab0037af02006cb9a283b91`; guarded-land it with ordered
-parents exactly `[e8a1c6d0aa13520b1ab0037af02006cb9a283b91, final-receipt-tip]`;
-prove ancestry, final-tip/merge tree equality, exact five-path scope, and the preserved
-final branch tip; run the post-merge gate; push and re-fetch exact local/tracking/remote
-equality; then guarded-remove the final-receipt worktree.
-The acceptance authorizes CX-004; actual provider-neutral fake-process containment
-work begins only after both feature and final-receipt closeouts have positive
-landing/push/re-fetch/teardown proof. CX-004
+preserved feature-branch tip, and guarded feature-worktree removal are positive. The
+separate final receipt sealed as
+`23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f` and guarded-landed as
+`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`, with exact ordered parents
+`[e8a1c6d0aa13520b1ab0037af02006cb9a283b91,
+23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f]` and exact receipt/merge tree
+`ec9af29551d91e41571d13add210f6025e011ec8`. Its pre/post full gates each passed
+660/660 server tests plus the dead-import guard. Exact push/re-fetch and guarded
+worktree/residual teardown passed; both CX-003 branches are preserved.
+The acceptance authorizes CX-004; native or TypeScript containment implementation
+begins only after its immutable-runner pre-code gate. CX-004
 must not start Codex. Stable 0.144.1 remains unable to mint the complete effective-
 policy receipt. Before a later stable CX-005 provider process, shared-login-home
 access, or invocation, a separately approved fresh production bootstrap/install/
@@ -549,10 +564,22 @@ fallback is authorized.
 - CX-003 exact decision/merge tree:
   `5b926bbf73ecfc1819386c16a287125d74669c69`
 - CX-003 final-receipt branch: `codex/cx-003-final-receipt`
-- CX-003 final-receipt worktree:
-  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-003-final-receipt`
-- CX-003 status: accepted-decision feature closeout complete; transient final-receipt
-  landing/post-merge-gate/push/re-fetch/teardown remains before fake-only CX-004
+- CX-003 final-receipt commit:
+  `23841e3c5ddb2fdb961a6aad2f0a1f1364a1146f`
+- CX-003 final-receipt/final-merge tree:
+  `ec9af29551d91e41571d13add210f6025e011ec8`
+- CX-003 final closeout merge:
+  `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`
+- CX-003 final-receipt worktree: removed after the guarded landing, post-merge
+  660/660 gate, exact push/re-fetch, and guarded residual cleanup
+- CX-003 status: complete; both branches preserved
+- CX-004 base: `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`
+- CX-004 branch: `codex/cx-004-windows-containment`
+- CX-004 worktree:
+  `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
+- CX-004 contract: `docs/execution/slices/CX-004.md`
+- CX-004 status: blocked at Q0 by the missing sealed generalized source VHDX/offline
+  inputs and Hyper-V lifecycle authority; Q1 then builds the Q2 runner/vector
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -626,11 +653,11 @@ git log --oneline --decorate -8
 ```
 
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are
-removed. The CX-003 accepted-decision feature is guarded-landed and its worktree and
-residual are removed; its branch remains preserved. Main and the isolated CX-003
-final-receipt worktree are registered now. That transient docs-only worktree must be
-guarded-landed, pushed, re-fetched, and torn down before closeout is complete and main
-alone remains.
+removed. Both CX-003 worktrees and guarded residuals are removed; both branches are
+preserved. Main and the isolated CX-004 worktree are the only registered worktrees.
+Main, `origin/main`, and the remote main ref were equal to
+`cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc` at CX-004 startup. The feature worktree
+was clean at that exact base before this blocked contract checkpoint.
 
 ## Known blockers
 
@@ -643,15 +670,23 @@ remains. No CX-001 implementation, verification, hostile-review, live-gate,
 landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
 documentation-closeout blocker. CX-003's evidence, decision, feature landing, push,
-re-fetch, and feature teardown have no blocker; only its transient final-receipt
-closeout remains before fake-only CX-004. Stable app-server 0.144.1 has a
+re-fetch, final-receipt closeout, post-merge gate, and both teardowns have no blocker.
+CX-004 has one external Q0 blocker: no accessible sealed generalized Windows 11 25H2
+AMD64 `10.0.26200.8655` source VHDX/offline provisioning inputs and no noninteractive
+Hyper-V create/provision/freeze/destroy authority. Q1 must use those inputs to build the
+final read-only parent and complete contract-defined VHDX/provisioning/store/build/
+security/controller/wire-schema/attestation vector before Q2. The physical workstation is explicitly
+non-admitted because it is mutable, credential-bearing, and not disposable; the
+current account cannot enumerate or create Hyper-V VMs, and Windows Sandbox is absent.
+No Q1 bootstrap or containment implementation may begin until its prerequisite is
+supplied and re-proved. Stable app-server 0.144.1 separately has a
 confirmed effective-policy receipt blocker, so it cannot start a native thread
 or turn. Waiting for/upgrading to a qualifying stable release is recommended;
 experimental, forked, alternate-wire, API-billed, or weaker routes cannot
 bypass the same gates. Future governing-doc-authorized wire evaluation remains
-separate. Acceptance authorizes CX-004 provider-neutral containment, but actual
-work begins only after the positive final-receipt closeout and never
-authorizes a Codex process. Process-capable parity and the real-fix gate stay
+separate. Acceptance authorizes CX-004 provider-neutral containment; implementation
+begins only after the runner gate and never authorizes a Codex process.
+Process-capable parity and the real-fix gate stay
 blocked through the separate CX-006-through-CX-010 receipts.
 The Next shortcut code is isolated but has not been installed; regular daily
 driving remains on the original PC-SDK until the migration gate. SF-002 has no
