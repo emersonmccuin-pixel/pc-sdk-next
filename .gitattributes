@@ -1,2 +1,5 @@
 # CX-001 hashes and byte-compares the pinned generated app-server schema.
 /apps/server/src/runner/codex/generated/** text eol=lf
+
+# CX-004 executes and byte-seals these reviewed Sandbox qualification sources.
+/packages/windows-containment/lab/** text eol=lf
