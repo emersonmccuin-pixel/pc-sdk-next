@@ -1,15 +1,18 @@
 # Current state
 
-Last updated: 2026-07-13 at the CX-004 Windows Sandbox runner amendment. CX-003 is fully closed:
+Last updated: 2026-07-13 after the CX-004 Windows Sandbox runner amendment landed.
+CX-003 is fully closed:
 its accepted decision and separate final receipt guarded-landed, each passed the
 post-merge gate, the exact final merge was pushed/re-fetched, and both transient
 worktrees were removed under positive guards. The product owner replaced CX-004's
 custom licensed VM/image factory with fresh Windows Sandbox fake-only qualification
-plus a bounded fake-only host Job Object smoke. The governing amendment is active;
-Sandbox is not yet enabled and product code remains blocked at runner-readiness gate
-Q0S. No ISO, product key, Microsoft account, custom VM, or provider access is required.
-No
-native Codex process, thread, turn, provider login, or credential access occurred.
+plus a bounded fake-only host Job Object smoke. Amendment commit
+`1a30458628a58905bb6d2ba496531f14503ae5ec` guarded-landed as
+`320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`, passed the full post-merge gate, and was
+pushed/re-fetched exactly. Sandbox is not yet enabled and product code remains blocked
+at runner-readiness gate Q0S. No ISO, product key, Microsoft account, custom VM, or
+provider access is required. No native Codex process, thread, turn, provider login, or
+credential access occurred.
 
 ## Preserved baseline
 
@@ -228,9 +231,13 @@ only in PC-SDK Next.
 - CX-004 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
 - CX-004 contract: `docs/execution/slices/CX-004.md`
-- CX-004 status: Windows Sandbox amendment active; product code blocked at Q0S while
-  the feature/modern-CLI surface is enabled and discovered, then the provider-free
-  harness/fixed probes are implemented and sealed
+- CX-004 amendment commit:
+  `1a30458628a58905bb6d2ba496531f14503ae5ec`
+- CX-004 amendment landing:
+  `320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`
+- CX-004 status: amendment landed/pushed; product code blocked at Q0S while the feature/
+  modern-CLI surface is enabled and discovered, then the provider-free harness/fixed
+  probes are implemented and sealed
 
 Isolation defaults in the planning slice:
 
@@ -976,11 +983,12 @@ Detailed decision evidence is in
 
 ## Active N5 Windows Sandbox readiness; product implementation blocked
 
-CX-004 is authorized only for the governing amendment and Q0S harness/readiness work.
+CX-004's governing amendment is landed, post-merge verified, and pushed/re-fetched.
+Only Q0S environment/harness/readiness work is now authorized.
 The exact host is Windows 11 Pro 25H2 AMD64 `10.0.26200.8655`; Sandbox is currently
 absent. The built-in `Containers-DisposableClientVM` feature is the anticipated
-environment prerequisite. After this amendment lands it will be enabled through one
-announced UAC action, followed by a restart only if Windows reports one required. A
+environment prerequisite. It will be enabled through one announced UAC action, followed
+by a restart only if Windows reports one required. A
 host-only doctor must then find the modern Store-delivered `wsb` CLI; legacy/no-CLI
 state is unsupported, and any still-needed official Store/update action is announced
 separately. No separate Windows license, ISO, account sign-in, custom switch/disk/VM,
@@ -997,8 +1005,8 @@ The writable evidence mapping is a narrow residual; returned bytes are untrusted
 The exact scope, ownership, hardening, numeric bounds, final fake matrix, receipt
 requirements, and deferred production decisions are sealed in
 `docs/execution/slices/CX-004.md`. No native or TypeScript product containment
-implementation has begun. The next safe action is to land this governing amendment,
-announce feature enablement, perform host-only modern-CLI discovery, then implement/
+implementation has begun. The next safe action is to announce feature enablement,
+perform host-only modern-CLI discovery, then implement/
 review/land the restricted provider-free Q0S harness and probes as `S0`. Q0S run
 evidence `R0` plus post-landing closeout `R1` permit product implementation; the
 complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
