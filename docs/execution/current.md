@@ -1,13 +1,15 @@
 # Current execution handoff
 
-Updated: 2026-07-13 at the CX-004 Windows Sandbox runner amendment. CX-003 is fully closed at
+Updated: 2026-07-13 after the CX-004 Windows Sandbox runner amendment landed. CX-003 is fully closed at
 `cb78b23dd49f1fdb751d86cb18838a6cdd2ac1cc`; its accepted decision and separate
 final receipt guarded-landed, passed their post-merge gates, were pushed/re-fetched
 exactly, and both worktrees were removed under positive guards. CX-004 is the active
 fake-only slice. The product owner replaced its custom licensed VM/image factory with
-fresh Windows Sandbox qualification plus a bounded fake-only host smoke. Only the
-governing amendment and provider-free Q0S harness/fixed probes may proceed now;
-Sandbox is not enabled and native/TypeScript product code remains blocked. No native
+fresh Windows Sandbox qualification plus a bounded fake-only host smoke. Amendment
+commit `1a30458628a58905bb6d2ba496531f14503ae5ec` guarded-landed as
+`320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`, passed its full post-merge gate, and was
+pushed/re-fetched exactly. Only Q0S environment/harness work may proceed now; Sandbox
+is not enabled and native/TypeScript product code remains blocked. No native
 Codex process, thread, turn, provider login, or credential access occurred.
 
 ## Repository
@@ -412,10 +414,10 @@ branch is preserved.
 
 ## Active action
 
-CX-004 is authorized and its exact fake-only contract is
-`docs/execution/slices/CX-004.md`. First land the governing amendment, then announce and
-enable built-in `Containers-DisposableClientVM`, restarting only if Windows requires
-it. Host-only discovery must then find the modern Store-delivered `wsb` CLI; legacy/no-
+CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`; its governing
+amendment is landed/pushed. Next announce and enable built-in
+`Containers-DisposableClientVM`, restarting only if Windows requires it. Host-only
+discovery must then find the modern Store-delivered `wsb` CLI; legacy/no-
 CLI is unsupported and any additional official Store/update action is announced
 separately. Implement/review/guarded-land the provider-free Sandbox harness, canonical
 template, fixed bootstrap, deterministic lifecycle probe, tests, and receipt schemas as
@@ -582,9 +584,13 @@ fallback is authorized.
 - CX-004 worktree:
   `E:\Claude Code Projects\Personal\PC-SDK-Next-cx-004`
 - CX-004 contract: `docs/execution/slices/CX-004.md`
-- CX-004 status: governing Windows Sandbox amendment in progress; product code blocked
-  at Q0S; feature enablement and host-only modern-CLI discovery precede the provider-
-  free harness/fixed-probe `S0` implementation slice
+- CX-004 amendment commit:
+  `1a30458628a58905bb6d2ba496531f14503ae5ec`
+- CX-004 amendment landing:
+  `320089fd2ceb3cf5f64f24bca05d2b8d6e48e1a2`
+- CX-004 status: amendment landed/pushed; product code blocked at Q0S; feature enablement
+  and host-only modern-CLI discovery precede the provider-free harness/fixed-probe `S0`
+  implementation slice
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
