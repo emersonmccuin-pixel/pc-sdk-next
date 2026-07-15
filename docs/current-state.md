@@ -1,7 +1,9 @@
 # Current state
 
-Last updated: 2026-07-14 after the CX-004 pre-code path amendment guarded-landed,
-passed post-merge verification, was pushed/re-fetched exactly, and was cleaned up.
+Last updated: 2026-07-15 after the CX-004 T0 native-toolchain checkpoint
+guarded-landed, passed post-merge verification, was pushed/re-fetched exactly, and was
+cleaned up. A bounded owner-approved T1 contract amendment now names `.gitattributes`
+solely for canonical LF bytes across the declared native-build-input authority.
 CX-003 remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
@@ -18,10 +20,14 @@ source seals, and bounded host smoke. R0 feature commit
 `96ccca7dd83da9abe75fcdbcf6db7c917a386f75`. Pre-code amendment feature
 `5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda` guarded-landed as
 `0b51c1e8751516686ec3d140451a2e95480f3b20`, exact tree
-`01ddba90791aaade4b4ffbf3382d71175d2cc5a0`. Fake-product implementation is
-authorized, while product source remains held for the native toolchain/input seal. No
-provider process, provider login, credential home, real project, or project data was
-accessed.
+`01ddba90791aaade4b4ffbf3382d71175d2cc5a0`. T0 feature
+`b0d8a31642e40aaba4626140967fa3cf5ac8c8bf` guarded-landed as
+`8821a8cc12fe6f8c5d299c89512ba35cc006c56f`, exact tree
+`a08b1d19488447a1b480f6c626c96da46278ed57`, with ordered parents
+`[0b51c1e8751516686ec3d140451a2e95480f3b20,
+b0d8a31642e40aaba4626140967fa3cf5ac8c8bf]`. Fake-product implementation is
+authorized, while product source remains held for the native input seal. No provider
+process, provider login, credential home, real project, or project data was accessed.
 
 ## Preserved baseline
 
