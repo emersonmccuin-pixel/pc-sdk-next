@@ -13,7 +13,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r --if-present test",
     "check:dead-imports": "node scripts/check-dead-imports.mjs",
-    "ci:check": "pnpm typecheck && pnpm test && pnpm check:dead-imports"
+    "check:process-boundaries": "node scripts/check-process-boundaries.mjs",
+    "ci:check": "pnpm typecheck && pnpm test && pnpm check:dead-imports && pnpm check:process-boundaries"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

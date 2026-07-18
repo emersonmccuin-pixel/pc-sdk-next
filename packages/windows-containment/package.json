@@ -1,0 +1,34 @@
+{
+  "name": "@pc/windows-containment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "node build/build.mjs",
+    "qualify:fake": "node qualification/run-fake-matrix.mjs",
+    "test": "node --test \"toolchain/**/*.test.mjs\" && tsx --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "toolchain:generate": "node toolchain/generate-native-build-input.mjs",
+    "toolchain:verify": "node toolchain/verify-native-build-input.mjs"
+  },
+  "dependencies": {
+    "@pc/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "better-sqlite3": "11.10.0",
+    "esbuild": "0.28.1",
+    "node-gyp": "12.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "ws": "8.21.0"
+  }
+}

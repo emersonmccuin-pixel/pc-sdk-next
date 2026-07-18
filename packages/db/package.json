@@ -15,6 +15,7 @@
   "dependencies": {
     "@pc/contracts": "workspace:*",
     "@pc/domain": "workspace:*",
+    "@pc/owner-lifecycle": "workspace:*",
     "@pc/utils": "workspace:*",
     "better-sqlite3": "11.10.0",
     "drizzle-orm": "^0.38.0",

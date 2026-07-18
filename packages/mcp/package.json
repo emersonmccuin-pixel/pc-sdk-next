@@ -42,7 +42,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@pc/contracts": "workspace:*",
-    "@pc/domain": "workspace:*"
+    "@pc/domain": "workspace:*",
+    "@pc/windows-containment": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

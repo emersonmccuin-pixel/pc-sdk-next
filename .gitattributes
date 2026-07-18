@@ -4,3 +4,24 @@
 # CX-004 executes and byte-seals these reviewed Sandbox qualification sources.
 /packages/windows-containment/lab/** text eol=lf
 /docs/execution/manifests/CX-004-sandbox-runner.json text eol=lf
+
+# CX-004 seals these native-build-input authorities byte-for-byte before product code.
+/.gitattributes text eol=lf
+/package.json text eol=lf
+/pnpm-workspace.yaml text eol=lf
+/apps/server/package.json text eol=lf
+/apps/spike/package.json text eol=lf
+/apps/web/package.json text eol=lf
+/packages/app-services/package.json text eol=lf
+/packages/contracts/package.json text eol=lf
+/packages/db/package.json text eol=lf
+/packages/domain/package.json text eol=lf
+/packages/mcp/package.json text eol=lf
+/packages/owner-lifecycle/package.json text eol=lf
+/packages/utils/package.json text eol=lf
+/packages/windows-containment/package.json text eol=lf
+/packages/owner-lifecycle/tsconfig.json text eol=lf
+/packages/windows-containment/tsconfig.json text eol=lf
+/packages/windows-containment/toolchain/** text eol=lf
+/pnpm-lock.yaml text eol=lf
+/scripts/check-process-boundaries.mjs text eol=lf
