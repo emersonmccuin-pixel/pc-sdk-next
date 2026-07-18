@@ -1,9 +1,18 @@
 # Current state
 
-Last updated: 2026-07-15 after the CX-004 T0 native-toolchain checkpoint
-guarded-landed, passed post-merge verification, was pushed/re-fetched exactly, and was
-cleaned up. A bounded owner-approved T1 contract amendment now names `.gitattributes`
-solely for canonical LF bytes across the declared native-build-input authority.
+Last updated: 2026-07-18 after the CX-004 T1 native-build-input seal guarded-landed as
+`560a5ed81e86da07496a097906781bdca0113526`, exact tree
+`5c4a2789c96140d8919a9e2f43efd32de92d7c35`, with ordered parents
+`[05db82af7f920f323853e302cd5cb2b43946d1fb,
+2550c5a53e7d5c445f916389c8f3ef011682b87c]`. Deterministic generation and standalone
+verification passed for root SHA-256
+`8526c8b2955b6220a7955060aa8cebdddc7063840ce1e7c7ae2265e242df94f1`, covering
+40,414 inputs in 131 manifests. The provider-free native probe, independent input
+audit, positive teardown, and post-merge `pnpm ci:check` passed, including 660/660
+server tests. Main, `origin/main`, and the live remote equal the clean landing. CX-004
+remains active at T2 contracts; no requirement was promoted and no provider/product
+execution, credential-home access, external-project access, or stable-repository
+mutation was authorized or performed.
 CX-003 remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
@@ -25,9 +34,13 @@ source seals, and bounded host smoke. R0 feature commit
 `8821a8cc12fe6f8c5d299c89512ba35cc006c56f`, exact tree
 `a08b1d19488447a1b480f6c626c96da46278ed57`, with ordered parents
 `[0b51c1e8751516686ec3d140451a2e95480f3b20,
-b0d8a31642e40aaba4626140967fa3cf5ac8c8bf]`. Fake-product implementation is
-authorized, while product source remains held for the native input seal. No provider
-process, provider login, credential home, real project, or project data was accessed.
+b0d8a31642e40aaba4626140967fa3cf5ac8c8bf]`. Native-input LF-policy feature
+`6c3a01995e826b6570b15ba6701d421b59c131c4` guarded-landed as
+`05db82af7f920f323853e302cd5cb2b43946d1fb`, exact tree
+`3d2c65b7f8ab8bdc82a149e7e6add1bbbd0452e8`, with ordered parents
+`[8821a8cc12fe6f8c5d299c89512ba35cc006c56f,
+6c3a01995e826b6570b15ba6701d421b59c131c4]`. Fake-product implementation remains
+authorized only within the sealed CX-004 boundary.
 
 ## Preserved baseline
 
@@ -283,8 +296,18 @@ only in PC-SDK Next.
   5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda]`
 - CX-004 pre-code amendment branch/worktree: branch preserved at the feature commit;
   worktree and byte-audited dependency/build residue removed
-- CX-004 status: Q0S/R0/R1/amendment passed; native toolchain pin/input-seal checkpoint
-  active before fake-product source implementation
+- CX-004 T1 feature/landing:
+  `2550c5a53e7d5c445f916389c8f3ef011682b87c` /
+  `560a5ed81e86da07496a097906781bdca0113526`
+- CX-004 T1 exact tree/ordered parents:
+  `5c4a2789c96140d8919a9e2f43efd32de92d7c35` /
+  `[05db82af7f920f323853e302cd5cb2b43946d1fb,
+  2550c5a53e7d5c445f916389c8f3ef011682b87c]`
+- CX-004 T1 root manifest SHA-256:
+  `8526c8b2955b6220a7955060aa8cebdddc7063840ce1e7c7ae2265e242df94f1`
+- CX-004 status: Q0S/R0/R1/amendments/T0/T1 passed and published; T2 exact
+  three-path contracts slice is active, while provider/production execution remains
+  blocked
 
 Isolation defaults in the planning slice:
 
@@ -1088,16 +1111,23 @@ The pre-code path-amendment feature commit
 Focused/full pre/post gates, independent review, exact push/re-fetch, preserved branch,
 and guarded worktree/residue removal passed.
 
-No native or TypeScript product containment implementation has begun. The next safe
-action is to exact-pin Node/pnpm, `node-gyp`, esbuild, SQLite, and `ws`, then verify/
-land/push/re-fetch that toolchain checkpoint. Acquire and signature/hash-verify the
-official Node 22.13.0 and LLVM 19.1.7 offline inputs and seal the native-build-input
-manifest against that exact landing before source. The installed upstream SQLite input
-is explicitly non-admitted because final CFG function-table and CET evidence are
-missing; the accepted hardened pinned source-build path proceeds autonomously. The
-complete product fake matrix must later pass in fresh Q0S-revalidated Sandbox sessions.
-Q0S/R0/R1/amendment promote no requirement. Production/provider execution remains
-unavailable throughout CX-004.
+T0 and its LF-policy amendment are guarded-landed, and T1's canonical 90,886-byte root
+manifest has SHA-256
+`8526c8b2955b6220a7955060aa8cebdddc7063840ce1e7c7ae2265e242df94f1`.
+Its closed set contains 131 manifests, 31 surfaces, 45 sources, and 40,414 inputs.
+Definitive preseal run `7c7866551af645309a4d1db5fbed570f`, provider-free native
+probe `68f6504cc6674f17f611cba4b25eaee1`, and independent audit leaf
+`354d27a9505f5ea9d5c1070e526c074f` passed with positive teardown. Deterministic
+generation, standalone verification, the pinned 97/97 Windows-containment suite, and
+full post-merge `pnpm ci:check` with 660/660 server tests also passed.
+
+No native or TypeScript product-containment implementation has begun. The next safe
+action is T2 contracts only, changing exactly
+`packages/contracts/src/owner-lifecycle.ts`, `packages/contracts/src/index.ts`, and
+`packages/contracts/test/owner-lifecycle.test.ts`. The complete product fake matrix
+must later pass in fresh Q0S-revalidated Sandbox sessions. Q0S/R0/R1/amendments/T0/T1
+promote no requirement. Production/provider execution remains unavailable throughout
+CX-004.
 
 ## Known architectural gaps
 
