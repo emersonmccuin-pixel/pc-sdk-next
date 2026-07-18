@@ -1,18 +1,18 @@
 # Current state
 
-Last updated: 2026-07-18 after the CX-004 T1 native-build-input seal guarded-landed as
-`560a5ed81e86da07496a097906781bdca0113526`, exact tree
-`5c4a2789c96140d8919a9e2f43efd32de92d7c35`, with ordered parents
-`[05db82af7f920f323853e302cd5cb2b43946d1fb,
-2550c5a53e7d5c445f916389c8f3ef011682b87c]`. Deterministic generation and standalone
-verification passed for root SHA-256
-`8526c8b2955b6220a7955060aa8cebdddc7063840ce1e7c7ae2265e242df94f1`, covering
-40,414 inputs in 131 manifests. The provider-free native probe, independent input
-audit, positive teardown, and post-merge `pnpm ci:check` passed, including 660/660
-server tests. Main, `origin/main`, and the live remote equal the clean landing. CX-004
-remains active at T2 contracts; no requirement was promoted and no provider/product
-execution, credential-home access, external-project access, or stable-repository
-mutation was authorized or performed.
+Last updated: 2026-07-18 after CX-004 T2 lifecycle contracts guarded-landed as
+`1c63a5a453c74227be38369f0b099e808ed58081`, exact tree
+`485fec878d117dc3924fb581737d6b54fd96d33c`, with ordered parents
+`[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
+dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`. T2 changed exactly three contract
+paths. Its focused suite passed 124/124; full pre/post-merge `pnpm ci:check`, an
+independent hostile review, a final cached-snapshot audit, ancestry/tree proof, and exact
+push/re-fetch passed, including 660/660 server tests. Before this documentation-only
+closeout, main,
+`origin/main`, and the live remote were re-fetched equal to that clean code landing.
+CX-004 remains active at T3 typed native-resource ownership. No requirement was
+promoted and no provider/product execution, credential-home access, external-project
+access, or stable-repository mutation was authorized or performed.
 CX-003 remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
@@ -305,8 +305,15 @@ only in PC-SDK Next.
   2550c5a53e7d5c445f916389c8f3ef011682b87c]`
 - CX-004 T1 root manifest SHA-256:
   `8526c8b2955b6220a7955060aa8cebdddc7063840ce1e7c7ae2265e242df94f1`
-- CX-004 status: Q0S/R0/R1/amendments/T0/T1 passed and published; T2 exact
-  three-path contracts slice is active, while provider/production execution remains
+- CX-004 T2 feature/landing:
+  `dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d` /
+  `1c63a5a453c74227be38369f0b099e808ed58081`
+- CX-004 T2 exact tree/ordered parents:
+  `485fec878d117dc3924fb581737d6b54fd96d33c` /
+  `[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
+  dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`
+- CX-004 status: Q0S/R0/R1/amendments/T0/T1/T2 passed and published; T3 typed
+  native-resource ownership is active, while provider/production execution remains
   blocked
 
 Isolation defaults in the planning slice:
@@ -1121,11 +1128,17 @@ probe `68f6504cc6674f17f611cba4b25eaee1`, and independent audit leaf
 generation, standalone verification, the pinned 97/97 Windows-containment suite, and
 full post-merge `pnpm ci:check` with 660/660 server tests also passed.
 
-No native or TypeScript product-containment implementation has begun. The next safe
-action is T2 contracts only, changing exactly
-`packages/contracts/src/owner-lifecycle.ts`, `packages/contracts/src/index.ts`, and
-`packages/contracts/test/owner-lifecycle.test.ts`. The complete product fake matrix
-must later pass in fresh Q0S-revalidated Sandbox sessions. Q0S/R0/R1/amendments/T0/T1
+No native product-containment implementation has begun. T2's provider-neutral DTOs and
+strict guards are published; they do not create OS authority. The next safe action is
+T3 using only the active slice's exact sealed path closure: typed resource ownership,
+exact type-specific release outcomes, a generated/embedded closed ownership manifest,
+and release-fault/ABA canaries. The package manifest, workspace lockfile, TypeScript
+configuration, and toolchain subtree remain byte-immutable. The contract now seals each
+recyclable-site ABA search at 65,536
+successful same-domain acquisitions or 5 monotonic seconds, whichever occurs first,
+inside a 60-second single-process matrix; failure to prove exact reuse is inconclusive.
+The complete product fake matrix must
+later pass in fresh Q0S-revalidated Sandbox sessions. Q0S/R0/R1/amendments/T0/T1/T2
 promote no requirement. Production/provider execution remains unavailable throughout
 CX-004.
 
