@@ -1,0 +1,174 @@
+{
+  "artifactIds": [
+    "addon",
+    "bootstrap",
+    "qualification"
+  ],
+  "classification": "cx-004-native-resource-site-registry",
+  "schemaVersion": "pc-sdk.cx-004.native-resource-site-registry.v1",
+  "sites": [
+    {
+      "abaCanary": {
+        "kind": "not-applicable",
+        "maxAttempts": 0,
+        "maxMonotonicMilliseconds": 0,
+        "noProofOutcome": "not-applicable",
+        "proof": "borrower proves the owner remains known-live through last use and never attempts release"
+      },
+      "acquisitionApi": "borrow:qualification_owned_event",
+      "artifactIds": [
+        "qualification"
+      ],
+      "callsiteAnchor": "BorrowQualificationEvent",
+      "faultCanaryId": "qualification_borrowed_event_never_release",
+      "faultCanary": {
+        "beforeCall": "not-applicable",
+        "nonpositiveResult": "not-applicable",
+        "reportUncertainAfterSuccess": "not-applicable"
+      },
+      "identitySlot": "qualification.event.borrowed-view",
+      "inheritable": false,
+      "lastUse": "positive owner-liveness check after the borrowed wait probe and before owned-event release",
+      "ownerSiteId": "qualification_owned_event",
+      "ownership": "borrowed",
+      "releaseApi": null,
+      "releaseCompletion": "not-applicable",
+      "releaseOrder": null,
+      "releaseProof": "borrower has no release operation; the linked owner remains known-live through this site's last use",
+      "resourceDomain": "recyclable-numeric",
+      "resourceType": "win32-event-handle",
+      "rightsHeld": [
+        "EVENT_MODIFY_STATE",
+        "SYNCHRONIZE"
+      ],
+      "rightsUsed": [
+        "SYNCHRONIZE"
+      ],
+      "siteId": "qualification_borrowed_event",
+      "translationUnit": "packages/windows-containment/native/core/resource.cc",
+      "uncertainDisposition": "not-applicable"
+    },
+    {
+      "abaCanary": {
+        "kind": "exact-numeric-same-domain",
+        "maxAttempts": 65536,
+        "maxMonotonicMilliseconds": 5000,
+        "noProofOutcome": "inconclusive",
+        "proof": "an independently witnessed benign unsignaled event reuses the exact released numeric value; GetHandleInformation succeeds and WaitForSingleObject(value, 0) returns WAIT_TIMEOUT"
+      },
+      "acquisitionApi": "CreateEventExW",
+      "artifactIds": [
+        "qualification"
+      ],
+      "callsiteAnchor": "AcquireQualificationOwnedEvent",
+      "faultCanaryId": "qualification_owned_event_release_fault",
+      "faultCanary": {
+        "beforeCall": "injected-failure-before-call",
+        "nonpositiveResult": "release-returned-nonpositive",
+        "reportUncertainAfterSuccess": "underlying-release-succeeded-report-uncertain"
+      },
+      "identitySlot": "qualification.event.owner",
+      "inheritable": false,
+      "lastUse": "after borrowed-event last use and immediately before exact one-attempt release",
+      "ownerSiteId": null,
+      "ownership": "owned",
+      "releaseApi": "CloseHandle",
+      "releaseCompletion": "positive-nonzero-return",
+      "releaseOrder": 20,
+      "releaseProof": "CloseHandle returns nonzero exactly once from known-live state",
+      "resourceDomain": "recyclable-numeric",
+      "resourceType": "win32-event-handle",
+      "rightsHeld": [
+        "EVENT_MODIFY_STATE",
+        "SYNCHRONIZE"
+      ],
+      "rightsUsed": [
+        "SYNCHRONIZE"
+      ],
+      "siteId": "qualification_owned_event",
+      "translationUnit": "packages/windows-containment/native/core/resource.cc",
+      "uncertainDisposition": "transient-failure-exit"
+    },
+    {
+      "abaCanary": {
+        "kind": "type-specific-liveness-release",
+        "maxAttempts": 1,
+        "maxMonotonicMilliseconds": 5000,
+        "noProofOutcome": "inconclusive",
+        "proof": "an independent fixed HLOCAL has positive LocalSize before its own LocalFree returns null; the quarantined stale slot is never read or released again"
+      },
+      "acquisitionApi": "LocalAlloc",
+      "artifactIds": [
+        "qualification"
+      ],
+      "callsiteAnchor": "AcquireQualificationOwnedLocalAlloc",
+      "faultCanaryId": "qualification_owned_local_alloc_release_fault",
+      "faultCanary": {
+        "beforeCall": "injected-failure-before-call",
+        "nonpositiveResult": "release-returned-nonpositive",
+        "reportUncertainAfterSuccess": "underlying-release-succeeded-report-uncertain"
+      },
+      "identitySlot": "qualification.local-fixed-memory.owner",
+      "inheritable": false,
+      "lastUse": "after the bounded write/read liveness probe and immediately before exact one-attempt release",
+      "ownerSiteId": null,
+      "ownership": "owned",
+      "releaseApi": "LocalFree",
+      "releaseCompletion": "null-return",
+      "releaseOrder": 10,
+      "releaseProof": "LocalFree returns null exactly once from known-live state",
+      "resourceDomain": "opaque",
+      "resourceType": "win32-local-fixed-memory",
+      "rightsHeld": [
+        "read-write-local-fixed-block"
+      ],
+      "rightsUsed": [
+        "read-write-local-fixed-block"
+      ],
+      "siteId": "qualification_owned_local_alloc",
+      "translationUnit": "packages/windows-containment/native/core/resource.cc",
+      "uncertainDisposition": "transient-failure-exit"
+    },
+    {
+      "abaCanary": {
+        "kind": "not-applicable",
+        "maxAttempts": 0,
+        "maxMonotonicMilliseconds": 0,
+        "noProofOutcome": "not-applicable",
+        "proof": "the documented current-process pseudo handle has stable pseudo identity and no release call or effect"
+      },
+      "acquisitionApi": "GetCurrentProcess",
+      "artifactIds": [
+        "qualification"
+      ],
+      "callsiteAnchor": "AcquireQualificationPseudoProcess",
+      "faultCanaryId": "qualification_pseudo_process_no_release",
+      "faultCanary": {
+        "beforeCall": "not-applicable",
+        "nonpositiveResult": "not-applicable",
+        "reportUncertainAfterSuccess": "not-applicable"
+      },
+      "identitySlot": "qualification.current-process.pseudo",
+      "inheritable": false,
+      "lastUse": "after positive current-process identity comparison and before qualification result publication",
+      "ownerSiteId": null,
+      "ownership": "no-release",
+      "releaseApi": null,
+      "releaseCompletion": "not-applicable",
+      "releaseOrder": null,
+      "releaseProof": "GetCurrentProcess returns the documented stable pseudo handle and CloseHandle is never called for this site",
+      "resourceDomain": "pseudo",
+      "resourceType": "win32-current-process-pseudo-handle",
+      "rightsHeld": [
+        "PROCESS_QUERY_LIMITED_INFORMATION",
+        "documented-current-process-pseudo-handle-access"
+      ],
+      "rightsUsed": [
+        "PROCESS_QUERY_LIMITED_INFORMATION"
+      ],
+      "siteId": "qualification_pseudo_process",
+      "translationUnit": "packages/windows-containment/native/core/resource.cc",
+      "uncertainDisposition": "not-applicable"
+    }
+  ]
+}
