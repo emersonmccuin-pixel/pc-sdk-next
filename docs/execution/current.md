@@ -1,19 +1,20 @@
 # Current execution handoff
 
-Updated: 2026-07-18 after CX-004 T2 lifecycle contracts guarded-landed as
-`1c63a5a453c74227be38369f0b099e808ed58081`, exact tree
-`485fec878d117dc3924fb581737d6b54fd96d33c`, with ordered parents
-`[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
-dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`. T2 changed exactly three contract
-paths. Its focused suite passed 124/124; full pre/post-merge `pnpm ci:check`, an
-independent hostile review, a final cached-snapshot audit, ancestry/tree proof, and exact
-push/re-fetch passed, including 660/660 server tests. Before this documentation-only
-closeout, main,
+Updated: 2026-07-19 after CX-004 T3 typed native-resource ownership feature
+`4f38e17667dc5399e9f8499a18b7115cbabd7aca` guarded-landed as
+`bcbd89b1083b7e852f71284a2581e334173a054a`, exact tree
+`8015a48db4b6d9532d1c14cf84f8fc22227b24b1`, with ordered parents
+`[06c578a7f8cb010adcdbf9875c4a70080fe19aa3,
+4f38e17667dc5399e9f8499a18b7115cbabd7aca]`. T3 changed exactly the amended
+21-path closure. Its official matrix passed twice with 7,000,231 assertions; focused
+and full pre/post-merge gates, independent hostile/scope/landing reviews, exact
+source/PE seals, ancestry/tree proof, exact push/re-fetch, and guarded teardown passed,
+including 660/660 server tests. Before this documentation-only closeout, main,
 `origin/main`, and the live remote were re-fetched equal to that clean code landing.
-CX-004 remains active at T3 typed native-resource ownership. No requirement was
-promoted and no provider/product execution, credential-home access, external-project
-access, or stable-repository mutation was authorized or performed. CX-003 remains fully
-closed. Final S0 correction merge
+This closeout records the T3 receipt and authorizes T4's exact engineering closure only
+after its own guarded publication. No requirement was promoted and no provider/product
+execution, credential-home access, external-project access, or stable-repository
+mutation was authorized or performed. CX-003 remains fully closed. Final S0 correction merge
 `4fd90a4c9647af000d051beb59c3013222d22461`, tree
 `91281255c85ce84ae44046185b548a5183cb0c74`, passed focused and full pre/post-merge
 gates and was pushed/re-fetched exactly before Q0S. Closed bundle id
@@ -444,19 +445,19 @@ branch is preserved.
 ## Active action
 
 CX-004's exact fake-only contract is `docs/execution/slices/CX-004.md`; Q0S, R0, R1,
-both earlier bounded amendments, T0, T1, and T2 are complete from exact fetched
-identities. T2 feature commit `dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d`
-guarded-landed as `1c63a5a453c74227be38369f0b099e808ed58081`; focused and full
-pre/post gates, an independent hostile review, a final cached-snapshot audit, exact
-tree/ancestry, and local/remote equality passed. The next safe action is T3 typed
-native-resource ownership using only the exact
-path closure now sealed in the active slice. Do not modify the package manifest,
-workspace lockfile, TypeScript configuration, or
-`packages/windows-containment/toolchain/**`.
-The newly explicit numeric ABA bound is 65,536 successful same-domain acquisitions or
-5 monotonic seconds per recyclable site, whichever occurs first, inside a 60-second
-single-process matrix; no exact reuse is inconclusive. Q0S is runner readiness, not the
-final product matrix, and provider/production access remains unauthorized.
+both earlier bounded amendments, T0, T1, T2, and T3 are complete from exact fetched
+identities. T3 feature commit `4f38e17667dc5399e9f8499a18b7115cbabd7aca`
+guarded-landed as `bcbd89b1083b7e852f71284a2581e334173a054a`; focused and full
+pre/post gates, three independent reviews, exact source/PE seals, tree/ancestry, and
+local/remote equality passed. Receipt `docs/execution/receipts/CX-004-T3.md` concludes
+exactly `fake lab qualification only; production unavailable`. The next safe action is
+T4: implement the serialized process-creation coordinator and same-token, no-fallback
+`CreateProcessW` full-spawn path using only the exact closure now sealed in the active
+slice. Do not modify package manifests, the workspace lockfile, TypeScript/workspace
+configuration, or `packages/windows-containment/toolchain/**`. Restricted-token parity
+is T5, bounded full-duplex I/O is T6, and full-frame coverage-guided qualification is
+T11. Q0S is runner readiness, not the final product matrix, and provider/production
+access remains unauthorized.
 
 The stable-0.144.1 policy audit and Windows containment/toolchain design are complete.
 The product owner explicitly accepted
@@ -669,9 +670,19 @@ fallback is authorized.
   `485fec878d117dc3924fb581737d6b54fd96d33c` /
   `[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
   dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`
-- CX-004 status: Q0S/R0/R1/amendments/T0/T1/T2 passed and published; T3 typed
-  native-resource ownership is active, while provider/production execution remains
-  blocked
+- CX-004 T3 feature/landing:
+  `4f38e17667dc5399e9f8499a18b7115cbabd7aca` /
+  `bcbd89b1083b7e852f71284a2581e334173a054a`
+- CX-004 T3 exact tree/ordered parents:
+  `8015a48db4b6d9532d1c14cf84f8fc22227b24b1` /
+  `[06c578a7f8cb010adcdbf9875c4a70080fe19aa3,
+  4f38e17667dc5399e9f8499a18b7115cbabd7aca]`
+- CX-004 T3 receipt: `docs/execution/receipts/CX-004-T3.md`
+- CX-004 T3 branch/worktree: `codex/cx-004-resource-ownership` preserved at the
+  feature commit; worktree and proven internal dependency residue removed
+- CX-004 status: Q0S/R0/R1/amendments/T0/T1/T2/T3 passed and published; T4 becomes
+  active after this documentation closeout lands/publishes exactly, while
+  provider/production execution remains blocked
 
 - CX-002 base: `da1376c334c78c9e485df7fe2d3a6d3b6af05c17`
 - CX-002 branch: `codex/cx-002-codex-runtime-adapter`
@@ -746,13 +757,13 @@ git log --oneline --decorate -8
 
 All completed CX-001 and CX-002 feature/closeout worktrees and residuals are removed.
 Both CX-003 worktrees and guarded residuals are removed; both branches are preserved.
-The CX-004 R0, R1, and pre-code-amendment worktrees are removed after exact landing/
-remote/branch-tip/path/zero-process proof; all branches are preserved at their feature
-commits. The T2 code landing was pushed and re-fetched; before this docs-only closeout,
-main, `origin/main`, and the live remote equaled
-`1c63a5a453c74227be38369f0b099e808ed58081`. The T2 feature branch remains
-preserved at its reviewed commit. The T2 docs-closeout branch is documentation-only;
-the T3 worktree must start from its re-fetched published landing.
+The CX-004 R0, R1, pre-code-amendment, T1, T2, and T3 feature worktrees are removed
+after exact landing/remote/branch-tip/path/zero-process proof; all branches are
+preserved at their feature commits. The T3 code landing was pushed and re-fetched;
+before this docs-only closeout, main, `origin/main`, and the live remote equaled
+`bcbd89b1083b7e852f71284a2581e334173a054a`. The T3 feature branch remains
+preserved at its reviewed commit. This T3 closeout branch is documentation-only; the
+T4 worktree must start from its re-fetched published landing.
 
 ## Known blockers
 
@@ -766,13 +777,13 @@ landing, closeout, final-receipt, or cleanup blocker remains. CX-002 has no
 implementation, verification, review, code-landing, push, feature-teardown, or
 documentation-closeout blocker. CX-003's evidence, decision, feature landing, push,
 re-fetch, final-receipt closeout, post-merge gate, and both teardowns have no blocker.
-CX-004 has no remaining environment, Q0S, R0, R1, path-amendment, T0, T1, or T2 blocker: Windows Sandbox, package
-`0.5.3.0`, the modern CLI, exact two-session guest/readiness matrix, source seals,
-teardown, bounded host smoke, R0 pre/post gates, guarded landing, exact publication,
-and guarded cleanup passed. Toolchain pinning, official offline input acquisition, the
-native-build-input seal, and T2 contracts passed. T3 typed resource ownership is the
-next bounded implementation slice and requires no product-direction decision; its
-previously implicit ABA limit is now explicit before native source.
+CX-004 has no remaining environment, Q0S, R0, R1, path-amendment, T0, T1, T2, or T3
+blocker: Windows Sandbox, package `0.5.3.0`, the modern CLI, exact two-session guest/
+readiness matrix, source seals, teardown, bounded host smoke, guarded landing,
+publication, native-input authority, lifecycle contracts, typed resource ownership,
+generated/embedded ownership manifest, release-fault/ABA qualification, full gates,
+and guarded cleanup passed. T4 serialized same-token full-spawn is the next bounded
+engineering slice and requires no product-direction decision.
 Q0S remains fake runner readiness only; the final
 complete fake matrix still must pass, and provider/production execution requires
 independent later current-host receipts.

@@ -1,18 +1,19 @@
 # Current state
 
-Last updated: 2026-07-18 after CX-004 T2 lifecycle contracts guarded-landed as
-`1c63a5a453c74227be38369f0b099e808ed58081`, exact tree
-`485fec878d117dc3924fb581737d6b54fd96d33c`, with ordered parents
-`[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
-dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`. T2 changed exactly three contract
-paths. Its focused suite passed 124/124; full pre/post-merge `pnpm ci:check`, an
-independent hostile review, a final cached-snapshot audit, ancestry/tree proof, and exact
-push/re-fetch passed, including 660/660 server tests. Before this documentation-only
-closeout, main,
-`origin/main`, and the live remote were re-fetched equal to that clean code landing.
-CX-004 remains active at T3 typed native-resource ownership. No requirement was
-promoted and no provider/product execution, credential-home access, external-project
-access, or stable-repository mutation was authorized or performed.
+Last updated: 2026-07-19 after CX-004 T3 typed native-resource ownership feature
+`4f38e17667dc5399e9f8499a18b7115cbabd7aca` guarded-landed as
+`bcbd89b1083b7e852f71284a2581e334173a054a`, exact tree
+`8015a48db4b6d9532d1c14cf84f8fc22227b24b1`, with ordered parents
+`[06c578a7f8cb010adcdbf9875c4a70080fe19aa3,
+4f38e17667dc5399e9f8499a18b7115cbabd7aca]`. T3 changed exactly its amended
+21-path closure. The official native matrix passed twice with 7,000,231 assertions;
+focused and full pre/post-merge gates, three independent reviews, source/PE seals,
+ancestry/tree proof, exact push/re-fetch, and guarded teardown passed, including
+660/660 server tests. Before this documentation-only closeout, main, `origin/main`,
+and the live remote were re-fetched equal to that clean code landing. CX-004 advances
+to T4 only after this closeout publishes the exact T4 engineering closure. No
+requirement was promoted and no provider/product execution, credential-home access,
+external-project access, or stable-repository mutation was authorized or performed.
 CX-003 remains fully closed. The final S0 correction guarded-landed as
 `4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
 gates, and was pushed/re-fetched exactly before the run. Closed bundle id
@@ -312,9 +313,19 @@ only in PC-SDK Next.
   `485fec878d117dc3924fb581737d6b54fd96d33c` /
   `[d8c27ee5e7d64717535bdb44a1fb8235dcf03f05,
   dbaa3aa2eda9d1625fbd5660851ef9f14cc45b6d]`
-- CX-004 status: Q0S/R0/R1/amendments/T0/T1/T2 passed and published; T3 typed
-  native-resource ownership is active, while provider/production execution remains
-  blocked
+- CX-004 T3 feature/landing:
+  `4f38e17667dc5399e9f8499a18b7115cbabd7aca` /
+  `bcbd89b1083b7e852f71284a2581e334173a054a`
+- CX-004 T3 exact tree/ordered parents:
+  `8015a48db4b6d9532d1c14cf84f8fc22227b24b1` /
+  `[06c578a7f8cb010adcdbf9875c4a70080fe19aa3,
+  4f38e17667dc5399e9f8499a18b7115cbabd7aca]`
+- CX-004 T3 receipt: `docs/execution/receipts/CX-004-T3.md`
+- CX-004 T3 branch/worktree: `codex/cx-004-resource-ownership` preserved at the
+  feature commit; worktree and verified internal dependency residue removed
+- CX-004 status: Q0S/R0/R1/amendments/T0/T1/T2/T3 passed and published; this
+  closeout authorizes T4's exact engineering closure, while provider/production
+  execution remains blocked
 
 Isolation defaults in the planning slice:
 
@@ -1128,19 +1139,27 @@ probe `68f6504cc6674f17f611cba4b25eaee1`, and independent audit leaf
 generation, standalone verification, the pinned 97/97 Windows-containment suite, and
 full post-merge `pnpm ci:check` with 660/660 server tests also passed.
 
-No native product-containment implementation has begun. T2's provider-neutral DTOs and
-strict guards are published; they do not create OS authority. The next safe action is
-T3 using only the active slice's exact sealed path closure: typed resource ownership,
-exact type-specific release outcomes, a generated/embedded closed ownership manifest,
-and release-fault/ABA canaries. The package manifest, workspace lockfile, TypeScript
-configuration, and toolchain subtree remain byte-immutable. The contract now seals each
-recyclable-site ABA search at 65,536
-successful same-domain acquisitions or 5 monotonic seconds, whichever occurs first,
-inside a 60-second single-process matrix; failure to prove exact reuse is inconclusive.
-The complete product fake matrix must
-later pass in fresh Q0S-revalidated Sandbox sessions. Q0S/R0/R1/amendments/T0/T1/T2
-promote no requirement. Production/provider execution remains unavailable throughout
-CX-004.
+T3's provider-free native-resource ownership foundation is published. Its exact
+resource registry drives one generated/embedded manifest; move-only owned, borrowed,
+pseudo, and opaque wrappers retain positive release versus quarantine semantics; one
+atomic liveness word closes borrow/release retirement; and injected release/ABA,
+profile, alias, manifest, and deterministic-repeat gates pass. The 18-file source seal
+has manifest SHA-256
+`217e45f88d6acd5106142e49e978b2033e75dfbe6437dca30a43b90f1c27de8e` and source-set
+SHA-256 `69093f4b01713e433accc32895f58e28ad4381d4ee9be36ebb9fcbf0c75b652a`.
+The exact receipt is `docs/execution/receipts/CX-004-T3.md`; its conclusion is
+`fake lab qualification only; production unavailable`. Coverage-guided full-frame
+fuzzing remains T11 and is not claimed by T3.
+
+The next safe action is T4 using only the active slice's exact closure: checked and
+bounded process inputs, serialized coordinator ownership, immediate leaf-job creation,
+same-token no-fallback `CreateProcessW`, exact extended startup attributes, pre-resume
+proof, least-right handle derivation/retirement, `ResumeThread == 1`, and atomic receipt
+publication or owned-leaf cleanup/poisoning. Restricted-token parity remains T5 and
+full-duplex I/O remains T6. Package manifests, lockfile, TypeScript/workspace
+configuration, and the toolchain subtree remain byte-immutable. Q0S/R0/R1/amendments/
+T0/T1/T2/T3 promote no requirement. Production/provider execution remains unavailable
+throughout CX-004.
 
 ## Known architectural gaps
 
