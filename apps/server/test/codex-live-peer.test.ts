@@ -269,8 +269,15 @@ test('live discovery degrades to discovery-unavailable when initialize fails', a
   assert.deepEqual(await pending, { status: 'unavailable', code: 'codex-discovery-unavailable' });
 });
 
-test('the live turn peer is gated loudly and never silently faked', async () => {
-  const deps = createCodexLiveDeps({ codexHome: '/tmp/x', cwd: '/tmp/y' });
+test('the live turn peer factory mints a native peer after the initialize handshake', async (t) => {
+  const { codexHome, cwd } = tempDirs(t);
+  const fakes: FakeChild[] = [];
+  const spawnProcess: CodexAppServerProcessFactory = () => {
+    const fake = new FakeChild();
+    fakes.push(fake);
+    return fake;
+  };
+  const deps = createCodexLiveDeps({ codexHome, cwd, spawnProcess });
   const input: CodexRuntimePeerFactoryInput = {
     continuationAttemptId: 'attempt',
     selection: {
@@ -281,22 +288,31 @@ test('the live turn peer is gated loudly and never silently faked', async () => 
     } satisfies RuntimeSelection,
     mode: 'create',
     requestedThreadId: null,
-    cwd: '/tmp/y',
+    cwd,
   };
-  assert.throws(
-    () => deps.runtimePeerFactory(input),
-    (error: unknown) => error instanceof CodexLivePeerError && error.code === 'live-turn-peer-unavailable',
-  );
+  const pending = deps.runtimePeerFactory(input);
+  const fake = fakes[0]!;
+  const init = await fake.nextFrame();
+  assert.equal(init.method, 'initialize');
+  fake.send({ id: init.id, result: { codexHome, userAgent: 'x', platformFamily: 'unix', platformOs: 'linux' } });
+  assert.equal((await fake.nextFrame()).method, 'initialized');
+  const peer = await pending;
+  for (const method of ['startThread', 'startTurn', 'notifications', 'approvals', 'respondToApproval', 'dispose']) {
+    assert.equal(typeof (peer as unknown as Record<string, unknown>)[method], 'function');
+  }
+  await peer.dispose();
+  assert.ok(fake.killSignals.length >= 1, 'dispose must reap the native turn child');
+});
+
+test('the conformance authority refuses to attest a peer it did not mint', async () => {
+  const deps = createCodexLiveDeps({ codexHome: '/tmp/x', cwd: '/tmp/y' });
   await assert.rejects(
-    () => deps.conformanceAuthority.attestExecutionPolicy(
-      {} as never,
-      {} as never,
-    ),
-    (error: unknown) => error instanceof CodexLivePeerError && error.code === 'live-turn-peer-unavailable',
+    () => deps.conformanceAuthority.attestExecutionPolicy({} as never, {} as never),
+    (error: unknown) => error instanceof CodexLivePeerError && error.code === 'live-peer-posture-unverified',
   );
   await assert.rejects(
     () => deps.conformanceAuthority.attestTurnBoundary({} as never, {} as never),
-    (error: unknown) => error instanceof CodexLivePeerError && error.code === 'live-turn-peer-unavailable',
+    (error: unknown) => error instanceof CodexLivePeerError && error.code === 'live-peer-posture-unverified',
   );
 });
 
@@ -307,8 +323,8 @@ test('createCodexLiveDeps rejects non-canonical option shapes', () => {
   );
 });
 
-test('CodexRuntimeAdapterError remains the surfaced failure when the turn peer is gated', () => {
-  // Documents the contract wiring: a gated factory throw becomes the adapter's
-  // typed session-mint-unavailable (proven end-to-end in the live smoke).
+test('a gated/failed factory still surfaces as the adapter typed session-mint-unavailable', () => {
+  // A live spawn/initialize failure throws from the factory, which the adapter
+  // maps to session-mint-unavailable (proven end-to-end in the live smoke).
   assert.equal(new CodexRuntimeAdapterError('session-mint-unavailable').code, 'session-mint-unavailable');
 });
