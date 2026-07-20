@@ -1,11 +1,21 @@
 # Current state
 
-Last updated: 2026-07-20. CX-004 descoped by product owner (ADR-0003):
-`packages/windows-containment` removed; Codex native execution will rely on
-Codex's built-in sandbox plus per-agent worktree isolation, the read-only main
-working copy, and guarded serialized merges. N0–N4 complete. Active work: finish
-N5 (live Codex peer, composition, runtime switching UI, gates) and N6 (MCP
-manager, usage dashboard, lifecycle policy UX) per the approved finish plan.
+Last updated: 2026-07-20 (evening). Finish plan executed (WF-0..WF-4):
+- CX-004 descoped (ADR-0003); `packages/windows-containment` removed.
+- N5 essentially complete: live Codex peer + transport, dual-runtime composition,
+  project-scoped runtime switching, model-rot fallback, hook-tolerant Claude
+  adapter, file-based delivery door for tool-bridge-less specialists.
+  Live-proven: Codex chat turn/interrupt/switch-back through the app; Claude
+  specialist fix landed e2e; kill-recovery both flavors. Pending external:
+  live Codex specialist fix through the file door (blocked by ChatGPT account
+  turn quota at verification time — code path proven by integration tests;
+  retry `apps/server/scripts/codex-live-smoke.ts` then the dispatch e2e).
+- N6 complete: DB-backed MCP manager (7 reliability requirements) + manager UI,
+  per-runtime/account usage dashboard, per-project lifecycle policy settings.
+- N7 partial: backup script (`pnpm backup`), launcher hardening. Remaining:
+  daily-driver soak, service auto-start, notifications.
+Known gaps: Codex sessions run without app pc_*/MCP tools (appToolBridge gate;
+visible in log); Codex native turns unstable on long multi-step prompts.
 CX-004 receipts/manifests under `docs/execution/` are historical record only.
 
 ## Preserved baseline
