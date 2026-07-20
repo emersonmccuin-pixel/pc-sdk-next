@@ -220,9 +220,9 @@ export class CodexRuntimeSession implements RuntimeSession {
         threadId: this.nativeThreadId,
         input: [{ type: 'text', text, text_elements: [] }],
         cwd: this.cwd,
-        approvalPolicy: 'never',
+        approvalPolicy: 'on-request',
         approvalsReviewer: 'user',
-        sandboxPolicy: { type: 'readOnly', networkAccess: false },
+        sandboxPolicy: workspaceWriteSandbox(this.cwd),
         model: this.selection.model,
         effort: selectedEffort(this.selection),
       }), cancellation);
@@ -641,6 +641,22 @@ function terminalItemsMatch(
     return match !== undefined && item.itemId === match.itemId &&
       item.text === match.text && item.phase === match.phase;
   });
+}
+
+function workspaceWriteSandbox(cwd: string): {
+  type: 'workspaceWrite';
+  writableRoots: string[];
+  networkAccess: boolean;
+  excludeTmpdirEnvVar: boolean;
+  excludeSlashTmp: boolean;
+} {
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
+  };
 }
 
 function selectedEffort(selection: RuntimeSelection): string | null {

@@ -365,7 +365,7 @@ class FakeCodexConformanceAuthority implements CodexProviderFreeConformanceAutho
       turnId: challenge.turnId,
       turnSequence: challenge.turnSequence,
       status: challenge.status,
-      notificationBoundary: 'closed-fake',
+      notificationBoundary: 'open-native',
       pendingNotifications,
     };
   }
@@ -398,8 +398,8 @@ function providerFreeReceipt(
     notificationMethods: [...CODEX_RUNTIME_NOTIFICATION_METHODS],
     effectiveNativeTools: [],
     effectiveMcpServers: [],
-    approvalRequests: 'disabled',
-    lifecycle: 'contained-fake',
+    approvalRequests: 'routed',
+    lifecycle: 'direct-child',
   };
 }
 
@@ -462,10 +462,20 @@ function threadResponse(threadId: string, cwd: string): Record<string, unknown> 
     serviceTier: null,
     cwd,
     instructionSources: [],
-    approvalPolicy: 'never',
+    approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: { type: 'readOnly', networkAccess: false },
+    sandbox: workspaceWriteSandbox(cwd),
     reasoningEffort: EFFORT,
+  };
+}
+
+function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
   };
 }
 
@@ -716,8 +726,8 @@ test('Codex policy receipt mismatches refuse before either thread method', async
     (value) => ({ ...value, continuationAttemptId: 'stale-attempt' }),
     (value) => ({ ...value, effectiveNativeTools: ['shell'] }),
     (value) => ({ ...value, effectiveMcpServers: ['private-mcp'] }),
-    (value) => ({ ...value, approvalRequests: 'routed' }),
-    (value) => ({ ...value, lifecycle: 'direct-child' }),
+    (value) => ({ ...value, approvalRequests: 'disabled' }),
+    (value) => ({ ...value, lifecycle: 'contained-fake' }),
     (value) => ({ ...value, requestMethods: [...CODEX_RUNTIME_REQUEST_METHODS].reverse() }),
   ];
 
@@ -770,9 +780,9 @@ test('Codex create emits the exact challenge and closed stable thread request', 
     modelProvider: CODEX_MODEL_PROVIDER,
     serviceTier: null,
     cwd: CWD,
-    approvalPolicy: 'never',
+    approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: 'read-only',
+    sandbox: 'workspace-write',
     config: { model_reasoning_effort: EFFORT },
     baseInstructions: null,
     developerInstructions: 'provider-neutral charter',
@@ -897,9 +907,17 @@ test('Codex thread response mismatch matrix closes the peer and resume never fal
     (value) => ({ ...value, model: 'wrong-model' }),
     (value) => ({ ...value, modelProvider: 'wrong-provider' }),
     (value) => ({ ...value, cwd: 'E:\\wrong' }),
-    (value) => ({ ...value, approvalPolicy: 'on-request' }),
+    (value) => ({ ...value, approvalPolicy: 'never' }),
     (value) => ({ ...value, approvalsReviewer: 'auto_review' }),
-    (value) => ({ ...value, sandbox: { type: 'readOnly', networkAccess: true } }),
+    (value) => ({ ...value, sandbox: { type: 'readOnly', networkAccess: false } }),
+    (value) => ({
+      ...value,
+      sandbox: { ...workspaceWriteSandbox(CWD), writableRoots: [CWD, 'E:\\escape'] },
+    }),
+    (value) => ({
+      ...value,
+      sandbox: { ...workspaceWriteSandbox(CWD), networkAccess: true },
+    }),
     (value) => ({ ...value, reasoningEffort: 'low' }),
     (value) => ({
       ...value,

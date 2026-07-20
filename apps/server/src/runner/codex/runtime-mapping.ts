@@ -204,8 +204,8 @@ export function captureProviderFreePolicyReceipt(
       !sameStrings(value.notificationMethods, CODEX_RUNTIME_NOTIFICATION_METHODS) ||
       !Array.isArray(value.effectiveNativeTools) || value.effectiveNativeTools.length !== 0 ||
       !Array.isArray(value.effectiveMcpServers) || value.effectiveMcpServers.length !== 0 ||
-      value.approvalRequests !== 'disabled' ||
-      value.lifecycle !== 'contained-fake'
+      value.approvalRequests !== 'routed' ||
+      value.lifecycle !== 'direct-child'
     ) fail('execution-policy-invalid');
 
     return {
@@ -221,8 +221,8 @@ export function captureProviderFreePolicyReceipt(
       notificationMethods: [...CODEX_RUNTIME_NOTIFICATION_METHODS],
       effectiveNativeTools: [],
       effectiveMcpServers: [],
-      approvalRequests: 'disabled',
-      lifecycle: 'contained-fake',
+      approvalRequests: 'routed',
+      lifecycle: 'direct-child',
     };
   });
 }
@@ -263,8 +263,9 @@ export function captureThreadPeerReceipt(
       model !== challenge.selection.model || modelProvider !== CODEX_MODEL_PROVIDER ||
       serviceTier !== null || cwd !== challenge.cwd ||
       !Array.isArray(instructionSources) || instructionSources.length !== 0 ||
-      approvalPolicy !== 'never' || approvalsReviewer !== 'user' ||
-      !isReadOnlySandbox(sandbox) || reasoningEffort !== selectedEffort(challenge.selection)
+      approvalPolicy !== 'on-request' || approvalsReviewer !== 'user' ||
+      !isWorkspaceWriteSandbox(sandbox, challenge.cwd) ||
+      reasoningEffort !== selectedEffort(challenge.selection)
     ) fail('thread-response-invalid');
 
     const thread = captureThread(rawThread, challenge.cwd, challenge.mode);
@@ -420,7 +421,7 @@ export function captureProviderFreeTurnBoundaryReceipt(
       value.turnId !== challenge.turnId ||
       value.turnSequence !== challenge.turnSequence ||
       value.status !== challenge.status ||
-      value.notificationBoundary !== 'closed-fake' ||
+      value.notificationBoundary !== 'open-native' ||
       value.pendingNotifications !== 0
     ) fail('turn-boundary-invalid');
     return {
@@ -432,7 +433,7 @@ export function captureProviderFreeTurnBoundaryReceipt(
       turnId: challenge.turnId,
       turnSequence: challenge.turnSequence,
       status: challenge.status,
-      notificationBoundary: 'closed-fake',
+      notificationBoundary: 'open-native',
       pendingNotifications: 0,
     };
   });
@@ -1019,9 +1020,17 @@ function gitInfo(value: unknown): boolean {
     nullableString(value.originUrl);
 }
 
-function isReadOnlySandbox(value: unknown): boolean {
-  return isRecord(value) && Object.keys(value).length === 2 &&
-    value.type === 'readOnly' && value.networkAccess === false;
+/** The product sandbox posture: workspace-write confined to exactly the session
+ * cwd, network denied, temp-dir escapes excluded. Any other shape fails closed. */
+function isWorkspaceWriteSandbox(value: unknown, cwd: string): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 5 ||
+    value.type !== 'workspaceWrite' || value.networkAccess !== false ||
+    value.excludeTmpdirEnvVar !== true || value.excludeSlashTmp !== true ||
+    !Array.isArray(value.writableRoots)) {
+    return false;
+  }
+  const roots = [...value.writableRoots];
+  return roots.length === 1 && roots[0] === cwd;
 }
 
 function selectedEffort(selection: RuntimeSelection): string | null {

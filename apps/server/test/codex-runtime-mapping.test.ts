@@ -70,8 +70,8 @@ function policyReceipt(expected = challenge()): Record<string, unknown> {
     notificationMethods: [...CODEX_RUNTIME_NOTIFICATION_METHODS],
     effectiveNativeTools: [],
     effectiveMcpServers: [],
-    approvalRequests: 'disabled',
-    lifecycle: 'contained-fake',
+    approvalRequests: 'routed',
+    lifecycle: 'direct-child',
   };
 }
 
@@ -88,13 +88,23 @@ function threadReceipt(
       serviceTier: null,
       cwd: expected.cwd,
       instructionSources: [],
-      approvalPolicy: 'never',
+      approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
-      sandbox: { type: 'readOnly', networkAccess: false },
+      sandbox: workspaceWriteSandbox(expected.cwd),
       reasoningEffort: expected.selection.effort.kind === 'selected'
         ? expected.selection.effort.value
         : null,
     },
+  };
+}
+
+function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
   };
 }
 
@@ -285,8 +295,8 @@ test('provider-free policy mismatch matrix fails before execution admission', ()
     }],
     ['native tools', (value) => { value.effectiveNativeTools = ['shell']; }],
     ['MCP', (value) => { value.effectiveMcpServers = ['private-mcp']; }],
-    ['approvals', (value) => { value.approvalRequests = 'routed'; }],
-    ['lifecycle', (value) => { value.lifecycle = 'direct-child'; }],
+    ['approvals', (value) => { value.approvalRequests = 'disabled'; }],
+    ['lifecycle', (value) => { value.lifecycle = 'contained-fake'; }],
     ['extra key', (value) => { value.extra = true; }],
   ];
   for (const [label, mutate] of mutations) {
@@ -513,9 +523,21 @@ test('thread response mismatch matrix rejects every immutable selection and post
     (root) => { response(root).serviceTier = 'priority'; },
     (root) => { response(root).cwd = 'E:\\wrong'; },
     (root) => { response(root).instructionSources = ['E:\\private\\AGENTS.md']; },
-    (root) => { response(root).approvalPolicy = 'on-request'; },
+    (root) => { response(root).approvalPolicy = 'never'; },
     (root) => { response(root).approvalsReviewer = 'auto_review'; },
-    (root) => { response(root).sandbox = { type: 'readOnly', networkAccess: true }; },
+    (root) => { response(root).sandbox = { type: 'readOnly', networkAccess: false }; },
+    (root) => {
+      response(root).sandbox = { ...workspaceWriteSandbox(CWD), networkAccess: true };
+    },
+    (root) => {
+      response(root).sandbox = {
+        ...workspaceWriteSandbox(CWD),
+        writableRoots: [CWD, resolve('test-fixtures/escape')],
+      };
+    },
+    (root) => {
+      response(root).sandbox = { ...workspaceWriteSandbox(CWD), excludeSlashTmp: false };
+    },
     (root) => { response(root).reasoningEffort = 'low'; },
     (root) => { threadObject(root).id = THREAD_ID; },
     (root) => { threadObject(root).cwd = 'E:\\wrong'; },
@@ -1025,7 +1047,7 @@ test('interrupt acknowledgement is exact and never a terminal receipt', () => {
   }
 });
 
-test('provider-free turn boundary requires an exact closed and empty fake stream receipt', () => {
+test('provider-free turn boundary requires an exact drained native turn stream receipt', () => {
   const expected: CodexTurnBoundaryChallenge = {
     kind: 'provider-free-turn-boundary-challenge',
     protocolVersion: CODEX_PROTOCOL_VERSION,
@@ -1045,7 +1067,7 @@ test('provider-free turn boundary requires an exact closed and empty fake stream
     turnId: expected.turnId,
     turnSequence: expected.turnSequence,
     status: expected.status,
-    notificationBoundary: 'closed-fake',
+    notificationBoundary: 'open-native',
     pendingNotifications: 0,
   };
   assert.deepEqual(captureProviderFreeTurnBoundaryReceipt(receipt, expected), receipt);
