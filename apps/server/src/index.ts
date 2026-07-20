@@ -162,21 +162,28 @@ async function main(): Promise<void> {
       return { status: 'invalid' as const, code: 'account-unavailable' as const };
     }
     if (!account) return { status: 'invalid' as const, code: 'account-unavailable' as const };
-    // The orchestrator row's stored model is a Claude-shorthand default
-    // (DEFAULT_CLAUDE_SPECIALIST_MODEL policy above) and is meaningless once
-    // a session targets a different runtime. Allow the generic one-shot
-    // model-discovery fallback (resolveSelectionWithModelFallback) only when
-    // that mismatch is plausible: an explicit runtime switch was requested,
-    // or the resolved runtime already differs from the one the stored model
-    // was written for. This keeps the fallback from silently reassigning a
-    // model when a same-runtime selection is genuinely broken.
-    const allowModelFallback = input.runtimeId !== undefined || runtimeId !== CLAUDE_RUNTIME_ID;
-    return resolveSelectionWithModelFallback(runtimes, {
+    // The orchestrator row's stored model is a seeded/administered default and
+    // can drift out of sync with what the resolved runtime actually supports
+    // right now (a runtime's discovered model list can change independently of
+    // this stored value, e.g. a provider retiring a shorthand id). Every new
+    // orchestrator mint — same runtime or a switch — opts into the generic
+    // one-shot model-discovery fallback (resolveSelectionWithModelFallback):
+    // a rejection for 'model-unsupported' is retried exactly once against the
+    // resolved runtime's own first live-discovered model, never invented here.
+    const result = await resolveSelectionWithModelFallback(runtimes, {
       runtimeId,
       accountId: account.id,
       model,
       effort: orchestrator?.effort ?? null,
-    }, allowModelFallback);
+    }, true);
+    if (result.status === 'valid' && result.selection.model !== model) {
+      console.warn(
+        `[pc-sdk][runtime-selection] stored orchestrator model '${model}' is no longer ` +
+        `supported on runtime '${runtimeId}'; falling back to discovered model ` +
+        `'${result.selection.model}'`,
+      );
+    }
+    return result;
   };
 
   const resolveNewSpecialistSelection: DispatchServiceDeps['resolveNewSpecialistSelection'] =
@@ -187,6 +194,10 @@ async function main(): Promise<void> {
       // under a non-Claude project runtime must name its own model explicitly.
       const model = input.model?.trim() ||
         (runtimeId === CLAUDE_RUNTIME_ID ? DEFAULT_CLAUDE_SPECIALIST_MODEL : '');
+      // A non-Claude runtime with no model named at all stays a typed
+      // rejection here — the fallback below only ever replaces a model that
+      // was actually named (explicitly, or via the Claude default above), it
+      // never invents one for a runtime that got nothing.
       if (!model) return { status: 'invalid', code: 'model-unsupported' };
       let account: Account;
       try {
@@ -194,12 +205,24 @@ async function main(): Promise<void> {
       } catch {
         return { status: 'invalid', code: 'account-unavailable' };
       }
-      return runtimes.resolveSelection({
+      // The named model (explicit or the Claude default) can drift out of
+      // sync with the runtime's current discovery the same way the
+      // orchestrator's stored model can — retry once against the runtime's
+      // own first live-discovered model when it does.
+      const result = await resolveSelectionWithModelFallback(runtimes, {
         runtimeId,
         accountId: account.id,
         model,
         effort: input.effort,
-      });
+      }, true);
+      if (result.status === 'valid' && result.selection.model !== model) {
+        console.warn(
+          `[pc-sdk][runtime-selection] specialist model '${model}' is no longer ` +
+          `supported on runtime '${runtimeId}'; falling back to discovered model ` +
+          `'${result.selection.model}'`,
+        );
+      }
+      return result;
     };
   const dispatch = new DispatchService({
     resolveNewSpecialistSelection,
