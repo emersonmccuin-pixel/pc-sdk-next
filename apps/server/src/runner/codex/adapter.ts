@@ -19,6 +19,7 @@ import {
 } from '../runtime.ts';
 import {
   captureCodexDiscovery,
+  captureCodexRateLimits,
   captureProviderFreePolicyReceipt,
   captureThreadPeerReceipt,
 } from './runtime-mapping.ts';
@@ -126,7 +127,9 @@ export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
         currentUse: { status: 'unavailable', code: 'codex-context-unavailable' },
         compaction: { status: 'unavailable', code: 'codex-compaction-unavailable' },
       },
-      subscriptionQuota: { status: 'unavailable', code: 'codex-quota-unavailable' },
+      subscriptionQuota: typeof this.discoveryPeer.readRateLimits === 'function'
+        ? { status: 'supported', sourceSemantics: ['used'], confidences: ['exact'] }
+        : { status: 'unavailable', code: 'codex-quota-unavailable' },
     };
   }
 
@@ -141,17 +144,19 @@ export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
     if (options?.signal?.aborted) {
       return quotaUnavailable(accountId, 'observation-timeout', this.safeNow());
     }
-    const discovery = await this.discover(accountId);
+    if (typeof this.discoveryPeer.readRateLimits !== 'function') {
+      return quotaUnavailable(accountId, 'unsupported', this.safeNow());
+    }
+    let raw: unknown;
+    try {
+      raw = await this.discoveryPeer.readRateLimits(accountId);
+    } catch {
+      raw = null;
+    }
     if (options?.signal?.aborted) {
       return quotaUnavailable(accountId, 'observation-timeout', this.safeNow());
     }
-    return quotaUnavailable(
-      accountId,
-      discovery.status === 'unavailable' && discovery.code === 'account-unavailable'
-        ? 'account-unavailable'
-        : 'unsupported',
-      this.safeNow(),
-    );
+    return captureCodexRateLimits(raw, accountId, this.safeNow());
   }
 
   async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
