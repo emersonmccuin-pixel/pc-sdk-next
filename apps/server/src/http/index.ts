@@ -24,6 +24,8 @@ import { mountProjects } from './projects.ts';
 import { mountSettings } from './settings.ts';
 import { mountAccounts } from './accounts.ts';
 import { mountRuntimes } from './runtimes.ts';
+import { mountMcp } from './mcp.ts';
+import type { McpManager } from '../mcp/manager.ts';
 import type { AccountRegistry } from '../runner/account-env.ts';
 import type { DispatchService } from '../dispatch/service.ts';
 import type { SubscriptionQuotaService } from '@pc/app-services';
@@ -45,6 +47,9 @@ export interface HttpDeps {
   subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
   dispatch?: DispatchService;
+  /** MCP manager — the /api/mcp registry/health/vault/attachment routes mount
+   *  when set (tests may omit). */
+  mcp?: McpManager;
   /** In-app engine restart (Settings → Restart engine). The composition root
    *  owns the mechanics (close + self-respawn); absent ⇒ route returns 501. */
   onRestartRequest?: () => void;
@@ -89,6 +94,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
   mountSettings(app);
   mountAgents(app);
   if (deps.dispatch) mountAgentRuns(app, { dispatch: deps.dispatch });
+  if (deps.mcp) mountMcp(app, { mcp: deps.mcp });
 
   // ── Sessions ────────────────────────────────────────────────────────────────
   app.get('/api/projects/:id/sessions', async (c) => {

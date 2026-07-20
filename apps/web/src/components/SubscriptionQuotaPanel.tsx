@@ -9,6 +9,10 @@ interface SubscriptionQuotaPanelProps {
   runtimeId: string | null;
   accountId: string | null;
   selectionResolved?: boolean;
+  /** Overrides the "Subscription quota" heading/aria-label — the usage
+   *  dashboard renders one panel per registered runtime+account and passes a
+   *  runtime-specific title so each region stays distinguishable. */
+  title?: string;
 }
 
 function formatResetIn(resetsAt: number | null, now: number): string | null {
@@ -122,6 +126,7 @@ export function SubscriptionQuotaPanel({
   runtimeId,
   accountId,
   selectionResolved = true,
+  title = 'Subscription quota',
 }: SubscriptionQuotaPanelProps) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -170,10 +175,10 @@ export function SubscriptionQuotaPanel({
   return (
     <section
       className="max-h-[45vh] shrink-0 overflow-y-auto border-t border-border bg-card/60 px-3 py-2"
-      aria-label="Subscription quota"
+      aria-label={title}
     >
       <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-muted-foreground">
-        <span>Subscription quota</span>
+        <span>{title}</span>
         {snapshot?.availability === 'unavailable' && (
           <span role="status" aria-live="polite" aria-atomic="true" className="font-semibold text-foreground">
             {unavailableLabel(snapshot)}

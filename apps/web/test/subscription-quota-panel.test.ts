@@ -143,6 +143,27 @@ test('unresolved project attribution is explicit and never borrows a predecessor
   assert.doesNotMatch(markup, /personal|work|role="progressbar"/);
 });
 
+test('a title override renders per-runtime attribution for the usage dashboard, default unchanged elsewhere', () => {
+  const markup = renderToStaticMarkup(createElement(SubscriptionQuotaPanel, {
+    snapshot: snapshot({
+      runtimeId: 'openai-codex',
+      accountId: 'chatgpt',
+      availability: 'unavailable',
+      unavailableReason: 'unsupported',
+    }),
+    runtimeId: 'openai-codex',
+    accountId: 'chatgpt',
+    title: 'Codex · chatgpt',
+  }));
+  assert.match(markup, /aria-label="Codex · chatgpt"/);
+  assert.match(markup, /<span>Codex · chatgpt<\/span>/);
+  assert.doesNotMatch(markup, />Subscription quota</);
+
+  const defaulted = html(snapshot());
+  assert.match(defaulted, /aria-label="Subscription quota"/);
+  assert.match(defaulted, /<span>Subscription quota<\/span>/);
+});
+
 test('model scope and dynamic provider-neutral labels render without fixed window names', () => {
   const modelScoped = observation({
     window: { id: 'burst', label: 'Burst window', durationMs: null },

@@ -93,6 +93,25 @@ export async function deleteJson<T>(path: string): Promise<T> {
   return data;
 }
 
+/** DELETE with a JSON body — some endpoints (e.g. MCP attachment detach)
+ *  disambiguate via body rather than path segment. */
+export async function deleteJsonWithBody<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchWithRetry(
+    path,
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    WRITE_RETRY,
+  );
+  const data = (await res.json()) as T & { ok?: boolean; error?: string };
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error ?? `${path} → ${res.status}`);
+  }
+  return data;
+}
+
 export async function postJsonMethod<T>(
   path: string,
   body: unknown,

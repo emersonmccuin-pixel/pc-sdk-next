@@ -93,6 +93,12 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
   const [gitRemote, setGitRemote] = useState(project.gitRemote ?? '');
   const [remoteControl, setRemoteControl] = useState(project.settings.remoteControl);
   const [integrationBranch, setIntegrationBranch] = useState(project.settings.integrationBranch ?? '');
+  const [reviewPolicy, setReviewPolicy] = useState(
+    project.settings.reviewPolicy ?? 'orchestrator-review',
+  );
+  const [autoMergeEligible, setAutoMergeEligible] = useState(
+    project.settings.autoMergeEligible ?? false,
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -101,12 +107,16 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
     setGitRemote(project.gitRemote ?? '');
     setRemoteControl(project.settings.remoteControl);
     setIntegrationBranch(project.settings.integrationBranch ?? '');
+    setReviewPolicy(project.settings.reviewPolicy ?? 'orchestrator-review');
+    setAutoMergeEligible(project.settings.autoMergeEligible ?? false);
   }, [
     project.id,
     project.name,
     project.gitRemote,
     project.settings.remoteControl,
     project.settings.integrationBranch,
+    project.settings.reviewPolicy,
+    project.settings.autoMergeEligible,
   ]);
 
   const trimmedName = name.trim();
@@ -116,7 +126,9 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
     trimmedName !== project.name ||
     (trimmedRemote || null) !== (project.gitRemote ?? null) ||
     remoteControl !== project.settings.remoteControl ||
-    (trimmedBranch || null) !== (project.settings.integrationBranch ?? null);
+    (trimmedBranch || null) !== (project.settings.integrationBranch ?? null) ||
+    reviewPolicy !== (project.settings.reviewPolicy ?? 'orchestrator-review') ||
+    autoMergeEligible !== (project.settings.autoMergeEligible ?? false);
   const valid = trimmedName.length > 0;
 
   async function save() {
@@ -127,7 +139,12 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
       const patch: {
         name?: string;
         git_remote?: string | null;
-        settings?: { remoteControl?: 'use-global' | 'on' | 'off'; integrationBranch?: string | null };
+        settings?: {
+          remoteControl?: 'use-global' | 'on' | 'off';
+          integrationBranch?: string | null;
+          reviewPolicy?: 'orchestrator-review' | 'full-review';
+          autoMergeEligible?: boolean;
+        };
       } = {};
       if (trimmedName !== project.name) patch.name = trimmedName;
       const nextRemote = trimmedRemote ? trimmedRemote : null;
@@ -138,6 +155,12 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
       const nextBranch = trimmedBranch ? trimmedBranch : null;
       if (nextBranch !== (project.settings.integrationBranch ?? null)) {
         patch.settings = { ...patch.settings, integrationBranch: nextBranch };
+      }
+      if (reviewPolicy !== (project.settings.reviewPolicy ?? 'orchestrator-review')) {
+        patch.settings = { ...patch.settings, reviewPolicy };
+      }
+      if (autoMergeEligible !== (project.settings.autoMergeEligible ?? false)) {
+        patch.settings = { ...patch.settings, autoMergeEligible };
       }
       const updated = await projectsApi.updateProject(project.id, patch);
       onSaved(updated);
@@ -153,6 +176,8 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
     setGitRemote(project.gitRemote ?? '');
     setRemoteControl(project.settings.remoteControl);
     setIntegrationBranch(project.settings.integrationBranch ?? '');
+    setReviewPolicy(project.settings.reviewPolicy ?? 'orchestrator-review');
+    setAutoMergeEligible(project.settings.autoMergeEligible ?? false);
     setErr(null);
   }
 
@@ -210,6 +235,32 @@ function ProjectInfoForm({ project, onSaved }: { project: Project; onSaved: (nex
           <option value="on">Always on</option>
           <option value="off">Always off</option>
         </select>
+      </Field>
+      <Field
+        label="Review policy"
+        help="The dispatch lifecycle's default Review gate. Orchestrator review parks a verified pass for a cheap accept; full review always dispatches an independent review specialist first. A specific agent's contract can still require full review even when this is set to orchestrator review."
+      >
+        <select
+          value={reviewPolicy}
+          onChange={(e) => setReviewPolicy(e.target.value as 'orchestrator-review' | 'full-review')}
+          className="w-full border border-border bg-background px-2 py-1 text-sm"
+        >
+          <option value="orchestrator-review">Orchestrator review (default)</option>
+          <option value="full-review">Full independent review</option>
+        </select>
+      </Field>
+      <Field
+        label="Auto-merge eligible"
+        help="Let a verified repo contract land automatically instead of waiting for accept, when the agent's own contract didn't already decide. Never applies when the effective policy is full review."
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={autoMergeEligible}
+            onChange={(e) => setAutoMergeEligible(e.target.checked)}
+          />
+          Allow auto-merge on a verified pass
+        </label>
       </Field>
       <div className="flex items-center gap-2 pt-1">
         <button

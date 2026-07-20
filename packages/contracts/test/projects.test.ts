@@ -80,6 +80,30 @@ test('update parser handles integrationBranch: trim, blank→null, bad ref rejec
   assert.equal(parseUpdateProjectRequest({ settings: { integrationBranch: 42 } }).ok, false);
 });
 
+test('update parser handles reviewPolicy: accepts valid values, rejects junk', () => {
+  const full = parseUpdateProjectRequest({ settings: { reviewPolicy: 'full-review' } });
+  assert.equal(full.ok, true);
+  if (full.ok) assert.deepEqual(full.value.settings, { reviewPolicy: 'full-review' });
+
+  const orch = parseUpdateProjectRequest({ settings: { reviewPolicy: 'orchestrator-review' } });
+  assert.equal(orch.ok, true);
+  if (orch.ok) assert.deepEqual(orch.value.settings, { reviewPolicy: 'orchestrator-review' });
+
+  assert.equal(parseUpdateProjectRequest({ settings: { reviewPolicy: 'bogus' } }).ok, false);
+});
+
+test('update parser handles autoMergeEligible: accepts booleans, rejects non-booleans', () => {
+  const on = parseUpdateProjectRequest({ settings: { autoMergeEligible: true } });
+  assert.equal(on.ok, true);
+  if (on.ok) assert.deepEqual(on.value.settings, { autoMergeEligible: true });
+
+  const off = parseUpdateProjectRequest({ settings: { autoMergeEligible: false } });
+  assert.equal(off.ok, true);
+  if (off.ok) assert.deepEqual(off.value.settings, { autoMergeEligible: false });
+
+  assert.equal(parseUpdateProjectRequest({ settings: { autoMergeEligible: 'true' } }).ok, false);
+});
+
 test('reorder parser requires orderedIds as strings', () => {
   assert.deepEqual(parseReorderProjectsRequest({ orderedIds: ['a', 'b'] }), {
     ok: true,

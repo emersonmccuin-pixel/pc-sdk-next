@@ -5,7 +5,14 @@
 // parsePodMcpServerConfig for transport validation; this layer just persists.
 
 import { and, asc, eq, isNull, or } from 'drizzle-orm';
-import type { McpDiscoveryStatus, McpServerRegistryRow, McpServerTransport, PodScope, ULID } from '@pc/domain';
+import type {
+  McpDiscoveryStatus,
+  McpHealthState,
+  McpServerRegistryRow,
+  McpServerTransport,
+  PodScope,
+  ULID,
+} from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { mcpServers } from '../schema.ts';
@@ -17,9 +24,17 @@ function rowToRegistry(row: typeof mcpServers.$inferSelect): McpServerRegistryRo
     projectId: row.projectId as ULID | null ?? null,
     name: row.name,
     description: row.description,
+    enabled: row.enabled,
     transport: row.transport,
     discoveredTools: row.discoveredTools ?? null,
     discoveryStatus: row.discoveryStatus,
+    healthState: row.healthState,
+    healthReason: row.healthReason ?? null,
+    lastProbeAt: row.lastProbeAt ?? null,
+    lastOkProbeAt: row.lastOkProbeAt ?? null,
+    toolCount: row.toolCount ?? null,
+    lastError: row.lastError ?? null,
+    consecutiveFailures: row.consecutiveFailures,
     rev: row.rev,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -36,6 +51,7 @@ export interface CreateMcpServerRegistryInput {
   projectId?: ULID | null;
   name: string;
   description?: string;
+  enabled?: boolean;
   transport: McpServerTransport;
 }
 
@@ -51,9 +67,17 @@ export function createMcpServerRegistry(input: CreateMcpServerRegistryInput): Mc
     projectId: input.scope === 'project' ? (input.projectId ?? null) : null,
     name: input.name,
     description: input.description ?? '',
+    enabled: input.enabled ?? true,
     transport: input.transport,
     discoveredTools: null,
     discoveryStatus: 'stale' as McpDiscoveryStatus,
+    healthState: 'unknown' as McpHealthState,
+    healthReason: null,
+    lastProbeAt: null,
+    lastOkProbeAt: null,
+    toolCount: null,
+    lastError: null,
+    consecutiveFailures: 0,
     rev: 1,
     createdAt: now,
     updatedAt: now,
@@ -113,6 +137,7 @@ export function listMcpServersRegistry(opts: ListMcpServersRegistryOptions = {})
 export interface PatchMcpServerRegistryInput {
   name?: string;
   description?: string;
+  enabled?: boolean;
   transport?: McpServerTransport;
 }
 
@@ -130,6 +155,10 @@ export function patchMcpServerRegistry(
   }
   if (patch.description !== undefined && patch.description !== existing.description) {
     set.description = patch.description;
+    changed = true;
+  }
+  if (patch.enabled !== undefined && patch.enabled !== existing.enabled) {
+    set.enabled = patch.enabled;
     changed = true;
   }
   if (patch.transport !== undefined && JSON.stringify(patch.transport) !== JSON.stringify(existing.transport)) {
@@ -171,6 +200,54 @@ export function setMcpServerDiscovery(
     .set({
       discoveryStatus: result.status,
       discoveredTools: result.status === 'ok' ? result.tools : null,
+      updatedAt: now,
+      rev: existing.rev + 1,
+    })
+    .where(eq(mcpServers.id, id))
+    .run();
+  return getMcpServerRegistry(id);
+}
+
+// --- health bookkeeping (N6 MCP reliability) ---------------------------------
+
+export interface SetMcpServerHealthInput {
+  state: McpHealthState;
+  reason: string | null;
+  lastProbeAt: number;
+  /** Set only when this probe succeeded; carried forward otherwise. */
+  lastOkProbeAt?: number | null;
+  toolCount: number | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  /** Tool names to cache on a successful probe; null clears cache on failure. */
+  tools: string[] | null;
+}
+
+/** Persist the outcome of a probe onto the registry row: the explicit health
+ *  state, verbatim error, probe timestamps, tool count/list, and the failure
+ *  streak that drives backoff + flap detection. Bumps rev so WS consumers can
+ *  discard stale deltas. */
+export function setMcpServerHealth(
+  id: ULID,
+  input: SetMcpServerHealthInput,
+): McpServerRegistryRow | null {
+  const existing = getMcpServerRegistry(id);
+  if (!existing) return null;
+  const ok = input.state === 'healthy';
+  const now = Date.now();
+  getDb()
+    .update(mcpServers)
+    .set({
+      healthState: input.state,
+      healthReason: input.reason,
+      lastProbeAt: input.lastProbeAt,
+      lastOkProbeAt:
+        input.lastOkProbeAt !== undefined ? input.lastOkProbeAt : existing.lastOkProbeAt,
+      toolCount: input.toolCount,
+      lastError: input.lastError,
+      consecutiveFailures: input.consecutiveFailures,
+      discoveryStatus: ok ? 'ok' : 'failed',
+      discoveredTools: ok ? input.tools : null,
       updatedAt: now,
       rev: existing.rev + 1,
     })

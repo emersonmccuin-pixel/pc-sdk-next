@@ -310,6 +310,26 @@ export type McpDiscoveryStatus = 'ok' | 'failed' | 'stale';
 
 export const MCP_DISCOVERY_STATUSES: readonly McpDiscoveryStatus[] = ['ok', 'failed', 'stale'];
 
+/** Explicit per-server health state (N6 MCP reliability, requirement 1: no
+ *  silent failure — unknown is a state, never a guess).
+ *  - `unknown`     — never probed yet.
+ *  - `healthy`     — last probe succeeded; tools cached.
+ *  - `degraded`    — a previously-healthy server is failing transiently
+ *                    (flapping); still visible as an outage, not toggled clean.
+ *  - `down`        — sustained failure (never connected, or past the degrade
+ *                    threshold).
+ *  - `auth-expired`— a bound credential is expired, or the server rejected auth
+ *                    (401/403). Distinct + actionable (requirement 4). */
+export type McpHealthState = 'unknown' | 'healthy' | 'degraded' | 'down' | 'auth-expired';
+
+export const MCP_HEALTH_STATES: readonly McpHealthState[] = [
+  'unknown',
+  'healthy',
+  'degraded',
+  'down',
+  'auth-expired',
+];
+
 /** Row in the `mcp_servers` registry table. Scope mirrors agents: global rows
  *  are shared across all projects; project rows are project-local. `transport`
  *  carries the same stdio/HTTP shape as `agent_mcp_servers.config_json`. */
@@ -320,14 +340,57 @@ export interface McpServerRegistryRow {
   projectId: ULID | null;
   name: string;
   description: string;
+  /** When false the manager skips probing/bridging this server entirely. */
+  enabled: boolean;
   /** Stored transport — may contain SecretRef objects in headers/env.
    *  Resolve via `resolveTransportSecrets` before passing to the SDK. */
   transport: McpServerTransport;
   /** Cached tool list from the last successful discovery probe. Null until P2. */
   discoveredTools: string[] | null;
   discoveryStatus: McpDiscoveryStatus;
+  // ── Health bookkeeping (N6 requirement 2: health is visible) ──────────────
+  /** Explicit state-machine state. */
+  healthState: McpHealthState;
+  /** Human-readable reason for a non-healthy state; null when healthy/unknown. */
+  healthReason: string | null;
+  /** Epoch-ms of the last probe attempt (success or failure); null until first. */
+  lastProbeAt: number | null;
+  /** Epoch-ms of the last SUCCESSFUL probe; null until one succeeds. */
+  lastOkProbeAt: number | null;
+  /** Tool count from the last successful probe; null when never healthy. */
+  toolCount: number | null;
+  /** Verbatim last error string; null when healthy. */
+  lastError: string | null;
+  /** Consecutive failed probes since the last success (backoff + flap logic). */
+  consecutiveFailures: number;
   rev: number;
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
+}
+
+// ── MCP consumer attachments (N6 requirement 6 — attachment is explicit) ──────
+
+/** A consumer that a registered MCP server may be attached to. Either the
+ *  orchestrator (the standing chat agent) or a named specialist agent. A
+ *  server with no attachment rows is visible to NO consumer; new servers are
+ *  seeded with an `orchestrator` attachment (default orchestrator-only). */
+export type McpConsumer =
+  | { kind: 'orchestrator' }
+  | { kind: 'agent'; name: string };
+
+/** The literal stored in `mcp_consumer_attachments.consumer` — `'orchestrator'`
+ *  or `agent:<name>`. */
+export type McpConsumerKey = 'orchestrator' | `agent:${string}`;
+
+export function consumerKey(consumer: McpConsumer): McpConsumerKey {
+  return consumer.kind === 'orchestrator' ? 'orchestrator' : `agent:${consumer.name}`;
+}
+
+/** One row of `mcp_consumer_attachments`. */
+export interface McpConsumerAttachmentRow {
+  id: ULID;
+  mcpServerId: ULID;
+  consumer: McpConsumerKey;
+  createdAt: number;
 }

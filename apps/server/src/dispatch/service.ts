@@ -98,9 +98,11 @@ import {
   parseReviewVerdictPayload,
   parseWorktreeProfile,
   reviewVerdictExpectedOutput,
+  resolveContractLandingPolicy,
   reviewCheckoutPhaseMatchesRun,
   type AgentRunRow,
   type ContractLandingAuthorizer,
+  type ContractLandingPolicy,
   type Deliverable,
   type ExpectedOutput,
   type PendingAskOption,
@@ -659,9 +661,11 @@ export class DispatchService {
       worktreePath: worktree?.dir ?? null,
       worktreeBaseBranch: worktree?.baseBranch ?? null,
       worktreeBaseSha: worktree?.baseSha ?? null,
-      // Landing policy is stamped at creation from the issuer's spec; readers
-      // of legacy NULL rows fall back through effectiveLandingPolicy().
-      landingPolicy: spec.kind === 'repo' ? effectiveLandingPolicy(null, spec) : null,
+      // Landing policy is stamped at creation from the issuer's spec, filled
+      // in by the project's reviewPolicy/autoMergeEligible defaults where the
+      // spec left it open (never downgraded — resolveContractLandingPolicy).
+      // Readers of legacy NULL rows fall back through effectiveLandingPolicy().
+      landingPolicy: spec.kind === 'repo' ? this.resolveLandingPolicy(project, spec) : null,
     });
     // Complete the worktree row's binding — the contract postdates the upsert.
     if (worktree) setWorktreeContractId(worktree.branch, contract.id as ULID);
@@ -1298,6 +1302,23 @@ export class DispatchService {
       ...input,
       authorizeRuntimeCwd: () => this.reviewWorkspaceAuthorityIssue(checkoutId, true),
     });
+  }
+
+  /** Landing-policy decision point (docs/master-plan.md "MCP manager —
+   *  reliability requirements" / Phase 4): resolves a fresh repo contract's
+   *  landing policy from the issuer's spec plus the project's
+   *  reviewPolicy/autoMergeEligible defaults. A guard override (the project
+   *  setting losing to a stricter spec-derived invariant) is never silent —
+   *  it is logged here, once, at the exact decision point. */
+  private resolveLandingPolicy(project: Project, spec: ExpectedOutput): ContractLandingPolicy | null {
+    if (spec.kind !== 'repo') return null;
+    const resolved = resolveContractLandingPolicy(project.settings, spec);
+    if (resolved.guardOverride) {
+      console.warn(
+        `[pc-sdk][dispatch] project ${project.id} lifecycle policy guard: ${resolved.guardOverride}`,
+      );
+    }
+    return resolved.policy;
   }
 
   /** True when the row is gone or already terminal (killed/settled during the

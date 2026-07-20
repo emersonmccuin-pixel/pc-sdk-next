@@ -81,11 +81,12 @@ export {
   evaluatePredicate,
   pathMatchesPattern,
 } from './ac-evaluator.ts';
-export type { Project, ProjectSettings } from './project.ts';
+export type { Project, ProjectSettings, ResolvedContractLandingPolicy } from './project.ts';
 export {
   defaultProjectSettings,
   INTEGRATION_BRANCH_RE,
   resolveCancelledHidden,
+  resolveContractLandingPolicy,
   resolveRemoteControlEnabled,
   withProjectSettingsDefaults,
 } from './project.ts';
@@ -240,7 +241,11 @@ export type {
   CredentialAuthState,
   CredentialKind,
   CredentialRow,
+  McpConsumer,
+  McpConsumerAttachmentRow,
+  McpConsumerKey,
   McpDiscoveryStatus,
+  McpHealthState,
   McpServerRegistryRow,
   McpServerTransport,
   PodAgentRow,
@@ -257,8 +262,10 @@ export type {
   TransportValue,
 } from './pod.ts';
 export {
+  consumerKey,
   CREDENTIAL_AUTH_STATES,
   MCP_DISCOVERY_STATUSES,
+  MCP_HEALTH_STATES,
   POD_AUDIT_ACTORS,
   POD_AUDIT_FIELDS,
   POD_SCOPES,

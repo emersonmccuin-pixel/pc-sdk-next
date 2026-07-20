@@ -1,8 +1,9 @@
-// App-wide settings modal. Trimmed vs. PC-PTY-Chat: the Usage tab (old
-// statusline aggregate — replaced by the durable usage channel + Phase-4
-// dashboard), the Updates tab (Electron auto-update — browser-only now), and
-// the MCP-servers tab (Phase-4 manager) are deferred. Tabs: General (folder /
-// fonts / scale / layout) + Accounts (the login registry).
+// App-wide settings modal. Trimmed vs. PC-PTY-Chat: the old statusline-
+// aggregate Usage tab is gone — replaced below by the durable, provider-aware
+// usage dashboard (N6). The Updates tab (Electron auto-update) stays deferred
+// — browser-only now. Tabs: General (folder / fonts / scale / layout) +
+// Accounts (the login registry) + MCP servers (N6 reliability bar) + Usage
+// (every registered runtime+account's subscription quota).
 
 import { useState } from 'react';
 
@@ -17,12 +18,16 @@ import { postJson } from '@/api/http';
 import { FONT_REGISTRY, applyFontCssVars, fontsForGroup } from '@/features/settings/fonts';
 import type { FontGroup, FontKey } from '@/features/settings/types';
 import { useAccounts } from '@/state/accounts';
+import { McpManagerPanel } from '@/features/mcp/McpManagerPanel';
+import { UsageDashboardPanel } from '@/features/usage/UsageDashboardPanel';
 
-type TabId = 'general' | 'accounts';
+type TabId = 'general' | 'accounts' | 'mcp' | 'usage';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'accounts', label: 'Accounts' },
+  { id: 'mcp', label: 'MCP servers' },
+  { id: 'usage', label: 'Usage' },
 ];
 
 const FONT_GROUPS: { group: FontGroup; label: string }[] = [
@@ -77,7 +82,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/50" onClick={onClose}>
       <div
-        className="flex h-[560px] w-[720px] flex-col border border-border bg-card text-foreground shadow-2xl"
+        className="flex h-[620px] w-[820px] flex-col border border-border bg-card text-foreground shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -180,6 +185,8 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
             )}
 
             {active === 'accounts' && <AccountsTab />}
+            {active === 'mcp' && <McpManagerPanel />}
+            {active === 'usage' && <UsageDashboardPanel />}
           </div>
         </div>
 

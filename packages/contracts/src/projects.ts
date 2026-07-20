@@ -24,6 +24,17 @@ export interface ProjectSettingsDto {
   remoteControl: 'use-global' | 'on' | 'off';
   /** Branch finished work merges into. Null = auto-detect on next use. */
   integrationBranch?: string | null;
+  /** WF-2 — dispatch lifecycle Review-phase default. 'orchestrator-review'
+   *  (default) parks a verified pass for the orchestrator's cheap accept;
+   *  'full-review' always escalates to the independent review specialist.
+   *  An issuer-authored contract spec can still require full-review even
+   *  when this is 'orchestrator-review'. */
+  reviewPolicy?: 'orchestrator-review' | 'full-review';
+  /** WF-2 — opt-in: let a verified repo contract land automatically instead
+   *  of parking merge-ready, when the contract's own spec left it open.
+   *  Default false. Never applies when the effective policy is
+   *  'full-review'. */
+  autoMergeEligible?: boolean;
 }
 
 /** Mirrors @pc/domain INTEGRATION_BRANCH_RE (contracts can't import domain). */
@@ -147,6 +158,20 @@ export function parseUpdateProjectRequest(input: unknown): ParseResult<UpdatePro
         return parseErr('invalid integrationBranch');
       }
     }
+    const rp = input.settings.reviewPolicy;
+    if (rp !== undefined) {
+      if (rp !== 'orchestrator-review' && rp !== 'full-review') {
+        return parseErr('invalid reviewPolicy');
+      }
+      settings.reviewPolicy = rp;
+    }
+    const ame = input.settings.autoMergeEligible;
+    if (ame !== undefined) {
+      if (typeof ame !== 'boolean') {
+        return parseErr('invalid autoMergeEligible');
+      }
+      settings.autoMergeEligible = ame;
+    }
     request.settings = settings;
   }
   return parseOk(request);
@@ -195,7 +220,13 @@ export function isProjectSettingsDto(value: unknown): value is ProjectSettingsDt
     value.integrationBranch === undefined ||
     value.integrationBranch === null ||
     typeof value.integrationBranch === 'string';
-  return cancelledOk && remoteOk && ibOk;
+  const reviewPolicyOk =
+    value.reviewPolicy === undefined ||
+    value.reviewPolicy === 'orchestrator-review' ||
+    value.reviewPolicy === 'full-review';
+  const autoMergeEligibleOk =
+    value.autoMergeEligible === undefined || typeof value.autoMergeEligible === 'boolean';
+  return cancelledOk && remoteOk && ibOk && reviewPolicyOk && autoMergeEligibleOk;
 }
 
 export function isProjectDto(value: unknown): value is ProjectDto {

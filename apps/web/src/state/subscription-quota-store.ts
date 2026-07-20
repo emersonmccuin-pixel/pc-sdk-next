@@ -55,3 +55,21 @@ export function useSubscriptionQuotaSnapshot(
       ? state.byRuntimeAccount[subscriptionQuotaKey(runtimeId, accountId)] ?? null
       : null);
 }
+
+/** Plain selector logic behind `useAllSubscriptionQuotaSnapshots`, kept
+ *  separate from the hook so it's testable via `.getState()` directly —
+ *  `react-dom/server`'s static render always calls a store hook's
+ *  server-snapshot path (bound to *initial* state at `create()` time), so a
+ *  rendered-hook test could never observe a later `set()` call. */
+export function selectAllSubscriptionQuotaSnapshots(
+  state: Pick<SubscriptionQuotaStore, 'byRuntimeAccount'>,
+): SubscriptionQuotaSnapshot[] {
+  return Object.values(state.byRuntimeAccount);
+}
+
+/** Every durably observed snapshot across every runtime+account — the usage
+ *  dashboard's join input. Distinct from `useSubscriptionQuotaSnapshot`, which
+ *  reads exactly one selection; this generalizes to all of them at once. */
+export function useAllSubscriptionQuotaSnapshots(): SubscriptionQuotaSnapshot[] {
+  return useSubscriptionQuotaStore(selectAllSubscriptionQuotaSnapshots);
+}

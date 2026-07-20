@@ -34,6 +34,12 @@ export interface BridgeServer {
   tools: RemoteTool[];
 }
 
+/** Liveness gate (N6 requirement 5 — stale tools can't be called). Returns
+ *  false when a tool has vanished from the server's live cache since the bridge
+ *  was built; the handler then returns a typed error instead of dialing (which
+ *  would hang or 404). */
+export type IsToolLive = (serverId: string, remoteToolName: string) => boolean;
+
 export interface BridgeBuild {
   /** SDK MCP server key — tools surface as `mcp__<serverKey>__<name>`. */
   serverKey: string;
@@ -48,8 +54,10 @@ function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'mcp';
 }
 
-/** Build the bridge from the currently-healthy servers' cached tool lists. */
-export function buildBridge(servers: BridgeServer[]): BridgeBuild {
+/** Build the bridge from the currently-healthy servers' cached tool lists.
+ *  `isToolLive` (optional) is consulted at call time so a tool that vanished on
+ *  a later reconnect returns a typed error instead of hanging. */
+export function buildBridge(servers: BridgeServer[], isToolLive?: IsToolLive): BridgeBuild {
   const toolDefs: BridgeToolDef[] = [];
   const seen = new Set<string>();
   for (const server of servers) {
@@ -64,7 +72,7 @@ export function buildBridge(servers: BridgeServer[]): BridgeBuild {
         name,
         description: remote.description || `Proxied MCP tool ${remote.name} on ${server.name}`,
         inputSchema: jsonSchemaToZodShape(remote.inputSchema),
-        handler: makeHandler(server.config, remote.name),
+        handler: makeHandler(server.id, server.config, remote.name, isToolLive),
       });
     }
   }
@@ -76,10 +84,23 @@ export function buildBridge(servers: BridgeServer[]): BridgeBuild {
 }
 
 function makeHandler(
+  serverId: string,
   config: PodMcpServerConfig,
   remoteName: string,
+  isToolLive?: IsToolLive,
 ): (args: Record<string, unknown>) => Promise<ToolCallResult> {
   return async (args) => {
+    if (isToolLive && !isToolLive(serverId, remoteName)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `MCP tool error (${remoteName}): tool is no longer available on its server (removed since last connect)`,
+          },
+        ],
+        isError: true,
+      };
+    }
     const r = await callTool(config, remoteName, args ?? {});
     if (!r.ok) {
       return { content: [{ type: 'text', text: `MCP tool error (${remoteName}): ${r.error}` }], isError: true };
