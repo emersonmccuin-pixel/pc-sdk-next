@@ -1,47 +1,12 @@
 # Current state
 
-Last updated: 2026-07-19 after CX-004 T3 typed native-resource ownership feature
-`4f38e17667dc5399e9f8499a18b7115cbabd7aca` guarded-landed as
-`bcbd89b1083b7e852f71284a2581e334173a054a`, exact tree
-`8015a48db4b6d9532d1c14cf84f8fc22227b24b1`, with ordered parents
-`[06c578a7f8cb010adcdbf9875c4a70080fe19aa3,
-4f38e17667dc5399e9f8499a18b7115cbabd7aca]`. T3 changed exactly its amended
-21-path closure. The official native matrix passed twice with 7,000,231 assertions;
-focused and full pre/post-merge gates, three independent reviews, source/PE seals,
-ancestry/tree proof, exact push/re-fetch, and guarded teardown passed, including
-660/660 server tests. Before this documentation-only closeout, main, `origin/main`,
-and the live remote were re-fetched equal to that clean code landing. CX-004 advances
-to T4 only after this closeout publishes the exact T4 engineering closure. No
-requirement was promoted and no provider/product execution, credential-home access,
-external-project access, or stable-repository mutation was authorized or performed.
-CX-003 remains fully closed. The final S0 correction guarded-landed as
-`4fd90a4c9647af000d051beb59c3013222d22461`, passed focused and full pre/post-merge
-gates, and was pushed/re-fetched exactly before the run. Closed bundle id
-`dd17bb6a67e44d2b8fef6a7f6dab1a63`, aggregate SHA-256
-`e7aa3420516490e154c649313c562e399b5c6bbc658440fd0bc5729d65345025`, positively
-proved two fresh sessions, the exact 24H2 Enterprise guest, read-only mappings,
-network isolation, persistence reset, exact teardown, final empty inventory, stable
-source seals, and bounded host smoke. R0 feature commit
-`6f275d2a1eae870abf4a48d481b925b43997c5bd` guarded-landed as
-`fdf3163e2013a808a1a5d681d29ea3d5ee9f766f`, exact tree
-`f3872b746dcbf0cb10cb775f3a37278f3aa35550`. R1 feature commit
-`a2da8c6bdfbc1c95f04584be5b18caafbf22b5c1` guarded-landed as
-`7a75aabe36b70d16ce6d88c3fb67a3c181fb3b6f`, exact tree
-`96ccca7dd83da9abe75fcdbcf6db7c917a386f75`. Pre-code amendment feature
-`5ae7c2755a76cf26ad6ad1720c07ff3f2aa2ebda` guarded-landed as
-`0b51c1e8751516686ec3d140451a2e95480f3b20`, exact tree
-`01ddba90791aaade4b4ffbf3382d71175d2cc5a0`. T0 feature
-`b0d8a31642e40aaba4626140967fa3cf5ac8c8bf` guarded-landed as
-`8821a8cc12fe6f8c5d299c89512ba35cc006c56f`, exact tree
-`a08b1d19488447a1b480f6c626c96da46278ed57`, with ordered parents
-`[0b51c1e8751516686ec3d140451a2e95480f3b20,
-b0d8a31642e40aaba4626140967fa3cf5ac8c8bf]`. Native-input LF-policy feature
-`6c3a01995e826b6570b15ba6701d421b59c131c4` guarded-landed as
-`05db82af7f920f323853e302cd5cb2b43946d1fb`, exact tree
-`3d2c65b7f8ab8bdc82a149e7e6add1bbbd0452e8`, with ordered parents
-`[8821a8cc12fe6f8c5d299c89512ba35cc006c56f,
-6c3a01995e826b6570b15ba6701d421b59c131c4]`. Fake-product implementation remains
-authorized only within the sealed CX-004 boundary.
+Last updated: 2026-07-20. CX-004 descoped by product owner (ADR-0003):
+`packages/windows-containment` removed; Codex native execution will rely on
+Codex's built-in sandbox plus per-agent worktree isolation, the read-only main
+working copy, and guarded serialized merges. N0–N4 complete. Active work: finish
+N5 (live Codex peer, composition, runtime switching UI, gates) and N6 (MCP
+manager, usage dashboard, lifecycle policy UX) per the approved finish plan.
+CX-004 receipts/manifests under `docs/execution/` are historical record only.
 
 ## Preserved baseline
 
