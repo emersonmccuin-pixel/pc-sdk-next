@@ -50,9 +50,13 @@ export type CodexDiscoveryObservation =
     };
 
 /** Provider-local discovery port. Implementations may return hostile values;
- * the adapter treats every result as untrusted and captures it defensively. */
+ * the adapter treats every result as untrusted and captures it defensively.
+ * `readRateLimits` is optional so existing fakes that only implement
+ * `discover` keep satisfying this interface; its result is equally
+ * untrusted and must be captured defensively. */
 export interface CodexDiscoveryPeer {
   discover(accountId: string): Promise<unknown>;
+  readRateLimits?(accountId: string): Promise<unknown>;
 }
 
 export type CodexRuntimeMode = 'create' | 'resume';

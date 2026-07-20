@@ -24,6 +24,7 @@ export const CODEX_ADMISSION_REQUEST_METHODS = Object.freeze([
   'config/read',
   'account/read',
   'model/list',
+  'account/rateLimits/read',
 ] as const);
 
 export type CodexAdmissionRequestMethod =
@@ -373,6 +374,21 @@ export class CodexAppServerClient {
     }
     if (!isCanonicalMethod(method) || !ADMISSION_METHOD_SET.has(method)) {
       return Promise.reject(new CodexAppServerError('request-method-not-allowed'));
+    }
+    // The rate-limits read carries no params at all (unlike the other three
+    // admission methods, which are always object-shaped); reject anything but
+    // exactly `undefined` rather than coercing it into an object on the wire.
+    if (method === 'account/rateLimits/read') {
+      if (params !== undefined) {
+        return Promise.reject(new CodexAppServerError('request-params-not-allowed'));
+      }
+      let timeoutMs: number;
+      try {
+        timeoutMs = normalizeRequestTimeout(options, this.options.requestTimeoutMs);
+      } catch {
+        return Promise.reject(new CodexAppServerError('invalid-client-option'));
+      }
+      return this.sendRequest(method, undefined, timeoutMs);
     }
     const normalizedParams = normalizeAdmissionRequestParams(method, params, this.options.cwd);
     if (normalizedParams === null) {

@@ -3,6 +3,10 @@ import {
   runtimeSelectionsEqual,
   type RuntimeModelDiscovery,
   type RuntimeSelection,
+  type SubscriptionQuotaLimitState,
+  type SubscriptionQuotaObservationBatch,
+  type SubscriptionQuotaSourceObservation,
+  type SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
 import { scrubProviderDetail } from '@pc/utils';
 
@@ -173,6 +177,189 @@ export function captureCodexDiscovery(
 
     return { status: 'available', models };
   });
+}
+
+/** Codex rate-limit windows report their reset instant as a Unix epoch in
+ *  seconds, matching the sibling generated reset-credit shape's documented
+ *  `grantedAt`/`expiresAt` convention; PC-SDK's contract is epoch
+ *  milliseconds throughout. */
+function codexEpochSecondsToMs(value: number): number | null {
+  const ms = value * 1_000;
+  return Number.isSafeInteger(ms) ? ms : null;
+}
+
+function clampUsedFraction(value: number): number {
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+/** `RateLimitWindow.windowDurationMins` is minutes; the contract wants
+ *  milliseconds. e.g. "5 hours" / "7 days" with a stable fallback for any
+ *  duration that isn't a whole number of hours or days. */
+function codexRateLimitWindowLabel(durationMs: number | null): string {
+  if (durationMs === null) return 'Codex quota';
+  const HOUR_MS = 60 * 60_000;
+  if (durationMs % HOUR_MS !== 0) return 'Codex quota';
+  const hours = durationMs / HOUR_MS;
+  if (hours % 24 === 0) {
+    const days = hours / 24;
+    return `${days} day${days === 1 ? '' : 's'}`;
+  }
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
+const CODEX_RATE_LIMIT_REACHED_TYPES: ReadonlySet<string> = new Set([
+  'rate_limit_reached',
+  'workspace_owner_credits_depleted',
+  'workspace_member_credits_depleted',
+  'workspace_owner_usage_limit_reached',
+  'workspace_member_usage_limit_reached',
+]);
+
+/** Reached ⇒ rejected outright. Otherwise the used fraction places it on the
+ *  same allowed/warning/rejected vocabulary the Claude mapping uses; nothing
+ *  outside {@link SUBSCRIPTION_QUOTA_LIMIT_STATES} is ever produced. */
+function codexRateLimitState(
+  reachedType: string | null,
+  usedFraction: number,
+): SubscriptionQuotaLimitState {
+  if (reachedType !== null) return 'rejected';
+  if (usedFraction >= 1) return 'rejected';
+  if (usedFraction >= 0.9) return 'warning';
+  return 'allowed';
+}
+
+type CodexRateLimitWindowMapping =
+  | { ok: true; observation: SubscriptionQuotaSourceObservation | null }
+  | { ok: false };
+
+/** One `primary`/`secondary` RateLimitWindow. `null` means the bucket is
+ *  absent (not an error); anything else must be a well-shaped window. */
+function captureCodexRateLimitWindow(
+  raw: unknown,
+  id: 'primary' | 'secondary',
+  reachedType: string | null,
+): CodexRateLimitWindowMapping {
+  if (raw === null) return { ok: true, observation: null };
+  if (!isRecord(raw)) return { ok: false };
+
+  const usedPercent = raw.usedPercent;
+  const windowDurationMins = raw.windowDurationMins;
+  const resetsAt = raw.resetsAt;
+  if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return { ok: false };
+  if (
+    windowDurationMins !== null &&
+    !(typeof windowDurationMins === 'number' && Number.isFinite(windowDurationMins) &&
+      windowDurationMins > 0)
+  ) return { ok: false };
+  if (
+    resetsAt !== null &&
+    !(Number.isSafeInteger(resetsAt) && (resetsAt as number) >= 0)
+  ) return { ok: false };
+
+  const durationMs = windowDurationMins === null
+    ? null
+    : Math.round((windowDurationMins as number) * 60_000);
+  if (durationMs !== null && !(Number.isSafeInteger(durationMs) && durationMs > 0)) {
+    return { ok: false };
+  }
+  const resetsAtMs = resetsAt === null ? null : codexEpochSecondsToMs(resetsAt as number);
+  if (resetsAt !== null && resetsAtMs === null) return { ok: false };
+
+  const usedFraction = clampUsedFraction(usedPercent / 100);
+  return {
+    ok: true,
+    observation: {
+      window: { id, label: codexRateLimitWindowLabel(durationMs), durationMs },
+      scope: { kind: 'account' },
+      source: { semantics: 'used', fraction: usedFraction },
+      confidence: 'exact',
+      limitState: codexRateLimitState(reachedType, usedFraction),
+      resetsAt: resetsAtMs,
+    },
+  };
+}
+
+function unavailableCodexQuotaBatch(
+  accountId: string,
+  reason: SubscriptionQuotaUnavailableReason,
+  observedAt: number,
+): SubscriptionQuotaObservationBatch {
+  return {
+    runtimeId: CODEX_RUNTIME_ID,
+    accountId,
+    availability: 'unavailable',
+    reason,
+    observedAt,
+  };
+}
+
+/** Map the untrusted result of `CodexDiscoveryPeer.readRateLimits`. The live
+ *  peer either returns the raw `account/rateLimits/read` response, or a typed
+ *  unavailable marker (mirroring `CodexDiscoveryObservation`) when the
+ *  account isn't a cached ChatGPT login or the read otherwise failed. Native
+ *  wrapper keys and any other snapshot fields (credits, plan, individual
+ *  limit) never cross this seam. */
+export function captureCodexRateLimits(
+  value: unknown,
+  accountId: string,
+  observedAt: number,
+): SubscriptionQuotaObservationBatch {
+  if (!isRecord(value)) {
+    return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+  }
+
+  if (value.status === 'unavailable') {
+    if (
+      value.protocolVersion !== CODEX_PROTOCOL_VERSION ||
+      value.runtimeId !== CODEX_RUNTIME_ID ||
+      value.accountId !== accountId ||
+      !exactString(value.code)
+    ) {
+      return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+    }
+    return unavailableCodexQuotaBatch(
+      accountId,
+      value.code === 'account-unavailable' ? 'account-unavailable' : 'invalid-observation',
+      observedAt,
+    );
+  }
+
+  const snapshot = value.rateLimits;
+  if (!isRecord(snapshot)) {
+    return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+  }
+  const reachedTypeRaw = snapshot.rateLimitReachedType;
+  if (
+    reachedTypeRaw !== null &&
+    !(typeof reachedTypeRaw === 'string' && CODEX_RATE_LIMIT_REACHED_TYPES.has(reachedTypeRaw))
+  ) {
+    return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+  }
+  const reachedType = reachedTypeRaw as string | null;
+
+  const primary = captureCodexRateLimitWindow(snapshot.primary, 'primary', reachedType);
+  const secondary = captureCodexRateLimitWindow(snapshot.secondary, 'secondary', reachedType);
+  if (!primary.ok || !secondary.ok) {
+    return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+  }
+
+  const observations: SubscriptionQuotaSourceObservation[] = [];
+  if (primary.observation) observations.push(primary.observation);
+  if (secondary.observation) observations.push(secondary.observation);
+  if (observations.length === 0) {
+    return unavailableCodexQuotaBatch(accountId, 'invalid-observation', observedAt);
+  }
+
+  return {
+    runtimeId: CODEX_RUNTIME_ID,
+    accountId,
+    availability: 'available',
+    coverage: 'complete',
+    observedAt,
+    observations,
+  };
 }
 
 export function captureProviderFreePolicyReceipt(

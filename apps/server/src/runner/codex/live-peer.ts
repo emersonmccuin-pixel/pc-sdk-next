@@ -109,6 +109,10 @@ class CodexLiveDiscoveryPeer implements CodexDiscoveryPeer {
   async discover(accountId: string): Promise<unknown> {
     return discoverLiveCatalog(this.options, accountId);
   }
+
+  async readRateLimits(accountId: string): Promise<unknown> {
+    return readLiveRateLimits(this.options, accountId);
+  }
 }
 
 /** The canonical turn notification methods, as a fast membership set. */
@@ -564,6 +568,48 @@ async function discoverLiveCatalog(
     } catch {
       // Disposal failure never turns a discovery result into a throw; the child
       // is best-effort reaped and the process-per-call lifecycle is bounded.
+    }
+  }
+}
+
+/** Live rate-limit read: spawn -> initialize -> account/read (guarded by
+ *  isCachedChatgptAccount) -> account/rateLimits/read -> dispose. Every
+ *  failure — spawn, initialize, transport, or a non-ChatGPT account — degrades
+ *  to a typed unavailable marker; the raw success response is returned as-is
+ *  (untrusted) for the mapping seam to capture defensively. */
+async function readLiveRateLimits(
+  options: CodexLivePeerOptions,
+  accountId: string,
+): Promise<unknown> {
+  let client: ReturnType<typeof startCodexAppServer>;
+  try {
+    client = startCodexAppServer({
+      codexHome: options.codexHome,
+      cwd: options.cwd,
+      requestTimeoutMs: options.requestTimeoutMs,
+      stderrPolicy: { mode: 'discard' },
+      ...(options.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
+    });
+  } catch {
+    return unavailable(accountId, 'codex-discovery-unavailable');
+  }
+
+  try {
+    await client.initialize(options.codexHome);
+    const account = await client.request('account/read', { refreshToken: false });
+    if (!isCachedChatgptAccount(account)) {
+      return unavailable(accountId, 'account-unavailable');
+    }
+    return await client.request('account/rateLimits/read', undefined);
+  } catch {
+    return unavailable(accountId, 'codex-discovery-unavailable');
+  } finally {
+    try {
+      await client.dispose();
+    } catch {
+      // Disposal failure never turns a rate-limit read into a throw; the
+      // child is best-effort reaped and the process-per-call lifecycle is
+      // bounded, matching discoverLiveCatalog.
     }
   }
 }
