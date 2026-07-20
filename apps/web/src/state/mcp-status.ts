@@ -1,14 +1,14 @@
-// MCP status seam — the StatusBar pill. In the new contract MCP health arrives
-// as `mcp-server` resource events (full snapshot per server). A sibling (MCP
-// client core / manager) wires those into this store; the stub reports null so
-// the pill shows "offline" without a data path. Degrade, never block.
+// MCP status seam — the StatusBar pill. MCP health arrives as `mcp-server`
+// resource events (full snapshot per server); ws-client wires those in here.
+// Degrade, never block: an unreachable/auth-expired server still reports its
+// explicit state, never a guess.
 
 import { create } from 'zustand';
 
 export interface McpServerStatus {
   id: string;
   name: string;
-  status: 'healthy' | 'degraded' | 'down' | 'unknown';
+  status: 'healthy' | 'degraded' | 'down' | 'auth-expired' | 'unknown';
   toolCount: number | null;
 }
 
