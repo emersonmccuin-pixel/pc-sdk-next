@@ -54,5 +54,29 @@ test('existing settings keys are unaffected by the new field', () => {
     remoteControl: 'on',
     integrationBranch: null,
     defaultAccountId: null,
+    defaultRuntimeId: null,
   });
+});
+
+test('defaultRuntimeId defaults to null, trims, and rejects non-strings', () => {
+  assert.equal(defaultProjectSettings().defaultRuntimeId, null);
+  assert.equal(withProjectSettingsDefaults(undefined).defaultRuntimeId, null);
+  assert.equal(withProjectSettingsDefaults({}).defaultRuntimeId, null);
+  assert.equal(
+    withProjectSettingsDefaults({ defaultRuntimeId: '  openai-codex  ' }).defaultRuntimeId,
+    'openai-codex',
+  );
+  assert.equal(
+    withProjectSettingsDefaults({ defaultRuntimeId: '' }).defaultRuntimeId,
+    null,
+  );
+  assert.equal(
+    withProjectSettingsDefaults({ defaultRuntimeId: 7 as unknown as string }).defaultRuntimeId,
+    null,
+  );
+
+  // round-trip
+  const out = withProjectSettingsDefaults({ defaultRuntimeId: 'openai-codex' });
+  const again = withProjectSettingsDefaults({ ...out });
+  assert.equal(again.defaultRuntimeId, 'openai-codex');
 });

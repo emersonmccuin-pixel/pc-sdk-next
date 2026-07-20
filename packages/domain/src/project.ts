@@ -25,6 +25,13 @@ export interface ProjectSettings {
    *  ('personal'). Switching this mints a NEW session (sessions live per config
    *  dir). Value is an account id from the server's account registry. */
   defaultAccountId: string | null;
+  /** WF-1 — the agent-runtime adapter (e.g. `claude-agent-sdk`, `openai-codex`)
+   *  new orchestrator/specialist sessions for this project resolve against.
+   *  `null` = use the server's default runtime. A runtime id here is opaque to
+   *  this package; the composition root owns what ids exist. Switching this
+   *  mints a NEW session (a runtime/account/model/effort change is always a
+   *  session boundary — docs/agent-runtime-architecture.md). */
+  defaultRuntimeId: string | null;
 }
 
 /** Git ref-name shape for the integration branch. Unlike the runtime's
@@ -37,6 +44,7 @@ export function defaultProjectSettings(): ProjectSettings {
     remoteControl: 'use-global',
     integrationBranch: null,
     defaultAccountId: null,
+    defaultRuntimeId: null,
   };
 }
 
@@ -50,6 +58,7 @@ export function withProjectSettingsDefaults(
   const rc = stored.remoteControl;
   const ib = typeof stored.integrationBranch === 'string' ? stored.integrationBranch.trim() : null;
   const acct = typeof stored.defaultAccountId === 'string' ? stored.defaultAccountId.trim() : null;
+  const rt = typeof stored.defaultRuntimeId === 'string' ? stored.defaultRuntimeId.trim() : null;
   return {
     cancelledVisibility:
       v === 'force-visible' || v === 'force-hidden' || v === 'use-global'
@@ -59,6 +68,7 @@ export function withProjectSettingsDefaults(
       rc === 'on' || rc === 'off' || rc === 'use-global' ? rc : defaults.remoteControl,
     integrationBranch: ib && INTEGRATION_BRANCH_RE.test(ib) ? ib : null,
     defaultAccountId: acct && acct.length > 0 ? acct : null,
+    defaultRuntimeId: rt && rt.length > 0 ? rt : null,
   };
 }
 
