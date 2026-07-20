@@ -41,9 +41,11 @@ export type ResourceScope = 'project' | 'global';
 export interface McpServerStatus {
   id: string;
   name: string;
-  status: 'healthy' | 'degraded' | 'down' | 'unknown';
+  status: 'healthy' | 'degraded' | 'down' | 'auth-expired' | 'unknown';
   reason: string | null;
   lastProbeAt: number | null;
+  /** Epoch-ms of the last SUCCESSFUL probe; null until one succeeds. */
+  lastOkProbeAt: number | null;
   toolCount: number | null;
   lastError: string | null;
 }
@@ -207,9 +209,11 @@ export function isMcpServerStatus(value: unknown): value is McpServerStatus {
     (value.status === 'healthy' ||
       value.status === 'degraded' ||
       value.status === 'down' ||
+      value.status === 'auth-expired' ||
       value.status === 'unknown') &&
     (value.reason === null || typeof value.reason === 'string') &&
     (value.lastProbeAt === null || typeof value.lastProbeAt === 'number') &&
+    (value.lastOkProbeAt === null || typeof value.lastOkProbeAt === 'number') &&
     (value.toolCount === null || typeof value.toolCount === 'number') &&
     (value.lastError === null || typeof value.lastError === 'string')
   );

@@ -18,7 +18,9 @@ import type {
   CredentialKind,
   ExpectedOutput,
   GlobalSettings,
+  McpConsumerKey,
   McpDiscoveryStatus,
+  McpHealthState,
   McpServerTransport,
   PodAuditActor,
   PodAuditField,
@@ -379,6 +381,8 @@ export const mcpServers = sqliteTable(
       .references(() => projects.id),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
+    /** When 0 the manager skips probing/bridging this server entirely. */
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
     /** Stored transport — may contain SecretRef objects in headers/env.
      *  Resolve via resolveTransportSecrets before using. */
     transport: text('transport', { mode: 'json' }).notNull().$type<McpServerTransport>(),
@@ -388,6 +392,14 @@ export const mcpServers = sqliteTable(
       .notNull()
       .default('stale')
       .$type<McpDiscoveryStatus>(),
+    // ── Health bookkeeping (N6 MCP reliability) ──────────────────────────────
+    healthState: text('health_state').notNull().default('unknown').$type<McpHealthState>(),
+    healthReason: text('health_reason'),
+    lastProbeAt: integer('last_probe_at'),
+    lastOkProbeAt: integer('last_ok_probe_at'),
+    toolCount: integer('tool_count'),
+    lastError: text('last_error'),
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
     /** Monotonic write counter — incremented on every mutating write. */
     rev: integer('rev').notNull().default(0),
     createdAt: integer('created_at').notNull(),
@@ -432,6 +444,30 @@ export const agentMcpAttachments = sqliteTable(
   (t) => [
     index('agent_mcp_attachments_agent_idx').on(t.agentId),
     uniqueIndex('agent_mcp_attachments_unique_idx').on(t.agentId, t.mcpServerId),
+  ],
+);
+
+/**
+ * Explicit per-server → consumer attachment (N6 MCP reliability, requirement 6).
+ * `consumer` is `'orchestrator'` or `agent:<name>`. A server with no rows here
+ * is bridged to NO consumer; new servers are seeded with an `orchestrator` row
+ * (default orchestrator-only). One row per (server, consumer) pair.
+ */
+export const mcpConsumerAttachments = sqliteTable(
+  'mcp_consumer_attachments',
+  {
+    id: text('id').primaryKey().$type<ULID>(),
+    mcpServerId: text('mcp_server_id')
+      .notNull()
+      .$type<ULID>()
+      .references(() => mcpServers.id),
+    consumer: text('consumer').notNull().$type<McpConsumerKey>(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    index('mcp_consumer_attachments_server_idx').on(t.mcpServerId),
+    index('mcp_consumer_attachments_consumer_idx').on(t.consumer),
+    uniqueIndex('mcp_consumer_attachments_unique_idx').on(t.mcpServerId, t.consumer),
   ],
 );
 

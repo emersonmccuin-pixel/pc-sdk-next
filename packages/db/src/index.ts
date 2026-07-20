@@ -415,6 +415,7 @@ export {
   patchMcpServerRegistry,
   replaceTransportOnly,
   setMcpServerDiscovery,
+  setMcpServerHealth,
   softDeleteMcpServerRegistry,
 } from './repos/mcp-servers.ts';
 export type {
@@ -422,6 +423,7 @@ export type {
   ListMcpServersRegistryOptions,
   PatchMcpServerRegistryInput,
   SetMcpServerDiscoveryInput,
+  SetMcpServerHealthInput,
 } from './repos/mcp-servers.ts';
 
 // Agent MCP Attachments repo.
@@ -433,6 +435,15 @@ export {
   upsertMcpAttachment,
 } from './repos/mcp-attachments.ts';
 export type { UpsertMcpAttachmentInput } from './repos/mcp-attachments.ts';
+
+// MCP consumer attachments repo (N6 — explicit per-server attachment).
+export {
+  attachMcpConsumer,
+  detachMcpConsumer,
+  listMcpConsumersForServer,
+  listMcpServerIdsForConsumer,
+} from './repos/mcp-consumer-attachments.ts';
+export type { AttachMcpConsumerInput } from './repos/mcp-consumer-attachments.ts';
 
 // Mailbox repos.
 export {

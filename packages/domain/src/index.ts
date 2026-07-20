@@ -240,7 +240,11 @@ export type {
   CredentialAuthState,
   CredentialKind,
   CredentialRow,
+  McpConsumer,
+  McpConsumerAttachmentRow,
+  McpConsumerKey,
   McpDiscoveryStatus,
+  McpHealthState,
   McpServerRegistryRow,
   McpServerTransport,
   PodAgentRow,
@@ -257,8 +261,10 @@ export type {
   TransportValue,
 } from './pod.ts';
 export {
+  consumerKey,
   CREDENTIAL_AUTH_STATES,
   MCP_DISCOVERY_STATUSES,
+  MCP_HEALTH_STATES,
   POD_AUDIT_ACTORS,
   POD_AUDIT_FIELDS,
   POD_SCOPES,

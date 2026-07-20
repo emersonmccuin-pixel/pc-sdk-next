@@ -141,6 +141,13 @@
       "when": 1783947600000,
       "tag": "0019_review_checkout_verdicts",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1783951200000,
+      "tag": "0020_mcp_reliability",
+      "breakpoints": true
     }
   ]
 }
