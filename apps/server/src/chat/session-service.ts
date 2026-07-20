@@ -1013,10 +1013,12 @@ export class SessionService {
         this.markRuntimeResumeFailed(session, acquisition.continuationAttemptId);
       }
       if (!terminalSettled) {
-        // Provider/runtime exception text is diagnostic evidence, not product
-        // copy — never surfaced. A typed app-authored `.code` (e.g. from
-        // CodexRuntimeAdapterError) is app vocabulary, not provider text, so
-        // it rides along in parentheses to give the user something actionable.
+        // A typed app-authored `.code` (e.g. from CodexRuntimeAdapterError) is
+        // app vocabulary, not provider text, so it rides along in parentheses
+        // to give the user something actionable. The thrown error's own
+        // `.providerDetail` — already bounded + secret-scrubbed at its capture
+        // seam — rides separately as diagnostic-only detail, never woven into
+        // this app-authored message.
         this.settleInfrastructureFailure(
           turn,
           infrastructureFailureMessage(
@@ -1025,6 +1027,7 @@ export class SessionService {
           ),
           runtimeAccepted,
           runtimeAcquired,
+          providerDetailFromError(error),
         );
       }
     } finally {
@@ -1282,12 +1285,18 @@ export class SessionService {
     message: string,
     runtimeAccepted = false,
     quarantineRuntime = runtimeAccepted,
+    providerDetail?: string,
   ): void {
     this.askRegistry.clear('turn failed');
     if (quarantineRuntime) this.quarantineRuntime(turn.sessionId, turn.turnId);
     settleConversationTurn({
       turnId: turn.turnId,
-      terminalEvent: { kind: 'turn-failed', error: message, source: 'internal' },
+      terminalEvent: {
+        kind: 'turn-failed',
+        error: message,
+        source: 'internal',
+        ...(providerDetail ? { providerDetail } : {}),
+      },
       terminalOutcome: 'turn-failed',
       queueStatus: runtimeAccepted ? 'accepted' : 'failed',
       queueFailureReason: runtimeAccepted ? null : message,
@@ -1556,6 +1565,16 @@ export function typedErrorCode(error: unknown): string | null {
 export function infrastructureFailureMessage(baseMessage: string, error: unknown): string {
   const code = typedErrorCode(error);
   return code ? `${baseMessage} (${code})` : baseMessage;
+}
+
+/** A thrown error's own `.providerDetail` — already bounded + secret-scrubbed
+ *  at the adapter capture seam that raised it (see @pc/utils scrubProviderDetail)
+ *  — if it carries one. Never reads `.message` here: that would re-admit raw,
+ *  unscrubbed native prose one layer removed from its scrub site. */
+export function providerDetailFromError(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const detail = (error as { providerDetail?: unknown }).providerDetail;
+  return typeof detail === 'string' && detail.length > 0 ? detail : undefined;
 }
 
 function summarize(message: unknown): string {

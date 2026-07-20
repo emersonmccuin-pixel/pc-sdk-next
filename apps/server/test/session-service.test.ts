@@ -17,7 +17,7 @@ import {
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
 import { ConversationRelay } from '../src/chat/conversation-relay.ts';
-import { infrastructureFailureMessage, SessionService } from '../src/chat/session-service.ts';
+import { infrastructureFailureMessage, providerDetailFromError, SessionService } from '../src/chat/session-service.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
 import type { MintRuntimeSession, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from '../src/ws/hub.ts';
@@ -470,6 +470,64 @@ test('a typed error code rides along in the runtime-failed-to-start message; an 
   // above and by the "...persist only app-authored prose" test below).
 });
 
+test('a thrown error\'s providerDetail rides the durable turn-failed event as a separate scrubbed field', async () => {
+  class FakeAdapterError extends Error {
+    readonly providerDetail?: string;
+    constructor(readonly code: string, providerDetail?: string) {
+      super('irrelevant native exception message');
+      if (providerDetail) this.providerDetail = providerDetail;
+    }
+  }
+  freshDb();
+  const project = newProject('provider-detail-startup-error');
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt(async () => {
+      throw new FakeAdapterError('session-mint-unavailable', 'account currently refuses all turns');
+    }),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+  });
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'provider-detail-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'provider-detail-client',
+  });
+  await until(() => terminals(session.id).length === 1);
+  assert.deepEqual(terminals(session.id), [{
+    kind: 'turn-failed',
+    error: 'runtime failed to start (session-mint-unavailable)',
+    source: 'internal',
+    providerDetail: 'account currently refuses all turns',
+  }]);
+  await service.dispose();
+
+  // No providerDetail on the thrown error: the field is entirely absent, not
+  // a synthesized or empty one.
+  freshDb();
+  const bareProject = newProject('provider-detail-absent');
+  const bareService = new SessionService({
+    projectId: bareProject.id,
+    mintSession: withRuntimeReceipt(async () => {
+      throw new FakeAdapterError('session-mint-unavailable');
+    }),
+    ...testSessionSelectionDeps(),
+    broadcast: () => {},
+  });
+  const bareSession = await bareService.ensureActiveSession();
+  await bareService.handleSend({
+    type: 'send', commandId: 'provider-detail-absent-command', sessionId: bareSession.id,
+    text: 'go', clientMessageId: 'provider-detail-absent-client',
+  });
+  await until(() => terminals(bareSession.id).length === 1);
+  assert.deepEqual(terminals(bareSession.id), [{
+    kind: 'turn-failed',
+    error: 'runtime failed to start (session-mint-unavailable)',
+    source: 'internal',
+  }]);
+  await bareService.dispose();
+});
+
 test('infrastructureFailureMessage appends a typed code and never a raw provider-shaped one', () => {
   class FakeTypedError extends Error {
     constructor(readonly code: string) {
@@ -512,6 +570,19 @@ test('infrastructureFailureMessage appends a typed code and never a raw provider
     infrastructureFailureMessage('runtime failed to start', Object.assign(new Error('x'), { code: 42 })),
     'runtime failed to start',
   );
+});
+
+test('providerDetailFromError reads only a string .providerDetail own property', () => {
+  assert.equal(
+    providerDetailFromError(Object.assign(new Error('x'), { providerDetail: 'account currently refuses all turns' })),
+    'account currently refuses all turns',
+  );
+  assert.equal(providerDetailFromError(new Error('no detail here')), undefined);
+  assert.equal(providerDetailFromError(Object.assign(new Error('x'), { providerDetail: '' })), undefined);
+  assert.equal(providerDetailFromError(Object.assign(new Error('x'), { providerDetail: 42 })), undefined);
+  assert.equal(providerDetailFromError('a string throw'), undefined);
+  assert.equal(providerDetailFromError(null), undefined);
+  assert.equal(providerDetailFromError(undefined), undefined);
 });
 
 test('runtime startup and synchronous delivery exceptions persist only app-authored prose', async () => {
