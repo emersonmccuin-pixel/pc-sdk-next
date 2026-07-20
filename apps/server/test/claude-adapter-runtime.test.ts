@@ -1063,6 +1063,45 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
   await runtime.dispose();
 });
 
+test("Claude create omits options.model for the 'default' selection instead of passing it verbatim", async () => {
+  const DEFAULT_MODELS: ModelInfo[] = [
+    { value: 'default', displayName: 'Default', description: '', supportsEffort: false },
+    ...MODELS,
+  ];
+  const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(DIRTY_RUNTIME_ENV),
+    queryFactory: (params) => {
+      captures.push(params);
+      return captures.length % 2 === 1
+        ? discoveryQuery(DEFAULT_MODELS)
+        : sessionQuery(params.prompt, 'native-created-default');
+    },
+  });
+  const selected: RuntimeSelection = {
+    runtimeId: CLAUDE_RUNTIME_ID, accountId: 'personal', model: 'default', effort: { kind: 'unavailable' },
+  };
+  const runtime = await adapter.createSession({
+    appSessionId: 'app-1', projectId: 'project-1',
+    continuationAttemptId: ATTEMPT_ID, selection: selected,
+  });
+
+  assert.equal(captures.length, 2);
+  // 'default' is a legitimate discovered id meaning "let the SDK pick its
+  // own default" — passing it through verbatim as options.model would make
+  // the SDK look for a model literally named 'default'. The option must be
+  // omitted entirely rather than set to 'default'.
+  assert.equal('model' in (captures[1]?.options ?? {}), false);
+  const started = await firstEvent(runtime);
+  assert.equal(started.type, 'session-started');
+  if (started.type === 'session-started') {
+    // The stamped selection still honestly records 'default' as what was
+    // chosen — only the SDK-facing option is omitted, not the receipt.
+    assert.equal(started.receipt.selection.model, 'default');
+  }
+  await runtime.dispose();
+});
+
 test('Claude resume requires an exact native init receipt and never falls back to create', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({

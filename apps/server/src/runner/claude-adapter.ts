@@ -651,7 +651,14 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     const resume = this.requestedNativeSessionId ?? undefined;
 
     const options: Options = {
-      model: this.config.selection.model,
+      // 'default' is a legitimate discovered model id meaning "let the SDK
+      // pick its own default" — passing it through verbatim as options.model
+      // makes the SDK look for a literal model named 'default' and fail.
+      // Omit the option entirely in that case; the stamped selection.model
+      // stays 'default' as an honest record of what was chosen.
+      ...(this.config.selection.model !== 'default'
+        ? { model: this.config.selection.model }
+        : {}),
       systemPrompt: this.config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
       // Defense in depth at the final native-query seam. This second pass
       // prevents a direct session config or late internal mutation from
