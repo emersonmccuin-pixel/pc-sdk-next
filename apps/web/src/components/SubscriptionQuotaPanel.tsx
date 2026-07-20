@@ -29,20 +29,6 @@ function formatResetIn(resetsAt: number | null, now: number): string | null {
   return `resets in ${days}d${remH === 0 ? '' : ` ${remH}h`}`;
 }
 
-function formatAge(observedAt: number, now: number): string {
-  const mins = Math.max(0, Math.floor((now - observedAt) / 60_000));
-  if (mins < 1) return 'observed now';
-  if (mins < 60) return `observed ${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  return `observed ${hours}h ago`;
-}
-
-function confidenceLabel(observation: SubscriptionQuotaObservation): string {
-  if (observation.confidence === 'derived') return 'derived';
-  if (observation.confidence === 'approximate') return 'approximate';
-  return 'exact';
-}
-
 function QuotaBar({ observation, now }: {
   observation: SubscriptionQuotaObservation;
   now: number;
@@ -66,18 +52,19 @@ function QuotaBar({ observation, now }: {
         ? 'bg-warning'
         : 'bg-primary';
   const reset = formatResetIn(observation.resetsAt, now);
-  const sourceDetail = observation.source.semantics === 'remaining'
-    ? `source reported ${(observation.source.fraction * 100).toFixed(0)}% remaining`
-    : 'source reported used';
   const scope = observation.scope.kind === 'model'
     ? ` · ${observation.scope.model}`
     : '';
   const accessibleScope = observation.scope.kind === 'model'
     ? ` for ${observation.scope.model}`
     : '';
+  // Bottom line: only the reset countdown, or a plain stale marker. Everything
+  // else (confidence, source semantics, observed age) is intentionally dropped —
+  // the panel shows what the user acts on: how full, and when it clears.
+  const footer = stale ? 'stale' : reset;
   const valueDetail = `${pct.toFixed(0)} percent used${
     stale ? ', stale' : enforcement ? `, ${enforcement}` : ''
-  }, ${confidenceLabel(observation)}, ${sourceDetail}`;
+  }`;
 
   return (
     <div className="flex flex-col gap-0.5" data-stale={stale ? 'true' : 'false'}>
@@ -101,11 +88,13 @@ function QuotaBar({ observation, now }: {
       >
         <div className={`absolute inset-y-0 left-0 ${tone}`} style={{ width: `${fill}%` }} />
       </div>
-      <div id={detailId} className="text-[10px] leading-tight text-muted-foreground">
-        {formatAge(observation.observedAt, now)} · {confidenceLabel(observation)}
-        {` · ${sourceDetail}`}
-        {reset ? ` · ${reset}` : ''}
-      </div>
+      {footer ? (
+        <div id={detailId} className="text-[10px] leading-tight text-muted-foreground">
+          {footer}
+        </div>
+      ) : (
+        <div id={detailId} className="sr-only">{valueDetail}</div>
+      )}
     </div>
   );
 }
@@ -164,13 +153,14 @@ export function SubscriptionQuotaPanel({
       ? 'quota warning'
       : null;
 
-  const attribution = snapshot
-    ? `${snapshot.runtimeId} · ${snapshot.accountId}`
-    : runtimeId && accountId
-      ? `${runtimeId} · ${accountId}`
-      : selectionResolved
-        ? 'no runtime account selected'
-        : 'runtime account selection unavailable';
+  // Only shown when there is no live snapshot — it explains why nothing renders.
+  // With a snapshot present the heading/title already names the runtime+account,
+  // so the redundant "runtime · account" line is dropped.
+  const attribution = runtimeId && accountId
+    ? `${runtimeId} · ${accountId}`
+    : selectionResolved
+      ? 'no runtime account selected'
+      : 'runtime account selection unavailable';
 
   return (
     <section
@@ -190,12 +180,14 @@ export function SubscriptionQuotaPanel({
           </span>
         )}
       </div>
-      <div className="mb-1.5 truncate text-[10px] text-muted-foreground" title={attribution}>
-        {attribution}
-      </div>
+      {!snapshot && (
+        <div className="mb-1.5 truncate text-[10px] text-muted-foreground" title={attribution}>
+          {attribution}
+        </div>
+      )}
       {snapshot?.availability === 'unavailable' ? (
         <div className="text-[10px] leading-tight text-muted-foreground">
-          No current percentage available. Last-good windows remain durable but are not presented as current.
+          No current percentage available.
         </div>
       ) : observations.length > 0 ? (
         <div className="flex flex-col gap-2">

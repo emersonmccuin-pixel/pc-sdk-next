@@ -50,21 +50,21 @@ function html(value: SubscriptionQuotaSnapshot | null): string {
   }));
 }
 
-test('remaining-source quota always presents normalized percent used with source semantics', () => {
+test('quota bar shows only window, percent used, and enforcement badge', () => {
   const markup = html(snapshot());
   assert.match(markup, /aria-label="Subscription quota"/);
-  assert.match(markup, /runtime-a · personal/);
   assert.match(markup, /75% used/);
   assert.match(markup, /aria-valuenow="75"/);
   assert.match(markup, /width:75%/);
-  assert.match(markup, /derived/);
-  assert.match(markup, /source reported 25% remaining/);
   assert.match(markup, /quota warning/);
   assert.match(markup, /75% used · warning/);
-  assert.match(markup, /aria-valuetext="75 percent used, warning, derived, source reported 25% remaining"/);
+  assert.match(markup, /aria-valuetext="75 percent used, warning"/);
   assert.match(markup, /role="status" aria-live="polite"/);
   assert.match(markup, /max-h-\[45vh\].*overflow-y-auto/);
-  assert.doesNotMatch(markup, />25% remaining</);
+  // Simplified panel drops confidence, source semantics, and the redundant
+  // runtime · account line when a live snapshot is present.
+  assert.doesNotMatch(markup, /derived|source reported|remaining/);
+  assert.doesNotMatch(markup, /runtime-a · personal/);
 });
 
 test('fresh native rejection stays visible even when the used fraction is low', () => {
@@ -77,8 +77,8 @@ test('fresh native rejection stays visible even when the used fraction is low', 
   const markup = html(snapshot({ observations: [rejected] }));
   assert.match(markup, /quota blocked/);
   assert.match(markup, /10% used · blocked/);
-  assert.match(markup, /aria-valuetext="10 percent used, blocked, exact, source reported used"/);
-  assert.match(markup, /source reported used/);
+  assert.match(markup, /aria-valuetext="10 percent used, blocked"/);
+  assert.doesNotMatch(markup, /source reported/);
 });
 
 test('unknown enforcement remains explicit and is never presented as allowed', () => {
@@ -90,7 +90,7 @@ test('unknown enforcement remains explicit and is never presented as allowed', (
   });
   const markup = html(snapshot({ observations: [unknown] }));
   assert.match(markup, /10% used · limit state unknown/);
-  assert.match(markup, /aria-valuetext="10 percent used, limit state unknown, exact, source reported used"/);
+  assert.match(markup, /aria-valuetext="10 percent used, limit state unknown"/);
   assert.doesNotMatch(markup, /quota warning|quota blocked/);
 });
 
@@ -105,8 +105,7 @@ test('stale quota is visibly stale in text, state, and accessibility detail', ()
   const markup = html(snapshot({ observedAt: 1, observations: [stale] }));
   assert.match(markup, /data-stale="true"/);
   assert.match(markup, /40% used · stale/);
-  assert.match(markup, /aria-valuetext="40 percent used, stale, exact, source reported used"/);
-  assert.match(markup, /exact/);
+  assert.match(markup, /aria-valuetext="40 percent used, stale"/);
 });
 
 test('unavailable quota never presents retained last-good windows as current', () => {
