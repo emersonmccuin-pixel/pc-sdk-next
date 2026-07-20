@@ -142,6 +142,12 @@ export type AgentRunFailureCause =
    *  sole done-signal; ending a turn / exiting with nothing delivered is a
    *  failure with a reason, not a silent "completed-but-empty". */
   | 'no-deliverable'
+  /** Tool-bridge-less delivery door (Codex et al.): a deliverable FILE was
+   *  present at the worktree root but could not be honored — malformed JSON,
+   *  a shape/kind mismatch the canonical validation rejected, or the signal
+   *  file could not be removed before the sealed commit. A typed failure with
+   *  the validation reason, never a silent no-deliverable. */
+  | 'invalid-deliverable'
   /** Contract invariant: the dispatch was aborted because the contract could
    *  not be resolved or created. A run must ALWAYS have a contract before the
    *  agent spawns; if one can't be guaranteed the dispatch is refused. */
@@ -179,6 +185,7 @@ export const AGENT_RUN_FAILURE_CAUSES: readonly AgentRunFailureCause[] = [
   'host-protocol-error',
   'host-rejected',
   'no-deliverable',
+  'invalid-deliverable',
   'contract-required',
   'worktree-provision-failed',
   'repository-occupied',

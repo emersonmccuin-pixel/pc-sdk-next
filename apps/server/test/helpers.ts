@@ -139,9 +139,16 @@ export function testDispatchRuntimeDeps(
   runtimeId = 'claude-agent-sdk',
 ): Pick<
   DispatchServiceDeps,
-  'resolveNewSpecialistSelection' | 'preflightRuntimeSession' | 'mintSpecialistRuntimeSession'
+  | 'resolveNewSpecialistSelection'
+  | 'preflightRuntimeSession'
+  | 'mintSpecialistRuntimeSession'
+  | 'appToolBridgeForRuntime'
 > {
   return {
+    appToolBridgeForRuntime: (rid) => {
+      const resolution = runtimes.resolve(rid);
+      return resolution.status === 'resolved' ? resolution.adapter.appToolBridge : 'supported';
+    },
     resolveNewSpecialistSelection: async (input) => {
       let account;
       try {

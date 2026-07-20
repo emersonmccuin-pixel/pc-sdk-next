@@ -12,7 +12,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   addAgentToProject,
   commitConversationEvent,
@@ -58,6 +59,7 @@ import { runBootRecovery } from '../src/boot-recovery.ts';
 import { git, provisionWorktree } from '../src/dispatch/worktrees.ts';
 import {
   advanceTestAgentRunStatus,
+  commitFile,
   freshDb,
   newGitProject,
   newProject,
@@ -1395,4 +1397,219 @@ test('answerPendingAsk disposes a revived session when kill wins during provider
   assert.equal(runtime.disposeCalls, 1);
   assert.equal(runtime.sendCalls, 0);
   assert.equal(dispatch.hasLiveRun(runId), false);
+});
+
+// ── file-based delivery door (tool-bridge-less runtimes, e.g. Codex) ──────────
+// A bridge-less adapter (appToolBridge='unsupported') mints with zero pc_*
+// tools, so its specialist cannot call pc_submit_deliverable. Instead it writes
+// .pc-deliverable.json at the worktree root as its final act; the service reads,
+// validates (same submitDeliverable rules), and removes it before the seal.
+
+/** Repo adapter that holds its turn open at a gate so the test can commit work
+ *  and drop the deliverable file into the live worktree, then end the turn with
+ *  NO tool deliverable — exactly the Codex end-of-turn the door must catch. */
+class GatedRepoAdapter implements AgentRuntimeAdapter {
+  readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge: 'supported' | 'unsupported';
+  cwd: string | null = null;
+  instructions = '';
+  private release!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.release = resolve; });
+  constructor(appToolBridge: 'supported' | 'unsupported') {
+    this.appToolBridge = appToolBridge;
+  }
+  releaseTurn(): void { this.release(); }
+  async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
+  async observeSubscriptionQuota(accountId: string) {
+    return testSubscriptionQuotaUnavailable(this.id, accountId);
+  }
+  async listModels() { return testModelDiscovery(); }
+  async createSession(input: CreateRuntimeSession): Promise<RuntimeSession> {
+    this.cwd = input.cwd ?? null;
+    this.instructions = input.instructions ?? '';
+    const gate = this.gate;
+    const attemptId = input.continuationAttemptId;
+    const selection = input.selection;
+    return {
+      async *sendTurn() {
+        yield {
+          type: 'session-started',
+          receipt: {
+            mode: 'created',
+            continuationAttemptId: attemptId,
+            selection,
+            nativeSessionId: 'native-bridgeless',
+            requestedNativeSessionId: null,
+          },
+        };
+        await gate;
+        yield OK_RESULT;
+      },
+      observeContext: async () => ({ confidence: 'unavailable' as const, reason: 'unsupported' as const }),
+      interrupt: async () => {},
+      dispose: async () => {},
+    };
+  }
+  async resumeSession(): Promise<RuntimeSession> {
+    throw new Error('resume is not expected');
+  }
+}
+
+test('file door: a bridge-less repo run delivers via .pc-deliverable.json, verifies, and never lands the file', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject('bridgeless-door');
+  const adapter = new GatedRepoAdapter('unsupported');
+  const dispatch = rig(adapter);
+  try {
+    const result = await dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer',
+      input: 'build it',
+      dispatcherSessionId: 'S1',
+      expectedOutput: { kind: 'repo', paths_touched: ['feature.txt'] },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const runId = (result as { run: { runId: string } }).run.runId as ULID;
+    await until(() => getAgentRunRow(runId)?.status === 'running', 5000);
+    const dir = getAgentRunRow(runId)!.worktreeDir!;
+
+    // The specialist prompt swapped to the file-door discipline (no tool exists).
+    assert.match(adapter.instructions, /\.pc-deliverable\.json/);
+    assert.equal(adapter.instructions.includes('pc_submit_deliverable'), false);
+
+    // Commit real work, then drop the (uncommitted) deliverable signal file.
+    await commitFile(dir, 'feature.txt', 'work\n');
+    writeFileSync(join(dir, '.pc-deliverable.json'), JSON.stringify({ kind: 'repo', report: 'done via file' }));
+    adapter.releaseTurn();
+
+    await until(() => getAgentRunRow(runId)?.status === 'completed', 5000);
+    const row = getAgentRunRow(runId)!;
+    assert.equal(row.failureCause, null);
+    assert.ok(row.deliveredAt, 'deliveredAt stamped through the file door');
+
+    // Removed before the seal — never in the working tree nor the sealed commit.
+    assert.equal(existsSync(join(dir, '.pc-deliverable.json')), false, 'signal file removed before seal');
+    const contract = getContract(row.contractId!)!;
+    const sealed = (contract.deliverable as { commit?: string }).commit!;
+    assert.ok(sealed, 'repo deliverable sealed a commit');
+    const tree = await git(['ls-tree', '-r', '--name-only', sealed], gp.dir);
+    assert.equal(tree.stdout.includes('.pc-deliverable.json'), false, 'signal file never in the sealed commit');
+    assert.match(tree.stdout, /feature\.txt/);
+
+    await until(() => getContract(row.contractId!)?.verificationStatus === 'passed', 5000);
+    assert.equal(getContract(row.contractId!)!.report, 'done via file');
+  } finally {
+    await dispatch.disposeAll();
+    await gp.cleanup();
+  }
+});
+
+test('file door: a TOOL-BRIDGED repo run ignores the file and still fails no-deliverable', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject('bridged-no-door');
+  const adapter = new GatedRepoAdapter('supported');
+  const dispatch = rig(adapter);
+  try {
+    const result = await dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer',
+      input: 'build it',
+      dispatcherSessionId: 'S1',
+      expectedOutput: { kind: 'repo', paths_touched: ['feature.txt'] },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const runId = (result as { run: { runId: string } }).run.runId as ULID;
+    await until(() => getAgentRunRow(runId)?.status === 'running', 5000);
+    const dir = getAgentRunRow(runId)!.worktreeDir!;
+
+    // Bridged prompt keeps the canonical tool discipline.
+    assert.match(adapter.instructions, /pc_submit_deliverable/);
+
+    await commitFile(dir, 'feature.txt', 'work\n');
+    writeFileSync(join(dir, '.pc-deliverable.json'), JSON.stringify({ kind: 'repo', report: 'should be ignored' }));
+    adapter.releaseTurn();
+
+    await until(() => getAgentRunRow(runId)?.status === 'failed', 5000);
+    const row = getAgentRunRow(runId)!;
+    assert.equal(row.failureCause, 'no-deliverable');
+    // The door never opened, so it never touched the file.
+    assert.equal(existsSync(join(dir, '.pc-deliverable.json')), true, 'door left the file untouched for a bridged runtime');
+  } finally {
+    await dispatch.disposeAll();
+    await gp.cleanup();
+  }
+});
+
+test('file door: a malformed .pc-deliverable.json is a typed invalid-deliverable failure, not silence', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject('bridgeless-malformed');
+  const adapter = new GatedRepoAdapter('unsupported');
+  const dispatch = rig(adapter);
+  try {
+    const result = await dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer',
+      input: 'build it',
+      dispatcherSessionId: 'S1',
+      expectedOutput: { kind: 'repo', paths_touched: ['feature.txt'] },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const runId = (result as { run: { runId: string } }).run.runId as ULID;
+    await until(() => getAgentRunRow(runId)?.status === 'running', 5000);
+    const dir = getAgentRunRow(runId)!.worktreeDir!;
+
+    await commitFile(dir, 'feature.txt', 'work\n');
+    writeFileSync(join(dir, '.pc-deliverable.json'), '{ not valid json');
+    adapter.releaseTurn();
+
+    await until(() => getAgentRunRow(runId)?.status === 'failed', 5000);
+    const row = getAgentRunRow(runId)!;
+    assert.equal(row.failureCause, 'invalid-deliverable');
+    assert.match(row.failureReason ?? '', /JSON/);
+    assert.equal(row.deliveredAt, null, 'a malformed file never seals a deliverable');
+    // Still removed before it could ever land.
+    assert.equal(existsSync(join(dir, '.pc-deliverable.json')), false, 'malformed signal file removed');
+  } finally {
+    await dispatch.disposeAll();
+    await gp.cleanup();
+  }
+});
+
+test('file door: a wrong-kind .pc-deliverable.json is rejected by the SAME validation as the tool', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject('bridgeless-wrongkind');
+  const adapter = new GatedRepoAdapter('unsupported');
+  const dispatch = rig(adapter);
+  try {
+    const result = await dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer',
+      input: 'build it',
+      dispatcherSessionId: 'S1',
+      expectedOutput: { kind: 'repo', paths_touched: ['feature.txt'] },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const runId = (result as { run: { runId: string } }).run.runId as ULID;
+    await until(() => getAgentRunRow(runId)?.status === 'running', 5000);
+    const dir = getAgentRunRow(runId)!.worktreeDir!;
+
+    await commitFile(dir, 'feature.txt', 'work\n');
+    // Contract expects 'repo'; a mismatched kind must be refused by the same
+    // kind-mismatch rule pc_submit_deliverable enforces.
+    writeFileSync(join(dir, '.pc-deliverable.json'), JSON.stringify({ kind: 'answer', text: 'nope' }));
+    adapter.releaseTurn();
+
+    await until(() => getAgentRunRow(runId)?.status === 'failed', 5000);
+    const row = getAgentRunRow(runId)!;
+    assert.equal(row.failureCause, 'invalid-deliverable');
+    assert.match(row.failureReason ?? '', /kind/);
+    assert.equal(row.deliveredAt, null);
+  } finally {
+    await dispatch.disposeAll();
+    await gp.cleanup();
+  }
 });

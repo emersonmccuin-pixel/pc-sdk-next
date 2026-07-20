@@ -7,6 +7,7 @@
 // — a run that ends its turn without submitting fails `no-deliverable`.
 
 import type { AcceptanceCriteria, ExpectedOutput } from '@pc/domain';
+import { DELIVERABLE_FILE_NAME } from './pc-bridge.ts';
 
 export interface SpecialistPromptInput {
   charter: string;
@@ -15,11 +16,38 @@ export interface SpecialistPromptInput {
   acceptanceCriteria: AcceptanceCriteria;
   /** Set for repo-kind dispatches — the isolated worktree the agent runs in. */
   worktreeDir?: string | null;
+  /** True only for tool-bridge-less runtimes (adapter `appToolBridge` is
+   *  'unsupported', e.g. Codex): they mint with no pc_* tools, so the delivery
+   *  discipline is swapped from `pc_submit_deliverable` to the file door. */
+  fileDeliveryDoor?: boolean;
 }
 
 export function buildSpecialistInstructions(input: SpecialistPromptInput): string {
   const parts: string[] = [];
   parts.push(input.charter.trim() || `You are the "${input.podName}" specialist agent.`);
+
+  const deliveryRules = input.fileDeliveryDoor
+    ? `Rules:
+- Deliver by WRITING your typed deliverable as a JSON file named
+  \`${DELIVERABLE_FILE_NAME}\` at the ROOT of your working directory, as your
+  FINAL action. Its shape mirrors a submission: a top-level \`"kind"\` matching
+  the expected output, the deliverable fields, and a short \`"report"\` — e.g.
+  \`{ "kind": "...", "report": "..." }\`. That file — not your end-of-turn text
+  — is what gets captured and verified. A run that ends with no such file is
+  recorded as a failure (\`no-deliverable\`); a malformed file fails with the
+  validation reason.
+- Do NOT commit \`${DELIVERABLE_FILE_NAME}\` — it is a delivery signal, not part
+  of your work. Commit your actual changes first, then write the file last.`
+    : `Rules:
+- Re-read your live contract any time with \`pc_get_contract\` and self-check
+  against the acceptance criteria BEFORE submitting.
+- Submit your typed deliverable with \`pc_submit_deliverable\` (kind matching
+  the expected output) as your FINAL action. That submission — not your
+  end-of-turn text — is what gets captured and verified. A run that ends with
+  nothing submitted is recorded as a failure (\`no-deliverable\`).
+- If the brief is missing a detail you cannot responsibly decide, call
+  \`pc_ask_orchestrator\` (one clear question), then END YOUR TURN and wait —
+  the answer arrives as your next message.`;
 
   parts.push(`
 ## Your contract
@@ -40,18 +68,21 @@ Acceptance criteria (machine-evaluated against your submission):
 ${JSON.stringify(input.acceptanceCriteria, null, 2)}
 \`\`\`
 
-Rules:
-- Re-read your live contract any time with \`pc_get_contract\` and self-check
-  against the acceptance criteria BEFORE submitting.
-- Submit your typed deliverable with \`pc_submit_deliverable\` (kind matching
-  the expected output) as your FINAL action. That submission — not your
-  end-of-turn text — is what gets captured and verified. A run that ends with
-  nothing submitted is recorded as a failure (\`no-deliverable\`).
-- If the brief is missing a detail you cannot responsibly decide, call
-  \`pc_ask_orchestrator\` (one clear question), then END YOUR TURN and wait —
-  the answer arrives as your next message.`);
+${deliveryRules}`);
 
   if (input.expectedOutput.kind === 'repo' && input.worktreeDir) {
+    const repoDelivery = input.fileDeliveryDoor
+      ? `- Deliver by writing \`${DELIVERABLE_FILE_NAME}\` at the worktree root
+  with \`{ "kind": "repo", "report": "..." }\` as your FINAL action (branch and
+  commit are read from the worktree HEAD — you do not supply them). Do NOT
+  commit that file. After verification passes, your branch is landed into the
+  base branch by the orchestrator's review (or automatically when the contract
+  opted in) — you never merge it yourself.`
+      : `- Submit \`{ kind: "repo", branch, commit }\` (your branch name and final
+  commit SHA — \`git rev-parse HEAD\`) via \`pc_submit_deliverable\`. After
+  verification passes, your branch is landed into the base branch by the
+  orchestrator's review (or automatically when the contract opted in) — you
+  never merge it yourself.`;
     parts.push(`
 ## Repo work — isolated worktree
 
@@ -60,13 +91,9 @@ You are running inside an isolated git worktree: \`${input.worktreeDir}\`
 - Do all work HERE. Never touch the main project checkout.
 - COMMIT everything you want verified — verification reads the COMMITTED diff
   against the dispatch base; uncommitted changes are invisible to it. Commit
-  before you submit your deliverable.
+  before you deliver.
 - Do not push, do not switch branches, do not create new branches.
-- Submit \`{ kind: "repo", branch, commit }\` (your branch name and final
-  commit SHA — \`git rev-parse HEAD\`) via \`pc_submit_deliverable\`. After
-  verification passes, your branch is landed into the base branch by the
-  orchestrator's review (or automatically when the contract opted in) — you
-  never merge it yourself.`);
+${repoDelivery}`);
   }
 
   return parts.join('\n');
