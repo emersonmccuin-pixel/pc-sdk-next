@@ -139,15 +139,21 @@ async function main(): Promise<void> {
       ?? CLAUDE_RUNTIME_ID;
 
   const resolveNewSessionSelection = async (
-    input: { projectId: ULID; accountId?: string },
+    input: { projectId: ULID; accountId?: string; runtimeId?: string },
   ) => {
     const orchestrator = orchestratorRow();
     const model = orchestrator?.model?.trim();
     if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
-    const runtimeId = projectRuntimeId(input.projectId);
+    const runtimeId = input.runtimeId ?? projectRuntimeId(input.projectId);
+    if (!runtimes.has(runtimeId)) {
+      return { status: 'invalid' as const, code: 'runtime-not-registered' as const };
+    }
     let account: Account | null;
     try {
-      account = input.accountId
+      // An explicit runtime switch always resolves a fresh default account for
+      // the new runtime — the old runtime's account id is never carried across
+      // (docs/agent-runtime-architecture.md "Sessions and switching").
+      account = input.accountId && !input.runtimeId
         ? accounts.get(runtimeId, input.accountId)
         : accounts.resolveForProject(input.projectId, runtimeId);
     } catch {

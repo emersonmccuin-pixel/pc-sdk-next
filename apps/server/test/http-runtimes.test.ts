@@ -106,7 +106,9 @@ test('a native/discovery failure degrades to null capabilities, never a thrown r
     runtimes: { runtimeId: string; accounts: { id: string; capabilities: unknown }[] }[];
   };
   const codex = json.runtimes.find((r) => r.runtimeId === 'openai-codex')!;
-  assert.deepEqual(codex.accounts, [{ id: 'personal', capabilities: null }]);
+  assert.deepEqual(codex.accounts, [
+    { id: 'personal', capabilities: null, models: { status: 'available', models: [] } },
+  ]);
 });
 
 test('an account seeded for an unregistered runtime is omitted, not a crash', async () => {

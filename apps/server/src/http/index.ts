@@ -173,7 +173,12 @@ export function createHttpApp(deps: HttpDeps): Hono {
       subscriptionQuota: deps.subscriptionQuota,
     });
     if (deps.runtimes) {
-      mountRuntimes(app, { accounts: deps.accounts, runtimes: deps.runtimes });
+      mountRuntimes(app, {
+        accounts: deps.accounts,
+        runtimes: deps.runtimes,
+        registry: deps.registry,
+        defaultRuntimeId: deps.orchestratorRuntimeId,
+      });
     }
   }
 

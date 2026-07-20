@@ -71,12 +71,13 @@ export function testModelDiscovery(): RuntimeModelDiscovery {
 export function testSessionSelectionDeps() {
   return {
     resolveNewSessionSelection: async (
-      input: { projectId: string; accountId?: string },
+      input: { projectId: string; accountId?: string; runtimeId?: string },
     ): Promise<RuntimeSelectionValidation> => ({
       status: 'valid',
       selection: {
         ...TEST_SELECTION,
         accountId: input.accountId ?? TEST_SELECTION.accountId,
+        runtimeId: input.runtimeId ?? TEST_SELECTION.runtimeId,
       },
     }),
     preflightRuntimeSession: async (

@@ -30,6 +30,7 @@ export const CONVERSATION_SESSION_ENDED_REASONS = [
   'provider_error',
   'provider_session_lost',
   'account_switched',
+  'runtime_switched',
   'selection_unavailable',
   'pty_exit',
   'archived',
