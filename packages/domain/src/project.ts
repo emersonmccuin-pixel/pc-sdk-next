@@ -1,5 +1,6 @@
 // Project domain type + per-project settings.
 
+import { effectiveLandingPolicy, type ContractLandingPolicy, type ExpectedOutput } from './contract.ts';
 import type { ULID } from './ulid.ts';
 import type { RepositoryIdentityReceipt, WorktreeProfile } from './worktree.ts';
 
@@ -32,6 +33,23 @@ export interface ProjectSettings {
    *  mints a NEW session (a runtime/account/model/effort change is always a
    *  session boundary — docs/agent-runtime-architecture.md). */
   defaultRuntimeId: string | null;
+  /** WF-2 — per-project default gate for the dispatch lifecycle's Review
+   *  phase (docs/master-plan.md "MCP manager — reliability requirements" /
+   *  Phase 4). `'orchestrator-review'` (default) parks a verified pass
+   *  merge-ready for the orchestrator's cheap accept; `'full-review'` always
+   *  escalates to the independent review specialist. This is a PROJECT-WIDE
+   *  fallback: an issuer-authored contract spec (`ExpectedOutput.review`)
+   *  still wins when it demands `'full-review'` — see
+   *  `resolveContractLandingPolicy`, which never lets this setting downgrade
+   *  a stricter spec-derived policy. */
+  reviewPolicy: 'orchestrator-review' | 'full-review';
+  /** WF-2 — per-project opt-in that lets a verified repo contract land
+   *  automatically instead of parking merge-ready, when the contract's own
+   *  spec didn't already decide (issuer-authored `auto_land`/`review` always
+   *  wins over this project default). Default false — auto-merge stays
+   *  opt-in. Never applies when the effective policy is `'full-review'`
+   *  (see `resolveContractLandingPolicy`). */
+  autoMergeEligible: boolean;
 }
 
 /** Git ref-name shape for the integration branch. Unlike the runtime's
@@ -45,6 +63,8 @@ export function defaultProjectSettings(): ProjectSettings {
     integrationBranch: null,
     defaultAccountId: null,
     defaultRuntimeId: null,
+    reviewPolicy: 'orchestrator-review',
+    autoMergeEligible: false,
   };
 }
 
@@ -59,6 +79,8 @@ export function withProjectSettingsDefaults(
   const ib = typeof stored.integrationBranch === 'string' ? stored.integrationBranch.trim() : null;
   const acct = typeof stored.defaultAccountId === 'string' ? stored.defaultAccountId.trim() : null;
   const rt = typeof stored.defaultRuntimeId === 'string' ? stored.defaultRuntimeId.trim() : null;
+  const rp = stored.reviewPolicy;
+  const ame = stored.autoMergeEligible;
   return {
     cancelledVisibility:
       v === 'force-visible' || v === 'force-hidden' || v === 'use-global'
@@ -69,6 +91,8 @@ export function withProjectSettingsDefaults(
     integrationBranch: ib && INTEGRATION_BRANCH_RE.test(ib) ? ib : null,
     defaultAccountId: acct && acct.length > 0 ? acct : null,
     defaultRuntimeId: rt && rt.length > 0 ? rt : null,
+    reviewPolicy: rp === 'orchestrator-review' || rp === 'full-review' ? rp : defaults.reviewPolicy,
+    autoMergeEligible: typeof ame === 'boolean' ? ame : defaults.autoMergeEligible,
   };
 }
 
@@ -97,6 +121,50 @@ export function resolveRemoteControlEnabled(
   if (resolved === 'on') return true;
   if (resolved === 'off') return false;
   return globalEnabled;
+}
+
+/** Result of resolving a repo contract's landing policy against the
+ *  per-project lifecycle-policy settings (WF-2). `guardOverride` is set
+ *  (non-null) exactly when a project setting was IGNORED because a
+ *  stricter, contract/spec-derived invariant already applies — the caller
+ *  logs it; the guard silently winning would hide the override. */
+export interface ResolvedContractLandingPolicy {
+  policy: ContractLandingPolicy;
+  guardOverride: string | null;
+}
+
+/** docs/master-plan.md "MCP manager — reliability requirements" / Phase 4 —
+ *  per-project `reviewPolicy`/`autoMergeEligible` fill in ONLY where the
+ *  contract's own spec left the decision open (NULL landingPolicy). An
+ *  issuer-authored spec (`ExpectedOutput.review === 'full'` or
+ *  `auto_land === true`) is never downgraded or silently relaxed by a
+ *  project default; `full-review`, once reached from either source, always
+ *  wins over `autoMergeEligible`. */
+export function resolveContractLandingPolicy(
+  projectSettings: Partial<ProjectSettings> | undefined,
+  spec: ExpectedOutput | null | undefined,
+): ResolvedContractLandingPolicy {
+  // Landing policy only means anything for repo-kind contracts — a
+  // non-repo spec has no worktree/branch for the project's review/auto-merge
+  // defaults to act on, so it always parks 'default-review' untouched.
+  if (spec?.kind !== 'repo') return { policy: 'default-review', guardOverride: null };
+  const settings = withProjectSettingsDefaults(projectSettings);
+  const specPolicy = effectiveLandingPolicy(null, spec);
+  if (specPolicy === 'full-review') {
+    return {
+      policy: 'full-review',
+      guardOverride: settings.autoMergeEligible
+        ? 'autoMergeEligible ignored — the contract spec requires full-review (guard wins, never downgraded)'
+        : null,
+    };
+  }
+  if (settings.reviewPolicy === 'full-review') {
+    return { policy: 'full-review', guardOverride: null };
+  }
+  if (settings.autoMergeEligible) {
+    return { policy: 'auto-merge', guardOverride: null };
+  }
+  return { policy: specPolicy, guardOverride: null };
 }
 
 export interface Project {

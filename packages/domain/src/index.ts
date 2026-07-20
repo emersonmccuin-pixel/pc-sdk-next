@@ -81,11 +81,12 @@ export {
   evaluatePredicate,
   pathMatchesPattern,
 } from './ac-evaluator.ts';
-export type { Project, ProjectSettings } from './project.ts';
+export type { Project, ProjectSettings, ResolvedContractLandingPolicy } from './project.ts';
 export {
   defaultProjectSettings,
   INTEGRATION_BRANCH_RE,
   resolveCancelledHidden,
+  resolveContractLandingPolicy,
   resolveRemoteControlEnabled,
   withProjectSettingsDefaults,
 } from './project.ts';
