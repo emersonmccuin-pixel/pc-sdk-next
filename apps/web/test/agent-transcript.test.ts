@@ -92,6 +92,28 @@ test('transcript renderer never serializes malformed or internal envelope payloa
   assert.equal(internalEnvelope, '');
 });
 
+test('turn-failed transcript row renders providerDetail as a dimmed attributed line only when present', () => {
+  const withDetail = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: {
+      kind: 'turn-failed',
+      error: 'runtime failed to start (session-mint-unavailable)',
+      source: 'internal',
+      providerDetail: 'account currently refuses all turns',
+    },
+  }));
+  assert.match(withDetail, /Provider:/);
+  assert.match(withDetail, /account currently refuses all turns/);
+
+  const withoutDetail = renderToStaticMarkup(createElement(TranscriptRow, {
+    event: {
+      kind: 'turn-failed',
+      error: 'runtime failed to start (session-mint-unavailable)',
+      source: 'internal',
+    },
+  }));
+  assert.doesNotMatch(withoutDetail, /Provider:/);
+});
+
 test('context telemetry stays in the session bar and unknown compaction renders honestly', () => {
   const context = renderToStaticMarkup(createElement(TranscriptRow, {
     event: {

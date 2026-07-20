@@ -45,6 +45,7 @@ import {
   type SubscriptionQuotaSourceObservation,
   type SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
+import { scrubProviderDetail } from '@pc/utils';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 import { buildChildEnvironment } from '../operations/child-environment.ts';
 import type { AccountRegistry } from './account-env.ts';
@@ -900,7 +901,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     if (!turn) return;
     this.currentTurn = null;
     resetTurnCorrelation(this.keys);
-    void err;
+    const providerDetail = scrubProviderDetail(err instanceof Error ? err.message : null) ?? undefined;
     turn.push({
       type: 'result',
       ok: false,
@@ -910,9 +911,11 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       error: 'runtime query failed',
       // A genuine stream break is a real failure, never mistaken for turn-budget
       // exhaustion (which only ever comes from a native `result` message).
-      // Query-loop exception text is not typed native abort evidence.
+      // Query-loop exception text is not typed native abort evidence — only the
+      // scrubbed, bounded providerDetail below carries any of it, for display.
       outcome: 'error',
       numTurns: null,
+      ...(providerDetail ? { providerDetail } : {}),
     });
     turn.end();
   }
@@ -1528,10 +1531,20 @@ function mapResult(m: Record<string, unknown>): RuntimeEvent {
     : outcome === 'aborted'
       ? 'runtime turn aborted'
       : 'runtime execution failed';
+  const providerDetail = scrubProviderDetail(nativeResultErrorText(m.errors)) ?? undefined;
   return {
     type: 'result', ok: false, stopReason, usage, durationMs,
     error, outcome, numTurns,
+    ...(providerDetail ? { providerDetail } : {}),
   };
+}
+
+/** SDKResultError.errors: string[] — the native failure text(s) for a failed
+ *  result message. Joined for display; pre-scrub. */
+function nativeResultErrorText(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  const strings = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  return strings.length > 0 ? strings.join('; ') : null;
 }
 
 function mapResultPermissionDenials(

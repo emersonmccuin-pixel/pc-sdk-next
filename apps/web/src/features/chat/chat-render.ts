@@ -48,7 +48,13 @@ export type RenderItem =
       postTokens: number | null;
     }
   | { kind: 'system'; key: string; subtype: string; level: 'info' | 'notice' | 'warning' | 'error'; message: string }
-  | { kind: 'turn-failed'; key: string; error: string; source: 'api' | 'abort' | 'internal' }
+  | {
+      kind: 'turn-failed';
+      key: string;
+      error: string;
+      source: 'api' | 'abort' | 'internal';
+      providerDetail: string | null;
+    }
   | {
       kind: 'turn-end';
       key: string;
@@ -168,7 +174,13 @@ export function buildRenderItems(frames: readonly ConversationEventFrame[]): Ren
         break;
       case 'turn-failed':
         flushTools();
-        items.push({ kind: 'turn-failed', key, error: ev.error, source: ev.source });
+        items.push({
+          kind: 'turn-failed',
+          key,
+          error: ev.error,
+          source: ev.source,
+          providerDetail: ev.providerDetail ?? null,
+        });
         break;
       case 'turn-end':
         flushTools();

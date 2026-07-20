@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { formatToolLabel } from '@/lib/tool-labels';
 import { Markdown } from './Markdown';
 import type { RenderItem, ToolCall } from './chat-render';
+import { turnFailedHint } from './turn-failed-hints';
 
 // ── Content bubbles ─────────────────────────────────────────────────────────
 
@@ -180,11 +181,26 @@ export function SystemBubble({ level, message }: { level: 'info' | 'notice' | 'w
   );
 }
 
-export function TurnFailedBubble({ error, source }: { error: string; source: string }) {
+export function TurnFailedBubble({
+  error,
+  source,
+  providerDetail,
+}: {
+  error: string;
+  source: string;
+  providerDetail?: string | null;
+}) {
+  const hint = turnFailedHint(error);
   return (
     <div className="border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm">
       <span className="text-[10px] uppercase tracking-wider text-destructive">turn failed · {source}</span>
       <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground">{error}</div>
+      {hint && <div className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">{hint}</div>}
+      {providerDetail && (
+        <div className="mt-1 whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground/80">
+          Provider: {providerDetail}
+        </div>
+      )}
     </div>
   );
 }
@@ -248,7 +264,7 @@ export function RenderItemView({ item }: { item: RenderItem }) {
     case 'system':
       return <SystemBubble level={item.level} message={item.message} />;
     case 'turn-failed':
-      return <TurnFailedBubble error={item.error} source={item.source} />;
+      return <TurnFailedBubble error={item.error} source={item.source} providerDetail={item.providerDetail} />;
     case 'turn-end':
       return <TurnEndMarker stopReason={item.stopReason} />;
   }

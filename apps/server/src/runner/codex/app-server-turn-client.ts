@@ -12,9 +12,13 @@
 // It is intentionally a THIN wire: it frames JSONL, correlates request ids, and
 // routes inbound frames to sinks. All provider-neutral capture, filtering, and
 // policy live one layer up in live-peer.ts. Native prose never survives on the
-// typed error here.
+// typed error's message/code — only a bounded, secret-scrubbed copy of a native
+// JSON-RPC error's own `.message` may ride along as `providerDetail`, for
+// display, never for control flow (docs/agent-runtime-architecture.md).
 
 import { spawn } from 'node:child_process';
+
+import { scrubProviderDetail } from '@pc/utils';
 
 import type {
   CodexAppServerProcess,
@@ -35,9 +39,11 @@ export type CodexTurnTransportErrorCode =
 
 export class CodexTurnTransportError extends Error {
   readonly name = 'CodexTurnTransportError';
+  readonly providerDetail?: string;
 
-  constructor(readonly code: CodexTurnTransportErrorCode) {
+  constructor(readonly code: CodexTurnTransportErrorCode, providerDetail?: string | null) {
     super(`Codex turn transport unavailable: ${code}`);
+    if (providerDetail) this.providerDetail = providerDetail;
   }
 }
 
@@ -290,7 +296,7 @@ export class CodexTurnTransport {
     this.pending.delete(id);
     clearTimeout(entry.timer);
     if (message.error !== undefined) {
-      entry.reject(new CodexTurnTransportError('transport-failed'));
+      entry.reject(new CodexTurnTransportError('transport-failed', scrubProviderDetail(nativeErrorMessage(message.error))));
     } else {
       entry.resolve(message.result);
     }
@@ -346,4 +352,10 @@ export class CodexTurnTransport {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** A native JSON-RPC error's own `.message`, pre-scrub. Any other shape (a
+ *  malformed/absent message) yields null rather than a synthesized string. */
+function nativeErrorMessage(value: unknown): string | null {
+  return isRecord(value) && typeof value.message === 'string' ? value.message : null;
 }

@@ -168,7 +168,15 @@ export type ChatEvent =
   | { kind: 'user'; text: string }
   | { kind: 'assistant-text'; text: string; midLoop: boolean }
   | { kind: 'turn-end'; text: string; stopReason: TurnStopReason | null }
-  | { kind: 'turn-failed'; error: string; source: 'api' | 'abort' | 'internal' }
+  | {
+      kind: 'turn-failed';
+      error: string;
+      source: 'api' | 'abort' | 'internal';
+      /** Optional bounded, secret-scrubbed provider diagnostic text (see
+       *  @pc/utils scrubProviderDetail). Display-only: never woven into
+       *  `error`, never used for control flow. */
+      providerDetail?: string;
+    }
   | { kind: 'activity-state'; phase: ActivityPhase }
   | ToolStateEvent
   | {
@@ -293,6 +301,12 @@ function nonNegativeSafeInteger(value: unknown): value is number {
 
 function nullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
+}
+
+const PROVIDER_DETAIL_MAX_LENGTH = 500;
+
+function isBoundedProviderDetail(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= PROVIDER_DETAIL_MAX_LENGTH;
 }
 
 function isTurnStopReason(value: unknown): value is TurnStopReason {
@@ -426,9 +440,11 @@ export function isChatEvent(value: unknown): value is ChatEvent {
       );
     case 'turn-failed':
       return (
-        hasOnlyKeys(value, ['kind', 'error', 'source']) &&
+        hasOnlyKeys(value, ['kind', 'error', 'source', 'providerDetail']) &&
         typeof value.error === 'string' &&
-        (value.source === 'api' || value.source === 'abort' || value.source === 'internal')
+        (value.source === 'api' || value.source === 'abort' || value.source === 'internal') &&
+        // Bound matches @pc/utils scrubProviderDetail's cap; absent stays valid.
+        (value.providerDetail === undefined || isBoundedProviderDetail(value.providerDetail))
       );
     case 'activity-state':
       return (

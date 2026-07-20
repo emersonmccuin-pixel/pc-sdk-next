@@ -50,14 +50,32 @@ test('subtype error_max_budget_usd -> outcome budget-exhausted', () => {
   assert.equal(rm.numTurns, 42);
 });
 
-test('subtype error_during_execution -> outcome error', () => {
+test('subtype error_during_execution -> outcome error, native errors[] rides as bounded providerDetail', () => {
   const rm = mapResult({
-    subtype: 'error_during_execution', num_turns: 3, errors: ['SECRET technical failure'],
-  }) as { outcome: string; numTurns: number | null; error: string | null };
+    subtype: 'error_during_execution', num_turns: 3, errors: ['native technical failure'],
+  }) as { outcome: string; numTurns: number | null; error: string | null; providerDetail?: string };
   assert.equal(rm.outcome, 'error');
   assert.equal(rm.numTurns, 3);
   assert.equal(rm.error, 'runtime execution failed');
-  assert.equal(JSON.stringify(rm).includes('SECRET'), false);
+  // Owner-approved product decision: the native `errors[]` text rides through
+  // as bounded, attributed providerDetail — display-only, never woven into
+  // the app-authored `error` field above or used for control flow.
+  assert.equal(rm.providerDetail, 'native technical failure');
+
+  const multi = mapResult({
+    subtype: 'error_during_execution',
+    errors: ['first native reason', 'second native reason'],
+  }) as { providerDetail?: string };
+  assert.equal(multi.providerDetail, 'first native reason; second native reason');
+
+  const withToken = mapResult({
+    subtype: 'error_during_execution',
+    errors: [`auth failed: Bearer ${'a'.repeat(40)}`],
+  }) as { providerDetail?: string };
+  assert.equal(withToken.providerDetail, 'auth failed: [redacted]');
+
+  const noErrors = mapResult({ subtype: 'error_during_execution' }) as { providerDetail?: string };
+  assert.equal(noErrors.providerDetail, undefined);
 });
 
 test('only documented native terminal reasons map to outcome aborted', () => {

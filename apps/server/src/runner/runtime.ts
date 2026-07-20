@@ -85,6 +85,11 @@ export type RuntimeResultEvent =
       ok: false;
       error: string | null;
       outcome: 'error' | 'aborted' | 'budget-exhausted';
+      /** Optional bounded, secret-scrubbed native failure text (already
+       *  scrubbed by the adapter at its capture seam — see @pc/utils
+       *  scrubProviderDetail). Display-only diagnostic detail, never used to
+       *  classify the outcome above. */
+      providerDetail?: string;
     });
 
 /** The typed events a runtime session yields for one turn. Adapters mint
