@@ -2,7 +2,6 @@
 /apps/server/src/runner/codex/generated/** text eol=lf
 
 # CX-004 executes and byte-seals these reviewed Sandbox qualification sources.
-/packages/windows-containment/lab/** text eol=lf
 /docs/execution/manifests/CX-004-sandbox-runner.json text eol=lf
 
 # CX-004 seals these native-build-input authorities byte-for-byte before product code.
@@ -19,30 +18,9 @@
 /packages/mcp/package.json text eol=lf
 /packages/owner-lifecycle/package.json text eol=lf
 /packages/utils/package.json text eol=lf
-/packages/windows-containment/package.json text eol=lf
 /packages/owner-lifecycle/tsconfig.json text eol=lf
-/packages/windows-containment/tsconfig.json text eol=lf
-/packages/windows-containment/toolchain/** text eol=lf
 /pnpm-lock.yaml text eol=lf
 /scripts/check-process-boundaries.mjs text eol=lf
 
 # CX-004 T3 byte-seals the exact typed resource-ownership implementation closure.
-/packages/windows-containment/build/build.mjs text eol=lf
-/packages/windows-containment/build/resource-manifest.mjs text eol=lf
-/packages/windows-containment/build/source-seal.mjs text eol=lf
-/packages/windows-containment/native/core/resource.cc text eol=lf
-/packages/windows-containment/native/core/resource_state.cc text eol=lf
-/packages/windows-containment/native/include/pc_sdk_next/generated/resource_manifest.generated.h text eol=lf
-/packages/windows-containment/native/include/pc_sdk_next/resource.h text eol=lf
-/packages/windows-containment/native/include/pc_sdk_next/resource_manifest.h text eol=lf
-/packages/windows-containment/native/include/pc_sdk_next/resource_state.h text eol=lf
-/packages/windows-containment/native/resource-sites.json text eol=lf
-/packages/windows-containment/native/test/fuzz/fuzz_manifest.cc text eol=lf
-/packages/windows-containment/native/test/fuzz/fuzz_resource_state.cc text eol=lf
-/packages/windows-containment/native/test/property/properties.cc text eol=lf
-/packages/windows-containment/native/test/property/property_main.cc text eol=lf
-/packages/windows-containment/qualification/run-fake-matrix.mjs text eol=lf
-/packages/windows-containment/src/index.ts text eol=lf
-/packages/windows-containment/src/resource-manifest.ts text eol=lf
-/packages/windows-containment/test/resource-manifest.test.ts text eol=lf
 /docs/execution/manifests/CX-004-native-source.json text eol=lf
