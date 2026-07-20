@@ -396,6 +396,11 @@ const claudeRuntimeAdapterConformanceFixture: RuntimeAdapterConformanceFactory =
 runtimeAdapterConformance('generic fake', genericRuntimeAdapterConformanceFixture);
 runtimeAdapterConformance('Claude', claudeRuntimeAdapterConformanceFixture);
 
+test('Claude adapter declares app-tool bridging supported', async () => {
+  const fixture = await claudeRuntimeAdapterConformanceFixture('discovery');
+  assert.equal(fixture.adapter.appToolBridge, 'supported');
+});
+
 test('Claude session config requires an exact durable continuation attempt identity', () => {
   for (const continuationAttemptId of ['', ' attempt-padded ']) {
     assert.throws(

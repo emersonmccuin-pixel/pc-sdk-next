@@ -703,6 +703,11 @@ function conformanceFixture(
 
 runtimeAdapterConformance('Codex', conformanceFixture);
 
+test('Codex adapter declares app-tool bridging unsupported', async () => {
+  const fixture = await conformanceFixture('discovery');
+  assert.equal(fixture.adapter.appToolBridge, 'unsupported');
+});
+
 test('Codex discovery, capabilities, context, and quota degrade with exact attribution', async () => {
   const control = makeControl('manual');
   const adapter = adapterFor(control);

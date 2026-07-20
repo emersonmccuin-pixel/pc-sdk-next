@@ -59,6 +59,11 @@ export function runtimeAdapterConformance(
     const fixture = await factory('discovery');
     const { adapter, selection } = fixture;
     assert.equal(adapter.id, selection.runtimeId);
+    assert.equal(
+      adapter.appToolBridge === 'supported' || adapter.appToolBridge === 'unsupported',
+      true,
+      'every adapter must statically declare its app-tool-bridge capability',
+    );
 
     const capabilities = await adapter.capabilities(selection.accountId);
     assert.equal(isRuntimeCapabilities(capabilities), true);
@@ -361,6 +366,7 @@ const GENERIC_CONTEXT: ContextObservation = {
 
 class GenericConformanceAdapter implements AgentRuntimeAdapter {
   readonly id = GENERIC_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
 
   constructor(private readonly control: GenericControl) {}
 

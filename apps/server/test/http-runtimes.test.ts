@@ -28,6 +28,8 @@ const session: RuntimeSession = {
  *  (e.g. the Codex adapter's app-server spawn failing) without touching a
  *  real process. */
 class FakeAdapter implements AgentRuntimeAdapter {
+  readonly appToolBridge = 'supported' as const;
+
   constructor(
     readonly id: string,
     private readonly capsById: Map<string, 'throw'> = new Map(),

@@ -92,6 +92,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  *  until releaseTurn(i). First messages are captured for brief assertions. */
 class QueueAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   readonly created: CreateRuntimeSession[] = [];
   readonly turnInputs: string[] = [];
   private readonly gates: Array<ReturnType<typeof deferred>> = [];

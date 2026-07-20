@@ -87,6 +87,7 @@ const OK_RESULT = {
 
 class FakeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   created: CreateRuntimeSession[] = [];
   resumed: ResumeRuntimeSession[] = [];
   /** One entry per minted session (create OR resume), in order — lets a test
@@ -123,6 +124,7 @@ class FakeAdapter implements AgentRuntimeAdapter {
 
 class DeferredResumeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   resumed: ResumeRuntimeSession[] = [];
   private markStarted!: () => void;
   readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
@@ -172,6 +174,7 @@ class TrackingRuntime implements RuntimeSession {
 
 class ThrowingCreateAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
   async observeSubscriptionQuota(accountId: string) {
     return testSubscriptionQuotaUnavailable(this.id, accountId);
@@ -196,6 +199,7 @@ class ThrowingSendRuntime implements RuntimeSession {
 
 class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   constructor(private readonly runtime: RuntimeSession) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
   async observeSubscriptionQuota(accountId: string) {
@@ -221,6 +225,7 @@ class SingleRuntimeAdapter implements AgentRuntimeAdapter {
 
 class UnreceiptedAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
   async observeSubscriptionQuota(accountId: string) {
     return testSubscriptionQuotaUnavailable(this.id, accountId);
@@ -611,6 +616,7 @@ test('specialist quota ingress requires its exact receipt and never contaminates
   const admitted: SubscriptionQuotaObservationBatch[] = [];
   const adapter: AgentRuntimeAdapter = {
     id: CLAUDE_RUNTIME_ID,
+    appToolBridge: 'supported',
     capabilities: async (accountId) => testCapabilities(CLAUDE_RUNTIME_ID, accountId),
     observeSubscriptionQuota: async (accountId) =>
       testSubscriptionQuotaUnavailable(CLAUDE_RUNTIME_ID, accountId),

@@ -123,6 +123,7 @@ function deferred<T = void>(): {
 
 class ControlledAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   readonly created: CreateRuntimeSession[] = [];
   readonly turnInputs: string[] = [];
   readonly disposed: number[] = [];

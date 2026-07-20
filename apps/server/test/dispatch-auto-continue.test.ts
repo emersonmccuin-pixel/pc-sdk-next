@@ -102,6 +102,7 @@ const CRASH_RESULT = {
  *  auto-continuation deterministically. */
 class FakeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   created: CreateRuntimeSession[] = [];
   constructor(private readonly turns: ScriptedTurn[]) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
@@ -185,6 +186,7 @@ class LateAfterDisposeRuntime implements RuntimeSession {
 
 class SingleRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   constructor(private readonly runtime: RuntimeSession) {}
   async capabilities(accountId: string) { return testCapabilities(this.id, accountId); }
   async observeSubscriptionQuota(accountId: string) {
@@ -232,6 +234,7 @@ class DeferredRuntime implements RuntimeSession {
 
 class DeferredCreateAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   private markStarted!: () => void;
   readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
   private resolveMint!: (session: RuntimeSession) => void;

@@ -5,6 +5,7 @@ import {
   resolveSelectionWithModelFallback,
   RuntimeRegistrationError,
   RuntimeRegistry,
+  sessionToolsForAdapter,
   type AgentRuntimeAdapter,
   type CreateRuntimeSession,
   type ResumeRuntimeSession,
@@ -12,6 +13,7 @@ import {
   type RuntimeModelDiscovery,
   type RuntimeSession,
 } from '../src/runner/runtime.ts';
+import type { BridgeBuild } from '../src/mcp/bridge.ts';
 import { testSubscriptionQuotaUnavailable } from './runtime-fixtures.ts';
 
 const session: RuntimeSession = {
@@ -23,6 +25,7 @@ const session: RuntimeSession = {
 
 class FakeAdapter implements AgentRuntimeAdapter {
   readonly id = 'fake-runtime';
+  readonly appToolBridge = 'supported' as const;
   capabilitiesValue: RuntimeCapabilities = {
     runtimeId: this.id,
     accountId: 'account-a',
@@ -494,4 +497,48 @@ test('model fallback leaves the typed model-unsupported rejection alone when the
     runtimeId: adapter.id, accountId: 'account-a', model: 'sonnet', effort: null,
   }, true), { status: 'invalid', code: 'model-unsupported' });
   assert.equal(calls, 2);
+});
+
+const fakeBridgeBuild: BridgeBuild = {
+  serverKey: 'pc',
+  toolDefs: [],
+  allowedToolNames: [],
+};
+
+test('sessionToolsForAdapter builds tools only for an adapter that declares app-tool bridging', () => {
+  let calls = 0;
+  const build = () => {
+    calls += 1;
+    return fakeBridgeBuild;
+  };
+
+  const supported = sessionToolsForAdapter(
+    { id: 'supports-tools', appToolBridge: 'supported' },
+    build,
+  );
+  assert.equal(supported, fakeBridgeBuild);
+  assert.equal(calls, 1);
+});
+
+test('sessionToolsForAdapter omits tools and never invokes the builder for an unsupported adapter', () => {
+  let calls = 0;
+  const build = () => {
+    calls += 1;
+    return fakeBridgeBuild;
+  };
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(String(args[0])); };
+  try {
+    const tools = sessionToolsForAdapter(
+      { id: 'openai-codex', appToolBridge: 'unsupported' },
+      build,
+    );
+    assert.equal(tools, undefined);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(calls, 0, 'the builder must stay unevaluated for an unsupported adapter');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /app tools omitted: openai-codex does not bridge app tools/);
 });
