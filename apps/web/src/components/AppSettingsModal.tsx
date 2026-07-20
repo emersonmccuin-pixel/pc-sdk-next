@@ -1,8 +1,9 @@
-// App-wide settings modal. Trimmed vs. PC-PTY-Chat: the Usage tab (old
-// statusline aggregate — replaced by the durable usage channel + Phase-4
-// dashboard) and the Updates tab (Electron auto-update — browser-only now)
-// are deferred. Tabs: General (folder / fonts / scale / layout) + Accounts
-// (the login registry) + MCP servers (Phase-4 manager, N6 reliability bar).
+// App-wide settings modal. Trimmed vs. PC-PTY-Chat: the old statusline-
+// aggregate Usage tab is gone — replaced below by the durable, provider-aware
+// usage dashboard (N6). The Updates tab (Electron auto-update) stays deferred
+// — browser-only now. Tabs: General (folder / fonts / scale / layout) +
+// Accounts (the login registry) + MCP servers (N6 reliability bar) + Usage
+// (every registered runtime+account's subscription quota).
 
 import { useState } from 'react';
 
@@ -18,13 +19,15 @@ import { FONT_REGISTRY, applyFontCssVars, fontsForGroup } from '@/features/setti
 import type { FontGroup, FontKey } from '@/features/settings/types';
 import { useAccounts } from '@/state/accounts';
 import { McpManagerPanel } from '@/features/mcp/McpManagerPanel';
+import { UsageDashboardPanel } from '@/features/usage/UsageDashboardPanel';
 
-type TabId = 'general' | 'accounts' | 'mcp';
+type TabId = 'general' | 'accounts' | 'mcp' | 'usage';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'accounts', label: 'Accounts' },
   { id: 'mcp', label: 'MCP servers' },
+  { id: 'usage', label: 'Usage' },
 ];
 
 const FONT_GROUPS: { group: FontGroup; label: string }[] = [
@@ -183,6 +186,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
 
             {active === 'accounts' && <AccountsTab />}
             {active === 'mcp' && <McpManagerPanel />}
+            {active === 'usage' && <UsageDashboardPanel />}
           </div>
         </div>
 
