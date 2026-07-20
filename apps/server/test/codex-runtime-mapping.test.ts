@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { ServerRequest } from '../src/runner/codex/generated/ServerRequest.ts';
 import type { ThreadItem } from '../src/runner/codex/generated/v2/ThreadItem.ts';
 import {
+  captureCodexApprovalRequest,
   captureCodexDiscovery,
   captureInterruptResponse,
   captureProviderFreePolicyReceipt,
@@ -1038,6 +1039,40 @@ test('outward notification fields are captured once before validation and return
     phase: 'final_answer',
   });
   assert.doesNotMatch(JSON.stringify(captured), /PRIVATE/iu);
+});
+
+test('approval request capture reduces exec/patch to callId and fails closed on hostile shapes', () => {
+  assert.deepEqual(
+    captureCodexApprovalRequest({
+      kind: 'exec',
+      callId: 'native-1',
+      command: ['bash', '-lc', 'echo hi'],
+      cwd: CWD,
+    }),
+    { kind: 'exec', callId: 'native-1', command: ['bash', '-lc', 'echo hi'], cwd: CWD },
+  );
+  assert.deepEqual(
+    captureCodexApprovalRequest({ kind: 'patch', callId: 'native-2', paths: ['a.ts', 'b.ts'] }),
+    { kind: 'patch', callId: 'native-2', paths: ['a.ts', 'b.ts'] },
+  );
+
+  const hostile: unknown[] = [
+    null,
+    [],
+    'exec',
+    { kind: 'other', callId: 'x' },
+    { kind: 'exec', callId: 'x', command: ['a'], cwd: CWD, extra: PRIVATE_PROSE },
+    { kind: 'exec', callId: '', command: ['a'], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: [], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: ['a', 3], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: ['a'] },
+    { kind: 'patch', callId: 'x', paths: [] },
+    { kind: 'patch', callId: 'x', paths: [1] },
+    { kind: 'patch', callId: 'x' },
+  ];
+  for (const value of hostile) {
+    assertMappingError(() => captureCodexApprovalRequest(value), 'approval-request-invalid');
+  }
 });
 
 test('interrupt acknowledgement is exact and never a terminal receipt', () => {

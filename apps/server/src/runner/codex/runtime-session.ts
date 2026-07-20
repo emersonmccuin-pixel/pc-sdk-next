@@ -8,13 +8,15 @@ import {
   type RuntimeSessionReceipt,
 } from '@pc/contracts';
 
-import type { RuntimeEvent, RuntimeSession } from '../runtime.ts';
+import type { AskDecision, AskHandler, RuntimeEvent, RuntimeSession } from '../runtime.ts';
 import {
+  captureCodexApprovalRequest,
   captureInterruptResponse,
   captureProviderFreeTurnBoundaryReceipt,
   captureRuntimeNotification,
   captureTurnStartResponse,
   CodexRuntimeMappingError,
+  type CapturedCodexApprovalRequest,
 } from './runtime-mapping.ts';
 import {
   CODEX_PROTOCOL_VERSION,
@@ -52,6 +54,9 @@ export interface CodexRuntimeSessionConfig {
   historicalItemIds: readonly string[];
   cwd: string;
   maxTurns: number | null;
+  appSessionId: string;
+  /** Permission seam for routed exec/patch approvals; null denies fail-closed. */
+  ask: AskHandler | null;
 }
 
 const CONTEXT_UNAVAILABLE: ContextObservation = Object.freeze({
@@ -67,6 +72,9 @@ export class CodexRuntimeSession implements RuntimeSession {
   private readonly nativeThreadId: string;
   private readonly cwd: string;
   private readonly continuationAttemptId: string;
+  private readonly appSessionId: string;
+  private readonly ask: AskHandler | null;
+  private activeApprovalPump: Promise<void> | null = null;
   private receiptPending = true;
   private active = false;
   private activeReservationId: string | null = null;
@@ -98,7 +106,9 @@ export class CodexRuntimeSession implements RuntimeSession {
       (config.mode === 'created' &&
         (config.historicalTurnIds.length !== 0 || config.historicalItemIds.length !== 0)) ||
       (config.maxTurns !== null &&
-        (!Number.isSafeInteger(config.maxTurns) || config.maxTurns <= 0))) {
+        (!Number.isSafeInteger(config.maxTurns) || config.maxTurns <= 0)) ||
+      !exactString(config?.appSessionId) ||
+      (config.ask !== null && typeof config.ask !== 'function')) {
       throw new CodexRuntimeSessionError('invalid-session-config');
     }
     this.peer = config.peer;
@@ -107,6 +117,8 @@ export class CodexRuntimeSession implements RuntimeSession {
     this.nativeThreadId = config.nativeThreadId;
     this.cwd = config.cwd;
     this.continuationAttemptId = config.continuationAttemptId;
+    this.appSessionId = config.appSessionId;
+    this.ask = config.ask;
     this.maxTurns = config.maxTurns;
     this.usedTurnIds = new Set(config.historicalTurnIds);
     this.usedItemIds = new Set(config.historicalItemIds);
@@ -234,6 +246,10 @@ export class CodexRuntimeSession implements RuntimeSession {
       }
       this.usedTurnIds.add(turnId);
       this.activeTurnId = turnId;
+      // Route exec/patch approvals raised during this turn alongside the
+      // notification loop. The pump self-terminates when the shared turn
+      // cancellation fires (terminal, failure, dispose).
+      this.activeApprovalPump = this.pumpApprovals(reservationId, cancellation);
 
       if (this.receiptPending) {
         this.receiptPending = false;
@@ -421,6 +437,66 @@ export class CodexRuntimeSession implements RuntimeSession {
       }
       this.releaseTerminalReservation(reservationId);
     }
+  }
+
+  /** Drain the peer's per-turn approval requests, routing each to the app ask
+   * (or denying fail-closed when no handler) and forwarding the verdict. A
+   * malformed request or peer failure poisons the turn; cancellation ends the
+   * pump cleanly. */
+  private async pumpApprovals(
+    reservationId: string,
+    cancellation: TurnCancellation,
+  ): Promise<void> {
+    const iterator = this.peer.approvals()[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const next = await waitForTurn(iterator.next(), cancellation);
+        if (next.done) return;
+        this.assertTurnReservation(reservationId);
+        const request = captureCodexApprovalRequest(next.value);
+        const behavior = await this.decideApproval(request, cancellation);
+        await waitForTurn(this.peer.respondToApproval({
+          kind: request.kind,
+          callId: request.callId,
+          behavior,
+        }), cancellation);
+      }
+    } catch (error) {
+      // Cancellation (session-unavailable) is orderly teardown, not a failure.
+      if (!(error instanceof CodexRuntimeSessionError)) {
+        this.poisoned = true;
+        cancellation.cancel();
+      }
+    } finally {
+      try {
+        await iterator.return?.();
+      } catch {
+        // Peer disposal owns uncertain approval-iterator cleanup.
+      }
+    }
+  }
+
+  private async decideApproval(
+    request: CapturedCodexApprovalRequest,
+    cancellation: TurnCancellation,
+  ): Promise<'allow' | 'deny'> {
+    if (this.ask === null) return 'deny';
+    const handle = this.ask({
+      toolName: request.kind === 'exec' ? 'ExecCommand' : 'ApplyPatch',
+      callId: randomUUID(),
+      toolInput: request.kind === 'exec'
+        ? { command: request.command, cwd: request.cwd }
+        : { paths: request.paths },
+      appSessionId: this.appSessionId,
+    });
+    let decision: AskDecision;
+    try {
+      decision = await waitForTurn(handle.decision, cancellation);
+    } catch (error) {
+      handle.cancel();
+      throw error;
+    }
+    return decision.behavior === 'allow' ? 'allow' : 'deny';
   }
 
   private assertTurnReservation(reservationId: string, turnId?: string): void {
@@ -684,6 +760,8 @@ function isPeer(value: unknown): value is CodexRuntimePeer {
       typeof peer.startTurn === 'function' &&
       typeof peer.interruptTurn === 'function' &&
       typeof peer.notifications === 'function' &&
+      typeof peer.approvals === 'function' &&
+      typeof peer.respondToApproval === 'function' &&
       typeof peer.dispose === 'function';
   } catch {
     return false;

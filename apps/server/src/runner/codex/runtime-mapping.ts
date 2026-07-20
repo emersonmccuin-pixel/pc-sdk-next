@@ -26,7 +26,8 @@ export type CodexRuntimeMappingErrorCode =
   | 'runtime-notification-invalid'
   | 'runtime-notification-unsafe'
   | 'turn-boundary-invalid'
-  | 'interrupt-response-invalid';
+  | 'interrupt-response-invalid'
+  | 'approval-request-invalid';
 
 /** Durable-safe adapter failure. Native payloads and provider prose never
  * participate in the message. */
@@ -384,6 +385,44 @@ export function captureRuntimeNotification(value: unknown): CapturedCodexRuntime
       default:
         fail('runtime-notification-unsafe');
     }
+  });
+}
+
+/** A provider-neutral exec/patch approval request the peer raised mid-turn.
+ * Native request identity is reduced to the correlation `callId`; only the
+ * command/paths needed to render the ask card survive. */
+export type CapturedCodexApprovalRequest =
+  | { kind: 'exec'; callId: string; command: string[]; cwd: string }
+  | { kind: 'patch'; callId: string; paths: string[] };
+
+/** Capture one untrusted approval request. Anything unexpected fails closed so
+ * a malformed request denies rather than silently escaping the sandbox. */
+export function captureCodexApprovalRequest(value: unknown): CapturedCodexApprovalRequest {
+  return guarded('approval-request-invalid', () => {
+    if (!isRecord(value)) fail('approval-request-invalid');
+    const kind = value.kind;
+    if (kind === 'exec') {
+      exactKeys(value, ['kind', 'callId', 'command', 'cwd'], 'approval-request-invalid');
+      const callId = value.callId;
+      const command = value.command;
+      const cwd = value.cwd;
+      if (!exactString(callId) || !Array.isArray(command) || command.length === 0 ||
+        !command.every((entry) => typeof entry === 'string') || !exactString(cwd)) {
+        fail('approval-request-invalid');
+      }
+      return { kind: 'exec', callId, command: [...command] as string[], cwd };
+    }
+    if (kind === 'patch') {
+      exactKeys(value, ['kind', 'callId', 'paths'], 'approval-request-invalid');
+      const callId = value.callId;
+      const paths = value.paths;
+      if (!exactString(callId) || !Array.isArray(paths) || paths.length === 0 ||
+        !paths.every((entry) => typeof entry === 'string')) {
+        fail('approval-request-invalid');
+      }
+      return { kind: 'patch', callId, paths: [...paths] as string[] };
+    }
+    return fail('approval-request-invalid');
   });
 }
 
