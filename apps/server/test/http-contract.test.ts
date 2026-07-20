@@ -186,6 +186,20 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.ok(project.id && project.slug);
     assert.deepEqual(project.stages, []);
     assert.ok('cancelledVisibility' in project.settings && 'remoteControl' in project.settings);
+    // WF-2 — lifecycle policy settings default and round-trip through PATCH.
+    assert.equal(project.settings.reviewPolicy, 'orchestrator-review');
+    assert.equal(project.settings.autoMergeEligible, false);
+    const policyPatched = await fetch(`${base}/api/projects/${project.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ settings: { reviewPolicy: 'full-review', autoMergeEligible: true } }),
+    }).then(body);
+    assert.equal(policyPatched.ok, true);
+    assert.equal(policyPatched.project.settings.reviewPolicy, 'full-review');
+    assert.equal(policyPatched.project.settings.autoMergeEligible, true);
+    const policyDetail = await fetch(`${base}/api/projects/${project.id}`).then(body);
+    assert.equal(policyDetail.settings.reviewPolicy, 'full-review');
+    assert.equal(policyDetail.settings.autoMergeEligible, true);
 
     // list is ProjectDto[]
     const list = await fetch(`${base}/api/projects`).then(body);

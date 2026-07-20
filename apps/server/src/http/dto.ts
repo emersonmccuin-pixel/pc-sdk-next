@@ -14,7 +14,7 @@ import {
 import type { Project } from '@pc/domain';
 
 /** Domain project → wire ProjectDto. Stages are a dead (work-items) concept in
- *  Phase 2 — always []. Only the three DTO settings keys ride the wire. */
+ *  Phase 2 — always []. Only the DTO settings keys ride the wire. */
 export function toProjectDto(p: Project): ProjectDto {
   return {
     id: p.id,
@@ -27,6 +27,8 @@ export function toProjectDto(p: Project): ProjectDto {
       cancelledVisibility: p.settings.cancelledVisibility,
       remoteControl: p.settings.remoteControl,
       integrationBranch: p.settings.integrationBranch,
+      reviewPolicy: p.settings.reviewPolicy,
+      autoMergeEligible: p.settings.autoMergeEligible,
     },
     callsignSeq: p.callsignSeq,
     notes: p.notes,
