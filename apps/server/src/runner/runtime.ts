@@ -709,6 +709,37 @@ export class RuntimeRegistry {
   }
 }
 
+/** Retry a rejected `resolveSelection` exactly once with the target
+ * runtime's own first live-discovered model, when the caller opts in via
+ * `allowModelFallback`. Composition roots set that flag only when a stored
+ * model default was written for a different runtime than the one now being
+ * resolved (e.g. an explicit runtime switch) — a model shorthand from one
+ * runtime is never meaningful on another. The fallback model always comes
+ * from the adapter's own live discovery for the resolved account; one is
+ * never invented here. Discovery that is unavailable, errors, or returns no
+ * models leaves the original typed `model-unsupported` rejection untouched. */
+export async function resolveSelectionWithModelFallback(
+  registry: RuntimeRegistry,
+  request: RuntimeSelectionRequest,
+  allowModelFallback: boolean,
+): Promise<RuntimeSelectionValidation> {
+  const resolved = await registry.resolveSelection(request);
+  if (!allowModelFallback || resolved.status !== 'invalid' || resolved.code !== 'model-unsupported') {
+    return resolved;
+  }
+  const resolution = registry.resolve(request.runtimeId);
+  if (resolution.status === 'invalid') return resolved;
+  let discovery: RuntimeModelDiscovery;
+  try {
+    discovery = await resolution.adapter.listModels(request.accountId);
+  } catch {
+    return resolved;
+  }
+  const fallbackModel = discovery.status === 'available' ? discovery.models[0]?.id : undefined;
+  if (!fallbackModel) return resolved;
+  return registry.resolveSelection({ ...request, model: fallbackModel });
+}
+
 /** How the chat engine mints its per-session runtime session. The composition
  *  root supplies the closure that resolves selection + instructions + tools
  *  and calls the registered adapter (create or resume). */

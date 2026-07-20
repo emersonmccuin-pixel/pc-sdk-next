@@ -31,6 +31,7 @@ import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
 import { withProjectSettingsDefaults, type ULID } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 import {
+  resolveSelectionWithModelFallback,
   RuntimeRegistry,
   type MintRuntimeSession,
   type RuntimeSession,
@@ -160,12 +161,21 @@ async function main(): Promise<void> {
       return { status: 'invalid' as const, code: 'account-unavailable' as const };
     }
     if (!account) return { status: 'invalid' as const, code: 'account-unavailable' as const };
-    return runtimes.resolveSelection({
+    // The orchestrator row's stored model is a Claude-shorthand default
+    // (DEFAULT_CLAUDE_SPECIALIST_MODEL policy above) and is meaningless once
+    // a session targets a different runtime. Allow the generic one-shot
+    // model-discovery fallback (resolveSelectionWithModelFallback) only when
+    // that mismatch is plausible: an explicit runtime switch was requested,
+    // or the resolved runtime already differs from the one the stored model
+    // was written for. This keeps the fallback from silently reassigning a
+    // model when a same-runtime selection is genuinely broken.
+    const allowModelFallback = input.runtimeId !== undefined || runtimeId !== CLAUDE_RUNTIME_ID;
+    return resolveSelectionWithModelFallback(runtimes, {
       runtimeId,
       accountId: account.id,
       model,
       effort: orchestrator?.effort ?? null,
-    });
+    }, allowModelFallback);
   };
 
   const resolveNewSpecialistSelection: DispatchServiceDeps['resolveNewSpecialistSelection'] =
