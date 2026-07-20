@@ -311,11 +311,30 @@ test('only runner/codex/executable.ts resolves the repository-pinned Codex packa
     `unexpected Codex package owners: ${owners.join(', ')}`,
   );
 
+  // WF-1 registers the live Codex peer at the composition root. It must still
+  // never resolve the native package directly — only executable.ts (checked
+  // above) does that — and it must reach the adapter through the designated
+  // live-peer factory, not by constructing a native client itself.
   const composition = readFileSync(join(SRC, 'index.ts'), 'utf8');
   assert.doesNotMatch(
     composition,
-    /\bCodexRuntimeAdapter\b|['"][^'"]*runner\/codex[^'"]*['"]|['"]openai-codex['"]/,
-    'CX-002 provider-free mapping must remain unregistered and uncomposed',
+    CODEX_PACKAGE_REFERENCE,
+    'the composition root must not resolve the native Codex package directly',
+  );
+  assert.doesNotMatch(
+    composition,
+    /CodexAppServerClient|createCodexAppServerClient|startCodexAppServer|app-server-client/,
+    'the composition root must reach Codex only through runner/codex/live-peer.ts',
+  );
+  assert.match(
+    composition,
+    /\bCodexRuntimeAdapter\b/,
+    'the live Codex peer must be registered beside ClaudeRuntimeAdapter',
+  );
+  assert.match(
+    composition,
+    /createCodexLiveDeps/,
+    'the composition root must build Codex deps through runner/codex/live-peer.ts',
   );
 
   const executable = readFileSync(join(CODEX_SOURCE_ROOT, 'executable.ts'), 'utf8');
@@ -377,12 +396,22 @@ test('Codex runtime mapping has no native/default peer or production importer', 
       ))
       .join('; ')}`,
   );
+  // WF-1: the composition root (index.ts) is now the one authorized outside
+  // importer — it registers CodexRuntimeAdapter beside ClaudeRuntimeAdapter.
+  // No OTHER production file may reach the Codex runtime surface.
+  const COMPOSITION_ROOT = join(SRC, 'index.ts');
   const targets = new Set(CODEX_RUNTIME_SURFACE);
   const importers = PRODUCTION_FILES
     .filter((file) => !isWithin(CODEX_SOURCE_ROOT, file))
+    .filter((file) => file !== COMPOSITION_ROOT)
     .filter((file) => reachesAny(graph, file, targets))
     .map(repoPath);
   assert.deepEqual(importers, [], `Codex adapter escaped its provider-local boundary: ${importers.join(', ')}`);
+  assert.equal(
+    reachesAny(graph, COMPOSITION_ROOT, targets),
+    true,
+    'the composition root must actually register the Codex runtime surface',
+  );
 });
 
 test('Codex runtime import guard resolves relative and transitive barrel escapes', () => {

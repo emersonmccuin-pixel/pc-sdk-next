@@ -11,6 +11,7 @@ import {
   AccountUnavailableError,
   buildAccountEnv,
   defaultAccounts,
+  defaultCodexAccounts,
 } from '../src/runner/account-env.ts';
 import { freshDb, newProject } from './helpers.ts';
 
@@ -67,6 +68,31 @@ test('defaultAccounts seeds personal + work under the home dir', () => {
   );
   assert.ok(accts[0].configDir.endsWith('.claude'));
   assert.ok(accts[1].configDir.endsWith('.claude-work'));
+});
+
+test('defaultCodexAccounts seeds one personal account under <home>/.codex', () => {
+  const accts = defaultCodexAccounts('C:/Users/emers');
+  assert.deepEqual(accts.map((a) => ({ id: a.id, runtimeId: a.runtimeId })), [
+    { id: 'personal', runtimeId: 'openai-codex' },
+  ]);
+  assert.ok(accts[0].configDir.endsWith('.codex'));
+});
+
+test('Claude and Codex seeds combine into one runtime-scoped registry', () => {
+  const reg = new AccountRegistry([
+    ...defaultAccounts('C:/Users/emers'),
+    ...defaultCodexAccounts('C:/Users/emers'),
+  ]);
+  assert.equal(reg.has('claude-agent-sdk', 'personal'), true);
+  assert.equal(reg.has('claude-agent-sdk', 'work'), true);
+  assert.equal(reg.has('openai-codex', 'personal'), true);
+  assert.equal(reg.get('openai-codex', 'personal')?.configDir.endsWith('.codex'), true);
+  // The registry only stores the credential home; buildEnv is Claude-only and
+  // refuses to mislabel a Codex account's home as CLAUDE_CONFIG_DIR.
+  assert.throws(
+    () => reg.buildEnv('openai-codex', 'personal'),
+    /buildEnv only builds the Claude Code environment/,
+  );
 });
 
 test('resolveForProject uses an absent default but rejects an unknown stored account', () => {

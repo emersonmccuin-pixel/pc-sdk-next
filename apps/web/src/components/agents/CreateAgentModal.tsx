@@ -3,9 +3,10 @@
 // dispatch). Creates a GLOBAL pool agent and attaches it to the current
 // project in one call. Explicit close-only (no backdrop/Escape dismissal).
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { agentsApi, type Pod } from '@/features/agents/client';
+import { useRuntimes } from '@/state/runtimes';
 import type { ULID } from '@pc/contracts';
 
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -26,6 +27,22 @@ export function CreateAgentModal({ projectId, onCancel, onCreated }: CreateAgent
   const [tools, setTools] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Runtime is project-scoped, not per-agent (docs/agent-runtime-architecture.md
+  // — a dispatch resolves the specialist's model against whatever runtime the
+  // PROJECT currently runs on, switched via the header runtime control). This
+  // just feeds the model field with that runtime's discovered models; it does
+  // not store a runtime on the agent row (no such column exists).
+  const runtimes = useRuntimes((s) => s.runtimes);
+  const projectRuntimeId = useRuntimes((s) => s.selectedId);
+  const loadRuntimeRegistry = useRuntimes((s) => s.loadRegistry);
+  const loadRuntimeForProject = useRuntimes((s) => s.loadForProject);
+  useEffect(() => {
+    void loadRuntimeRegistry();
+    void loadRuntimeForProject(projectId);
+  }, [projectId, loadRuntimeRegistry, loadRuntimeForProject]);
+  const projectRuntime = runtimes.find((r) => r.id === projectRuntimeId) ?? null;
+  const discoveredModels = projectRuntime?.accounts.find((a) => a.available)?.models ?? [];
 
   const trimmedName = name.trim();
   const nameValid = /^[a-z0-9][a-z0-9-]*$/.test(trimmedName);
@@ -100,14 +117,33 @@ export function CreateAgentModal({ projectId, onCancel, onCreated }: CreateAgent
             />
           </Field>
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Model" help="haiku / sonnet / opus or a full id">
+            <Field
+              label="Model"
+              help={
+                projectRuntime
+                  ? `Runs on this project's runtime: ${projectRuntime.label}${
+                      discoveredModels.length > 0 ? ' — pick a discovered model or type one' : ''
+                    }`
+                  : 'haiku / sonnet / opus or a full id'
+              }
+            >
               <input
                 type="text"
+                list="create-agent-model-options"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="default"
                 className="w-full border border-border bg-background px-2 py-1 text-sm"
               />
+              {discoveredModels.length > 0 && (
+                <datalist id="create-agent-model-options">
+                  {discoveredModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </datalist>
+              )}
             </Field>
             <Field label="Effort">
               <select

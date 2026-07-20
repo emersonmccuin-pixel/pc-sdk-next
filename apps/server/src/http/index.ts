@@ -23,11 +23,13 @@ import { mountAgentRuns } from './agent-runs.ts';
 import { mountProjects } from './projects.ts';
 import { mountSettings } from './settings.ts';
 import { mountAccounts } from './accounts.ts';
+import { mountRuntimes } from './runtimes.ts';
 import type { AccountRegistry } from '../runner/account-env.ts';
 import type { DispatchService } from '../dispatch/service.ts';
 import type { SubscriptionQuotaService } from '@pc/app-services';
 import {
   RuntimeSelectionRejectedError,
+  type RuntimeRegistry,
   type RuntimeSelectionValidation,
 } from '../runner/runtime.ts';
 
@@ -38,6 +40,8 @@ export interface HttpDeps {
   /** Account switcher registry (accounts + quota endpoints mount when set). */
   accounts?: AccountRegistry;
   orchestratorRuntimeId?: string;
+  /** Registered runtime adapters (/api/runtimes mounts when accounts is also set). */
+  runtimes?: RuntimeRegistry;
   subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch — agent-run routes mount when set (tests may omit). */
   dispatch?: DispatchService;
@@ -168,6 +172,14 @@ export function createHttpApp(deps: HttpDeps): Hono {
       runtimeId: deps.orchestratorRuntimeId,
       subscriptionQuota: deps.subscriptionQuota,
     });
+    if (deps.runtimes) {
+      mountRuntimes(app, {
+        accounts: deps.accounts,
+        runtimes: deps.runtimes,
+        registry: deps.registry,
+        defaultRuntimeId: deps.orchestratorRuntimeId,
+      });
+    }
   }
 
   // ── Pasted images ─────────────────────────────────────────────────────────

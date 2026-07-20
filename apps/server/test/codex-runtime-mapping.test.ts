@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { ServerRequest } from '../src/runner/codex/generated/ServerRequest.ts';
 import type { ThreadItem } from '../src/runner/codex/generated/v2/ThreadItem.ts';
 import {
+  captureCodexApprovalRequest,
   captureCodexDiscovery,
   captureInterruptResponse,
   captureProviderFreePolicyReceipt,
@@ -70,8 +71,8 @@ function policyReceipt(expected = challenge()): Record<string, unknown> {
     notificationMethods: [...CODEX_RUNTIME_NOTIFICATION_METHODS],
     effectiveNativeTools: [],
     effectiveMcpServers: [],
-    approvalRequests: 'disabled',
-    lifecycle: 'contained-fake',
+    approvalRequests: 'routed',
+    lifecycle: 'direct-child',
   };
 }
 
@@ -85,23 +86,38 @@ function threadReceipt(
       thread: thread(nativeThreadId, expected.cwd),
       model: expected.selection.model,
       modelProvider: CODEX_MODEL_PROVIDER,
-      serviceTier: null,
+      serviceTier: 'default',
       cwd: expected.cwd,
+      runtimeWorkspaceRoots: [expected.cwd],
       instructionSources: [],
-      approvalPolicy: 'never',
+      approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
-      sandbox: { type: 'readOnly', networkAccess: false },
+      sandbox: workspaceWriteSandbox(expected.cwd),
+      activePermissionProfile: null,
       reasoningEffort: expected.selection.effort.kind === 'selected'
         ? expected.selection.effort.value
-        : null,
+        : 'medium',
+      multiAgentMode: 'explicitRequestOnly',
     },
+  };
+}
+
+function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
   };
 }
 
 function thread(id: string, cwd: string): Record<string, unknown> {
   return {
     id,
+    extra: null,
     sessionId: `session-${id}`,
+    historyMode: 'legacy',
     forkedFromId: null,
     parentThreadId: null,
     preview: '',
@@ -285,8 +301,8 @@ test('provider-free policy mismatch matrix fails before execution admission', ()
     }],
     ['native tools', (value) => { value.effectiveNativeTools = ['shell']; }],
     ['MCP', (value) => { value.effectiveMcpServers = ['private-mcp']; }],
-    ['approvals', (value) => { value.approvalRequests = 'routed'; }],
-    ['lifecycle', (value) => { value.lifecycle = 'direct-child'; }],
+    ['approvals', (value) => { value.approvalRequests = 'disabled'; }],
+    ['lifecycle', (value) => { value.lifecycle = 'contained-fake'; }],
     ['extra key', (value) => { value.extra = true; }],
   ];
   for (const [label, mutate] of mutations) {
@@ -510,13 +526,22 @@ test('thread response mismatch matrix rejects every immutable selection and post
     (root) => { root.response = null; },
     (root) => { response(root).model = 'different-model'; },
     (root) => { response(root).modelProvider = 'azure'; },
-    (root) => { response(root).serviceTier = 'priority'; },
+    (root) => { response(root).serviceTier = 5; },
     (root) => { response(root).cwd = 'E:\\wrong'; },
     (root) => { response(root).instructionSources = ['E:\\private\\AGENTS.md']; },
-    (root) => { response(root).approvalPolicy = 'on-request'; },
+    (root) => { response(root).approvalPolicy = 'never'; },
     (root) => { response(root).approvalsReviewer = 'auto_review'; },
-    (root) => { response(root).sandbox = { type: 'readOnly', networkAccess: true }; },
+    (root) => { response(root).sandbox = { type: 'readOnly', networkAccess: false }; },
+    (root) => {
+      response(root).sandbox = { ...workspaceWriteSandbox(CWD), networkAccess: true };
+    },
+    // The real write scope is top-level runtimeWorkspaceRoots pinned to cwd; an
+    // extra root escapes it, and an empty scope is not the session cwd.
+    (root) => { response(root).runtimeWorkspaceRoots = [CWD, resolve('test-fixtures/escape')]; },
+    (root) => { response(root).runtimeWorkspaceRoots = []; },
     (root) => { response(root).reasoningEffort = 'low'; },
+    (root) => { response(root).multiAgentMode = 5; },
+    (root) => { threadObject(root).historyMode = 5; },
     (root) => { threadObject(root).id = THREAD_ID; },
     (root) => { threadObject(root).cwd = 'E:\\wrong'; },
     (root) => { threadObject(root).modelProvider = 'azure'; },
@@ -1018,6 +1043,40 @@ test('outward notification fields are captured once before validation and return
   assert.doesNotMatch(JSON.stringify(captured), /PRIVATE/iu);
 });
 
+test('approval request capture reduces exec/patch to callId and fails closed on hostile shapes', () => {
+  assert.deepEqual(
+    captureCodexApprovalRequest({
+      kind: 'exec',
+      callId: 'native-1',
+      command: ['bash', '-lc', 'echo hi'],
+      cwd: CWD,
+    }),
+    { kind: 'exec', callId: 'native-1', command: ['bash', '-lc', 'echo hi'], cwd: CWD },
+  );
+  assert.deepEqual(
+    captureCodexApprovalRequest({ kind: 'patch', callId: 'native-2', paths: ['a.ts', 'b.ts'] }),
+    { kind: 'patch', callId: 'native-2', paths: ['a.ts', 'b.ts'] },
+  );
+
+  const hostile: unknown[] = [
+    null,
+    [],
+    'exec',
+    { kind: 'other', callId: 'x' },
+    { kind: 'exec', callId: 'x', command: ['a'], cwd: CWD, extra: PRIVATE_PROSE },
+    { kind: 'exec', callId: '', command: ['a'], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: [], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: ['a', 3], cwd: CWD },
+    { kind: 'exec', callId: 'x', command: ['a'] },
+    { kind: 'patch', callId: 'x', paths: [] },
+    { kind: 'patch', callId: 'x', paths: [1] },
+    { kind: 'patch', callId: 'x' },
+  ];
+  for (const value of hostile) {
+    assertMappingError(() => captureCodexApprovalRequest(value), 'approval-request-invalid');
+  }
+});
+
 test('interrupt acknowledgement is exact and never a terminal receipt', () => {
   assert.equal(captureInterruptResponse({}), undefined);
   for (const value of [null, [], { accepted: true }]) {
@@ -1025,7 +1084,7 @@ test('interrupt acknowledgement is exact and never a terminal receipt', () => {
   }
 });
 
-test('provider-free turn boundary requires an exact closed and empty fake stream receipt', () => {
+test('provider-free turn boundary requires an exact drained native turn stream receipt', () => {
   const expected: CodexTurnBoundaryChallenge = {
     kind: 'provider-free-turn-boundary-challenge',
     protocolVersion: CODEX_PROTOCOL_VERSION,
@@ -1045,7 +1104,7 @@ test('provider-free turn boundary requires an exact closed and empty fake stream
     turnId: expected.turnId,
     turnSequence: expected.turnSequence,
     status: expected.status,
-    notificationBoundary: 'closed-fake',
+    notificationBoundary: 'open-native',
     pendingNotifications: 0,
   };
   assert.deepEqual(captureProviderFreeTurnBoundaryReceipt(receipt, expected), receipt);

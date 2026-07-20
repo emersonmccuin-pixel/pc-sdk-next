@@ -87,6 +87,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  *  turn ends only after releaseTurn() — deterministic checkpoints, no timing. */
 class GatedAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   private readonly sessionGate = deferred();
   private readonly turnGate = deferred();
   releaseSession(): void {

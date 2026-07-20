@@ -239,6 +239,44 @@ function sessionQueryWithoutInit(
   return queryObject(messages(), MODELS, stopped.resolve);
 }
 
+// Reproduces the observed raw-SDK stream order for a SessionStart hook
+// (e.g. a ~/.claude plugin's session-start injection): hook_started and
+// hook_response arrive before the init that carries the native session id.
+function sessionQueryWithPreInitHookNoise(
+  prompt: string | AsyncIterable<SDKUserMessage>,
+  nativeSessionId: string,
+): Query {
+  const stopped = gate();
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    if (typeof prompt !== 'string') await prompt[Symbol.asyncIterator]().next();
+    yield { type: 'system', subtype: 'hook_started', uuid: 'hook-started-1' } as unknown as SDKMessage;
+    yield { type: 'system', subtype: 'hook_started', uuid: 'hook-started-2' } as unknown as SDKMessage;
+    yield { type: 'system', subtype: 'hook_started', uuid: 'hook-started-3' } as unknown as SDKMessage;
+    yield { type: 'system', subtype: 'hook_response', uuid: 'hook-response-1' } as unknown as SDKMessage;
+    yield { type: 'system', subtype: 'hook_response', uuid: 'hook-response-2' } as unknown as SDKMessage;
+    yield { type: 'system', subtype: 'hook_response', uuid: 'hook-response-3' } as unknown as SDKMessage;
+    yield {
+      type: 'system', subtype: 'init', uuid: 'init-1', session_id: nativeSessionId,
+    } as unknown as SDKMessage;
+    yield {
+      type: 'assistant', uuid: 'assistant-1', session_id: nativeSessionId,
+      parent_tool_use_id: null,
+      message: { id: 'message-1', content: [], usage: { iterations: null } },
+    } as unknown as SDKMessage;
+    yield {
+      type: 'result', subtype: 'success', is_error: false,
+      uuid: 'result-1', session_id: nativeSessionId,
+      usage: {
+        input_tokens: 1, output_tokens: 2,
+        cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      },
+      modelUsage: { opus: {} },
+    } as unknown as SDKMessage;
+    await stopped.promise;
+  }
+  return queryObject(messages(), MODELS, stopped.resolve);
+}
+
 function factoryWithSession(
   nativeSessionId: string,
   captures: Array<Parameters<ClaudeQueryFactory>[0]>,
@@ -395,6 +433,11 @@ const claudeRuntimeAdapterConformanceFixture: RuntimeAdapterConformanceFactory =
 
 runtimeAdapterConformance('generic fake', genericRuntimeAdapterConformanceFixture);
 runtimeAdapterConformance('Claude', claudeRuntimeAdapterConformanceFixture);
+
+test('Claude adapter declares app-tool bridging supported', async () => {
+  const fixture = await claudeRuntimeAdapterConformanceFixture('discovery');
+  assert.equal(fixture.adapter.appToolBridge, 'supported');
+});
 
 test('Claude session config requires an exact durable continuation attempt identity', () => {
   for (const continuationAttemptId of ['', ' attempt-padded ']) {
@@ -1058,6 +1101,45 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
   await runtime.dispose();
 });
 
+test("Claude create omits options.model for the 'default' selection instead of passing it verbatim", async () => {
+  const DEFAULT_MODELS: ModelInfo[] = [
+    { value: 'default', displayName: 'Default', description: '', supportsEffort: false },
+    ...MODELS,
+  ];
+  const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(DIRTY_RUNTIME_ENV),
+    queryFactory: (params) => {
+      captures.push(params);
+      return captures.length % 2 === 1
+        ? discoveryQuery(DEFAULT_MODELS)
+        : sessionQuery(params.prompt, 'native-created-default');
+    },
+  });
+  const selected: RuntimeSelection = {
+    runtimeId: CLAUDE_RUNTIME_ID, accountId: 'personal', model: 'default', effort: { kind: 'unavailable' },
+  };
+  const runtime = await adapter.createSession({
+    appSessionId: 'app-1', projectId: 'project-1',
+    continuationAttemptId: ATTEMPT_ID, selection: selected,
+  });
+
+  assert.equal(captures.length, 2);
+  // 'default' is a legitimate discovered id meaning "let the SDK pick its
+  // own default" — passing it through verbatim as options.model would make
+  // the SDK look for a model literally named 'default'. The option must be
+  // omitted entirely rather than set to 'default'.
+  assert.equal('model' in (captures[1]?.options ?? {}), false);
+  const started = await firstEvent(runtime);
+  assert.equal(started.type, 'session-started');
+  if (started.type === 'session-started') {
+    // The stamped selection still honestly records 'default' as what was
+    // chosen — only the SDK-facing option is omitted, not the receipt.
+    assert.equal(started.receipt.selection.model, 'default');
+  }
+  await runtime.dispose();
+});
+
 test('Claude resume requires an exact native init receipt and never falls back to create', async () => {
   const captures: Array<Parameters<ClaudeQueryFactory>[0]> = [];
   const adapter = new ClaudeRuntimeAdapter({
@@ -1152,6 +1234,34 @@ test('Claude rejects native output that arrives before a positive init receipt',
     assert.equal(event.ok, false);
     assert.equal(event.error, 'runtime native session receipt missing');
   }
+  await runtime.dispose();
+});
+
+test('Claude tolerates pre-init SessionStart hook noise (hook_started/hook_response) ahead of init', async () => {
+  let calls = 0;
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(),
+    queryFactory: (params) => {
+      calls += 1;
+      return calls === 1
+        ? discoveryQuery(MODELS)
+        : sessionQueryWithPreInitHookNoise(params.prompt, 'native-hook-noise');
+    },
+  });
+  const runtime = await adapter.createSession({
+    appSessionId: 'app-1', projectId: 'project-1',
+    continuationAttemptId: ATTEMPT_ID,
+    selection: selection({ kind: 'none' }),
+  });
+  const events: RuntimeEvent[] = [];
+  for await (const event of runtime.sendTurn('hello')) events.push(event);
+  assert.equal(events[0]?.type, 'session-started');
+  if (events[0]?.type === 'session-started') {
+    assert.equal(events[0].receipt.nativeSessionId, 'native-hook-noise');
+  }
+  const result = events.find((e) => e.type === 'result');
+  assert.ok(result, 'a clean result must follow the pre-init hook noise');
+  if (result?.type === 'result') assert.equal(result.ok, true);
   await runtime.dispose();
 });
 

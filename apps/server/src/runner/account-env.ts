@@ -46,6 +46,20 @@ export function defaultAccounts(
   ];
 }
 
+/** The seeded Codex registry: one ChatGPT-login account under the user's
+ *  home dir (`<home>/.codex` — CODEX_HOME, isolated from Claude's config
+ *  dirs). This registry stores only the credential-home path; per-runtime env
+ *  construction (CODEX_HOME vs CLAUDE_CONFIG_DIR) stays owned by each
+ *  adapter's own deps, never by this generic account file. */
+export function defaultCodexAccounts(
+  home = homedir(),
+  runtimeId = 'openai-codex',
+): Account[] {
+  return [
+    { id: 'personal', runtimeId, configDir: join(home, '.codex') },
+  ];
+}
+
 export class AccountRegistry {
   private readonly accounts: Map<string, Account>;
   private readonly defaultId: string;
@@ -102,9 +116,14 @@ export class AccountRegistry {
     return selectedDefault;
   }
 
-  /** Build the per-query env for an account. The SDK replaces the subprocess
-   *  env entirely, so the shared positive allowlist retains only the OS values
-   *  needed to launch it. The selected credential home is then added exactly. */
+  /** Build the per-query env for a Claude Code account. The SDK replaces the
+   *  subprocess env entirely, so the shared positive allowlist retains only the
+   *  OS values needed to launch it. The selected credential home is then added
+   *  exactly. Claude-only: this sets `CLAUDE_CONFIG_DIR`, so it refuses any
+   *  other runtime's account rather than mislabeling its credential home. Other
+   *  runtimes own their own env construction from the `configDir` this registry
+   *  hands back via `get()`/`resolveForProject()` (docs/agent-runtime-
+   *  architecture.md — "the registry only stores configDir"). */
   buildEnv(
     runtimeId: string,
     accountId: string,
@@ -112,6 +131,9 @@ export class AccountRegistry {
   ): Record<string, string> {
     const account = this.get(runtimeId, accountId);
     if (!account) throw new Error(`unknown account for runtime ${runtimeId}: ${accountId}`);
+    if (runtimeId !== 'claude-agent-sdk') {
+      throw new Error(`buildEnv only builds the Claude Code environment; got runtime ${runtimeId}`);
+    }
     return buildAccountEnv(account.configDir, base);
   }
 }

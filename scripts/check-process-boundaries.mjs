@@ -11,6 +11,7 @@ const ALLOWED_DIRECT_PROCESS_IMPORTS = new Map([
   ['apps/server/src/dispatch/worktrees.ts', 1],
   ['apps/server/src/index.ts', 1],
   ['apps/server/src/runner/codex/app-server-client.ts', 1],
+  ['apps/server/src/runner/codex/app-server-turn-client.ts', 1],
 ]);
 const SEALED_COMPONENT_IMPORT_POLICY = new Map([
   ['packages/owner-lifecycle/src', [

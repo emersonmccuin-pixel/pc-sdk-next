@@ -71,8 +71,10 @@ export interface CodexExecutionPolicyChallenge {
   notificationMethods: [...typeof CODEX_RUNTIME_NOTIFICATION_METHODS];
 }
 
-/** This receipt is deliberately ineligible as native-production evidence.
- * Only an independent provider-free conformance authority may mint it. */
+/** Independent provider-free attestation of the product execution posture: a
+ * workspace-write sandbox scoped to the session cwd, exec/patch approvals routed
+ * to the app ask flow, and a native direct-child process lifecycle. Only an
+ * independent provider-free conformance authority may mint it. */
 export interface CodexProviderFreeExecutionPolicyReceipt {
   kind: 'provider-free-conformance';
   protocolVersion: typeof CODEX_PROTOCOL_VERSION;
@@ -86,8 +88,8 @@ export interface CodexProviderFreeExecutionPolicyReceipt {
   notificationMethods: [...typeof CODEX_RUNTIME_NOTIFICATION_METHODS];
   effectiveNativeTools: [];
   effectiveMcpServers: [];
-  approvalRequests: 'disabled';
-  lifecycle: 'contained-fake';
+  approvalRequests: 'routed';
+  lifecycle: 'direct-child';
 }
 
 export interface CodexRuntimePeerFactoryInput {
@@ -115,8 +117,8 @@ export interface CodexTurnBoundaryChallenge {
 }
 
 /** An independent provider-free authority seals and attests the exact terminal
- * boundary of a fake turn epoch. Stable native 0.144.1 supplies no equivalent
- * receipt, so production composition cannot mint this in CX-002. */
+ * boundary of a native turn epoch: the canonical turn-notification stream is
+ * drained to its terminal frame with no residual pending notifications. */
 export interface CodexProviderFreeTurnBoundaryReceipt {
   kind: 'provider-free-conformance-turn-boundary';
   protocolVersion: typeof CODEX_PROTOCOL_VERSION;
@@ -126,7 +128,7 @@ export interface CodexProviderFreeTurnBoundaryReceipt {
   turnId: string;
   turnSequence: number;
   status: CodexTerminalStatus;
-  notificationBoundary: 'closed-fake';
+  notificationBoundary: 'open-native';
   pendingNotifications: 0;
 }
 
@@ -144,8 +146,21 @@ export interface CodexProviderFreeConformanceAuthority {
   ): Promise<unknown>;
 }
 
+/** Provider-neutral verdict forwarded back to the peer for one raised approval.
+ * The peer maps `behavior` onto its native review-decision vocabulary; native
+ * request identity never crosses this seam and is correlated by `callId`. */
+export interface CodexApprovalResponse {
+  kind: 'exec' | 'patch';
+  callId: string;
+  behavior: 'allow' | 'deny';
+}
+
 /** Closed provider-local execution port. It intentionally exposes no generic
- * request method and has no native/default implementation in CX-002. */
+ * request method and has no native/default implementation in CX-002.
+ *
+ * `approvals()` surfaces the per-turn exec/patch approval requests the peer
+ * raised (untrusted native frames the adapter captures defensively);
+ * `respondToApproval` forwards the routed verdict back. */
 export interface CodexRuntimePeer {
   startThread(
     params: ThreadStartParams,
@@ -158,6 +173,8 @@ export interface CodexRuntimePeer {
   startTurn(params: TurnStartParams): Promise<unknown>;
   interruptTurn(params: TurnInterruptParams): Promise<unknown>;
   notifications(): AsyncIterable<unknown>;
+  approvals(): AsyncIterable<unknown>;
+  respondToApproval(response: CodexApprovalResponse): Promise<unknown>;
   dispose(): Promise<void>;
 }
 

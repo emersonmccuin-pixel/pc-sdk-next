@@ -58,7 +58,10 @@ export function testSubscriptionQuotaUnavailable(
 export function testModelDiscovery(): RuntimeModelDiscovery {
   return {
     status: 'available',
-    models: ['opus', 'sonnet'].map((id) => ({
+    // 'opus[1m]' is the current seeded specialist/orchestrator model
+    // (stock-agent-content.ts) — kept alongside the bare 'opus' id so tests
+    // exercising either the legacy string or a live selection still resolve.
+    models: ['opus', 'opus[1m]', 'sonnet'].map((id) => ({
       id,
       resolvedId: null,
       label: id,
@@ -71,12 +74,13 @@ export function testModelDiscovery(): RuntimeModelDiscovery {
 export function testSessionSelectionDeps() {
   return {
     resolveNewSessionSelection: async (
-      input: { projectId: string; accountId?: string },
+      input: { projectId: string; accountId?: string; runtimeId?: string },
     ): Promise<RuntimeSelectionValidation> => ({
       status: 'valid',
       selection: {
         ...TEST_SELECTION,
         accountId: input.accountId ?? TEST_SELECTION.accountId,
+        runtimeId: input.runtimeId ?? TEST_SELECTION.runtimeId,
       },
     }),
     preflightRuntimeSession: async (

@@ -345,7 +345,7 @@ test('production source keeps admission first and quiesces DB ownership before r
   const acquire = indexSource.indexOf('acquireDataDirectoryAdmission(', mainStart);
   const migrate = indexSource.indexOf('runMigrations()', mainStart);
   assert.ok(mainStart >= 0 && acquire > mainStart && acquire < migrate);
-  const accountRegistry = indexSource.indexOf('new AccountRegistry()', migrate);
+  const accountRegistry = indexSource.indexOf('new AccountRegistry(', migrate);
   const runtimeRegistry = indexSource.indexOf('new RuntimeRegistry()', migrate);
   const serverStart = indexSource.indexOf('await startServer(', migrate);
   assert.ok(migrate < accountRegistry && accountRegistry < runtimeRegistry && runtimeRegistry < serverStart);

@@ -207,6 +207,10 @@ export interface ResumeRuntimeSession extends CreateRuntimeSession {
  *  runtime, registered at the composition root. */
 export interface AgentRuntimeAdapter {
   readonly id: string;
+  /** Static declaration of whether this adapter accepts app-provided tool
+   *  bridges (MCP + pc_* defs) in session input; 'unsupported' adapters must
+   *  mint without `tools` rather than receive and reject them per call. */
+  readonly appToolBridge: 'supported' | 'unsupported';
   capabilities(accountId: string): Promise<RuntimeCapabilities>;
   listModels(accountId: string): Promise<RuntimeModelDiscovery>;
   /** Observe account-scoped subscription quota without creating an app
@@ -223,6 +227,24 @@ export interface AgentRuntimeAdapter {
 export type RuntimeAdapterResolution =
   | { status: 'resolved'; adapter: AgentRuntimeAdapter }
   | { status: 'invalid'; code: 'runtime-not-registered' };
+
+/** Composition-seam gate: builds app tools only for adapters that declare
+ *  `appToolBridge: 'supported'`. Adapters that cannot bridge app tools mint
+ *  without them (never silently — logs once per call) instead of being
+ *  handed tools they would have to reject. `buildTools` stays lazy so
+ *  unsupported adapters skip the (possibly costly) bridge construction. */
+export function sessionToolsForAdapter(
+  adapter: Pick<AgentRuntimeAdapter, 'id' | 'appToolBridge'>,
+  buildTools: () => BridgeBuild | undefined,
+): BridgeBuild | undefined {
+  if (adapter.appToolBridge !== 'supported') {
+    console.warn(
+      `[pc-sdk][runtime] app tools omitted: ${adapter.id} does not bridge app tools`,
+    );
+    return undefined;
+  }
+  return buildTools();
+}
 
 export type RuntimeContinuationRequest =
   | { mode: 'create' }
@@ -593,6 +615,13 @@ export class RuntimeRegistry {
     return this.adapters.has(runtimeId);
   }
 
+  /** Registered runtime ids, insertion order. Read-only enumeration for
+   *  provider-neutral surfaces (e.g. an availability listing) that must not
+   *  hardcode which runtimes exist. */
+  ids(): string[] {
+    return [...this.adapters.keys()];
+  }
+
   async validate(selection: RuntimeSelection): Promise<RuntimeSelectionValidation> {
     const captured = captureRuntimeSelection(selection);
     if (!captured) return invalid('selection-unavailable');
@@ -700,6 +729,37 @@ export class RuntimeRegistry {
     if (resolution.status === 'invalid') return resolution;
     return preflightRuntimeSelection(resolution.adapter, captured, continuation);
   }
+}
+
+/** Retry a rejected `resolveSelection` exactly once with the target
+ * runtime's own first live-discovered model, when the caller opts in via
+ * `allowModelFallback`. Composition roots set that flag only when a stored
+ * model default was written for a different runtime than the one now being
+ * resolved (e.g. an explicit runtime switch) — a model shorthand from one
+ * runtime is never meaningful on another. The fallback model always comes
+ * from the adapter's own live discovery for the resolved account; one is
+ * never invented here. Discovery that is unavailable, errors, or returns no
+ * models leaves the original typed `model-unsupported` rejection untouched. */
+export async function resolveSelectionWithModelFallback(
+  registry: RuntimeRegistry,
+  request: RuntimeSelectionRequest,
+  allowModelFallback: boolean,
+): Promise<RuntimeSelectionValidation> {
+  const resolved = await registry.resolveSelection(request);
+  if (!allowModelFallback || resolved.status !== 'invalid' || resolved.code !== 'model-unsupported') {
+    return resolved;
+  }
+  const resolution = registry.resolve(request.runtimeId);
+  if (resolution.status === 'invalid') return resolved;
+  let discovery: RuntimeModelDiscovery;
+  try {
+    discovery = await resolution.adapter.listModels(request.accountId);
+  } catch {
+    return resolved;
+  }
+  const fallbackModel = discovery.status === 'available' ? discovery.models[0]?.id : undefined;
+  if (!fallbackModel) return resolved;
+  return registry.resolveSelection({ ...request, model: fallbackModel });
 }
 
 /** How the chat engine mints its per-session runtime session. The composition

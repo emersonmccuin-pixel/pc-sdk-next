@@ -304,6 +304,55 @@ test('account switch rejects a resolver result that does not match the requested
   await service.dispose();
 });
 
+test('runtime switch stamps the new session, persists the project default, and ends the prior session', async () => {
+  freshDb();
+  const project = newProject('runtime-roundtrip');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    ...testSessionSelectionDeps(),
+    queueDrainEnabled: false,
+  });
+  const claudeSession = await service.ensureActiveSession();
+  assert.equal(getOrchestratorSession(claudeSession.id)?.runtimeId, TEST_SELECTION.runtimeId);
+
+  const codexSession = await service.switchRuntimeSession('openai-codex');
+  assert.notEqual(codexSession.id, claudeSession.id);
+  assert.equal(getOrchestratorSession(codexSession.id)?.runtimeId, 'openai-codex');
+  assert.equal(getOrchestratorSession(claudeSession.id)?.status, 'ended');
+  assert.equal(getOrchestratorSession(claudeSession.id)?.endedReason, 'runtime_switched');
+  assert.equal(getProjectById(project.id)?.settings.defaultRuntimeId, 'openai-codex');
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, codexSession.id);
+  await service.dispose();
+});
+
+test('runtime switch rejects a resolver result that does not match the requested runtime', async () => {
+  freshDb();
+  const project = newProject('resolver-runtime-mismatch');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async () => ({
+      status: 'valid', selection: structuredClone(TEST_SELECTION),
+    }),
+    preflightRuntimeSession: testSessionSelectionDeps().preflightRuntimeSession,
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+
+  await assert.rejects(
+    () => service.switchRuntimeSession('openai-codex'),
+    (error: unknown) =>
+      error instanceof RuntimeSelectionRejectedError && error.code === 'runtime-not-registered',
+  );
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, original.id);
+  assert.equal(getProjectById(project.id)?.settings.defaultRuntimeId, null);
+  assert.equal(getOrchestratorSession(original.id)?.runtimeId, TEST_SELECTION.runtimeId);
+  await service.dispose();
+});
+
 test('a recovered resume-pending session is re-preflighted and never falls back to create', async () => {
   freshDb();
   const project = newProject('resume-pending-revalidation');

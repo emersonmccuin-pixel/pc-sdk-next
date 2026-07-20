@@ -134,6 +134,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  *  only after releaseSession(), each turn ends only after releaseTurn(). */
 class GatedAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   readonly rowsAtMint: ReturnType<typeof getAgentRunRow>[] = [];
   private sessionGate = deferred();
   private turnGate = deferred();

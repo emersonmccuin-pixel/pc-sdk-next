@@ -12,6 +12,7 @@ import {
   preflightRuntimeSelection,
   RuntimeSelectionRejectedError,
   type AgentRuntimeAdapter,
+  type AskHandler,
   type CreateRuntimeSession,
   type ResumeRuntimeSession,
   type RuntimeSession,
@@ -71,10 +72,15 @@ interface CapturedSessionInput {
   maxTurns: number | null;
   mode: CodexRuntimeMode;
   requestedThreadId: string | null;
+  /** Routed permission seam; null when bypassing or no handler was supplied. */
+  ask: AskHandler | null;
 }
 
 export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CODEX_RUNTIME_ID;
+  /** No Codex tool bridge exists yet; the composition seam must mint without
+   *  app tools instead of handing them to this adapter, which stays fail-closed. */
+  readonly appToolBridge = 'unsupported' as const;
   private readonly discoveryPeer: CodexDiscoveryPeer;
   private readonly conformanceAuthority: CodexProviderFreeConformanceAuthority;
   private readonly runtimePeerFactory: CodexRuntimePeerFactory;
@@ -225,6 +231,8 @@ export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
         historicalItemIds: thread.historicalItemIds,
         cwd: input.cwd,
         maxTurns: input.maxTurns,
+        appSessionId: input.appSessionId,
+        ask: input.ask,
       });
     } catch (error) {
       if (peer !== null) {
@@ -289,7 +297,7 @@ function captureSessionInput(
   if (hasAppTools(tools) ||
     (allowedNativeTools !== undefined &&
       (!Array.isArray(allowedNativeTools) || allowedNativeTools.length !== 0)) ||
-    ask !== undefined ||
+    (ask !== undefined && typeof ask !== 'function') ||
     (bypassPermissions !== undefined && typeof bypassPermissions !== 'boolean') ||
     (maxTurns !== undefined &&
       (!Number.isSafeInteger(maxTurns) || (maxTurns as number) <= 0)) ||
@@ -297,6 +305,10 @@ function captureSessionInput(
       (typeof instructions !== 'string' || instructions.includes('\u0000')))) {
     throw new CodexRuntimeAdapterError('unsupported-session-input');
   }
+  // Prompting disabled (bypass) routes no approvals: the session denies every
+  // exec/patch escalation fail-closed rather than silently escaping the sandbox.
+  const routedAsk: AskHandler | null =
+    bypassPermissions !== true && typeof ask === 'function' ? (ask as AskHandler) : null;
   return Object.freeze({
     appSessionId,
     projectId,
@@ -307,6 +319,7 @@ function captureSessionInput(
     maxTurns: (maxTurns as number | undefined) ?? null,
     mode,
     requestedThreadId,
+    ask: routedAsk,
   });
 }
 
@@ -344,9 +357,9 @@ function threadStartParams(input: CapturedSessionInput) {
     modelProvider: CODEX_MODEL_PROVIDER,
     serviceTier: null,
     cwd: input.cwd,
-    approvalPolicy: 'never' as const,
+    approvalPolicy: 'on-request' as const,
     approvalsReviewer: 'user' as const,
-    sandbox: 'read-only' as const,
+    sandbox: 'workspace-write' as const,
     config: effortConfig(input.selection),
     baseInstructions: null,
     developerInstructions: input.instructions,
@@ -362,9 +375,9 @@ function threadResumeParams(input: CapturedSessionInput) {
     modelProvider: CODEX_MODEL_PROVIDER,
     serviceTier: null,
     cwd: input.cwd,
-    approvalPolicy: 'never' as const,
+    approvalPolicy: 'on-request' as const,
     approvalsReviewer: 'user' as const,
-    sandbox: 'read-only' as const,
+    sandbox: 'workspace-write' as const,
     config: effortConfig(input.selection),
     baseInstructions: null,
     developerInstructions: input.instructions,
@@ -425,7 +438,8 @@ function isRuntimePeer(value: unknown): value is CodexRuntimePeer {
     const peer = value as Partial<CodexRuntimePeer>;
     return typeof peer.startThread === 'function' && typeof peer.resumeThread === 'function' &&
       typeof peer.startTurn === 'function' && typeof peer.interruptTurn === 'function' &&
-      typeof peer.notifications === 'function' &&
+      typeof peer.notifications === 'function' && typeof peer.approvals === 'function' &&
+      typeof peer.respondToApproval === 'function' &&
       typeof peer.dispose === 'function';
   } catch {
     return false;

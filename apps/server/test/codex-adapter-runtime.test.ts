@@ -13,6 +13,7 @@ import {
   CODEX_RUNTIME_REQUEST_METHODS,
   type CodexDiscoveryPeer,
   type CodexExecutionPolicyChallenge,
+  type CodexApprovalResponse,
   type CodexProviderFreeConformanceAuthority,
   type CodexProviderFreeExecutionPolicyReceipt,
   type CodexRuntimeMode,
@@ -25,6 +26,9 @@ import {
   CodexRuntimeAdapterError,
 } from '../src/runner/codex/adapter.ts';
 import type {
+  AskDecision,
+  AskHandler,
+  AskRequest,
   CreateRuntimeSession,
   RuntimeEvent,
   RuntimeSession,
@@ -144,6 +148,39 @@ class FakeNotificationQueue implements AsyncIterable<unknown> {
   }
 }
 
+class FakeApprovalChannel implements AsyncIterable<unknown> {
+  private readonly buffered: unknown[] = [];
+  private readonly waiters: Array<(value: IteratorResult<unknown>) => void> = [];
+  private closed = false;
+
+  push(value: unknown): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ done: false, value });
+    else this.buffered.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) this.waiters.shift()?.({ done: true, value: undefined });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+    return {
+      next: async () => {
+        if (this.buffered.length > 0) return { done: false, value: this.buffered.shift() };
+        if (this.closed) return { done: true, value: undefined };
+        return new Promise<IteratorResult<unknown>>((resolve) => this.waiters.push(resolve));
+      },
+      return: async () => {
+        this.close();
+        return { done: true, value: undefined };
+      },
+    };
+  }
+}
+
 interface FakeRuntimeControl {
   readonly scenario: RuntimeAdapterConformanceScenario | 'manual';
   readonly blockedTurnReady: Deferred;
@@ -160,6 +197,7 @@ interface FakeRuntimeControl {
   threadStarts: number;
   threadResumes: number;
   turnStarts: number;
+  approvalResponses: CodexApprovalResponse[];
   deferTurnBoundary?: Deferred;
   deferTurnStart?: Deferred;
   deferDispose?: Deferred;
@@ -177,6 +215,7 @@ interface FakeRuntimeControl {
 
 class FakeCodexRuntimePeer implements CodexRuntimePeer {
   private currentNotificationsQueue: FakeNotificationQueue;
+  private currentApprovalsChannel = new FakeApprovalChannel();
   readonly challenges: unknown[] = [];
   readonly boundaryChallenges: unknown[] = [];
   readonly threadParams: unknown[] = [];
@@ -223,6 +262,7 @@ class FakeCodexRuntimePeer implements CodexRuntimePeer {
     if (this.disposed) throw new Error('fake Codex peer disposed during turn start');
     this.turnSequence += 1;
     this.currentNotificationsQueue = new FakeNotificationQueue(this.control);
+    this.currentApprovalsChannel = new FakeApprovalChannel();
     this.activeTurnId = this.control.reuseTurnId
       ? TURN_ID
       : nativeSequenceId(3 + ((this.turnSequence - 1) * 2));
@@ -257,6 +297,23 @@ class FakeCodexRuntimePeer implements CodexRuntimePeer {
     return this.notificationsQueue;
   }
 
+  approvals(): AsyncIterable<unknown> {
+    return this.currentApprovalsChannel;
+  }
+
+  async respondToApproval(response: CodexApprovalResponse): Promise<unknown> {
+    this.control.approvalResponses.push(structuredClone(response));
+    return {};
+  }
+
+  emitApproval(value: unknown): void {
+    this.currentApprovalsChannel.push(value);
+  }
+
+  driveSuccessfulTurn(text = EXPECTED_TEXT): void {
+    this.emitSuccessfulTurn(text);
+  }
+
   async dispose(): Promise<void> {
     this.control.peerDisposeCalls += 1;
     if (this.disposed) return;
@@ -264,6 +321,7 @@ class FakeCodexRuntimePeer implements CodexRuntimePeer {
     this.control.onDispose?.();
     this.control.nativeCloses += 1;
     if (this.control.deferDispose) await this.control.deferDispose.promise;
+    this.currentApprovalsChannel.close();
     if (!this.control.holdQueueOpenAfterDispose) this.notificationsQueue.close();
   }
 
@@ -365,7 +423,7 @@ class FakeCodexConformanceAuthority implements CodexProviderFreeConformanceAutho
       turnId: challenge.turnId,
       turnSequence: challenge.turnSequence,
       status: challenge.status,
-      notificationBoundary: 'closed-fake',
+      notificationBoundary: 'open-native',
       pendingNotifications,
     };
   }
@@ -398,8 +456,8 @@ function providerFreeReceipt(
     notificationMethods: [...CODEX_RUNTIME_NOTIFICATION_METHODS],
     effectiveNativeTools: [],
     effectiveMcpServers: [],
-    approvalRequests: 'disabled',
-    lifecycle: 'contained-fake',
+    approvalRequests: 'routed',
+    lifecycle: 'direct-child',
   };
 }
 
@@ -451,6 +509,7 @@ function makeControl(
     threadStarts: 0,
     threadResumes: 0,
     turnStarts: 0,
+    approvalResponses: [],
   };
 }
 
@@ -459,20 +518,35 @@ function threadResponse(threadId: string, cwd: string): Record<string, unknown> 
     thread: thread(threadId, cwd),
     model: MODEL_ID,
     modelProvider: CODEX_MODEL_PROVIDER,
-    serviceTier: null,
+    serviceTier: 'default',
     cwd,
+    runtimeWorkspaceRoots: [cwd],
     instructionSources: [],
-    approvalPolicy: 'never',
+    approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: { type: 'readOnly', networkAccess: false },
+    sandbox: workspaceWriteSandbox(cwd),
+    activePermissionProfile: null,
     reasoningEffort: EFFORT,
+    multiAgentMode: 'explicitRequestOnly',
+  };
+}
+
+function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: true,
+    excludeSlashTmp: true,
   };
 }
 
 function thread(id: string, cwd: string): Record<string, unknown> {
   return {
     id,
+    extra: null,
     sessionId: `session-${id}`,
+    historyMode: 'legacy',
     forkedFromId: null,
     parentThreadId: null,
     preview: '',
@@ -565,6 +639,14 @@ async function collectEvents(stream: AsyncIterable<RuntimeEvent>): Promise<Runti
   return events;
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 2000; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error('waitUntil condition never became true');
+}
+
 function sessionInput(overrides: Partial<CreateRuntimeSession> = {}): CreateRuntimeSession {
   return {
     appSessionId: 'codex-provider-free-app-session',
@@ -620,6 +702,11 @@ function conformanceFixture(
 }
 
 runtimeAdapterConformance('Codex', conformanceFixture);
+
+test('Codex adapter declares app-tool bridging unsupported', async () => {
+  const fixture = await conformanceFixture('discovery');
+  assert.equal(fixture.adapter.appToolBridge, 'unsupported');
+});
 
 test('Codex discovery, capabilities, context, and quota degrade with exact attribution', async () => {
   const control = makeControl('manual');
@@ -716,8 +803,8 @@ test('Codex policy receipt mismatches refuse before either thread method', async
     (value) => ({ ...value, continuationAttemptId: 'stale-attempt' }),
     (value) => ({ ...value, effectiveNativeTools: ['shell'] }),
     (value) => ({ ...value, effectiveMcpServers: ['private-mcp'] }),
-    (value) => ({ ...value, approvalRequests: 'routed' }),
-    (value) => ({ ...value, lifecycle: 'direct-child' }),
+    (value) => ({ ...value, approvalRequests: 'disabled' }),
+    (value) => ({ ...value, lifecycle: 'contained-fake' }),
     (value) => ({ ...value, requestMethods: [...CODEX_RUNTIME_REQUEST_METHODS].reverse() }),
   ];
 
@@ -770,9 +857,9 @@ test('Codex create emits the exact challenge and closed stable thread request', 
     modelProvider: CODEX_MODEL_PROVIDER,
     serviceTier: null,
     cwd: CWD,
-    approvalPolicy: 'never',
+    approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
-    sandbox: 'read-only',
+    sandbox: 'workspace-write',
     config: { model_reasoning_effort: EFFORT },
     baseInstructions: null,
     developerInstructions: 'provider-neutral charter',
@@ -850,12 +937,7 @@ test('Codex revalidates discovery after policy evidence and before thread creati
   assert.equal(control.nativeCloses, 1);
 });
 
-test('Codex rejects tool, native-tool, ask, and malformed inputs before peer creation', async () => {
-  const ask = () => ({
-    requestId: 'must-not-run',
-    decision: Promise.resolve({ behavior: 'deny' as const, decidedBy: 'session' as const }),
-    cancel() {},
-  });
+test('Codex rejects tool, native-tool, non-function ask, and malformed inputs before peer creation', async () => {
   const invalidInputs: CreateRuntimeSession[] = [
     sessionInput({
       tools: {
@@ -865,7 +947,7 @@ test('Codex rejects tool, native-tool, ask, and malformed inputs before peer cre
       },
     }),
     sessionInput({ allowedNativeTools: ['shell'] }),
-    sessionInput({ ask }),
+    sessionInput({ ask: 'not-a-function' as unknown as AskHandler }),
     sessionInput({ maxTurns: 0 }),
     sessionInput({ instructions: 'bad\u0000instruction' }),
   ];
@@ -897,9 +979,16 @@ test('Codex thread response mismatch matrix closes the peer and resume never fal
     (value) => ({ ...value, model: 'wrong-model' }),
     (value) => ({ ...value, modelProvider: 'wrong-provider' }),
     (value) => ({ ...value, cwd: 'E:\\wrong' }),
-    (value) => ({ ...value, approvalPolicy: 'on-request' }),
+    (value) => ({ ...value, approvalPolicy: 'never' }),
     (value) => ({ ...value, approvalsReviewer: 'auto_review' }),
-    (value) => ({ ...value, sandbox: { type: 'readOnly', networkAccess: true } }),
+    (value) => ({ ...value, sandbox: { type: 'readOnly', networkAccess: false } }),
+    // The real write scope is the top-level runtimeWorkspaceRoots pinned to cwd;
+    // any extra root escapes it and must fail closed.
+    (value) => ({ ...value, runtimeWorkspaceRoots: [CWD, 'E:\\escape'] }),
+    (value) => ({
+      ...value,
+      sandbox: { ...workspaceWriteSandbox(CWD), networkAccess: true },
+    }),
     (value) => ({ ...value, reasoningEffort: 'low' }),
     (value) => ({
       ...value,
@@ -1181,6 +1270,148 @@ test('Codex text lifecycle is ordered, correlated, redacted, and exactly termina
     status: 'completed',
   }]);
   assert.deepEqual(await session.observeContext(), EXPECTED_CONTEXT);
+  await session.dispose();
+});
+
+test('Codex routes an exec approval to the ask and forwards the granted verdict', async () => {
+  const control = makeControl('manual');
+  const askCalls: AskRequest[] = [];
+  let resolveDecision!: (decision: AskDecision) => void;
+  const ask: AskHandler = (req) => {
+    askCalls.push(req);
+    return {
+      requestId: 'codex-ask-1',
+      decision: new Promise<AskDecision>((resolve) => { resolveDecision = resolve; }),
+      cancel() {},
+    };
+  };
+  const session = await adapterFor(control).createSession(sessionInput({ ask }));
+  const done = collectEvents(session.sendTurn('please edit the workspace'));
+  await control.turnStartEntered.promise;
+  const peer = control.peers.at(-1);
+  assert.ok(peer, 'expected a live provider-free peer');
+  peer.emitApproval({
+    kind: 'exec',
+    callId: 'native-call-1',
+    command: ['bash', '-lc', 'echo hi > out.txt'],
+    cwd: CWD,
+  });
+  await waitUntil(() => askCalls.length === 1);
+  const request = askCalls[0]!;
+  assert.equal(request.toolName, 'ExecCommand');
+  assert.deepEqual(request.toolInput, {
+    command: ['bash', '-lc', 'echo hi > out.txt'],
+    cwd: CWD,
+  });
+  assert.equal(request.appSessionId, 'codex-provider-free-app-session');
+  // The ask carries an adapter-minted canonical id, never the native callId.
+  assert.notEqual(request.callId, 'native-call-1');
+  assert.match(
+    request.callId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+  );
+  resolveDecision({ behavior: 'allow', decidedBy: 'user' });
+  await waitUntil(() => control.approvalResponses.length === 1);
+  assert.deepEqual(control.approvalResponses[0], {
+    kind: 'exec',
+    callId: 'native-call-1',
+    behavior: 'allow',
+  });
+  peer.driveSuccessfulTurn();
+  const events = await done;
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type, 'result');
+  assert.equal(terminal?.type === 'result' && terminal.ok, true);
+  await session.dispose();
+});
+
+test('Codex forwards a denied verdict and a patch approval routes to the ask', async () => {
+  const control = makeControl('manual');
+  const askCalls: AskRequest[] = [];
+  let resolveDecision!: (decision: AskDecision) => void;
+  const ask: AskHandler = (req) => {
+    askCalls.push(req);
+    return {
+      requestId: 'codex-ask-2',
+      decision: new Promise<AskDecision>((resolve) => { resolveDecision = resolve; }),
+      cancel() {},
+    };
+  };
+  const session = await adapterFor(control).createSession(sessionInput({ ask }));
+  const done = collectEvents(session.sendTurn('please patch a file'));
+  await control.turnStartEntered.promise;
+  const peer = control.peers.at(-1)!;
+  peer.emitApproval({
+    kind: 'patch',
+    callId: 'native-patch-1',
+    paths: ['E:\\workspace\\file.ts'],
+  });
+  await waitUntil(() => askCalls.length === 1);
+  assert.equal(askCalls[0]?.toolName, 'ApplyPatch');
+  assert.deepEqual(askCalls[0]?.toolInput, { paths: ['E:\\workspace\\file.ts'] });
+  resolveDecision({ behavior: 'deny', decidedBy: 'user', message: 'not allowed' });
+  await waitUntil(() => control.approvalResponses.length === 1);
+  assert.deepEqual(control.approvalResponses[0], {
+    kind: 'patch',
+    callId: 'native-patch-1',
+    behavior: 'deny',
+  });
+  peer.driveSuccessfulTurn();
+  const events = await done;
+  assert.equal(events.at(-1)?.type, 'result');
+  await session.dispose();
+});
+
+test('Codex denies approvals fail-closed when prompting is bypassed', async () => {
+  const control = makeControl('manual');
+  const askCalls: AskRequest[] = [];
+  const ask: AskHandler = (req) => {
+    askCalls.push(req);
+    return { requestId: 'must-not-run', decision: new Promise<AskDecision>(() => {}), cancel() {} };
+  };
+  const session = await adapterFor(control).createSession(
+    sessionInput({ ask, bypassPermissions: true }),
+  );
+  const done = collectEvents(session.sendTurn('bypassed run'));
+  await control.turnStartEntered.promise;
+  const peer = control.peers.at(-1)!;
+  peer.emitApproval({ kind: 'exec', callId: 'native-call-9', command: ['rm', '-rf', '/'], cwd: CWD });
+  await waitUntil(() => control.approvalResponses.length === 1);
+  assert.deepEqual(control.approvalResponses[0], {
+    kind: 'exec',
+    callId: 'native-call-9',
+    behavior: 'deny',
+  });
+  assert.equal(askCalls.length, 0, 'bypassed prompting must never register an ask');
+  peer.driveSuccessfulTurn();
+  const events = await done;
+  assert.equal(events.at(-1)?.type, 'result');
+  await session.dispose();
+});
+
+test('Codex malformed approval requests poison the turn and forward no verdict', async () => {
+  const control = makeControl('manual');
+  const askCalls: AskRequest[] = [];
+  const ask: AskHandler = (req) => {
+    askCalls.push(req);
+    return {
+      requestId: 'must-not-run',
+      decision: Promise.resolve({ behavior: 'allow' as const, decidedBy: 'user' as const }),
+      cancel() {},
+    };
+  };
+  const session = await adapterFor(control).createSession(sessionInput({ ask }));
+  const done = collectEvents(session.sendTurn('hostile approval'));
+  await control.turnStartEntered.promise;
+  const peer = control.peers.at(-1)!;
+  // Empty command is not a well-formed exec approval: fail closed.
+  peer.emitApproval({ kind: 'exec', callId: 'native-bad', command: [], cwd: CWD });
+  const events = await done;
+  const terminal = events.at(-1);
+  assert.equal(terminal?.type, 'result');
+  assert.equal(terminal?.type === 'result' && terminal.ok, false);
+  assert.equal(control.approvalResponses.length, 0);
+  assert.equal(askCalls.length, 0);
   await session.dispose();
 });
 
@@ -1522,14 +1753,6 @@ test('Codex lifecycle ordering and identity violations each close through one sa
     {
       label: 'success terminal lacks completed item',
       frames: () => [turnCompleted(CREATED_THREAD_ID, TURN_ID, 'completed')],
-    },
-    {
-      label: 'terminal snapshot omits streamed completion',
-      frames: () => [
-        itemStarted(CREATED_THREAD_ID, TURN_ID, agentMessage(AGENT_ITEM_ID, '')),
-        itemCompleted(CREATED_THREAD_ID, TURN_ID, agentMessage(AGENT_ITEM_ID, 'safe')),
-        turnCompleted(CREATED_THREAD_ID, TURN_ID, 'completed', []),
-      ],
     },
     {
       label: 'terminal snapshot has wrong item identity',

@@ -89,7 +89,7 @@ export interface SessionServiceDeps {
   broadcast: (frame: ServerFrame) => void;
   mintSession: RuntimeSessionFactory;
   resolveNewSessionSelection: (
-    input: { projectId: ULID; accountId?: string },
+    input: { projectId: ULID; accountId?: string; runtimeId?: string },
   ) => Promise<RuntimeSelectionValidation>;
   preflightRuntimeSession: (
     selection: RuntimeSelection,
@@ -605,12 +605,27 @@ export class SessionService {
     return this.withSessionTransition(() => this.replaceSession('account switched', accountId));
   }
 
-  private async replaceSession(reason: string, accountId?: string): Promise<OrchestratorSessionRow> {
+  /** Runtime default + a newly stamped session boundary are one DB transition.
+   * A runtime change re-resolves the account fresh for the new runtime (an old
+   * runtime's account id is not reused across runtimes — docs/agent-runtime-
+   * architecture.md "Sessions and switching"). Prior stamped sessions retain
+   * their original runtime/account and remain eligible for separately
+   * preflighted historical resume through their own adapter. */
+  async switchRuntimeSession(runtimeId: string): Promise<OrchestratorSessionRow> {
+    return this.withSessionTransition(() => this.replaceSession('runtime switched', undefined, runtimeId));
+  }
+
+  private async replaceSession(
+    reason: string,
+    accountId?: string,
+    runtimeId?: string,
+  ): Promise<OrchestratorSessionRow> {
     if (this.disposed) throw new Error('session service is disposed');
     const generation = this.lifecycleGeneration;
     const resolved = await this.resolveNewSessionSelection({
       projectId: this.projectId,
       ...(accountId ? { accountId } : {}),
+      ...(runtimeId ? { runtimeId } : {}),
     });
     if (this.disposed || generation !== this.lifecycleGeneration) {
       throw new Error('session service was disposed during selection resolution');
@@ -618,6 +633,9 @@ export class SessionService {
     if (resolved.status === 'invalid') throw new RuntimeSelectionRejectedError(resolved.code);
     if (accountId !== undefined && resolved.selection.accountId !== accountId) {
       throw new RuntimeSelectionRejectedError('account-runtime-mismatch');
+    }
+    if (runtimeId !== undefined && resolved.selection.runtimeId !== runtimeId) {
+      throw new RuntimeSelectionRejectedError('runtime-not-registered');
     }
     if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
     const replacement = replaceOrchestratorSession({
@@ -629,6 +647,11 @@ export class SessionService {
         ? {
             endedReason: 'account_switched' as const,
             settingsPatch: { defaultAccountId: accountId },
+          }
+        : runtimeId !== undefined
+        ? {
+            endedReason: 'runtime_switched' as const,
+            settingsPatch: { defaultRuntimeId: runtimeId },
           }
         : {}),
     });

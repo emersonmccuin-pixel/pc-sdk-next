@@ -14,6 +14,7 @@ import { agentsApi, resolveModelLabel, type Pod } from '@/features/agents/client
 import { CreateAgentModal } from '@/components/agents/CreateAgentModal';
 import { formatToolLabel } from '@/lib/tool-labels';
 import { useResourceEvents } from '@/state/resource-store';
+import { useRuntimes } from '@/state/runtimes';
 import type { ULID } from '@pc/contracts';
 
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -140,6 +141,7 @@ export function AgentsList({ project }: { project: Project }) {
             <DetailPane
               key={`${selectedPod.id}:${selectedPod.updatedAt}`}
               pod={selectedPod}
+              projectId={project.id as ULID}
               onMutated={applyPod}
               onDeleted={() => {
                 setSelectedId(null);
@@ -252,10 +254,12 @@ function ListRow({ pod, selected, onSelect }: { pod: Pod; selected: boolean; onS
 
 function DetailPane({
   pod,
+  projectId,
   onMutated,
   onDeleted,
 }: {
   pod: Pod;
+  projectId: ULID;
   onMutated: (next: Pod) => void;
   onDeleted: () => void;
 }) {
@@ -265,6 +269,7 @@ function DetailPane({
   return (
     <EditableDetail
       pod={pod}
+      projectId={projectId}
       lockName={isOrchestrator}
       lockTools={isOrchestrator}
       hint={
@@ -386,6 +391,7 @@ function StockDetail({ pod, onMutated }: { pod: Pod; onMutated: (next: Pod) => v
  *  tools locked). Dirty-tracked Save/Discard like ProjectInfoForm. */
 function EditableDetail({
   pod,
+  projectId,
   lockName,
   lockTools,
   hint,
@@ -394,6 +400,7 @@ function EditableDetail({
   onDeleted,
 }: {
   pod: Pod;
+  projectId: ULID;
   lockName: boolean;
   lockTools: boolean;
   hint?: string;
@@ -401,6 +408,21 @@ function EditableDetail({
   onMutated: (next: Pod) => void;
   onDeleted: () => void;
 }) {
+  // Runtime is project-scoped, not per-agent (docs/agent-runtime-architecture.md
+  // — dispatch resolves this agent's model against whatever runtime the
+  // PROJECT currently runs on, switched via the header runtime control). This
+  // just feeds the model field with that runtime's discovered models.
+  const runtimes = useRuntimes((s) => s.runtimes);
+  const projectRuntimeId = useRuntimes((s) => s.selectedId);
+  const loadRuntimeRegistry = useRuntimes((s) => s.loadRegistry);
+  const loadRuntimeForProject = useRuntimes((s) => s.loadForProject);
+  useEffect(() => {
+    void loadRuntimeRegistry();
+    void loadRuntimeForProject(projectId);
+  }, [projectId, loadRuntimeRegistry, loadRuntimeForProject]);
+  const projectRuntime = runtimes.find((r) => r.id === projectRuntimeId) ?? null;
+  const discoveredModels = projectRuntime?.accounts.find((a) => a.available)?.models ?? [];
+
   const [name, setName] = useState(pod.name);
   const [description, setDescription] = useState(pod.description);
   const [prompt, setPrompt] = useState(pod.prompt);
@@ -526,14 +548,33 @@ function EditableDetail({
           />
         </Field>
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Model" help="haiku / sonnet / opus or a full id">
+          <Field
+            label="Model"
+            help={
+              projectRuntime
+                ? `Runs on this project's runtime: ${projectRuntime.label}${
+                    discoveredModels.length > 0 ? ' — pick a discovered model or type one' : ''
+                  }`
+                : 'haiku / sonnet / opus or a full id'
+            }
+          >
             <input
               type="text"
+              list="edit-agent-model-options"
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder="default"
               className="w-full border border-border bg-background px-2 py-1 text-sm"
             />
+            {discoveredModels.length > 0 && (
+              <datalist id="edit-agent-model-options">
+                {discoveredModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </datalist>
+            )}
           </Field>
           <Field label="Effort">
             <select

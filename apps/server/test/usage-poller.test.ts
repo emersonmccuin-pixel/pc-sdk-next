@@ -42,6 +42,7 @@ function availableBatch(
 function adapter(runtimeId: string, observe: ObserveQuota): AgentRuntimeAdapter {
   return {
     id: runtimeId,
+    appToolBridge: 'supported',
     capabilities: async (accountId) => ({
       runtimeId,
       accountId,

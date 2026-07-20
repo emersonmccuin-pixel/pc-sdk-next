@@ -77,6 +77,7 @@ test('every direct production child-process importer is classified and policy-bu
     'apps/server/src/dispatch/worktrees.ts',
     'apps/server/src/index.ts',
     'apps/server/src/runner/codex/app-server-client.ts',
+    'apps/server/src/runner/codex/app-server-turn-client.ts',
   ]);
 
   const repositoryLease = source('dispatch/repository-lease.ts');
@@ -124,6 +125,23 @@ test('every direct production child-process importer is classified and policy-bu
   assert.doesNotMatch(codex, /this\.child\.stdin\.end\(/);
   assert.doesNotMatch(codex, /spawn\(\s*['"]codex(?:\.exe)?['"]/);
   assert.doesNotMatch(codex, /process\.env/);
+
+  const codexTurn = source('runner/codex/app-server-turn-client.ts');
+  assert.match(codexTurn, /import\s*\{\s*spawn\s*\}\s*from\s*['"]node:child_process['"]/);
+  assert.equal(count(codexTurn, /(?:node:)?child_process/g), 1);
+  assert.equal(count(codexTurn, /\bspawn\(/g), 1);
+  assert.match(codexTurn, /const environment = buildCodexEnvironment\(options\.codexHome\)/);
+  assert.match(codexTurn, /const executable = resolvePinnedCodexExecutable\(\)/);
+  assert.match(
+    codexTurn,
+    /'app-server',\s*'--stdio',\s*'-c',\s*'cli_auth_credentials_store="file"'/,
+  );
+  assert.match(codexTurn, /env:\s*environment/);
+  assert.match(codexTurn, /shell:\s*false/);
+  assert.match(codexTurn, /windowsHide:\s*true/);
+  assert.match(codexTurn, /detached:\s*false/);
+  assert.doesNotMatch(codexTurn, /spawn\(\s*['"]codex(?:\.exe)?['"]/);
+  assert.doesNotMatch(codexTurn, /process\.env/);
 
   const codexBoundary = [...walk(CODEX_SOURCE_ROOT), ...EXTRA_PRODUCTION_FILES]
     .map((file) => readFileSync(file, 'utf8'))

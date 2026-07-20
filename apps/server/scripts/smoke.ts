@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     selection: {
       runtimeId: CLAUDE_RUNTIME_ID,
       accountId,
-      model: 'opus',
+      model: 'opus[1m]',
       effort: { kind: 'none' },
     },
     cwd: process.cwd(),

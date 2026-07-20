@@ -58,7 +58,7 @@ test('orchestrator edits survive boots (insert-only); reset restores the seed', 
   assert.ok(resetFields && resetFields.includes('prompt') && resetFields.includes('model'));
   const restored = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
   assert.equal(restored.prompt, ORCHESTRATOR_AGENT_CONTENT.prompt);
-  assert.equal(restored.model, 'opus');
+  assert.equal(restored.model, 'opus[1m]');
 });
 
 test('resetAgentToSeed refuses non-seeded agents', () => {
