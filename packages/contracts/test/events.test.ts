@@ -155,6 +155,22 @@ test('every canonical ChatEvent shape rejects undeclared provider fields', () =>
   }), false);
 });
 
+test('turn-failed carries an optional bounded providerDetail; absent stays valid', () => {
+  const base = { kind: 'turn-failed', error: 'failed', source: 'internal' } as const;
+  assert.equal(isChatEvent(base), true);
+  assert.equal(
+    isChatEvent({ ...base, providerDetail: 'account currently refuses all turns' }),
+    true,
+  );
+  // Empty, over-length, or non-string detail is rejected — never silently
+  // dropped or truncated by the guard itself (the scrub helper owns bounding).
+  assert.equal(isChatEvent({ ...base, providerDetail: '' }), false);
+  assert.equal(isChatEvent({ ...base, providerDetail: 'x'.repeat(501) }), false);
+  assert.equal(isChatEvent({ ...base, providerDetail: 'x'.repeat(500) }), true);
+  assert.equal(isChatEvent({ ...base, providerDetail: 123 }), false);
+  assert.equal(isChatEvent({ ...base, providerDetail: null }), false);
+});
+
 test('agent-event frames admit only strict canonical transcript events', () => {
   const frame = {
     type: 'agent-event',
