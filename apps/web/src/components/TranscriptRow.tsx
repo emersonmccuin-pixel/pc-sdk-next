@@ -8,6 +8,8 @@
 
 import { isChatEvent } from '@pc/contracts';
 
+import { turnFailedHint } from '../features/chat/turn-failed-hints';
+
 export type RowTone = 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'muted';
 
 export function Row({
@@ -63,12 +65,15 @@ export function TranscriptRow({ event }: { event: unknown }) {
           )}
         </Row>
       );
-    case 'turn-failed':
+    case 'turn-failed': {
+      const hint = turnFailedHint(event.error);
       return (
         <Row label={`turn failed · ${event.source}`} tone="error">
           <div className="whitespace-pre-wrap text-destructive">{event.error}</div>
+          {hint && <div className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{hint}</div>}
         </Row>
       );
+    }
     case 'tool-state':
       return (
         <Row

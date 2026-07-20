@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { formatToolLabel } from '@/lib/tool-labels';
 import { Markdown } from './Markdown';
 import type { RenderItem, ToolCall } from './chat-render';
+import { turnFailedHint } from './turn-failed-hints';
 
 // ── Content bubbles ─────────────────────────────────────────────────────────
 
@@ -181,10 +182,12 @@ export function SystemBubble({ level, message }: { level: 'info' | 'notice' | 'w
 }
 
 export function TurnFailedBubble({ error, source }: { error: string; source: string }) {
+  const hint = turnFailedHint(error);
   return (
     <div className="border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm">
       <span className="text-[10px] uppercase tracking-wider text-destructive">turn failed · {source}</span>
       <div className="mt-0.5 whitespace-pre-wrap break-words text-foreground">{error}</div>
+      {hint && <div className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }
