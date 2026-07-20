@@ -541,6 +541,7 @@ test('isMcpServerStatus', () => {
       status: 'unknown',
       reason: null,
       lastProbeAt: null,
+      lastOkProbeAt: null,
       toolCount: null,
       lastError: null,
     }),
