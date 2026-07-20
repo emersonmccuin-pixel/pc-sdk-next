@@ -150,6 +150,35 @@ test('context observations stay out of the transcript render list', () => {
   assert.deepEqual(items, []);
 });
 
+test('turn-failed carries providerDetail through as null when absent, verbatim when present', () => {
+  const absent = buildRenderItems([
+    frame(1, { kind: 'turn-failed', error: 'runtime failed to start (session-mint-unavailable)', source: 'internal' }),
+  ]);
+  assert.deepEqual(absent, [{
+    kind: 'turn-failed',
+    key: `${SID}:1`,
+    error: 'runtime failed to start (session-mint-unavailable)',
+    source: 'internal',
+    providerDetail: null,
+  }]);
+
+  const present = buildRenderItems([
+    frame(1, {
+      kind: 'turn-failed',
+      error: 'runtime failed to start (session-mint-unavailable)',
+      source: 'internal',
+      providerDetail: 'account currently refuses all turns',
+    }),
+  ]);
+  assert.deepEqual(present, [{
+    kind: 'turn-failed',
+    key: `${SID}:1`,
+    error: 'runtime failed to start (session-mint-unavailable)',
+    source: 'internal',
+    providerDetail: 'account currently refuses all turns',
+  }]);
+});
+
 test('compaction remains visible without inventing trigger or token counts', () => {
   const items = buildRenderItems([
     frame(1, {

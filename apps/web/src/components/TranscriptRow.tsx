@@ -71,6 +71,11 @@ export function TranscriptRow({ event }: { event: unknown }) {
         <Row label={`turn failed · ${event.source}`} tone="error">
           <div className="whitespace-pre-wrap text-destructive">{event.error}</div>
           {hint && <div className="mt-0.5 whitespace-pre-wrap text-muted-foreground">{hint}</div>}
+          {event.providerDetail && (
+            <div className="mt-0.5 whitespace-pre-wrap font-mono text-muted-foreground/80">
+              Provider: {event.providerDetail}
+            </div>
+          )}
         </Row>
       );
     }
