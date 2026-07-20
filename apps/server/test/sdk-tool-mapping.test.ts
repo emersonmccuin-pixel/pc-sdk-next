@@ -587,7 +587,7 @@ test('Claude runtime records an idle query-loop death and rejects the next turn'
   assert.throws(() => session.sendTurn('next'), /query loop is closed/);
 });
 
-test('Claude query exceptions become fixed app-authored terminal errors', () => {
+test('Claude query exceptions become fixed app-authored terminal errors; the exception message rides as bounded providerDetail', () => {
   const session = new ClaudeRuntimeSession({
     env: TEST_CLAUDE_ENV, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
   });
@@ -601,9 +601,22 @@ test('Claude query exceptions become fixed app-authored terminal errors', () => 
     push: (event) => events.push(event),
     end: () => { ended = true; },
   };
-  internals.failCurrentTurn(new Error('SECRET provider query detail'));
+  internals.failCurrentTurn(new Error('native provider query detail'));
   assert.equal(ended, true);
   assert.equal(events.length, 1);
-  assert.equal((events[0] as Extract<RuntimeEvent, { type: 'result' }>).error, 'runtime query failed');
-  assert.equal(JSON.stringify(events).includes('SECRET'), false);
+  const result = events[0] as Extract<RuntimeEvent, { type: 'result'; ok: false }>;
+  assert.equal(result.error, 'runtime query failed');
+  // Owner-approved product decision: the caught exception's own `.message`
+  // rides through as bounded, attributed providerDetail — never woven into
+  // the fixed app-authored `error` above.
+  assert.equal(result.providerDetail, 'native provider query detail');
+
+  // A non-Error throw (no `.message`) yields no providerDetail at all.
+  events.length = 0;
+  internals.currentTurn = {
+    push: (event) => events.push(event),
+    end: () => { ended = true; },
+  };
+  internals.failCurrentTurn('a string throw');
+  assert.equal((events[0] as Extract<RuntimeEvent, { type: 'result'; ok: false }>).providerDetail, undefined);
 });
