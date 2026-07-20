@@ -344,7 +344,12 @@ export class CodexRuntimeSession implements RuntimeSession {
             if (!turnStarted || (event.status === 'completed' && !itemCompleted)) {
               throw new CodexRuntimeMappingError('runtime-notification-invalid');
             }
-            if (!terminalItemsMatch(
+            // A 0.144.1 turn/completed carries itemsView 'notLoaded' with items
+            // [], so the terminal does not re-list the agent item. When it DOES
+            // list items (a 'full' view) they must match the streamed terminal;
+            // an empty list is trusted because the item/completed frame already
+            // sealed the item. A completed status still requires that seal above.
+            if (event.items.length !== 0 && !terminalItemsMatch(
               event.items,
               itemCompleted && nativeItemId !== null
                 ? [{ itemId: nativeItemId, text: accumulatedText, phase: completedPhase }]

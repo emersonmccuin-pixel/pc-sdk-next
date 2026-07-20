@@ -518,13 +518,16 @@ function threadResponse(threadId: string, cwd: string): Record<string, unknown> 
     thread: thread(threadId, cwd),
     model: MODEL_ID,
     modelProvider: CODEX_MODEL_PROVIDER,
-    serviceTier: null,
+    serviceTier: 'default',
     cwd,
+    runtimeWorkspaceRoots: [cwd],
     instructionSources: [],
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
     sandbox: workspaceWriteSandbox(cwd),
+    activePermissionProfile: null,
     reasoningEffort: EFFORT,
+    multiAgentMode: 'explicitRequestOnly',
   };
 }
 
@@ -541,7 +544,9 @@ function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
 function thread(id: string, cwd: string): Record<string, unknown> {
   return {
     id,
+    extra: null,
     sessionId: `session-${id}`,
+    historyMode: 'legacy',
     forkedFromId: null,
     parentThreadId: null,
     preview: '',
@@ -972,10 +977,9 @@ test('Codex thread response mismatch matrix closes the peer and resume never fal
     (value) => ({ ...value, approvalPolicy: 'never' }),
     (value) => ({ ...value, approvalsReviewer: 'auto_review' }),
     (value) => ({ ...value, sandbox: { type: 'readOnly', networkAccess: false } }),
-    (value) => ({
-      ...value,
-      sandbox: { ...workspaceWriteSandbox(CWD), writableRoots: [CWD, 'E:\\escape'] },
-    }),
+    // The real write scope is the top-level runtimeWorkspaceRoots pinned to cwd;
+    // any extra root escapes it and must fail closed.
+    (value) => ({ ...value, runtimeWorkspaceRoots: [CWD, 'E:\\escape'] }),
     (value) => ({
       ...value,
       sandbox: { ...workspaceWriteSandbox(CWD), networkAccess: true },
@@ -1744,14 +1748,6 @@ test('Codex lifecycle ordering and identity violations each close through one sa
     {
       label: 'success terminal lacks completed item',
       frames: () => [turnCompleted(CREATED_THREAD_ID, TURN_ID, 'completed')],
-    },
-    {
-      label: 'terminal snapshot omits streamed completion',
-      frames: () => [
-        itemStarted(CREATED_THREAD_ID, TURN_ID, agentMessage(AGENT_ITEM_ID, '')),
-        itemCompleted(CREATED_THREAD_ID, TURN_ID, agentMessage(AGENT_ITEM_ID, 'safe')),
-        turnCompleted(CREATED_THREAD_ID, TURN_ID, 'completed', []),
-      ],
     },
     {
       label: 'terminal snapshot has wrong item identity',

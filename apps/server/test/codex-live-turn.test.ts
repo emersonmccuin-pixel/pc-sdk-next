@@ -176,7 +176,7 @@ function emitCompletedTurn(fake: FakeChild, cwd: string): void {
   fake.send(itemStarted(TURN_ID, agentMessage(ITEM_ID, '')));
   fake.send(agentDelta(TURN_ID, ITEM_ID, PONG));
   fake.send(itemCompleted(TURN_ID, agentMessage(ITEM_ID, PONG)));
-  fake.send(turnCompleted(TURN_ID, 'completed', [agentMessage(ITEM_ID, PONG)]));
+  fake.send(turnCompleted(TURN_ID, 'completed'));
   // Trailing noise after the terminal frame (must never count as pending):
   fake.send({ method: 'account/rateLimits/updated', params: { primary: null } });
   fake.send({ method: 'thread/tokenUsage/updated', params: { threadId: THREAD_ID } });
@@ -283,13 +283,16 @@ function threadResponse(cwd: string): Record<string, unknown> {
     thread: thread(cwd),
     model: MODEL_ID,
     modelProvider: CODEX_MODEL_PROVIDER,
-    serviceTier: null,
+    serviceTier: 'default',
     cwd,
+    runtimeWorkspaceRoots: [cwd],
     instructionSources: [],
     approvalPolicy: 'on-request',
     approvalsReviewer: 'user',
     sandbox: workspaceWriteSandbox(cwd),
-    reasoningEffort: null,
+    activePermissionProfile: null,
+    reasoningEffort: 'medium',
+    multiAgentMode: 'explicitRequestOnly',
   };
 }
 
@@ -299,17 +302,21 @@ function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
 
 function thread(cwd: string): Record<string, unknown> {
   return {
-    id: THREAD_ID, sessionId: `session-${THREAD_ID}`, forkedFromId: null, parentThreadId: null,
+    id: THREAD_ID, extra: null, sessionId: `session-${THREAD_ID}`, historyMode: 'legacy',
+    forkedFromId: null, parentThreadId: null,
     preview: '', ephemeral: false, modelProvider: CODEX_MODEL_PROVIDER, createdAt: 1, updatedAt: 1,
     recencyAt: null, status: { type: 'idle' }, path: null, cwd, cliVersion: CODEX_PROTOCOL_VERSION,
-    source: 'appServer', threadSource: null, agentNickname: null, agentRole: null, gitInfo: null,
+    source: 'vscode', threadSource: null, agentNickname: null, agentRole: null, gitInfo: null,
     name: null, turns: [],
   };
 }
 
+// Real 0.144.1 turns carry itemsView 'notLoaded' and do NOT re-list items on the
+// terminal frame; the item/* stream is authoritative.
 function turn(id: string, status: 'completed' | 'interrupted' | 'failed' | 'inProgress', items: unknown[] = []): Record<string, unknown> {
   return {
-    id, items, itemsView: 'full', status, error: null, startedAt: 1,
+    id, items, itemsView: 'notLoaded', status, error: null,
+    startedAt: status === 'inProgress' ? null : 1,
     completedAt: status === 'inProgress' ? null : 2, durationMs: status === 'inProgress' ? null : 10,
   };
 }

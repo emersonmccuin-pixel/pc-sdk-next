@@ -244,29 +244,42 @@ export function captureThreadPeerReceipt(
       'modelProvider',
       'serviceTier',
       'cwd',
+      'runtimeWorkspaceRoots',
       'instructionSources',
       'approvalPolicy',
       'approvalsReviewer',
       'sandbox',
+      'activePermissionProfile',
       'reasoningEffort',
+      'multiAgentMode',
     ], 'thread-response-invalid');
     const rawThread = response.thread;
     const model = response.model;
     const modelProvider = response.modelProvider;
     const serviceTier = response.serviceTier;
     const cwd = response.cwd;
+    const runtimeWorkspaceRoots = response.runtimeWorkspaceRoots;
     const instructionSources = response.instructionSources;
     const approvalPolicy = response.approvalPolicy;
     const approvalsReviewer = response.approvalsReviewer;
     const sandbox = response.sandbox;
+    const activePermissionProfile = response.activePermissionProfile;
     const reasoningEffort = response.reasoningEffort;
+    const multiAgentMode = response.multiAgentMode;
+    const expectedEffort = selectedEffort(challenge.selection);
     if (
       model !== challenge.selection.model || modelProvider !== CODEX_MODEL_PROVIDER ||
-      serviceTier !== null || cwd !== challenge.cwd ||
+      !nullableString(serviceTier) || cwd !== challenge.cwd ||
+      // The real product write scope is the top-level runtimeWorkspaceRoots pinned
+      // to exactly the session cwd; the thread-level sandbox is the mode default.
+      !isCwdScopedRoots(runtimeWorkspaceRoots, challenge.cwd) ||
       !Array.isArray(instructionSources) || instructionSources.length !== 0 ||
       approvalPolicy !== 'on-request' || approvalsReviewer !== 'user' ||
-      !isWorkspaceWriteSandbox(sandbox, challenge.cwd) ||
-      reasoningEffort !== selectedEffort(challenge.selection)
+      !isWorkspaceWriteThreadSandbox(sandbox) || !nullableString(activePermissionProfile) ||
+      !exactString(multiAgentMode) ||
+      // A selected effort must be honored exactly; an unselected effort falls to
+      // the model default (an opaque native string like 'medium').
+      (expectedEffort !== null ? reasoningEffort !== expectedEffort : !exactString(reasoningEffort))
     ) fail('thread-response-invalid');
 
     const thread = captureThread(rawThread, challenge.cwd, challenge.mode);
@@ -282,7 +295,9 @@ export function captureTurnStartResponse(value: unknown): string {
     if (!isRecord(value)) fail('turn-response-invalid');
     exactKeys(value, ['turn'], 'turn-response-invalid');
     const turn = captureTurn(value.turn, ['inProgress'], 'turn-response-invalid');
-    if (turn.itemsView !== 'full' || turn.items.length !== 0 || turn.error !== null ||
+    // 0.144.1 opens a turn with itemsView 'notLoaded'; only a partial 'summary'
+    // view is rejected. Items are authoritative via the item/* stream regardless.
+    if (turn.itemsView === 'summary' || turn.items.length !== 0 || turn.error !== null ||
       turn.completedAt !== null ||
       turn.durationMs !== null) fail('turn-response-invalid');
     return turn.id;
@@ -307,7 +322,7 @@ export function captureRuntimeNotification(value: unknown): CapturedCodexRuntime
         const rawTurn = params.turn;
         if (!exactString(threadId)) fail('runtime-notification-invalid');
         const turn = captureTurn(rawTurn, ['inProgress'], 'runtime-notification-invalid');
-        if (turn.itemsView !== 'full' || turn.items.length !== 0 || turn.error !== null ||
+        if (turn.itemsView === 'summary' || turn.items.length !== 0 || turn.error !== null ||
           turn.completedAt !== null ||
           turn.durationMs !== null) fail('runtime-notification-invalid');
         return { kind: 'turn-started', threadId, turnId: turn.id };
@@ -362,7 +377,7 @@ export function captureRuntimeNotification(value: unknown): CapturedCodexRuntime
           'runtime-notification-invalid',
         );
         if (turn.status === 'inProgress') fail('runtime-notification-invalid');
-        if (turn.itemsView !== 'full') fail('runtime-notification-invalid');
+        if (turn.itemsView === 'summary') fail('runtime-notification-invalid');
         const items = turn.items.map((item) => captureAgentMessage(item, true));
         if (turn.status === 'failed') {
           if (!isTurnError(turn.error)) fail('runtime-notification-invalid');
@@ -485,12 +500,14 @@ function captureThread(
 ): CapturedCodexThread {
   if (!isRecord(value)) fail('thread-response-invalid');
   exactKeys(value, [
-    'id', 'sessionId', 'forkedFromId', 'parentThreadId', 'preview', 'ephemeral',
-    'modelProvider', 'createdAt', 'updatedAt', 'recencyAt', 'status', 'path', 'cwd',
-    'cliVersion', 'source', 'threadSource', 'agentNickname', 'agentRole', 'gitInfo',
+    'id', 'extra', 'sessionId', 'forkedFromId', 'parentThreadId', 'preview', 'ephemeral',
+    'historyMode', 'modelProvider', 'createdAt', 'updatedAt', 'recencyAt', 'status', 'path',
+    'cwd', 'cliVersion', 'source', 'threadSource', 'agentNickname', 'agentRole', 'gitInfo',
     'name', 'turns',
   ], 'thread-response-invalid');
   const id = value.id;
+  const extra = value.extra;
+  const historyMode = value.historyMode;
   const sessionId = value.sessionId;
   const forkedFromId = value.forkedFromId;
   const parentThreadId = value.parentThreadId;
@@ -518,7 +535,8 @@ function captureThread(
     modelProvider !== CODEX_MODEL_PROVIDER || !safeTimestamp(createdAt) ||
     !safeTimestamp(updatedAt) || (recencyAt !== null && !safeTimestamp(recencyAt)) ||
     !idleThreadStatus(status) || !nullableString(path) || cwd !== expectedCwd ||
-    cliVersion !== CODEX_PROTOCOL_VERSION || source !== 'appServer' ||
+    cliVersion !== CODEX_PROTOCOL_VERSION || !threadSourceLabel(source) ||
+    (extra !== null && !isRecord(extra)) || !exactString(historyMode) ||
     !nullableString(threadSource) || agentNickname !== null ||
     agentRole !== null || !gitInfo(rawGitInfo) || !nullableString(name) ||
     !Array.isArray(rawTurns)
@@ -1043,6 +1061,12 @@ function historicalWebSearchAction(value: unknown): boolean {
   }
 }
 
+/** The native thread `source` label. Pinned 0.144.1 reports 'vscode' for an
+ * app-server-launched thread; 'appServer' remains accepted. */
+function threadSourceLabel(value: unknown): boolean {
+  return value === 'appServer' || value === 'vscode';
+}
+
 function idleThreadStatus(value: unknown): boolean {
   return isRecord(value) && Object.keys(value).length === 1 && value.type === 'idle';
 }
@@ -1059,16 +1083,19 @@ function gitInfo(value: unknown): boolean {
     nullableString(value.originUrl);
 }
 
-/** The product sandbox posture: workspace-write confined to exactly the session
- * cwd, network denied, temp-dir escapes excluded. Any other shape fails closed. */
-function isWorkspaceWriteSandbox(value: unknown, cwd: string): boolean {
-  if (!isRecord(value) || Object.keys(value).length !== 5 ||
-    value.type !== 'workspaceWrite' || value.networkAccess !== false ||
-    value.excludeTmpdirEnvVar !== true || value.excludeSlashTmp !== true ||
-    !Array.isArray(value.writableRoots)) {
-    return false;
-  }
-  const roots = [...value.writableRoots];
+/** The thread-level sandbox on a 0.144.1 thread/start response: a workspace-write
+ * mode with network denied. The mode's own writableRoots/exclude fields are the
+ * mode defaults; the enforced per-turn tmp exclusion is carried by the turn/start
+ * sandboxPolicy, and the write scope is pinned by runtimeWorkspaceRoots. Any other
+ * sandbox type, or any enabled network, fails closed. */
+function isWorkspaceWriteThreadSandbox(value: unknown): boolean {
+  return isRecord(value) && value.type === 'workspaceWrite' && value.networkAccess === false;
+}
+
+/** The product write scope: exactly the session cwd and nothing else. */
+function isCwdScopedRoots(value: unknown, cwd: string): boolean {
+  if (!Array.isArray(value)) return false;
+  const roots = [...value];
   return roots.length === 1 && roots[0] === cwd;
 }
 

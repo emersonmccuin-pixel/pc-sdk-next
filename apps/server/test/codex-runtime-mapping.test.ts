@@ -86,15 +86,18 @@ function threadReceipt(
       thread: thread(nativeThreadId, expected.cwd),
       model: expected.selection.model,
       modelProvider: CODEX_MODEL_PROVIDER,
-      serviceTier: null,
+      serviceTier: 'default',
       cwd: expected.cwd,
+      runtimeWorkspaceRoots: [expected.cwd],
       instructionSources: [],
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
       sandbox: workspaceWriteSandbox(expected.cwd),
+      activePermissionProfile: null,
       reasoningEffort: expected.selection.effort.kind === 'selected'
         ? expected.selection.effort.value
-        : null,
+        : 'medium',
+      multiAgentMode: 'explicitRequestOnly',
     },
   };
 }
@@ -112,7 +115,9 @@ function workspaceWriteSandbox(cwd: string): Record<string, unknown> {
 function thread(id: string, cwd: string): Record<string, unknown> {
   return {
     id,
+    extra: null,
     sessionId: `session-${id}`,
+    historyMode: 'legacy',
     forkedFromId: null,
     parentThreadId: null,
     preview: '',
@@ -521,7 +526,7 @@ test('thread response mismatch matrix rejects every immutable selection and post
     (root) => { root.response = null; },
     (root) => { response(root).model = 'different-model'; },
     (root) => { response(root).modelProvider = 'azure'; },
-    (root) => { response(root).serviceTier = 'priority'; },
+    (root) => { response(root).serviceTier = 5; },
     (root) => { response(root).cwd = 'E:\\wrong'; },
     (root) => { response(root).instructionSources = ['E:\\private\\AGENTS.md']; },
     (root) => { response(root).approvalPolicy = 'never'; },
@@ -530,16 +535,13 @@ test('thread response mismatch matrix rejects every immutable selection and post
     (root) => {
       response(root).sandbox = { ...workspaceWriteSandbox(CWD), networkAccess: true };
     },
-    (root) => {
-      response(root).sandbox = {
-        ...workspaceWriteSandbox(CWD),
-        writableRoots: [CWD, resolve('test-fixtures/escape')],
-      };
-    },
-    (root) => {
-      response(root).sandbox = { ...workspaceWriteSandbox(CWD), excludeSlashTmp: false };
-    },
+    // The real write scope is top-level runtimeWorkspaceRoots pinned to cwd; an
+    // extra root escapes it, and an empty scope is not the session cwd.
+    (root) => { response(root).runtimeWorkspaceRoots = [CWD, resolve('test-fixtures/escape')]; },
+    (root) => { response(root).runtimeWorkspaceRoots = []; },
     (root) => { response(root).reasoningEffort = 'low'; },
+    (root) => { response(root).multiAgentMode = 5; },
+    (root) => { threadObject(root).historyMode = 5; },
     (root) => { threadObject(root).id = THREAD_ID; },
     (root) => { threadObject(root).cwd = 'E:\\wrong'; },
     (root) => { threadObject(root).modelProvider = 'azure'; },

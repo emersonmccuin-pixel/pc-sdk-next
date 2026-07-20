@@ -15,26 +15,12 @@
 // SAME CodexRuntimeAdapter + live-peer surface the product uses, so a pass here
 // is a pass of the real turn path end to end, not just the native substrate.
 //
-// STATUS (empirically captured 2026-07-20 against pinned 0.144.1): step 1 passes
-// live; steps 2-3 currently fail at createSession because the CX-002 capture
-// contract (captureThreadPeerReceipt / captureTurnStartResponse /
-// captureRuntimeNotification) was authored against an idealized native shape the
-// real app-server does NOT emit. Confirmed field-level divergences to reconcile
-// before this exits 0:
-//   - thread/start response carries extra keys `runtimeWorkspaceRoots`,
-//     `activePermissionProfile`, `multiAgentMode`; `serviceTier` is 'default'
-//     (not null); `reasoningEffort` is the model default (e.g. 'medium') when no
-//     effort is selected; the response `sandbox` is the mode default
-//     (writableRoots [], excludeTmpdirEnvVar/excludeSlashTmp false) with the real
-//     write scope in top-level `runtimeWorkspaceRoots: [cwd]`.
-//   - thread object carries extra keys `extra`, `historyMode`; `source` is
-//     'vscode' (not 'appServer').
-//   - turn `itemsView` is 'notLoaded' (not 'full') on the turn/start response,
-//     turn/started, and turn/completed; turn/completed does NOT re-list items
-//     (items []), so the session's terminal item cross-check must not require it.
-// The transport + live peer + authority themselves are proven against this real
-// wire (the notification stream filters cleanly); the gap is purely the capture
-// contract's expected shapes vs 0.144.1.
+// PROVEN against pinned 0.144.1 on 2026-07-20 (exit 0): live discovery
+// (gpt-5.6-*), a real pong round-trip with an `ok` terminal, and a real interrupt
+// resolving to a typed `aborted` terminal. The CX-002 capture contract was
+// reconciled to the real thread/turn wire shapes (runtimeWorkspaceRoots-pinned
+// write scope, model-default reasoningEffort, itemsView 'notLoaded', terminal
+// frames that do not re-list items) so the product turn path runs end to end.
 //
 // Exit 0 on pass; non-zero on any failure. A missing/expired login is reported as
 // a typed unavailable discovery, never faked into a pass. Lives under
