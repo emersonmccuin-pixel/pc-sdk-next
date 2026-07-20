@@ -33,6 +33,7 @@ import { getDataDir } from '@pc/utils';
 import {
   resolveSelectionWithModelFallback,
   RuntimeRegistry,
+  sessionToolsForAdapter,
   type MintRuntimeSession,
   type RuntimeSession,
 } from './runner/runtime.ts';
@@ -207,9 +208,13 @@ async function main(): Promise<void> {
     mintSpecialistRuntimeSession: async (input) => {
       const { continuation, ...sessionInput } = input;
       const adapter = runtimes.get(sessionInput.selection.runtimeId);
+      const gatedSessionInput = {
+        ...sessionInput,
+        tools: sessionToolsForAdapter(adapter, () => sessionInput.tools),
+      };
       return continuation.mode === 'resume'
-        ? adapter.resumeSession({ ...sessionInput, nativeSessionId: continuation.nativeSessionId })
-        : adapter.createSession(sessionInput);
+        ? adapter.resumeSession({ ...gatedSessionInput, nativeSessionId: continuation.nativeSessionId })
+        : adapter.createSession(gatedSessionInput);
     },
     onSubscriptionQuota: recordSubscriptionQuota,
   });
@@ -260,7 +265,7 @@ async function main(): Promise<void> {
         repositoryLease.identity,
       );
     }
-    const tools =
+    const tools = sessionToolsForAdapter(adapter, () =>
       portRef.port > 0
         ? mergePcTools(
             mcp.buildBridge(),
@@ -270,7 +275,8 @@ async function main(): Promise<void> {
               serverPort: portRef.port,
             }),
           )
-        : mcp.buildBridge();
+        : mcp.buildBridge(),
+    );
     const input = {
       appSessionId: ctx.appSessionId,
       projectId: ctx.projectId,

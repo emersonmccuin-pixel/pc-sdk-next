@@ -207,6 +207,10 @@ export interface ResumeRuntimeSession extends CreateRuntimeSession {
  *  runtime, registered at the composition root. */
 export interface AgentRuntimeAdapter {
   readonly id: string;
+  /** Static declaration of whether this adapter accepts app-provided tool
+   *  bridges (MCP + pc_* defs) in session input; 'unsupported' adapters must
+   *  mint without `tools` rather than receive and reject them per call. */
+  readonly appToolBridge: 'supported' | 'unsupported';
   capabilities(accountId: string): Promise<RuntimeCapabilities>;
   listModels(accountId: string): Promise<RuntimeModelDiscovery>;
   /** Observe account-scoped subscription quota without creating an app
@@ -223,6 +227,24 @@ export interface AgentRuntimeAdapter {
 export type RuntimeAdapterResolution =
   | { status: 'resolved'; adapter: AgentRuntimeAdapter }
   | { status: 'invalid'; code: 'runtime-not-registered' };
+
+/** Composition-seam gate: builds app tools only for adapters that declare
+ *  `appToolBridge: 'supported'`. Adapters that cannot bridge app tools mint
+ *  without them (never silently — logs once per call) instead of being
+ *  handed tools they would have to reject. `buildTools` stays lazy so
+ *  unsupported adapters skip the (possibly costly) bridge construction. */
+export function sessionToolsForAdapter(
+  adapter: Pick<AgentRuntimeAdapter, 'id' | 'appToolBridge'>,
+  buildTools: () => BridgeBuild | undefined,
+): BridgeBuild | undefined {
+  if (adapter.appToolBridge !== 'supported') {
+    console.warn(
+      `[pc-sdk][runtime] app tools omitted: ${adapter.id} does not bridge app tools`,
+    );
+    return undefined;
+  }
+  return buildTools();
+}
 
 export type RuntimeContinuationRequest =
   | { mode: 'create' }

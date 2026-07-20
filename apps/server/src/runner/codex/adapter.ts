@@ -78,6 +78,9 @@ interface CapturedSessionInput {
 
 export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CODEX_RUNTIME_ID;
+  /** No Codex tool bridge exists yet; the composition seam must mint without
+   *  app tools instead of handing them to this adapter, which stays fail-closed. */
+  readonly appToolBridge = 'unsupported' as const;
   private readonly discoveryPeer: CodexDiscoveryPeer;
   private readonly conformanceAuthority: CodexProviderFreeConformanceAuthority;
   private readonly runtimePeerFactory: CodexRuntimePeerFactory;

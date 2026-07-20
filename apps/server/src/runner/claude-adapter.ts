@@ -1000,6 +1000,7 @@ export function resolveAnswerDecision(
  *  else (instructions, tools, cwd, model) as the provider-neutral package. */
 export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
   readonly id = CLAUDE_RUNTIME_ID;
+  readonly appToolBridge = 'supported' as const;
   private readonly accounts: AccountRegistry;
   private readonly queryFactory: ClaudeQueryFactory;
   private readonly quotaFetch: ClaudeQuotaFetch;
