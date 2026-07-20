@@ -833,6 +833,12 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     const turn = this.currentTurn;
     if (!turn) return; // out-of-turn telemetry must not mutate successor-turn correlation
     if (this.sdkSessionId === null) {
+      if (anyMsg.type === 'system') {
+        // Pre-init system noise (e.g. SessionStart hook_started/hook_response) is
+        // expected to race ahead of init and is dropped, not treated as a handshake
+        // violation. A non-system message this early is still a genuine violation.
+        return;
+      }
       this.rejectSessionStart('runtime native session receipt missing');
       return;
     }
