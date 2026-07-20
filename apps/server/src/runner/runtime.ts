@@ -593,6 +593,13 @@ export class RuntimeRegistry {
     return this.adapters.has(runtimeId);
   }
 
+  /** Registered runtime ids, insertion order. Read-only enumeration for
+   *  provider-neutral surfaces (e.g. an availability listing) that must not
+   *  hardcode which runtimes exist. */
+  ids(): string[] {
+    return [...this.adapters.keys()];
+  }
+
   async validate(selection: RuntimeSelection): Promise<RuntimeSelectionValidation> {
     const captured = captureRuntimeSelection(selection);
     if (!captured) return invalid('selection-unavailable');

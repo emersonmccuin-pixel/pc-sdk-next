@@ -13,6 +13,7 @@ import type { SubscriptionQuotaService } from '@pc/app-services';
 import type { ULID } from '@pc/domain';
 import type {
   RuntimeContinuationRequest,
+  RuntimeRegistry,
   RuntimeSelection,
   RuntimeSelectionValidation,
   RuntimeSessionFactory,
@@ -55,6 +56,9 @@ export interface StartServerOptions {
   /** Account switcher registry — mounts the accounts + quota HTTP routes. */
   accounts?: AccountRegistry;
   orchestratorRuntimeId?: string;
+  /** Registered runtime adapters — mounts the provider-neutral /api/runtimes
+   *  availability route alongside `accounts` when both are set. */
+  runtimes?: RuntimeRegistry;
   /** Durable quota component — served by the HTTP re-prime route. */
   subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch service — mounts the agent-run routes when set. */
@@ -120,6 +124,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     instanceId: opts.instanceId ?? process.env.PC_INSTANCE_ID ?? 'pc-sdk-next',
     accounts: opts.accounts,
     orchestratorRuntimeId: opts.orchestratorRuntimeId,
+    runtimes: opts.runtimes,
     subscriptionQuota: opts.subscriptionQuota,
     dispatch: opts.dispatch,
     onRestartRequest: opts.onRestartRequest,
