@@ -15,6 +15,7 @@ import type {
   AgentRunReadStatus,
   AgentRunView,
 } from '@/features/agent-runs/use-project-agent-runs';
+import { agentRunsApi } from '@/features/agent-runs/client';
 import { useProjectContracts } from '@/features/contracts/use-project-contracts';
 import {
   canRequestAbandonment,
@@ -27,6 +28,7 @@ import {
 import {
   buildRecoveryProjection,
   reviewVerdictPresentation,
+  isDismissibleRecoveryRun,
   preservationEvidenceMessage,
   reviewCheckoutsRequiringAttention,
   recoveryRunGuidance,
@@ -55,6 +57,8 @@ interface ActivityPanelProps {
 export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [abandonContractId, setAbandonContractId] = useState<ULID | null>(null);
+  const [dismissingRunId, setDismissingRunId] = useState<ULID | null>(null);
+  const [dismissError, setDismissError] = useState<{ runId: ULID; message: string } | null>(null);
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 5000);
     return () => clearInterval(id);
@@ -68,6 +72,20 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
     runReadError,
     retryRunRead,
   } = useProjectActivity(project);
+
+  const handleDismiss = async (runId: ULID) => {
+    if (!project) return;
+    setDismissingRunId(runId);
+    setDismissError(null);
+    try {
+      await agentRunsApi.dismissRun(project.id, runId);
+      retryRunRead();
+    } catch (cause) {
+      setDismissError({ runId, message: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      setDismissingRunId(null);
+    }
+  };
   const { contracts } = useProjectContracts(project?.id ?? null);
   const strandedRead = useRecoveryWorktrees(project?.id ?? null, project !== null);
   const reviewCheckoutRead = useReviewCheckouts(project?.id ?? null, project !== null);
@@ -213,6 +231,9 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
               nowMs={nowMs}
               onOpenRun={openRun}
               onAbandon={setAbandonContractId}
+              onDismiss={handleDismiss}
+              dismissingRunId={dismissingRunId}
+              dismissError={dismissError}
               runReadStatus={runReadStatus}
               runReadError={runReadError}
               onRetryRunRead={retryRunRead}
@@ -480,6 +501,9 @@ function RecoveryRequiredRegion({
   nowMs,
   onOpenRun,
   onAbandon,
+  onDismiss,
+  dismissingRunId,
+  dismissError,
   canAbandon,
   runReadStatus,
   runReadError,
@@ -498,6 +522,9 @@ function RecoveryRequiredRegion({
   nowMs: number;
   onOpenRun: (agentRunId: string | null) => void;
   onAbandon: (contractId: ULID) => void;
+  onDismiss: (runId: ULID) => void;
+  dismissingRunId: ULID | null;
+  dismissError: { runId: ULID; message: string } | null;
   canAbandon: (contractId: ULID) => boolean;
   runReadStatus: AgentRunReadStatus;
   runReadError: string | null;
@@ -609,45 +636,62 @@ function RecoveryRequiredRegion({
             </li>
           );
         })}
-        {projection.runCards.map(({ run, contract, worktree }) => (
-          <li key={`run:${run.runId}`} className="flex items-stretch">
-            <button
-              type="button"
-              onClick={() => onOpenRun(run.runId)}
-              className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left hover:bg-muted/40"
-              aria-label={`Inspect recovery run ${run.runId}`}
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
-                  {run.agentName}
+        {projection.runCards.map((card) => {
+          const { run, contract, worktree } = card;
+          const dismissible = isDismissibleRecoveryRun(card);
+          const runDismissError = dismissError?.runId === run.runId ? dismissError.message : null;
+          return (
+          <li key={`run:${run.runId}`} className="flex flex-col">
+            <div className="flex items-stretch">
+              <button
+                type="button"
+                onClick={() => onOpenRun(run.runId)}
+                className="block min-w-0 flex-1 cursor-pointer px-3 py-2 text-left hover:bg-muted/40"
+                aria-label={`Inspect recovery run ${run.runId}`}
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <div className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
+                    {run.agentName}
+                  </div>
+                  <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
+                    {recoveryRunLabel(run)}
+                  </span>
                 </div>
-                <span className="shrink-0 border border-destructive/40 bg-destructive/10 px-1 py-px text-[9px] uppercase tracking-wider text-destructive">
-                  {recoveryRunLabel(run)}
-                </span>
-              </div>
-              {run.failureReason && (
-                <div className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground" title={run.failureReason}>
-                  {run.failureReason}
-                </div>
-              )}
-              {sealedEvidenceMessage(contract) && (
+                {run.failureReason && (
+                  <div className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground" title={run.failureReason}>
+                    {run.failureReason}
+                  </div>
+                )}
+                {sealedEvidenceMessage(contract) && (
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {sealedEvidenceMessage(contract)}
+                  </div>
+                )}
                 <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  {sealedEvidenceMessage(contract)}
+                  {preservationEvidenceMessage(worktree)}
                 </div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
+                  <span className="line-clamp-2 text-muted-foreground">{recoveryRunGuidance(run)}</span>
+                  <span className="shrink-0 font-medium text-foreground">Inspect</span>
+                </div>
+              </button>
+              {contract && canRequestAbandonment(contract) && (
+                <AbandonButton contract={contract} onAbandon={onAbandon} />
               )}
-              <div className="mt-0.5 text-[11px] text-muted-foreground">
-                {preservationEvidenceMessage(worktree)}
-              </div>
-              <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
-                <span className="line-clamp-2 text-muted-foreground">{recoveryRunGuidance(run)}</span>
-                <span className="shrink-0 font-medium text-foreground">Inspect</span>
-              </div>
-            </button>
-            {contract && canRequestAbandonment(contract) && (
-              <AbandonButton contract={contract} onAbandon={onAbandon} />
+              {dismissible && (
+                <DismissButton
+                  runId={run.runId}
+                  busy={dismissingRunId === run.runId}
+                  onDismiss={onDismiss}
+                />
+              )}
+            </div>
+            {runDismissError && (
+              <div className="px-3 pb-2 text-[11px] text-destructive">{runDismissError}</div>
             )}
           </li>
-        ))}
+          );
+        })}
         {projection.strandedWorktrees.map((w) => {
           const inspectable = w.agentRunId !== null && canInspectRun(w.agentRunId);
           return (
@@ -740,6 +784,29 @@ function AbandonButton({
       title="Preview and explicitly approve worktree abandonment"
     >
       Abandon…
+    </button>
+  );
+}
+
+function DismissButton({
+  runId,
+  busy,
+  onDismiss,
+}: {
+  runId: ULID;
+  busy: boolean;
+  onDismiss: (runId: ULID) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onDismiss(runId)}
+      disabled={busy}
+      className="shrink-0 border-l border-border px-2 text-[10px] font-medium text-muted-foreground hover:bg-muted disabled:cursor-default disabled:opacity-60"
+      aria-label={`Dismiss recovery run ${runId}`}
+      title="Nothing to recover here — clear this card"
+    >
+      {busy ? 'Dismissing…' : 'Dismiss'}
     </button>
   );
 }

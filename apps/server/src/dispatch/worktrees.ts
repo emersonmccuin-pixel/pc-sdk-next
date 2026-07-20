@@ -281,6 +281,75 @@ export type ProvisionOutcome =
   | ({ ok: true } & ProvisionedWorktree)
   | { ok: false; error: string };
 
+export interface BaseBranchPreflightOk {
+  ok: true;
+  /** null when the folder is not a git repository YET — a deferred/first-dispatch
+   *  project whose repo is bootstrapped later under lease authority. There is no
+   *  branch to gate, so the pre-flight passes; provisionWorktree re-checks with a
+   *  real base once the repo exists. */
+  base: string | null;
+}
+export interface BaseBranchPreflightFailure {
+  ok: false;
+  error: string;
+}
+export type BaseBranchPreflightResult = BaseBranchPreflightOk | BaseBranchPreflightFailure;
+
+/** Pure READ-ONLY pre-flight for repo dispatch: the configured/probed base
+ *  branch must exist, and the project's main working copy must currently be
+ *  checked out on it. Never creates, checks out, or otherwise mutates
+ *  anything — safe to call before any durable row exists. `provisionWorktree`
+ *  re-runs this identical check under repository lease authority (defense in
+ *  depth) after the caller's own pre-flight has already gated the dispatch. */
+export async function preflightBaseBranch(
+  projectDir: string,
+  configuredBase?: string | null,
+): Promise<BaseBranchPreflightResult> {
+  if (!projectDir || !existsSync(projectDir)) {
+    return { ok: false, error: `project folder missing: ${projectDir || '(unset)'}` };
+  }
+  const inside = await git(['rev-parse', '--is-inside-work-tree'], projectDir);
+  if (!inside.ok || inside.stdout !== 'true') {
+    // Not a git repository yet: a deferred/first-dispatch project bootstrapped
+    // later under lease authority. Only an EXISTING repo can be on the wrong
+    // branch, so there is nothing to gate here — pass through and let
+    // provisionWorktree's post-bootstrap re-check enforce the invariant.
+    return { ok: true, base: null };
+  }
+  // Base resolution: profile override wins; else probe main/master.
+  let base: string | undefined;
+  if (configuredBase) {
+    if (!(await git(['rev-parse', '--verify', '--quiet', `refs/heads/${configuredBase}`], projectDir)).ok) {
+      return { ok: false, error: `configured base branch '${configuredBase}' does not exist in ${projectDir}` };
+    }
+    base = configuredBase;
+  } else {
+    for (const candidate of ['main', 'master']) {
+      if ((await git(['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`], projectDir)).ok) {
+        base = candidate;
+        break;
+      }
+    }
+  }
+  if (!base) {
+    return { ok: false, error: `no base branch: neither 'main' nor 'master' exists in ${projectDir}` };
+  }
+  const current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], projectDir);
+  if (!current.ok) {
+    return { ok: false, error: `cannot resolve HEAD: ${current.stderr}` };
+  }
+  if (current.stdout === 'HEAD') {
+    return { ok: false, error: 'project is on a detached HEAD — check out a branch first' };
+  }
+  if (current.stdout !== base) {
+    return {
+      ok: false,
+      error: `project is checked out on '${current.stdout}', not the base branch '${base}' — switch the main copy back to '${base}' first (provisioning never auto-checkouts)`,
+    };
+  }
+  return { ok: true, base };
+}
+
 /** `git worktree add -b agent-<id8> <dir> refs/heads/<base>` + the durable row
  *  + the clean-initial-status check.
  *  The main copy must be ON the base branch — the profile's `baseBranch` when
@@ -296,44 +365,13 @@ export async function provisionWorktree(
     expectedIdentity?: RepositoryIdentityReceipt | null;
   } = {},
 ): Promise<ProvisionOutcome> {
-  if (!projectDir || !existsSync(projectDir)) {
-    return { ok: false, error: `project folder missing: ${projectDir || '(unset)'}` };
-  }
-  const inside = await git(['rev-parse', '--is-inside-work-tree'], projectDir);
-  if (!inside.ok || inside.stdout !== 'true') {
-    return { ok: false, error: `not a git repository: ${projectDir}` };
-  }
-  // Base resolution: profile override wins; else probe main/master.
-  let base: string | undefined;
-  if (opts.baseBranch) {
-    if (!(await git(['rev-parse', '--verify', '--quiet', `refs/heads/${opts.baseBranch}`], projectDir)).ok) {
-      return { ok: false, error: `configured base branch '${opts.baseBranch}' does not exist in ${projectDir}` };
-    }
-    base = opts.baseBranch;
-  } else {
-    for (const candidate of ['main', 'master']) {
-      if ((await git(['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`], projectDir)).ok) {
-        base = candidate;
-        break;
-      }
-    }
-  }
-  if (!base) {
-    return { ok: false, error: `no base branch: neither 'main' nor 'master' exists in ${projectDir}` };
-  }
-  let current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], projectDir);
-  if (!current.ok) {
-    return { ok: false, error: `cannot resolve HEAD: ${current.stderr}` };
-  }
-  if (current.stdout === 'HEAD') {
-    return { ok: false, error: 'project is on a detached HEAD — check out a branch first' };
-  }
-  if (current.stdout !== base) {
-    return {
-      ok: false,
-      error: `project is checked out on '${current.stdout}', not the base branch '${base}' — switch the main copy back to '${base}' first (provisioning never auto-checkouts)`,
-    };
-  }
+  const preflight = await preflightBaseBranch(projectDir, opts.baseBranch ?? null);
+  if (!preflight.ok) return { ok: false, error: preflight.error };
+  // Provisioning requires a real repository — by this point a deferred project
+  // has been bootstrapped under lease authority, so a null base is a genuine
+  // failure, not the deferred pass-through the early caller-side pre-flight allows.
+  const base = preflight.base;
+  if (base === null) return { ok: false, error: `not a git repository: ${projectDir}` };
   let baseSha = await git(['rev-parse', `refs/heads/${base}`], projectDir);
   if (!baseSha.ok) {
     return { ok: false, error: `cannot resolve base branch tip: ${baseSha.stderr}` };
@@ -357,7 +395,7 @@ export async function provisionWorktree(
   }
   // Every preliminary check above is repeated after positive authority. Only
   // this under-lease evidence can authorize the worktree mutation.
-  current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], authorizedProjectDir);
+  const current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], authorizedProjectDir);
   if (!current.ok || current.stdout !== base) {
     return {
       ok: false,

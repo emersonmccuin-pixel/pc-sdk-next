@@ -368,6 +368,7 @@ test('socket admits only exact browser-safe agent-run resources', () => {
     failureCause: null,
     endedAt: null,
     rev: 1,
+    dismissedAt: null,
   };
   const frame = {
     type: 'resource',

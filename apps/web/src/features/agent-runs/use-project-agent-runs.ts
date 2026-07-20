@@ -56,6 +56,9 @@ export function isRecoveryTerminalRun(
   contractLandingStatus: string | null = null,
 ): boolean {
   if (run.agentName === 'contract-reviewer' && run.status === 'completed') return false;
+  // A dismissed run has nothing left to recover — the user explicitly
+  // cleared it (FIX B). It must never resurface as a recovery card.
+  if (run.dismissedAt !== null) return false;
   return isRetainedTerminalRun(run) && (
     run.lifecycleState !== 'merge-ready' || contractLandingStatus === 'landed'
   );

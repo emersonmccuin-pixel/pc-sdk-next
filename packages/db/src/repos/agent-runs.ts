@@ -159,6 +159,7 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     model: input.selection.model,
     ...effort,
     autoContinueCount: input.autoContinueCount ?? 0,
+    dismissedAt: null,
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
@@ -1061,6 +1062,18 @@ export function listTurnBudgetExhaustedRuns(): AgentRunRow[] {
  *  2) before delivering the ceiling envelope off the existing terminal row. */
 export function setAgentRunFailureReason(id: ULID, failureReason: string): void {
   getDb().update(agentRuns).set({ failureReason }).where(eq(agentRuns.id, id)).run();
+}
+
+/** Recovery-view dismissal. Idempotent (first dismissal wins) and does NOT
+ *  bump `rev` — dismissal is a recovery-projection concern, not a run
+ *  lifecycle transition. Eligibility (terminal + no worktree + no sealed
+ *  deliverable) is enforced by the caller before this door is reached. */
+export function dismissAgentRun(id: ULID, at: number): void {
+  getDb()
+    .update(agentRuns)
+    .set({ dismissedAt: at })
+    .where(and(eq(agentRuns.id, id), sql`${agentRuns.dismissedAt} IS NULL`))
+    .run();
 }
 
 // Step 2 (2026-06-03) — the boot-time bulk-fail sweeps (`reconcileOrphanedRunningRuns`,
