@@ -713,6 +713,10 @@ test('stable runtime notifications map only ordered public agent text and redact
     method: 'turn/completed',
     params: { threadId: THREAD_ID, turn: turn('failed') },
   });
+  // Owner-approved product decision: the native turn error's own `.message`
+  // rides through as bounded, attributed providerDetail — display-only, never
+  // woven into app copy or used for control flow. `additionalDetails` is a
+  // distinct native field and must still never surface.
   assert.deepEqual(failed, {
     kind: 'turn-completed',
     threadId: THREAD_ID,
@@ -720,8 +724,34 @@ test('stable runtime notifications map only ordered public agent text and redact
     status: 'failed',
     durationMs: 12,
     items: [],
+    providerDetail: PRIVATE_PROSE,
   });
-  assert.doesNotMatch(JSON.stringify(failed), /PRIVATE|provider payload/iu);
+  assert.doesNotMatch(JSON.stringify(failed), /additionalDetails|ADDITIONAL DETAILS/iu);
+});
+
+test('turn-completed providerDetail is null for a non-failed status and absent-message failures', () => {
+  const completed = captureRuntimeNotification({
+    method: 'turn/completed',
+    params: { threadId: THREAD_ID, turn: turn('completed') },
+  });
+  assert.deepEqual(completed, {
+    kind: 'turn-completed',
+    threadId: THREAD_ID,
+    turnId: TURN_ID,
+    status: 'completed',
+    durationMs: 12,
+    items: [],
+    providerDetail: null,
+  });
+
+  const failedNoMessage = captureRuntimeNotification({
+    method: 'turn/completed',
+    params: {
+      threadId: THREAD_ID,
+      turn: turn('failed', { error: { message: '', codexErrorInfo: null, additionalDetails: null } }),
+    },
+  });
+  assert.equal((failedNoMessage as { providerDetail: string | null }).providerDetail, null);
 });
 
 test('stable live item identity is exact nonempty text and is not invented as UUIDv7', () => {

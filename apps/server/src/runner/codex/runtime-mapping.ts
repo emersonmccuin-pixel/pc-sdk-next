@@ -4,6 +4,7 @@ import {
   type RuntimeModelDiscovery,
   type RuntimeSelection,
 } from '@pc/contracts';
+import { scrubProviderDetail } from '@pc/utils';
 
 import {
   CODEX_MODEL_PROVIDER,
@@ -81,6 +82,11 @@ export type CapturedCodexRuntimeNotification =
         text: string;
         phase: 'commentary' | 'final_answer' | null;
       }>;
+      /** Bounded, secret-scrubbed copy of the native turn error's own message —
+       *  present only when `status === 'failed'` and the native message was
+       *  non-empty. Display-only diagnostic detail (docs/agent-runtime-
+       *  architecture.md); never used to classify the outcome above. */
+      providerDetail: string | null;
     };
 
 export function captureCodexDiscovery(
@@ -379,8 +385,10 @@ export function captureRuntimeNotification(value: unknown): CapturedCodexRuntime
         if (turn.status === 'inProgress') fail('runtime-notification-invalid');
         if (turn.itemsView === 'summary') fail('runtime-notification-invalid');
         const items = turn.items.map((item) => captureAgentMessage(item, true));
+        let providerDetail: string | null = null;
         if (turn.status === 'failed') {
           if (!isTurnError(turn.error)) fail('runtime-notification-invalid');
+          providerDetail = scrubProviderDetail((turn.error as { message: string }).message);
         } else if (turn.error !== null) {
           fail('runtime-notification-invalid');
         }
@@ -395,6 +403,7 @@ export function captureRuntimeNotification(value: unknown): CapturedCodexRuntime
             text: item.text,
             phase: item.phase,
           })),
+          providerDetail,
         };
       }
       default:

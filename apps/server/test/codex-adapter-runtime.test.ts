@@ -211,6 +211,7 @@ interface FakeRuntimeControl {
   receiptMutation?: (receipt: Record<string, unknown>) => unknown;
   threadMutation?: (value: Record<string, unknown>, mode: CodexRuntimeMode) => unknown;
   turnStartMutation?: (value: Record<string, unknown>) => unknown;
+  threadStartError?: () => Error;
 }
 
 class FakeCodexRuntimePeer implements CodexRuntimePeer {
@@ -242,6 +243,7 @@ class FakeCodexRuntimePeer implements CodexRuntimePeer {
   ): Promise<unknown> {
     this.control.threadStarts += 1;
     this.threadParams.push(structuredClone(params));
+    if (this.control.threadStartError) throw this.control.threadStartError();
     return this.threadPeerReceipt(CREATED_THREAD_ID, policyReceipt, 'create');
   }
 
@@ -935,6 +937,36 @@ test('Codex revalidates discovery after policy evidence and before thread creati
   assert.equal(control.threadStarts, 0);
   assert.equal(control.threadResumes, 0);
   assert.equal(control.nativeCloses, 1);
+});
+
+test('Codex mint failure carries the underlying providerDetail onto CodexRuntimeAdapterError', async () => {
+  const control = makeControl('manual');
+  control.threadStartError = () => Object.assign(
+    new Error('thread start failed'),
+    { providerDetail: 'account currently refuses all turns' },
+  );
+  const adapter = adapterFor(control);
+  await assert.rejects(
+    () => adapter.createSession(sessionInput()),
+    (error: unknown) => (
+      error instanceof CodexRuntimeAdapterError &&
+      error.code === 'session-mint-unavailable' &&
+      error.providerDetail === 'account currently refuses all turns'
+    ),
+  );
+
+  // An underlying failure with no providerDetail leaves it unset — never a
+  // synthesized message-based fallback.
+  const plainControl = makeControl('manual');
+  plainControl.threadStartError = () => new Error('thread start failed');
+  await assert.rejects(
+    () => adapterFor(plainControl).createSession(sessionInput()),
+    (error: unknown) => (
+      error instanceof CodexRuntimeAdapterError &&
+      error.code === 'session-mint-unavailable' &&
+      error.providerDetail === undefined
+    ),
+  );
 });
 
 test('Codex rejects tool, native-tool, non-function ask, and malformed inputs before peer creation', async () => {
@@ -1827,7 +1859,7 @@ test('Codex lifecycle ordering and identity violations each close through one sa
   }
 });
 
-test('Codex failed terminal drops native error prose and emits one fixed result', async () => {
+test('Codex failed terminal surfaces the native message as bounded providerDetail, never additionalDetails', async () => {
   const control = makeControl('manual');
   const session = await adapterFor(control).createSession(sessionInput());
   const iterator = session.sendTurn('failed terminal')[Symbol.asyncIterator]();
@@ -1839,6 +1871,9 @@ test('Codex failed terminal drops native error prose and emits one fixed result'
     if (next.done) break;
     remaining.push(next.value);
   }
+  // Owner-approved product decision: the native turn error's own `.message`
+  // rides through as bounded, attributed providerDetail (display-only, never
+  // woven into `error` or used for control flow).
   assert.deepEqual(remaining.at(-1), {
     type: 'result',
     ok: false,
@@ -1848,9 +1883,11 @@ test('Codex failed terminal drops native error prose and emits one fixed result'
     numTurns: null,
     error: 'runtime turn failed',
     outcome: 'error',
+    providerDetail: 'PRIVATE NATIVE ERROR PROSE',
   });
   assert.equal(remaining.filter((event) => event.type === 'result').length, 1);
-  assert.doesNotMatch(JSON.stringify(remaining), /PRIVATE NATIVE|ADDITIONAL DETAILS/iu);
+  // `additionalDetails` is a distinct native field and must still never surface.
+  assert.doesNotMatch(JSON.stringify(remaining), /ADDITIONAL DETAILS/iu);
   await session.dispose();
 });
 

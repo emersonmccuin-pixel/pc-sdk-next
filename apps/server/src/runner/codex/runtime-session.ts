@@ -399,7 +399,12 @@ export class CodexRuntimeSession implements RuntimeSession {
             } else if (event.status === 'interrupted') {
               result = failureResult('aborted', 'runtime turn interrupted', event.durationMs);
             } else {
-              result = failureResult('error', 'runtime turn failed', event.durationMs);
+              result = failureResult(
+                'error',
+                'runtime turn failed',
+                event.durationMs,
+                event.providerDetail ?? undefined,
+              );
             }
             this.completedTurns += 1;
             terminal = true;
@@ -411,7 +416,7 @@ export class CodexRuntimeSession implements RuntimeSession {
       }
 
       throw new CodexRuntimeMappingError('runtime-notification-invalid');
-    } catch {
+    } catch (error) {
       if (!terminal) {
         this.poisoned = true;
         this.closeAfterProtocolFailure();
@@ -432,7 +437,7 @@ export class CodexRuntimeSession implements RuntimeSession {
         terminal = true;
         abandonNotifications();
         this.releaseTerminalReservation(reservationId);
-        yield failureResult('error', 'runtime unavailable', null);
+        yield failureResult('error', 'runtime unavailable', null, nativeProviderDetail(error));
       }
     } finally {
       abandonNotifications();
@@ -614,6 +619,7 @@ function failureResult(
   outcome: 'error' | 'aborted' | 'budget-exhausted',
   error: string,
   durationMs: number | null,
+  providerDetail?: string,
 ): Extract<RuntimeEvent, { type: 'result' }> {
   return {
     type: 'result',
@@ -624,7 +630,18 @@ function failureResult(
     numTurns: null,
     error,
     outcome,
+    ...(providerDetail ? { providerDetail } : {}),
   };
+}
+
+/** A caught error's own `.providerDetail` (already bounded + scrubbed at the
+ *  transport/mapping capture seam that raised it), if it carries one. Never
+ *  reads or synthesizes from `.message` here — that would re-admit raw,
+ *  unscrubbed native prose one layer removed from its scrub site. */
+function nativeProviderDetail(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const detail = (error as { providerDetail?: unknown }).providerDetail;
+  return typeof detail === 'string' && detail.length > 0 ? detail : undefined;
 }
 
 async function* oneResultStream(

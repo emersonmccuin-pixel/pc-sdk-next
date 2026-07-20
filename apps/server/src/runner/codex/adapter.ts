@@ -49,9 +49,14 @@ export type CodexRuntimeAdapterErrorCode =
 
 export class CodexRuntimeAdapterError extends Error {
   readonly name = 'CodexRuntimeAdapterError';
+  /** Optional bounded, secret-scrubbed native failure text carried from
+   *  whatever threw underneath (already scrubbed at its own capture seam).
+   *  Display-only diagnostic detail — never used for control flow. */
+  readonly providerDetail?: string;
 
-  constructor(readonly code: CodexRuntimeAdapterErrorCode) {
+  constructor(readonly code: CodexRuntimeAdapterErrorCode, providerDetail?: string) {
     super(`Codex runtime adapter unavailable: ${code}`);
+    if (providerDetail) this.providerDetail = providerDetail;
   }
 }
 
@@ -244,7 +249,7 @@ export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
       }
       if (error instanceof CodexRuntimeAdapterError ||
         error instanceof RuntimeSelectionRejectedError) throw error;
-      throw new CodexRuntimeAdapterError('session-mint-unavailable');
+      throw new CodexRuntimeAdapterError('session-mint-unavailable', nativeProviderDetail(error));
     }
   }
 
@@ -468,4 +473,12 @@ function exactString(value: unknown): value is string {
 function nativeId(value: unknown): value is string {
   return exactString(value) &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** A caught error's own `.providerDetail` (already bounded + scrubbed at the
+ *  transport/mapping capture seam that raised it), if it carries one. */
+function nativeProviderDetail(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const detail = (error as { providerDetail?: unknown }).providerDetail;
+  return typeof detail === 'string' && detail.length > 0 ? detail : undefined;
 }

@@ -150,7 +150,43 @@ test('transport correlates a request to its response and surfaces an error respo
   const bad = h.transport.request('turn/interrupt', {});
   const badReq = await h.child.nextFrame();
   h.child.send({ id: badReq.id, error: { code: -1, message: 'nope' } });
-  await assert.rejects(bad, (e: unknown) => e instanceof CodexTurnTransportError && e.code === 'transport-failed');
+  await assert.rejects(bad, (e: unknown) => (
+    e instanceof CodexTurnTransportError && e.code === 'transport-failed' && e.providerDetail === 'nope'
+  ));
+});
+
+test('transport captures a native JSON-RPC error message as bounded providerDetail', async () => {
+  const h = harness();
+  await initialize(h);
+
+  // A malformed/absent native error message yields no providerDetail at all.
+  const noMessage = h.transport.request('turn/start', { threadId: 't' });
+  const noMessageReq = await h.child.nextFrame();
+  h.child.send({ id: noMessageReq.id, error: { code: -1 } });
+  await assert.rejects(noMessage, (e: unknown) => (
+    e instanceof CodexTurnTransportError && e.providerDetail === undefined
+  ));
+
+  // A token-shaped substring is redacted — same scrub helper as every other
+  // adapter capture seam.
+  const withToken = h.transport.request('turn/start', { threadId: 't' });
+  const withTokenReq = await h.child.nextFrame();
+  h.child.send({
+    id: withTokenReq.id,
+    error: { code: -1, message: 'refused: Bearer abc123.def456-token' },
+  });
+  await assert.rejects(withToken, (e: unknown) => (
+    e instanceof CodexTurnTransportError && e.providerDetail === 'refused: [redacted]'
+  ));
+
+  // A long native error message (no token-shaped run) is capped at 500 chars.
+  const longMessage = 'not a secret word '.repeat(40).trim();
+  const long = h.transport.request('turn/start', { threadId: 't' });
+  const longReq = await h.child.nextFrame();
+  h.child.send({ id: longReq.id, error: { code: -1, message: longMessage } });
+  await assert.rejects(long, (e: unknown) => (
+    e instanceof CodexTurnTransportError && e.providerDetail === longMessage.slice(0, 500)
+  ));
 });
 
 test('transport routes notifications and server requests to their sinks and answers by id', async () => {
