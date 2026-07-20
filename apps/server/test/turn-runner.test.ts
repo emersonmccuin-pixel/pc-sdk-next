@@ -145,6 +145,30 @@ test('error result ends in exactly one turn-failed (api)', async () => {
   assert.deepEqual(t[0], { kind: 'turn-failed', error: 'boom', source: 'api' });
 });
 
+test('a result event\'s providerDetail rides the turn-failed ChatEvent verbatim; absent stays absent', async () => {
+  const c = collector();
+  const term = await runTurn(
+    stream([{
+      type: 'result', ok: false, stopReason: null, usage: null, durationMs: null,
+      error: 'boom', outcome: 'error', numTurns: 4,
+      providerDetail: 'account currently refuses all turns',
+    }]),
+    c.deps,
+  );
+  assert.deepEqual(term, { terminal: 'turn-failed', outcome: 'error', numTurns: 4 });
+  assert.deepEqual(terminals(c.chat), [{
+    kind: 'turn-failed', error: 'boom', source: 'api',
+    providerDetail: 'account currently refuses all turns',
+  }]);
+
+  const c2 = collector();
+  await runTurn(
+    stream([{ type: 'result', ok: false, stopReason: null, usage: null, durationMs: null, error: 'boom', outcome: 'error', numTurns: 4 }]),
+    c2.deps,
+  );
+  assert.deepEqual(terminals(c2.chat), [{ kind: 'turn-failed', error: 'boom', source: 'api' }]);
+});
+
 test('canonical budget-exhausted outcome remains distinct from a crash', async () => {
   const c = collector();
   const term = await runTurn(

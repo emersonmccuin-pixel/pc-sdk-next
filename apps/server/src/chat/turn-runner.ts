@@ -256,6 +256,7 @@ export async function runTurn(
                     : 'runtime turn failed'
               ),
               source: msg.outcome === 'aborted' ? 'abort' : 'api',
+              ...(msg.providerDetail ? { providerDetail: msg.providerDetail } : {}),
             });
           }
           terminated = true;
