@@ -14,6 +14,7 @@
 //   a phantom run works off the row, not the handle).
 
 import { createHash } from 'node:crypto';
+import { readFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import {
   bindProjectRepositoryIdentity,
@@ -138,7 +139,13 @@ import type { SessionRegistry } from '../chat/registry.ts';
 import type { ConversationRelay } from '../chat/conversation-relay.ts';
 import type { ProjectWebSocketHub } from '../ws/hub.ts';
 import { runTurn } from '../chat/turn-runner.ts';
-import { AGENT_PC_TOOLS, buildPcToolDefs, mergePcTools } from './pc-bridge.ts';
+import {
+  AGENT_PC_TOOLS,
+  DELIVERABLE_FILE_NAME,
+  buildPcToolDefs,
+  mergePcTools,
+  shapeDeliverableFileContents,
+} from './pc-bridge.ts';
 import { buildAskEnvelope, buildReviewBrief, buildSpecialistInstructions, buildTerminalEnvelope } from './prompt.ts';
 import { autoLandBlockers, verifyContract, type VerificationOutcome } from './verification.ts';
 import {
@@ -292,6 +299,12 @@ export interface DispatchServiceDeps {
   /** Injectable provisioning boundary keeps shutdown-after-provision races
    * deterministic under guard tests. Production uses the canonical helper. */
   provisionWorktree?: typeof provisionWorktree;
+  /** Composition-seam fact: does a runtime bridge app tools? Mirrors the same
+   * `AgentRuntimeAdapter.appToolBridge` gate the mint uses. A runtime that does
+   * NOT bridge tools mints with zero pc_* tools, so its specialist cannot call
+   * pc_submit_deliverable — the file-based delivery door is opened for it. The
+   * dispatcher stays provider-neutral: it reads the fact, never the adapter. */
+  appToolBridgeForRuntime?: (runtimeId: string) => 'supported' | 'unsupported';
 }
 
 interface AttachContext {
@@ -1674,6 +1687,7 @@ export class DispatchService {
       expectedOutput: input.spec,
       acceptanceCriteria: (input.contract.acceptanceCriteria ?? []) as never,
       worktreeDir: input.worktree?.dir ?? null,
+      fileDeliveryDoor: this.fileDeliveryDoorOpen(input.selection.runtimeId, input.worktree?.dir ?? null),
     });
     if (input.snapshot.contextDocs.length > 0) {
       instructions += `\n\n## Context documents\n${input.snapshot.contextDocs
@@ -2175,7 +2189,23 @@ export class DispatchService {
     if (row.status === 'completed' || row.status === 'failed' || row.status === 'cancelled') return; // killed already
 
     if (terminalResult.terminal === 'turn-end') {
-      this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null }, liveRun.continuationAttemptId);
+      // Tool-bridge-less delivery door: a clean turn end with no tool
+      // deliverable may still have dropped a valid deliverable FILE at the
+      // worktree root. Attempt it BEFORE settling — submitDeliverable refuses
+      // once the run is terminal. A present-but-unusable file is a typed
+      // failure; a missing file falls through to the normal no-deliverable gate.
+      const door = await this.deliverFromFileDoor(runId);
+      if (!this.liveAttemptIsCurrent(runId, liveRun)) return;
+      if (typeof door === 'object') {
+        this.settleTerminal(runId, {
+          status: 'failed',
+          result: lastText || null,
+          failureCause: 'invalid-deliverable',
+          failureReason: door.invalid,
+        }, liveRun.continuationAttemptId);
+      } else {
+        this.settleTerminal(runId, { status: 'completed', result: lastText || null, failureCause: null, failureReason: null }, liveRun.continuationAttemptId);
+      }
     } else if (terminalResult.outcome === 'budget-exhausted') {
       // A canonical budget-exhausted terminal, not a crash — distinct
       // failureCause so the run reads as resumable.
@@ -2665,6 +2695,71 @@ export class DispatchService {
     // Sealed repo deliverable ⇒ the pipeline moves to deterministic verification.
     if (expectedKind === 'repo') this.stampLifecycle(input.agentRunId, 'verifying');
     return { ok: true, contract: updated };
+  }
+
+  /** The file-based delivery door only opens for a tool-bridge-less runtime
+   *  (adapter `appToolBridge === 'unsupported'`, e.g. Codex) that runs in a
+   *  worktree — the sole case where the specialist has no pc_submit_deliverable
+   *  tool but does have a root to write the signal file at. A tool-bridged
+   *  runtime (Claude) keeps the canonical tool as its ONLY done-signal. */
+  private fileDeliveryDoorOpen(runtimeId: string, worktreeDir: string | null): boolean {
+    if (!worktreeDir) return false;
+    return this.deps.appToolBridgeForRuntime?.(runtimeId) === 'unsupported';
+  }
+
+  /** Read + validate the deliverable FILE at the worktree root, for a
+   *  bridge-less run that ended its turn without a tool deliverable. The file
+   *  is removed BEFORE the seal (it must never land, and the clean-tree check
+   *  in submitDeliverable must not see it as an uncommitted change), then run
+   *  through the SAME `submitDeliverable` validation as the tool path.
+   *  - `delivered`: a valid file sealed the deliverable (or the tool already
+   *    delivered) — downstream verify/review/merge is identical to the tool.
+   *  - `absent`: door shut, or no file — the loud `no-deliverable` failure
+   *    stands unchanged.
+   *  - `{ invalid }`: a present-but-unusable file (bad JSON, shape/kind
+   *    rejected, or unremovable) — a typed failure carrying the reason. */
+  private async deliverFromFileDoor(
+    runId: ULID,
+  ): Promise<'delivered' | 'absent' | { invalid: string }> {
+    const row = getAgentRunRow(runId);
+    if (!row) return 'absent';
+    if (row.deliveredAt !== null) return 'delivered'; // tool deliverable already sealed
+    const selection = runtimeSelectionForAgentRun(row);
+    if (!selection || !this.fileDeliveryDoorOpen(selection.runtimeId, row.worktreeDir)) {
+      return 'absent';
+    }
+    const filePath = join(row.worktreeDir!, DELIVERABLE_FILE_NAME);
+    let raw: string;
+    try {
+      raw = await readFile(filePath, 'utf8');
+    } catch {
+      return 'absent'; // no file → existing no-deliverable path applies
+    }
+    // Remove before the seal — the landed tree must never carry the signal
+    // file, and submitDeliverable's clean-tree gate must not read it as dirty.
+    try {
+      await rm(filePath, { force: true });
+    } catch (error) {
+      return {
+        invalid: `deliverable file could not be removed before the sealed commit: ${(error as Error).message}`,
+      };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      return { invalid: `deliverable file is not valid JSON: ${(error as Error).message}` };
+    }
+    const shaped = shapeDeliverableFileContents(parsed);
+    if (!shaped.ok) return { invalid: shaped.reason };
+    const submitted = await this.submitDeliverable({
+      projectId: row.projectId,
+      agentRunId: runId,
+      deliverable: shaped.deliverable,
+      report: shaped.report,
+    });
+    if (!submitted.ok) return { invalid: submitted.message };
+    return 'delivered';
   }
 
   /** pc_review_contract door — tier-2 sign-off. Accept ⇒ passed (+ land for

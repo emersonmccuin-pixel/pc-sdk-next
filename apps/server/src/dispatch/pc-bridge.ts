@@ -31,6 +31,37 @@ export const AGENT_PC_TOOLS = [
   'pc_request_approval',
 ] as const;
 
+/** File-based delivery door for tool-bridge-less runtimes. An adapter whose
+ *  `appToolBridge` is 'unsupported' (e.g. Codex) mints with zero pc_* tools, so
+ *  it can never call pc_submit_deliverable. Instead it writes this file at its
+ *  worktree root as its final act; the dispatch service reads it, validates it
+ *  through the SAME `DispatchService.submitDeliverable` path as the tool, and
+ *  removes it before the sealed commit so the landed tree never contains it. */
+export const DELIVERABLE_FILE_NAME = '.pc-deliverable.json';
+
+/** Marshal a parsed deliverable file into the `{ deliverable, report }` submit
+ *  payload — mirrors pc_submit_deliverable's own marshalling (packages/mcp
+ *  tools/agent-runs.ts): a top-level string `kind` merged into the deliverable
+ *  object, an optional string `report`. This only SHAPES the input; the schema
+ *  validation itself is not forked — it stays the canonical
+ *  `DispatchService.submitDeliverable` path the tool also posts through. */
+export function shapeDeliverableFileContents(parsed: unknown):
+  | { ok: true; deliverable: Record<string, unknown>; report: string | null }
+  | { ok: false; reason: string } {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, reason: 'deliverable file must be a JSON object' };
+  }
+  const obj = parsed as Record<string, unknown>;
+  const kind = typeof obj.kind === 'string' ? obj.kind.trim() : '';
+  if (!kind) return { ok: false, reason: 'deliverable file is missing a string `kind`' };
+  const inner =
+    obj.deliverable && typeof obj.deliverable === 'object' && !Array.isArray(obj.deliverable)
+      ? (obj.deliverable as Record<string, unknown>)
+      : {};
+  const report = typeof obj.report === 'string' ? obj.report : null;
+  return { ok: true, deliverable: { ...inner, kind }, report };
+}
+
 export interface PcToolIdentity {
   projectId: string;
   /** Orchestrator app-session id (or the dispatcher's for a child agent). */

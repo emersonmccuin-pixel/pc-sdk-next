@@ -241,6 +241,15 @@ async function main(): Promise<void> {
         ? adapter.resumeSession({ ...gatedSessionInput, nativeSessionId: continuation.nativeSessionId })
         : adapter.createSession(gatedSessionInput);
     },
+    // Same fact the mint gate reads: a runtime that does not bridge app tools
+    // (Codex) mints specialists with no pc_* tools, so the file-based delivery
+    // door replaces pc_submit_deliverable for it. Unregistered ⇒ 'supported'
+    // (canonical tool path) — the door is only ever OPENED on a positive
+    // 'unsupported' fact, never guessed.
+    appToolBridgeForRuntime: (runtimeId) => {
+      const resolution = runtimes.resolve(runtimeId);
+      return resolution.status === 'resolved' ? resolution.adapter.appToolBridge : 'supported';
+    },
     onSubscriptionQuota: recordSubscriptionQuota,
   });
   activeDispatch = dispatch;
