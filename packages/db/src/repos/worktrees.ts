@@ -635,3 +635,15 @@ export function listStrandedWorktrees(projectId?: ULID): WorktreeRow[] {
     : eq(worktrees.status, 'stranded');
   return getDb().select().from(worktrees).where(where).all();
 }
+
+/** Recovery-view dismissal guard: is there real preserved-on-disk state to
+ *  lose? True only for an exact stranded binding — an ordinary active
+ *  worktree belongs to a live/landing-pending run, never a dismiss target. */
+export function hasStrandedWorktreeForAgentRun(agentRunId: ULID, db: DbExecutor = getDb()): boolean {
+  const row = db
+    .select({ id: worktrees.id })
+    .from(worktrees)
+    .where(and(eq(worktrees.agentRunId, agentRunId), eq(worktrees.status, 'stranded')))
+    .get();
+  return row !== undefined;
+}

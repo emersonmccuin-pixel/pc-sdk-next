@@ -162,6 +162,12 @@ export const agentRuns = sqliteTable(
      *  a run whose own count was N. Compared against MAX_AUTO_CONTINUES in
      *  the dispatch service. */
     autoContinueCount: integer('auto_continue_count').notNull().default(0),
+    /** Migration 0021 — recovery-view dismissal. Epoch-ms the user explicitly
+     *  cleared a terminal run that has nothing to auto-recover (no sealed
+     *  deliverable, no stranded worktree). NULL = not dismissed / not
+     *  eligible. Dismissal never mutates status/lifecycleState — it only
+     *  removes the run from the recovery projection. */
+    dismissedAt: integer('dismissed_at'),
   },
   (t) => [
     index('agent_runs_session_queued_idx').on(t.dispatcherSessionId, t.queuedAt),

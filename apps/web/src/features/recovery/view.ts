@@ -173,6 +173,19 @@ function recoveryCardWins(candidate: RecoveryRunCard, current: RecoveryRunCard):
   return candidate.run.startedAt >= current.run.startedAt;
 }
 
+/** FIX B — mirrors the server's dismiss-eligibility gate
+ * (apps/server/src/http/agent-runs.ts) so the UI only ever offers the
+ * control where the server would actually accept it: terminal 'failed' with
+ * lifecycleState 'provisioning-failed'/null, or 'cancelled', with no bound
+ * stranded worktree and no sealed deliverable. */
+export function isDismissibleRecoveryRun(card: RecoveryRunCard): boolean {
+  if (card.worktree) return false;
+  if (card.contract?.deliverable) return false;
+  if (card.run.status === 'cancelled') return true;
+  return card.run.status === 'failed' &&
+    (card.run.lifecycleState === null || card.run.lifecycleState === 'provisioning-failed');
+}
+
 export function recoveryRunLabel(run: AgentRunDto): string {
   if (run.failureCause === 'server-restart') return 'server restart';
   if (run.lifecycleState === 'provisioning-failed') return 'preparation failed';

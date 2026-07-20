@@ -258,6 +258,9 @@ export interface AgentRunDto {
   gitReceipt?: WorktreeGitReceiptDto | ReviewCheckoutGitReceiptDto | null;
   preparationReceipt?: WorktreePhaseReceiptDto | null;
   readinessReceipt?: WorktreePhaseReceiptDto | null;
+  /** Recovery-view dismissal. Epoch-ms the user cleared a terminal run that
+   *  has nothing to auto-recover. null = not dismissed. */
+  dismissedAt: number | null;
 }
 
 // ── Canonical resource payload (agent-run entity, full snapshot) ─────────────
@@ -546,6 +549,7 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
       'gitReceipt',
       'preparationReceipt',
       'readinessReceipt',
+      'dismissedAt',
     ]) &&
     typeof value.runId === 'string' &&
     typeof value.agentName === 'string' &&
@@ -567,7 +571,8 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
     typeof value.rev === 'number' &&
     isOptionalGitReceipt(value.gitReceipt) &&
     isOptionalPhaseReceipt(value.preparationReceipt, 'preparation') &&
-    isOptionalPhaseReceipt(value.readinessReceipt, 'readiness')
+    isOptionalPhaseReceipt(value.readinessReceipt, 'readiness') &&
+    (value.dismissedAt === null || typeof value.dismissedAt === 'number')
   );
 }
 

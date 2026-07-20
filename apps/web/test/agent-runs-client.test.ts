@@ -35,6 +35,7 @@ function run(overrides: Partial<AgentRunDto> = {}): AgentRunDto {
     failureCause: null,
     endedAt: null,
     rev: 2,
+    dismissedAt: null,
     ...overrides,
   };
 }

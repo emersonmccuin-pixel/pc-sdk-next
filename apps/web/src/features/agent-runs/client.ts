@@ -9,7 +9,7 @@
 // must implement both; until then `listAgentRuns` 404s and the running-agents
 // region shows its empty state (degrade, never block).
 
-import { getJson } from '@/api/http';
+import { getJson, postJson } from '@/api/http';
 import {
   isAgentRunDto,
   isAgentRunStatus,
@@ -100,4 +100,13 @@ export const agentRunsApi = {
     getJson<unknown>(
       `/api/projects/${projectId}/agent-runs/${runId}/events`,
     ).then(parseAgentRunEventsResponse),
+
+  /** FIX B — clear a terminal recovery run that has nothing to auto-recover.
+   *  Server refuses 409 (surfaced as a thrown Error by postJson) when the run
+   *  is not eligible, has a bound stranded worktree, or a sealed deliverable. */
+  dismissRun: (projectId: ULID, runId: string) =>
+    postJson<{ ok: true; run: AgentRunDto }>(
+      `/api/projects/${projectId}/agent-runs/${runId}/dismiss`,
+      {},
+    ).then((r) => r.run),
 };

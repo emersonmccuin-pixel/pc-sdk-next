@@ -282,6 +282,10 @@ export interface AgentRunRow {
    *  auto-continuation of a run whose own count was N. Durable so the ceiling
    *  (MAX_AUTO_CONTINUES) survives a server restart mid-chain. */
   autoContinueCount: number;
+  /** Recovery-view dismissal. Epoch-ms the user cleared a terminal run that
+   *  has nothing to auto-recover (no sealed deliverable, no stranded
+   *  worktree). NULL = not dismissed. */
+  dismissedAt: number | null;
 }
 
 /** Pending-ask kind. ☠ M7 (FD-6, 2026-06-04) — `'user'` deleted with

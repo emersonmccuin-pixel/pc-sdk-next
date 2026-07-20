@@ -8,11 +8,13 @@
 
 import { Hono } from 'hono';
 import {
+  dismissAgentRun,
   getAgentRunRow,
   getLiveEventHighWater,
   getPendingAsk,
   getProjectById,
   getReviewCheckoutForReviewer,
+  hasStrandedWorktreeForAgentRun,
   listActiveAgentRunsForProject,
   listAgentRunsForSession,
   listConversationEvents,
@@ -42,6 +44,10 @@ function isJsonContentType(value: string | undefined): boolean {
     parameters.every((parameter) => JSON_PARAMETER.test(parameter.trim()));
 }
 
+const DISMISSIBLE_STATUSES = new Set<AgentRunStatus>(['completed', 'failed', 'cancelled']);
+
+export type DismissRefusalReason = 'not-terminal' | 'not-eligible' | 'stranded-worktree-bound' | 'sealed-deliverable';
+
 export interface AgentRunsHttpDeps {
   dispatch: DispatchService;
 }
@@ -59,6 +65,51 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
   const project = (c: { req: { param: (k: string) => string } }): ULID | null => {
     const id = c.req.param('id') as ULID;
     return getProjectById(id) ? id : null;
+  };
+
+  /** FIX B eligibility gate (docs/worktree-lifecycle.md 'Recovery'): terminal
+   *  AND one of the two "nothing to auto-recover" buckets AND no stranded
+   *  worktree AND no sealed deliverable. Everything else (verification-failed,
+   *  review-rejected, merge-ready, stranded, conflict, completed) keeps real
+   *  recovery evidence and stays on the normal recovery flow. */
+  const dismissEligibility = (
+    row: AgentRunRow,
+  ): { ok: true } | { ok: false; reason: DismissRefusalReason; message: string } => {
+    if (!DISMISSIBLE_STATUSES.has(row.status)) {
+      return {
+        ok: false,
+        reason: 'not-terminal',
+        message: `run is '${row.status}' — only a terminal run can be dismissed`,
+      };
+    }
+    const eligible =
+      row.status === 'cancelled' ||
+      (row.status === 'failed' && (row.lifecycleState === null || row.lifecycleState === 'provisioning-failed'));
+    if (!eligible) {
+      return {
+        ok: false,
+        reason: 'not-eligible',
+        message:
+          `run status '${row.status}'${row.lifecycleState ? ` (lifecycle '${row.lifecycleState}')` : ''} ` +
+          'still carries retained recovery evidence — resolve it through the normal recovery flow',
+      };
+    }
+    if (hasStrandedWorktreeForAgentRun(row.id)) {
+      return {
+        ok: false,
+        reason: 'stranded-worktree-bound',
+        message: 'a stranded worktree is bound to this run — recover or abandon it before dismissing',
+      };
+    }
+    const contract = row.contractId ? contracts.get(row.contractId) : null;
+    if (contract?.deliverable) {
+      return {
+        ok: false,
+        reason: 'sealed-deliverable',
+        message: 'this run has a sealed deliverable recorded — recover it through the normal recovery flow',
+      };
+    }
+    return { ok: true };
   };
 
   // ── dispatch doors ──────────────────────────────────────────────────────────
@@ -218,6 +269,26 @@ export function mountAgentRuns(app: Hono, deps: AgentRunsHttpDeps): void {
     if (!result.ok) return c.json({ ok: false, error: result.message }, result.httpStatus as 404);
     const row = getAgentRunRow(c.req.param('runId') as ULID);
     return c.json({ ok: true, status: row?.status ?? 'cancelled', alreadyTerminal: result.alreadyTerminal });
+  });
+
+  /** Recovery-view dismissal (the FIX B door): clear a terminal run that has
+   *  nothing to auto-recover. Eligible = 'failed' with lifecycleState
+   *  'provisioning-failed'/null (spawn/runtime-start errors before or
+   *  without a worktree), or 'cancelled'. Refuses when a stranded worktree
+   *  is bound or the contract carries a sealed deliverable — both are real
+   *  recoverable state, not noise. */
+  app.post('/api/projects/:id/agent-runs/:runId/dismiss', async (c) => {
+    const projectId = project(c);
+    if (!projectId) return c.json({ ok: false, error: 'not found' }, 404);
+    const row = getAgentRunRow(c.req.param('runId') as ULID);
+    if (!row || row.projectId !== projectId) return c.json({ ok: false, error: 'run not found' }, 404);
+    const eligibility = dismissEligibility(row);
+    if (!eligibility.ok) {
+      return c.json({ ok: false, reason: eligibility.reason, error: eligibility.message }, 409);
+    }
+    dismissAgentRun(row.id, Date.now());
+    const updated = getAgentRunRow(row.id) ?? row;
+    return c.json({ ok: true, run: toAgentRunDto(updated) });
   });
 
   /** Transcript backfill for the run modal (docs/event-contract.md shape). */

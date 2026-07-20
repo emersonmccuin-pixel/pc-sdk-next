@@ -9,6 +9,7 @@ import {
   buildRecoveryProjection,
   exactReviewVerdictEvidence,
   exactStrandedEvidenceForRun,
+  isDismissibleRecoveryRun,
   preservationEvidenceMessage,
   recoveryRunGuidance,
   recoveryRunLabel,
@@ -42,6 +43,7 @@ function run(overrides: Partial<AgentRunDto> = {}): AgentRunView {
     failureCause: 'server-restart',
     endedAt: 20,
     rev: 3,
+    dismissedAt: null,
     stalled: false,
     ...overrides,
   };
@@ -182,6 +184,26 @@ test('strongest evidence wins across merge/landing, retained run, and stranded r
   assert.deepEqual(stronger, { runCards: [], strandedWorktrees: [] });
 });
 
+test('a dismissed run is excluded from the recovery projection (FIX B)', () => {
+  const dismissed = run({ dismissedAt: 12345 });
+  const notDismissed = run({ runId: 'run-2', dismissedAt: null });
+
+  const projected = buildRecoveryProjection({
+    runs: [dismissed, notDismissed],
+    contracts: [],
+    strongerContractIds: new Set(),
+    worktrees: [],
+  });
+
+  assert.equal(projected.runCards.length, 1, 'only the non-dismissed run remains a recovery card');
+  assert.equal(projected.runCards[0]?.run.runId, notDismissed.runId);
+  assert.equal(
+    projected.runCards.some((card) => card.run.runId === dismissed.runId),
+    false,
+    'a dismissed run must never appear as a recovery run card',
+  );
+});
+
 test('merge-ready rows never become recovery failures even without a matching contract', () => {
   const projected = buildRecoveryProjection({
     runs: [run({ status: 'completed', lifecycleState: 'merge-ready', failureCause: null, failureReason: null })],
@@ -251,6 +273,47 @@ test('typed labels, sealed evidence, and guidance stay provider-neutral', () => 
     deliverable: { kind: 'repo', branch: 'run-1', commit: 'b'.repeat(40) },
   })) ?? '', /bbbbbbbbbbbb/);
   assert.equal(sealedEvidenceMessage(contract({ expectedOutput: { kind: 'answer' } })), null);
+});
+
+test('the Dismiss control is offered only for eligible recovery run cards', () => {
+  const eligibleFailedNull = { run: run({ status: 'failed', lifecycleState: null }), contract: null, worktree: null };
+  const eligibleFailedProv = {
+    run: run({ status: 'failed', lifecycleState: 'provisioning-failed' }),
+    contract: null,
+    worktree: null,
+  };
+  const eligibleCancelled = {
+    run: run({ status: 'cancelled', lifecycleState: null }),
+    contract: null,
+    worktree: null,
+  };
+  assert.equal(isDismissibleRecoveryRun(eligibleFailedNull), true);
+  assert.equal(isDismissibleRecoveryRun(eligibleFailedProv), true);
+  assert.equal(isDismissibleRecoveryRun(eligibleCancelled), true);
+
+  // Not eligible: real recovery evidence retained by the normal flow.
+  assert.equal(
+    isDismissibleRecoveryRun({ run: run({ lifecycleState: 'verification-failed' }), contract: null, worktree: null }),
+    false,
+  );
+  // Not eligible: a bound stranded worktree is real preserved state.
+  assert.equal(
+    isDismissibleRecoveryRun({
+      run: run({ status: 'failed', lifecycleState: 'provisioning-failed' }),
+      contract: null,
+      worktree: worktree(),
+    }),
+    false,
+  );
+  // Not eligible: a sealed deliverable is real recoverable work.
+  assert.equal(
+    isDismissibleRecoveryRun({
+      run: run({ status: 'failed', lifecycleState: null }),
+      contract: contract({ deliverable: { kind: 'repo', branch: 'run-1', commit: 'c'.repeat(40) } }),
+      worktree: null,
+    }),
+    false,
+  );
 });
 
 test('review checkout read and recovery attention are strict and state-based', () => {

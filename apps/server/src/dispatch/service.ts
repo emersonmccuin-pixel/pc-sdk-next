@@ -159,6 +159,7 @@ import {
   git,
   inspectReviewCheckout,
   landBranch,
+  preflightBaseBranch,
   probeAlreadyLanded,
   provisionReviewCheckout,
   provisionWorktree,
@@ -616,7 +617,26 @@ export class DispatchService {
         'PC-SDK could not prove repository authority because the project folder is missing.',
         'repository-unavailable',
       );
-    } else if (project.folderPath) {
+    }
+    if (spec.kind === 'repo') {
+      // True pre-flight, run on EVERY repo dispatch, BEFORE the repository
+      // lease and BEFORE any insertAgentRunRow: is there a base branch, and
+      // is the main working copy actually checked out on it? These read-only
+      // preconditions are exempted from the "insert-the-row-first on
+      // failure" rule below (refuseProvision) because they create zero
+      // partial state — nothing was provisioned, nothing needs recovering —
+      // and the fix is entirely on the user (switch the main copy back to
+      // the base branch). Minting a durable failed run for this would only
+      // leave a permanent, non-actionable "recover required" card. Real
+      // provisioning failures that occur after this point (lease contention,
+      // `git worktree add` failure, dirty checkout, etc.) may leave partial
+      // state worth recording, so they still go through refuseProvision.
+      const preflight = await preflightBaseBranch(project.folderPath, profile?.baseBranch ?? null);
+      if (!preflight.ok) {
+        return refuse('worktree-provision-failed', preflight.error, 422);
+      }
+    }
+    if (project.folderPath) {
       try {
         repositoryLease = await this.repositoryLeases.acquireForRuntimeCwd(
           project.folderPath,

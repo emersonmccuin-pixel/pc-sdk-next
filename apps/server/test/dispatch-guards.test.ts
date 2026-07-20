@@ -471,6 +471,40 @@ test('repo kind with no repository folder ⇒ typed repository-unavailable termi
   assert.equal(listContractsForProject(project.id).length, 0);
 });
 
+test('repo dispatch while the main copy is off the base branch refuses 422 and mints no durable row (FIX A pre-flight)', async () => {
+  freshDb();
+  seedStockAgents();
+  const gp = await newGitProject();
+  try {
+    const checkout = await git(['checkout', '-b', 'feature-x'], gp.dir);
+    assert.equal(checkout.ok, true);
+    const dispatch = rig(new FakeAdapter([]));
+    const result = await dispatch.dispatchFresh({
+      projectId: gp.project.id,
+      agentName: 'code-writer', // stock default: { kind: 'repo' }
+      input: 'fix it',
+      dispatcherSessionId: 'S1',
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.cause, 'worktree-provision-failed');
+      assert.equal(result.httpStatus, 422);
+      assert.match(result.message, /not the base branch 'main'/);
+    }
+    // The pre-flight gate is exempted from the "insert-the-row-first" rule —
+    // it created zero partial state, so nothing durable needs recovering.
+    assert.equal(
+      listAgentRunsForSession(gp.project.id, 'S1', { podName: 'code-writer', limit: 10 }).length,
+      0,
+      'the pre-flight refusal mints no durable run row',
+    );
+    assert.equal(listNonTerminalAgentRuns().length, 0);
+    assert.equal(listContractsForProject(gp.project.id).length, 0);
+  } finally {
+    await gp.cleanup();
+  }
+});
+
 test('fresh dispatch reclaims an unpublished worktree when shutdown wins after provisioning', async () => {
   freshDb();
   seedStockAgents();

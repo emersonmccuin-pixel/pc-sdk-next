@@ -103,6 +103,7 @@ function makeDto(over: Partial<AgentRunDto> = {}): AgentRunDto {
     gitReceipt: null,
     preparationReceipt: null,
     readinessReceipt: null,
+    dismissedAt: null,
     ...over,
   };
 }

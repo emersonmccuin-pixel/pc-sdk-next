@@ -128,6 +128,7 @@ export {
   getWorktreeById,
   getWorktreeForContract,
   getWorktreeForLandedContract,
+  hasStrandedWorktreeForAgentRun,
   listActiveWorktrees,
   listReviewCheckoutBlockingCandidates,
   listReviewCheckoutsNeedingRecovery,
@@ -294,6 +295,7 @@ export type { ComputePodRevisionInput } from './repos/pod-revision.ts';
 export {
   bumpAgentRunRev,
   countAgentRunsForSessionAndPod,
+  dismissAgentRun,
   findActiveContinuation,
   getAgentRunRow,
   hasContinuation,
