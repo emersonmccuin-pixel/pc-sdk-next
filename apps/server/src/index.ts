@@ -96,7 +96,9 @@ async function main(): Promise<void> {
 
   const accounts = new AccountRegistry([...defaultAccounts(), ...defaultCodexAccounts()]);
   const subscriptionQuota = new SubscriptionQuotaService();
-  const mcp = new McpManager();
+  // autoReprobe: the manager self-heals down/degraded/auth-expired servers on an
+  // exponential backoff (docs/master-plan.md §MCP manager requirement 3).
+  const mcp = new McpManager({ autoReprobe: true });
 
   // The chat runs under the orchestrator agent row (seeded above, editable in
   // the Agents tab). Read fresh per mint — SessionService re-mints on rev change
@@ -337,6 +339,7 @@ async function main(): Promise<void> {
     runtimes,
     subscriptionQuota,
     dispatch,
+    mcp,
     onSubscriptionQuota: recordSubscriptionQuota,
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
     webDist: WEB_DIST_DIR,

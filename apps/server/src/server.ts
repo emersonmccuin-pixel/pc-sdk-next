@@ -20,6 +20,7 @@ import type {
 } from './runner/runtime.ts';
 import type { DispatchService } from './dispatch/service.ts';
 import type { AccountRegistry } from './runner/account-env.ts';
+import type { McpManager } from './mcp/manager.ts';
 import { SessionRegistry } from './chat/registry.ts';
 import { ConversationRelay } from './chat/conversation-relay.ts';
 import { ResourceRelay } from './resources/relay.ts';
@@ -63,6 +64,8 @@ export interface StartServerOptions {
   subscriptionQuota?: SubscriptionQuotaService;
   /** Phase-3 dispatch service — mounts the agent-run routes when set. */
   dispatch?: DispatchService;
+  /** MCP manager — mounts the /api/mcp registry/health/vault/attachment routes. */
+  mcp?: McpManager;
   /** In-app engine restart hook (composition root owns the respawn). */
   onRestartRequest?: () => void;
   /** Run boot recovery before listening. Default true. */
@@ -127,6 +130,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     runtimes: opts.runtimes,
     subscriptionQuota: opts.subscriptionQuota,
     dispatch: opts.dispatch,
+    mcp: opts.mcp,
     onRestartRequest: opts.onRestartRequest,
   });
 
