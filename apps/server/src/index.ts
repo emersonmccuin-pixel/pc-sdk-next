@@ -7,10 +7,13 @@
 // each project's login, the MCP manager bridges healthy remote tools, and the
 // subscription-quota service turns runtime observations into durable snapshots. All of it
 // hangs off the canonical `RuntimeSession` seam — `claude-adapter.ts` is the
-// only SDK importer.
+// only Claude Agent SDK importer; `runner/codex/*` is the only place that
+// reaches the native Codex app-server, reached only from here (and the live
+// smoke script/tests) via `runner/codex/live-peer.ts`.
 
 import { spawn, type StdioOptions } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,15 +28,17 @@ import {
   SubscriptionQuotaService,
 } from '@pc/app-services';
 import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
-import type { ULID } from '@pc/domain';
+import { withProjectSettingsDefaults, type ULID } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 import {
   RuntimeRegistry,
   type MintRuntimeSession,
   type RuntimeSession,
 } from './runner/runtime.ts';
-import { AccountRegistry, type Account } from './runner/account-env.ts';
+import { AccountRegistry, defaultAccounts, defaultCodexAccounts, type Account } from './runner/account-env.ts';
 import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter.ts';
+import { CODEX_RUNTIME_ID, CodexRuntimeAdapter } from './runner/codex/adapter.ts';
+import { createCodexLiveDeps } from './runner/codex/live-peer.ts';
 import { seedStockAgents } from './agents/seed.ts';
 import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
@@ -87,7 +92,7 @@ async function main(): Promise<void> {
     `[pc-sdk][agents] seed: ${seeded.inserted} inserted, ${seeded.reseeded} reseeded, ${seeded.unchanged} unchanged`,
   );
 
-  const accounts = new AccountRegistry();
+  const accounts = new AccountRegistry([...defaultAccounts(), ...defaultCodexAccounts()]);
   const subscriptionQuota = new SubscriptionQuotaService();
   const mcp = new McpManager();
 
@@ -98,6 +103,22 @@ async function main(): Promise<void> {
 
   const runtimes = new RuntimeRegistry();
   runtimes.register(new ClaudeRuntimeAdapter({ accounts }));
+  // The live Codex peer (WF-1): real discovery against the pinned app-server
+  // under the seeded 'personal' CODEX_HOME. Missing/expired ChatGPT login
+  // degrades to typed unavailable capabilities/discovery (never a boot
+  // failure); the live turn peer stays honestly gated to
+  // `session-mint-unavailable` until a thread-capable transport + real
+  // conformance authority land (see runner/codex/live-peer.ts).
+  const codexAccount = accounts.get(CODEX_RUNTIME_ID, 'personal');
+  if (codexAccount) {
+    runtimes.register(new CodexRuntimeAdapter(createCodexLiveDeps({
+      codexHome: codexAccount.configDir,
+      // Discovery-only spawn cwd — no file is read/written there. Write-capable
+      // turns are gated regardless (LIVE_SESSION_POLICY), and real session cwd
+      // always comes from the project/worktree lifecycle, never from here.
+      cwd: homedir(),
+    })));
+  }
   const recordSubscriptionQuota = (batch: SubscriptionQuotaObservationBatch): void => {
     try {
       subscriptionQuota.record(batch);
@@ -108,23 +129,33 @@ async function main(): Promise<void> {
     }
   };
 
+  // The project's stamped orchestrator runtime (`settings.defaultRuntimeId`),
+  // falling back to the server default (Claude). This is the ONE place a new
+  // (not-yet-stamped) session's runtime is chosen; every later mint/resume
+  // routes through the session's own durable stamp instead (mintSession below,
+  // orchestrator-sessions.ts), never re-resolving this default.
+  const projectRuntimeId = (projectId: ULID): string =>
+    withProjectSettingsDefaults(getProjectById(projectId)?.settings).defaultRuntimeId
+      ?? CLAUDE_RUNTIME_ID;
+
   const resolveNewSessionSelection = async (
     input: { projectId: ULID; accountId?: string },
   ) => {
     const orchestrator = orchestratorRow();
     const model = orchestrator?.model?.trim();
     if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
+    const runtimeId = projectRuntimeId(input.projectId);
     let account: Account | null;
     try {
       account = input.accountId
-        ? accounts.get(CLAUDE_RUNTIME_ID, input.accountId)
-        : accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
+        ? accounts.get(runtimeId, input.accountId)
+        : accounts.resolveForProject(input.projectId, runtimeId);
     } catch {
       return { status: 'invalid' as const, code: 'account-unavailable' as const };
     }
     if (!account) return { status: 'invalid' as const, code: 'account-unavailable' as const };
     return runtimes.resolveSelection({
-      runtimeId: CLAUDE_RUNTIME_ID,
+      runtimeId,
       accountId: account.id,
       model,
       effort: orchestrator?.effort ?? null,
@@ -133,16 +164,23 @@ async function main(): Promise<void> {
 
   const resolveNewSpecialistSelection: DispatchServiceDeps['resolveNewSpecialistSelection'] =
     async (input) => {
+      const runtimeId = projectRuntimeId(input.projectId);
+      // A specialist's model default is provider-specific; Claude's shorthand
+      // ('sonnet') is meaningless on another runtime, so a specialist dispatched
+      // under a non-Claude project runtime must name its own model explicitly.
+      const model = input.model?.trim() ||
+        (runtimeId === CLAUDE_RUNTIME_ID ? DEFAULT_CLAUDE_SPECIALIST_MODEL : '');
+      if (!model) return { status: 'invalid', code: 'model-unsupported' };
       let account: Account;
       try {
-        account = accounts.resolveForProject(input.projectId, CLAUDE_RUNTIME_ID);
+        account = accounts.resolveForProject(input.projectId, runtimeId);
       } catch {
         return { status: 'invalid', code: 'account-unavailable' };
       }
       return runtimes.resolveSelection({
-        runtimeId: CLAUDE_RUNTIME_ID,
+        runtimeId,
         accountId: account.id,
-        model: input.model?.trim() || DEFAULT_CLAUDE_SPECIALIST_MODEL,
+        model,
         effort: input.effort,
       });
     };
@@ -244,7 +282,14 @@ async function main(): Promise<void> {
     preflightRuntimeSession: (selection, continuation) =>
       runtimes.preflight(selection, continuation),
     accounts,
+    // The existing single-runtime account-switcher UI/HTTP surface
+    // (/api/projects/:id/account) is Claude-only; it still targets the default
+    // runtime here regardless of a project's own defaultRuntimeId. A project
+    // running on Codex resolves its own account through resolveNewSessionSelection
+    // above. /api/runtimes below is the provider-neutral, multi-runtime
+    // availability surface; a per-runtime account-switcher UI is follow-up work.
     orchestratorRuntimeId: CLAUDE_RUNTIME_ID,
+    runtimes,
     subscriptionQuota,
     dispatch,
     onSubscriptionQuota: recordSubscriptionQuota,
