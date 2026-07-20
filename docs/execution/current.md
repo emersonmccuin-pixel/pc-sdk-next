@@ -1,6 +1,15 @@
 # Current execution handoff
 
-Updated: 2026-07-19 after CX-004 T3 typed native-resource ownership feature
+Updated: 2026-07-20. CX-004 is descoped (ADR-0003) and `packages/windows-containment`
+is removed; everything below this line is historical record from before the descope.
+Current work follows the approved finish plan: N5 completion (live Codex peer,
+composition, runtime switching) then N6 (MCP manager, usage dashboard, policy UX).
+Normal small commits and green `pnpm ci:check` replace the manifest/receipt/guarded-
+landing ceremony described below.
+
+---
+
+Historical (pre-descope): after CX-004 T3 typed native-resource ownership feature
 `4f38e17667dc5399e9f8499a18b7115cbabd7aca` guarded-landed as
 `bcbd89b1083b7e852f71284a2581e334173a054a`, exact tree
 `8015a48db4b6d9532d1c14cf84f8fc22227b24b1`, with ordered parents

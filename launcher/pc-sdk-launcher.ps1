@@ -15,7 +15,6 @@ $Port       = $env:PC_PORT
 $InstanceId = $env:PC_INSTANCE_ID
 $HealthUrl  = "http://localhost:$Port/health"
 $AppUrl     = "http://localhost:$Port"
-$ServerDist = Join-Path $RepoRoot "apps\server\dist\index.js"
 $LogDir     = $env:PC_LOG_DIR
 $LogFile    = Join-Path $LogDir "server.log"
 $ErrFile    = Join-Path $LogDir "server.err.log"
@@ -44,15 +43,9 @@ function Test-Health {
 if (-not (Test-Health)) {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-    if (Test-Path $ServerDist) {
-        $exe        = "node"
-        $serverArgs = @($ServerDist)
-    } else {
-        # Fall back to workspace start script if a build hasn't been produced yet.
-        # pnpm is a .cmd — CreateProcess (used when redirecting) can't exec it directly.
-        $exe        = $env:ComSpec
-        $serverArgs = @("/c", "pnpm", "--filter", "@pc-sdk/server", "start")
-    }
+    # pnpm is a .cmd — CreateProcess (used when redirecting) can't exec it directly.
+    $exe        = $env:ComSpec
+    $serverArgs = @("/c", "pnpm", "--filter", "@pc-sdk/server", "start")
 
     try {
         $ServerProcess = Start-Process -FilePath $exe `

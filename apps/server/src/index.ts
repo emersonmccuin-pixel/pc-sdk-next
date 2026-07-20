@@ -11,7 +11,8 @@
 
 import { spawn, type StdioOptions } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   bindProjectRepositoryIdentity,
   closeDb,
@@ -57,6 +58,9 @@ import {
 const DEFAULT_CLAUDE_SPECIALIST_MODEL = 'sonnet';
 const RESTART_ADMISSION_WAIT_ENV = 'PC_DATA_ADMISSION_RESTART_WAIT';
 const RESTART_ADMISSION_WAIT_MS = 15_000;
+/** apps/server/src → apps/web/dist, resolved from this module's own location
+ *  so boot never depends on the process's current working directory. */
+const WEB_DIST_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
 
 let dataDirectoryAdmission: DataDirectoryAdmission | null = null;
 let activeDispatch: DispatchService | null = null;
@@ -245,7 +249,7 @@ async function main(): Promise<void> {
     dispatch,
     onSubscriptionQuota: recordSubscriptionQuota,
     orchestratorRev: () => orchestratorRow()?.rev ?? null,
-    webDist: join(process.cwd(), '..', 'web', 'dist'),
+    webDist: WEB_DIST_DIR,
     version: '0.0.0',
     deferConversationQueueDrain: true,
     // Settings → Restart engine: one lifecycle door closes new HTTP/WS work,

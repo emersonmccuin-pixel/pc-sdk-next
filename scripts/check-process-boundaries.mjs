@@ -16,13 +16,7 @@ const SEALED_COMPONENT_IMPORT_POLICY = new Map([
   ['packages/owner-lifecycle/src', [
     /^@anthropic-ai(?:\/|$)/u,
     /^@openai(?:\/|$)/u,
-    /^@pc\/(?:app-services|db|domain|mcp|windows-containment)(?:\/|$)/u,
-    /^@pc-sdk\/server(?:\/|$)/u,
-  ]],
-  ['packages/windows-containment/src', [
-    /^@anthropic-ai(?:\/|$)/u,
-    /^@openai(?:\/|$)/u,
-    /^@pc\/(?:app-services|db|domain|mcp|owner-lifecycle)(?:\/|$)/u,
+    /^@pc\/(?:app-services|db|domain|mcp)(?:\/|$)/u,
     /^@pc-sdk\/server(?:\/|$)/u,
   ]],
 ]);
@@ -35,17 +29,6 @@ const SEALED_COMPONENT_RELATIVE_IMPORT_POLICY = new Map([
     'packages/db',
     'packages/domain',
     'packages/mcp',
-    'packages/windows-containment',
-  ]],
-  ['packages/windows-containment/src', [
-    'apps/server',
-    'node_modules/@anthropic-ai',
-    'node_modules/@openai',
-    'packages/app-services',
-    'packages/db',
-    'packages/domain',
-    'packages/mcp',
-    'packages/owner-lifecycle',
   ]],
 ]);
 
