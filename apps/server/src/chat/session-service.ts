@@ -1014,10 +1014,15 @@ export class SessionService {
       }
       if (!terminalSettled) {
         // Provider/runtime exception text is diagnostic evidence, not product
-        // copy. Keep durable conversation and queue state app-authored.
+        // copy — never surfaced. A typed app-authored `.code` (e.g. from
+        // CodexRuntimeAdapterError) is app vocabulary, not provider text, so
+        // it rides along in parentheses to give the user something actionable.
         this.settleInfrastructureFailure(
           turn,
-          runtimeAccepted ? 'runtime delivery failed' : 'runtime failed to start',
+          infrastructureFailureMessage(
+            runtimeAccepted ? 'runtime delivery failed' : 'runtime failed to start',
+            error,
+          ),
           runtimeAccepted,
           runtimeAcquired,
         );
@@ -1533,6 +1538,24 @@ function runtimeSelectionCacheKey(selection: RuntimeSelection): string {
     selection.effort.kind,
     selection.effort.kind === 'selected' ? selection.effort.value : null,
   ]);
+}
+
+const TYPED_ERROR_CODE_PATTERN = /^[a-z0-9-]+$/;
+
+/** Typed app-authored errors (CodexRuntimeAdapterError, RuntimeSelectionRejectedError,
+ *  AccountUnavailableError, RepositoryLeaseError, ...) expose a stable `.code`
+ *  vocabulary word. That code is app vocabulary, not provider free text, so it
+ *  is safe to surface; the strict pattern keeps a raw provider message from
+ *  ever being mistaken for one. */
+export function typedErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && TYPED_ERROR_CODE_PATTERN.test(code) ? code : null;
+}
+
+export function infrastructureFailureMessage(baseMessage: string, error: unknown): string {
+  const code = typedErrorCode(error);
+  return code ? `${baseMessage} (${code})` : baseMessage;
 }
 
 function summarize(message: unknown): string {

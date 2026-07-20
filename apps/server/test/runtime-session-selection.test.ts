@@ -729,7 +729,9 @@ test('active remint refuses missing repository identity before resume state or p
   const queued = getConversationQueueSnapshot(session.id).items;
   assert.equal(queued.length, 1);
   assert.equal(queued[0]?.status, 'failed');
-  assert.equal(queued[0]?.failureReason, 'runtime failed to start');
+  // The rejection is a typed RuntimeSelectionRejectedError — its code is app
+  // vocabulary, so it rides along instead of being swallowed as generic copy.
+  assert.equal(queued[0]?.failureReason, 'runtime failed to start (repository-identity-unavailable)');
   await service.dispose();
 });
 
