@@ -104,6 +104,7 @@ function makeDto(over: Partial<AgentRunDto> = {}): AgentRunDto {
     preparationReceipt: null,
     readinessReceipt: null,
     dismissedAt: null,
+    continues: null,
     ...over,
   };
 }

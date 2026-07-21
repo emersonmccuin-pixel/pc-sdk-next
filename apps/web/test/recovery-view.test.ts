@@ -44,7 +44,9 @@ function run(overrides: Partial<AgentRunDto> = {}): AgentRunView {
     endedAt: 20,
     rev: 3,
     dismissedAt: null,
+    continues: null,
     stalled: false,
+    priorAttempts: [],
     ...overrides,
   };
 }

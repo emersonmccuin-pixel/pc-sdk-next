@@ -59,6 +59,15 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
   const [abandonContractId, setAbandonContractId] = useState<ULID | null>(null);
   const [dismissingRunId, setDismissingRunId] = useState<ULID | null>(null);
   const [dismissError, setDismissError] = useState<{ runId: ULID; message: string } | null>(null);
+  const [expandedAttempts, setExpandedAttempts] = useState<Set<ULID>>(() => new Set());
+  const toggleAttempts = (runId: ULID) => {
+    setExpandedAttempts((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+  };
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 5000);
     return () => clearInterval(id);
@@ -234,6 +243,8 @@ export function ActivityPanel({ project, expanded, onExpand }: ActivityPanelProp
               onDismiss={handleDismiss}
               dismissingRunId={dismissingRunId}
               dismissError={dismissError}
+              expandedAttempts={expandedAttempts}
+              onToggleAttempts={toggleAttempts}
               runReadStatus={runReadStatus}
               runReadError={runReadError}
               onRetryRunRead={retryRunRead}
@@ -504,6 +515,8 @@ function RecoveryRequiredRegion({
   onDismiss,
   dismissingRunId,
   dismissError,
+  expandedAttempts,
+  onToggleAttempts,
   canAbandon,
   runReadStatus,
   runReadError,
@@ -525,6 +538,8 @@ function RecoveryRequiredRegion({
   onDismiss: (runId: ULID) => void;
   dismissingRunId: ULID | null;
   dismissError: { runId: ULID; message: string } | null;
+  expandedAttempts: Set<ULID>;
+  onToggleAttempts: (runId: ULID) => void;
   canAbandon: (contractId: ULID) => boolean;
   runReadStatus: AgentRunReadStatus;
   runReadError: string | null;
@@ -640,6 +655,8 @@ function RecoveryRequiredRegion({
           const { run, contract, worktree } = card;
           const dismissible = isDismissibleRecoveryRun(card);
           const runDismissError = dismissError?.runId === run.runId ? dismissError.message : null;
+          const attempts = run.priorAttempts;
+          const attemptsExpanded = expandedAttempts.has(run.runId);
           return (
           <li key={`run:${run.runId}`} className="flex flex-col">
             <div className="flex items-stretch">
@@ -675,6 +692,16 @@ function RecoveryRequiredRegion({
                   <span className="shrink-0 font-medium text-foreground">Inspect</span>
                 </div>
               </button>
+              {attempts.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => onToggleAttempts(run.runId)}
+                  className="shrink-0 border-l border-border px-2 text-[10px] font-medium text-muted-foreground hover:bg-muted"
+                  aria-label={`${attemptsExpanded ? 'Hide' : 'Show'} ${attempts.length} earlier attempt${attempts.length === 1 ? '' : 's'} for ${run.agentName}`}
+                >
+                  {attempts.length} earlier {attempts.length === 1 ? 'attempt' : 'attempts'} {attemptsExpanded ? '▲' : '▼'}
+                </button>
+              )}
               {contract && canRequestAbandonment(contract) && (
                 <AbandonButton contract={contract} onAbandon={onAbandon} />
               )}
@@ -688,6 +715,27 @@ function RecoveryRequiredRegion({
             </div>
             {runDismissError && (
               <div className="px-3 pb-2 text-[11px] text-destructive">{runDismissError}</div>
+            )}
+            {attempts.length > 0 && attemptsExpanded && (
+              <ul className="divide-y divide-border/30 border-t border-border/50 bg-muted/20 pl-2">
+                {attempts.map((attempt) => (
+                  <li key={`attempt:${attempt.runId}`}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenRun(attempt.runId)}
+                      className="block w-full cursor-pointer px-3 py-1.5 text-left hover:bg-muted/40"
+                      aria-label={`Inspect earlier attempt ${attempt.runId}`}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                          {recoveryRunLabel(attempt)}
+                        </div>
+                        <span className="shrink-0 font-medium text-foreground text-[10px]">Inspect</span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </li>
           );

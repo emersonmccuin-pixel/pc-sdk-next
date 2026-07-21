@@ -82,6 +82,7 @@ export function toAgentRunDto(
     preparationReceipt: row.preparationReceipt ?? null,
     readinessReceipt: row.readinessReceipt ?? null,
     dismissedAt: row.dismissedAt ?? null,
+    continues: row.continues ?? null,
   };
   if (!isAgentRunDto(dto)) {
     throw new AgentRunAdapterError(`invalid agent run row: unsafe or inconsistent projection (${row.id})`);
