@@ -42,6 +42,7 @@ import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from './runner/claude-adapter
 import { CODEX_RUNTIME_ID, CodexRuntimeAdapter } from './runner/codex/adapter.ts';
 import { createCodexLiveDeps } from './runner/codex/live-peer.ts';
 import { seedStockAgents } from './agents/seed.ts';
+import { composeOrchestratorInstructions } from './agents/host-safety-notice.ts';
 import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
 import {
@@ -236,6 +237,9 @@ async function main(): Promise<void> {
       const gatedSessionInput = {
         ...sessionInput,
         tools: sessionToolsForAdapter(adapter, () => sessionInput.tools),
+        // Same self-preservation fact as the orchestrator mint — a specialist
+        // dispatch is a live runtime session in this same process too.
+        hostPort: portRef.port,
       };
       return continuation.mode === 'resume'
         ? adapter.resumeSession({ ...gatedSessionInput, nativeSessionId: continuation.nativeSessionId })
@@ -316,7 +320,7 @@ async function main(): Promise<void> {
       projectId: ctx.projectId,
       continuationAttemptId: ctx.continuationAttemptId,
       selection: ctx.selection,
-      instructions: orchestrator?.prompt || undefined,
+      instructions: composeOrchestratorInstructions(orchestrator?.prompt, process.pid, portRef.port),
       cwd,
       tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,
@@ -326,6 +330,11 @@ async function main(): Promise<void> {
       // Enabling prompts is a separate product/security-policy decision; the
       // plumbing stays wired without silently changing daily-driver behavior.
       bypassPermissions: true,
+      // The orchestrator runs bypassPermissions (no ask round-trip), so the
+      // host-safety notice above is advisory, not enforcement — the actual
+      // enforcement is the PreToolUse guard in claude-adapter.ts, which reads
+      // this same live port (see tool-safety.ts).
+      hostPort: portRef.port,
     };
     return ctx.continuation.mode === 'resume'
       ? adapter.resumeSession({ ...input, nativeSessionId: ctx.continuation.nativeSessionId })
