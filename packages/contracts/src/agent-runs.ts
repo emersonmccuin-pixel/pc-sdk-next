@@ -261,6 +261,10 @@ export interface AgentRunDto {
   /** Recovery-view dismissal. Epoch-ms the user cleared a terminal run that
    *  has nothing to auto-recover. null = not dismissed. */
   dismissedAt: number | null;
+  /** runId of the run this run auto-continued from (turn-budget exhaustion),
+   *  or null for a fresh dispatch. Used to fold superseded retry-legs in
+   *  Activity/recovery presentation. */
+  continues: ULID | null;
 }
 
 // ── Canonical resource payload (agent-run entity, full snapshot) ─────────────
@@ -550,6 +554,7 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
       'preparationReceipt',
       'readinessReceipt',
       'dismissedAt',
+      'continues',
     ]) &&
     typeof value.runId === 'string' &&
     typeof value.agentName === 'string' &&
@@ -572,7 +577,8 @@ export function isAgentRunDto(value: unknown): value is AgentRunDto {
     isOptionalGitReceipt(value.gitReceipt) &&
     isOptionalPhaseReceipt(value.preparationReceipt, 'preparation') &&
     isOptionalPhaseReceipt(value.readinessReceipt, 'readiness') &&
-    (value.dismissedAt === null || typeof value.dismissedAt === 'number')
+    (value.dismissedAt === null || typeof value.dismissedAt === 'number') &&
+    (value.continues === null || isUlid(value.continues))
   );
 }
 

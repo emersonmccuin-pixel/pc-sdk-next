@@ -9,6 +9,7 @@ import {
   isAgentRunDto,
   isPendingAskDto,
   isRuntimeSelection,
+  isUlid,
   type AgentRunDto,
   type PendingAskDto,
   type RuntimeSelection,
@@ -82,6 +83,10 @@ export function toAgentRunDto(
     preparationReceipt: row.preparationReceipt ?? null,
     readinessReceipt: row.readinessReceipt ?? null,
     dismissedAt: row.dismissedAt ?? null,
+    // Coerce a non-ULID/legacy `continues` to null: a migrated legacy row may
+    // carry junk here, and it must not break the whole projection (and boot
+    // recovery) — a malformed value simply means "no continuation linkage".
+    continues: isUlid(row.continues) ? row.continues : null,
   };
   if (!isAgentRunDto(dto)) {
     throw new AgentRunAdapterError(`invalid agent run row: unsafe or inconsistent projection (${row.id})`);

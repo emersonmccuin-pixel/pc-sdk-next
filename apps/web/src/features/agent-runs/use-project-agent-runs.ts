@@ -27,6 +27,11 @@ export interface AgentRunView extends AgentRunDto {
   /** T2.2 — non-terminal watchdog warn, badge-only, derived from the latest
    *  live frame's `reason`. Never present on the HTTP seed. */
   stalled: boolean;
+  /** Superseded retry-legs this run auto-continued from (turn-budget
+   *  exhaustion chain), oldest first. Empty unless this run is the current/
+   *  final leg of a chain with folded predecessors. Each stays independently
+   *  openable for its transcript — nothing here is hidden, only collapsed. */
+  priorAttempts: AgentRunView[];
 }
 
 /** True when a terminal row is actionable recovery truth. The server bounds
@@ -34,6 +39,9 @@ export interface AgentRunView extends AgentRunDto {
  * browser must preserve every failed/cancelled row it is given without trying
  * to reproduce that retention query. */
 function isRetainedTerminalRun(run: AgentRunDto): boolean {
+  // A dismissed run has nothing left to recover — the user explicitly
+  // cleared it (FIX B). It must never resurface as a standalone row.
+  if (run.dismissedAt !== null) return false;
   return TERMINAL.has(run.status) && (
     // Successful independent reviewers remain a bounded recent transcript
     // door for their append-only review-checkout settlement evidence. The
@@ -56,12 +64,33 @@ export function isRecoveryTerminalRun(
   contractLandingStatus: string | null = null,
 ): boolean {
   if (run.agentName === 'contract-reviewer' && run.status === 'completed') return false;
-  // A dismissed run has nothing left to recover — the user explicitly
-  // cleared it (FIX B). It must never resurface as a recovery card.
-  if (run.dismissedAt !== null) return false;
   return isRetainedTerminalRun(run) && (
     run.lifecycleState !== 'merge-ready' || contractLandingStatus === 'landed'
   );
+}
+
+/** A run that another run's `continues` points at has been auto-continued
+ * into a fresh leg — it is superseded retry evidence, not a standalone
+ * failure. Only the chain's current/final leg (no successor) stands alone. */
+function isSupersededRetryLeg(run: AgentRunDto, parentIdsWithSuccessor: ReadonlySet<string>): boolean {
+  return parentIdsWithSuccessor.has(run.runId);
+}
+
+/** Walks a run's `continues` chain to collect the superseded legs it folds,
+ * oldest first. Stops at the first ancestor missing from the loaded window. */
+function collectPriorAttempts(
+  run: AgentRunDto,
+  byId: ReadonlyMap<string, AgentRunView>,
+): AgentRunView[] {
+  const attempts: AgentRunView[] = [];
+  let cursor = run.continues;
+  while (cursor !== null) {
+    const ancestor = byId.get(cursor);
+    if (!ancestor) break;
+    if (ancestor.dismissedAt === null) attempts.push(ancestor);
+    cursor = ancestor.continues;
+  }
+  return attempts.reverse();
 }
 
 export function overlayAgentRunPayloads(
@@ -107,11 +136,19 @@ export function overlayAgentRunPayloads(
     else stalledIds.delete(run.runId);
   }
   const all: AgentRunView[] = [...map.values()]
-    .map((run) => ({ ...run, stalled: stalledIds.has(run.runId) }))
+    .map((run) => ({ ...run, stalled: stalledIds.has(run.runId), priorAttempts: [] as AgentRunView[] }))
     .sort((a, b) => a.startedAt - b.startedAt);
+  const byId = new Map(all.map((run) => [run.runId, run]));
+  const parentIdsWithSuccessor = new Set<string>();
+  for (const run of all) {
+    if (run.continues !== null) parentIdsWithSuccessor.add(run.continues);
+  }
   return {
     runs: all.filter((run) => !TERMINAL.has(run.status)),
-    preserved: all.filter(isRetainedTerminalRun),
+    preserved: all
+      .filter(isRetainedTerminalRun)
+      .filter((run) => !isSupersededRetryLeg(run, parentIdsWithSuccessor))
+      .map((run) => ({ ...run, priorAttempts: collectPriorAttempts(run, byId) })),
   };
 }
 

@@ -36,6 +36,7 @@ function run(overrides: Partial<AgentRunDto> = {}): AgentRunDto {
     endedAt: null,
     rev: 2,
     dismissedAt: null,
+    continues: null,
     ...overrides,
   };
 }
@@ -300,6 +301,78 @@ test('agent-run list requires the server outbox high-water', () => {
     parseAgentRunListResponse({ ok: true, runs: [], asOfCursor: null }),
     { runs: [], asOfCursor: null },
   );
+});
+
+test('a dismissed terminal run is excluded from preserved', () => {
+  const dismissed = run({
+    runId: 'dismissed-run',
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'provisioning-failed',
+    dismissedAt: 12345,
+  });
+  const notDismissed = run({
+    runId: 'kept-run',
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'provisioning-failed',
+  });
+  const projected = overlayAgentRunPayloads([dismissed, notDismissed], []);
+  assert.deepEqual(projected.preserved.map((item) => item.runId), ['kept-run']);
+});
+
+test('a turn-budget-exhaustion chain folds superseded legs behind the final leg', () => {
+  const legA = run({
+    runId: 'leg-a',
+    startedAt: 1,
+    status: 'failed',
+    endedAt: 2,
+    lifecycleState: 'failed',
+    failureCause: 'turn-budget-exhausted',
+  });
+  const legB = run({
+    runId: 'leg-b',
+    startedAt: 3,
+    status: 'failed',
+    endedAt: 4,
+    lifecycleState: 'failed',
+    failureCause: 'turn-budget-exhausted',
+    continues: 'leg-a',
+  });
+  const legC = run({
+    runId: 'leg-c',
+    startedAt: 5,
+    status: 'failed',
+    endedAt: 6,
+    lifecycleState: 'failed',
+    failureCause: 'no-deliverable',
+    continues: 'leg-b',
+  });
+
+  const projected = overlayAgentRunPayloads([legA, legB, legC], []);
+  assert.deepEqual(
+    projected.preserved.map((item) => item.runId),
+    ['leg-c'],
+    'only the chain\'s current/final leg stands alone',
+  );
+  assert.deepEqual(
+    projected.preserved[0]?.priorAttempts.map((item) => item.runId),
+    ['leg-a', 'leg-b'],
+    'superseded legs remain reachable, oldest first, not deleted',
+  );
+});
+
+test('a standalone failed run with no successor is never folded', () => {
+  const stuck = run({
+    runId: 'stuck-run',
+    status: 'failed',
+    endedAt: 5,
+    lifecycleState: 'failed',
+    failureCause: 'server-restart',
+  });
+  const projected = overlayAgentRunPayloads([stuck], []);
+  assert.deepEqual(projected.preserved.map((item) => item.runId), ['stuck-run']);
+  assert.deepEqual(projected.preserved[0]?.priorAttempts, []);
 });
 
 test('terminal landed-cleanup lifecycle windows remain visible', () => {
