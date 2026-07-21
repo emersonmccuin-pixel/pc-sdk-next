@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubscriptionQuotaService } from '@pc/app-services';
 import { isSubscriptionQuotaListResponse } from '@pc/contracts';
@@ -262,6 +262,67 @@ test('projects: probe → create (contract shape) → list → detail; sessions 
     assert.equal(img.ok, true);
     assert.ok(img.path.endsWith('.png'));
   } finally {
+    await server.close();
+  }
+});
+
+test('fs/list: browses subdirectories for the create-project folder picker', async () => {
+  freshDb();
+  const { server, base } = await boot();
+  const root = mkdtempSync(join(tmpdir(), 'pc-fs-list-'));
+  const childB = join(root, 'b-folder');
+  const childA = join(root, 'a-folder');
+  const gitChild = join(root, 'c-git-repo');
+  mkdirSync(childA);
+  mkdirSync(childB);
+  mkdirSync(gitChild);
+  mkdirSync(join(gitChild, '.git'));
+  writeFileSync(join(root, 'not-a-dir.txt'), 'ignore me\n', 'utf8');
+  try {
+    const listing = await fetch(`${base}/api/fs/list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: root }),
+    }).then(body);
+    assert.equal(listing.ok, true);
+    assert.equal(listing.listing.path, root);
+    assert.equal(listing.listing.parent, join(root, '..'));
+    assert.deepEqual(
+      listing.listing.entries.map((e: { name: string }) => e.name),
+      ['a-folder', 'b-folder', 'c-git-repo'],
+    );
+    const gitEntry = listing.listing.entries.find((e: { name: string }) => e.name === 'c-git-repo');
+    assert.equal(gitEntry.isGitRepo, true);
+    const plainEntry = listing.listing.entries.find((e: { name: string }) => e.name === 'a-folder');
+    assert.equal(plainEntry.isGitRepo, false);
+    assert.equal(plainEntry.path, childA);
+
+    // nonexistent path → 404
+    const missing = await fetch(`${base}/api/fs/list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(root, 'nope') }),
+    });
+    assert.equal(missing.status, 404);
+
+    // a file, not a directory → 400
+    const notDir = await fetch(`${base}/api/fs/list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: join(root, 'not-a-dir.txt') }),
+    });
+    assert.equal(notDir.status, 400);
+
+    // no path → lists the home dir
+    const home = await fetch(`${base}/api/fs/list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }).then(body);
+    assert.equal(home.ok, true);
+    assert.equal(home.listing.path, homedir());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
     await server.close();
   }
 });

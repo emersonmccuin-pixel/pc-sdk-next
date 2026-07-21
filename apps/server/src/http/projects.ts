@@ -3,7 +3,8 @@
 // probe. The old minimal `{name,slug,folderPath}` CRUD is gone (one path).
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import type { Hono } from 'hono';
 import {
   createProject,
@@ -188,6 +189,50 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
       }
     }
     return c.json({ ok: true, probe: { path, exists, isDirectory, hasFiles, fileCount, isGitRepo } });
+  });
+
+  // Create-project folder browser — list immediate subdirectories of a path
+  // (defaulting to the home dir) so the modal can offer a native-ish picker.
+  // Read-only; never throws.
+  app.post('/api/fs/list', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawPath = typeof body.path === 'string' ? body.path.trim() : '';
+    const path = resolve(rawPath || homedir());
+
+    if (!existsSync(path)) return c.json({ ok: false, error: 'not found' }, 404);
+    let isDirectory = false;
+    try {
+      isDirectory = statSync(path).isDirectory();
+    } catch {
+      isDirectory = false;
+    }
+    if (!isDirectory) return c.json({ ok: false, error: 'not a directory' }, 400);
+
+    const parentPath = dirname(path);
+    const parent = parentPath === path ? null : parentPath;
+
+    let entries: { name: string; path: string; isGitRepo: boolean }[] = [];
+    try {
+      const dirents = readdirSync(path, { withFileTypes: true });
+      entries = dirents
+        .filter((d) => d.isDirectory())
+        .map((d) => ({
+          name: d.name,
+          path: join(path, d.name),
+          isGitRepo: existsSync(join(path, d.name, '.git')),
+        }))
+        .sort((a, b) => {
+          const aHidden = a.name.startsWith('.');
+          const bHidden = b.name.startsWith('.');
+          if (aHidden !== bHidden) return aHidden ? 1 : -1;
+          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        })
+        .slice(0, 1000);
+    } catch {
+      /* unreadable dir → empty, still navigable up */
+    }
+
+    return c.json({ ok: true, listing: { path, parent, entries } });
   });
 }
 
