@@ -83,11 +83,38 @@ function append(sessionId: string, projectId: ULID, turnId: string, event: ChatE
   });
 }
 
+/** "Jump back in": ask `deps.reengageOrchestrator` to fire a fresh
+ *  orchestrator turn for a turn this sweep JUST settled failed. Per-run
+ *  isolation (never let a bad hook abort the rest of the sweep) and
+ *  degrade-safe (an absent hook — e.g. a caller that never wired dispatch,
+ *  such as most existing tests — is a silent no-op, not a throw). */
+function reengage(deps: BootRecoveryDeps, projectId: ULID, sessionId: string, turnId: string): void {
+  if (!deps.reengageOrchestrator) return;
+  try {
+    deps.reengageOrchestrator({ projectId, sessionId, turnId });
+  } catch (err) {
+    console.error(
+      `[pc-sdk][boot-recovery] re-engagement failed for session ${sessionId} (project ${projectId}) — leaving it idle:`,
+      err,
+    );
+  }
+}
+
 export interface BootRecoveryResult {
   scanned: number;
   recovered: string[];
   failedRuns: string[];
   cancelledLegacyQueueItemIds: string[];
+}
+
+export interface BootRecoveryDeps {
+  /** "Jump back in" — called AT MOST ONCE per orchestrator turn this sweep
+   *  settles failed because the server restarted mid-turn (never on a clean
+   *  idle boot). Runs before dispatch attaches; the implementation is
+   *  expected to degrade to a silent no-op (never throw) if the orchestrator
+   *  session cannot yet run a turn — see DispatchService.deliverBootRecoveryReengagement,
+   *  whose F3 pendingEnvelopes queue is exactly that safe degradation. */
+  reengageOrchestrator?: (input: { projectId: ULID; sessionId: string; turnId: string }) => void;
 }
 
 export interface PreAttachRepositoryRecoveryDispatch {
@@ -125,8 +152,11 @@ export async function runPreAttachRepositoryRecovery(
 }
 
 /** Scan every project's active session; close out crashed turns. Returns the
- *  recovered session ids. */
-export function runBootRecovery(): BootRecoveryResult {
+ *  recovered session ids. When `deps.reengageOrchestrator` is supplied, fires
+ *  it once per turn actually recovered here ("jump back in" — never on a
+ *  clean idle boot, never twice for the same turn since a settled turn can
+ *  never be re-selected by a later sweep). */
+export function runBootRecovery(deps: BootRecoveryDeps = {}): BootRecoveryResult {
   const cancelledLegacyQueueItemIds = cancelLegacyUnavailableSessionQueues();
   const recovered: string[] = [];
   const projects = listProjects();
@@ -148,6 +178,7 @@ export function runBootRecovery(): BootRecoveryResult {
         `[pc-sdk][boot-recovery] session ${session.id} (project ${project.id}) had durable turn ${durableTurnId} in flight — ` +
           'settled failed with an uncertain-delivery receipt.',
       );
+      reengage(deps, project.id, session.id, durableTurnId);
       continue;
     }
     if (!hasOpenTurn(session.id)) continue;
@@ -163,6 +194,7 @@ export function runBootRecovery(): BootRecoveryResult {
       `[pc-sdk][boot-recovery] session ${session.id} (project ${project.id}) had a turn in flight — ` +
         `persisted turn-failed{internal} + session-state idle.`,
     );
+    reengage(deps, project.id, session.id, recoveryTurnId);
   }
   if (recovered.length > 0) {
     console.warn(`[pc-sdk][boot-recovery] recovered ${recovered.length}/${scanned} active session(s).`);

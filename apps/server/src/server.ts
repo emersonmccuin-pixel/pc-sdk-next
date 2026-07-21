@@ -105,7 +105,20 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 export async function startServer(opts: StartServerOptions): Promise<RunningServer> {
-  if (opts.runRecovery !== false) runBootRecovery();
+  // "Jump back in": `opts.dispatch` already exists here (the composition root
+  // constructs it before calling startServer) even though it cannot run a
+  // turn yet — `attach()` (index.ts, after MCP/repository recovery) is still
+  // ahead of us. Wiring the hook straight to `deliverBootRecoveryReengagement`
+  // is safe regardless: pre-attach it queues onto the same F3 pendingEnvelopes
+  // list a pre-attach agent terminal would, and `attach()` replays it once the
+  // registry/hub are live — never fired before the session can actually run.
+  if (opts.runRecovery !== false) {
+    runBootRecovery({
+      reengageOrchestrator: opts.dispatch
+        ? (input) => opts.dispatch!.deliverBootRecoveryReengagement(input)
+        : undefined,
+    });
+  }
 
   const hub = new ProjectWebSocketHub<ULID>();
   const relay = new ResourceRelay({ hub });
