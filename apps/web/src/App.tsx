@@ -11,6 +11,8 @@ import { NotesPopover } from '@/components/NotesPopover';
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard';
 import { AccountSwitcher } from '@/components/AccountSwitcher';
 import { RuntimeSwitcher } from '@/components/RuntimeSwitcher';
+import { ModelSwitcher } from '@/components/ModelSwitcher';
+import { EffortSwitcher } from '@/components/EffortSwitcher';
 import { Shell } from '@/components/Shell';
 import { COMMAND_PROJECT_SLUG } from '@pc/contracts';
 import { useSessionNav } from '@/state/sessions';
@@ -218,6 +220,8 @@ export default function App() {
         <div className="flex flex-1 items-center gap-3 pr-2">
           <div className="ml-auto flex items-center gap-1">
             <RuntimeSwitcher projectId={activeProject?.id ?? null} />
+            <ModelSwitcher projectId={activeProject?.id ?? null} />
+            <EffortSwitcher projectId={activeProject?.id ?? null} />
             <AccountSwitcher projectId={activeProject?.id ?? null} />
             {activeProject && (
               <button

@@ -18,7 +18,13 @@ export interface SessionRegistryDeps {
   conversationRelay?: ConversationRelay;
   mintSession: RuntimeSessionFactory;
   resolveNewSessionSelection: (
-    input: { projectId: ULID; accountId?: string },
+    input: {
+      projectId: ULID;
+      accountId?: string;
+      runtimeId?: string;
+      model?: string;
+      effort?: string | null;
+    },
   ) => Promise<RuntimeSelectionValidation>;
   preflightRuntimeSession: (
     selection: RuntimeSelection,

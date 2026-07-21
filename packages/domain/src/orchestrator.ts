@@ -10,6 +10,7 @@ export type SessionEndedReason =
   | 'provider_session_lost'
   | 'account_switched'
   | 'runtime_switched'
+  | 'selection_changed'
   | 'selection_unavailable'
   | 'pty_exit'
   | 'archived';
