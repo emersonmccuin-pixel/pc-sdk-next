@@ -1,13 +1,15 @@
 // Create-project modal. Probes the target folder (POST /api/fs/probe) to derive
-// the create mode, then POST /api/projects. The native folder browser is gone
-// (files browser deleted); the folder path is entered directly — prefilled from
-// the Projects folder setting.
+// the create mode, then POST /api/projects. The folder path can be typed
+// directly (prefilled from the Projects folder setting) or picked via the
+// lightweight FolderBrowser (POST /api/fs/list) — the old native browser was
+// removed with the files browser; this is a narrow, purpose-built substitute.
 
 import { useEffect, useState } from 'react';
 
 import { fsApi, type FolderProbe } from '@/features/fs/client';
 import { projectsApi, type Project } from '@/features/projects/client';
 import { createProjectModeFromProbe } from '@/features/projects/createMode';
+import { FolderBrowser } from './FolderBrowser';
 
 interface CreateProjectModalProps {
   /** Global Projects folder setting — prefilled as the path base. */
@@ -34,6 +36,7 @@ export function CreateProjectModal({
   const [probeState, setProbeState] = useState<ProbeState>({ status: 'idle' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -123,16 +126,25 @@ export function CreateProjectModal({
                 to choose where projects live.
               </p>
             )}
-            <input
-              value={folderPath}
-              onChange={(e) => {
-                setFolderPath(e.target.value);
-                setProbeState({ status: 'idle' });
-              }}
-              onBlur={() => probe(folderPath)}
-              placeholder={projectsFolder ? `${projectsFolder}\\my-project` : 'C:\\path\\to\\project'}
-              className="w-full bg-muted px-2 py-1 font-mono text-xs"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                value={folderPath}
+                onChange={(e) => {
+                  setFolderPath(e.target.value);
+                  setProbeState({ status: 'idle' });
+                }}
+                onBlur={() => probe(folderPath)}
+                placeholder={projectsFolder ? `${projectsFolder}\\my-project` : 'C:\\path\\to\\project'}
+                className="w-full bg-muted px-2 py-1 font-mono text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => setBrowsing(true)}
+                className="shrink-0 border border-border px-2 py-1 text-xs hover:bg-muted"
+              >
+                Browse…
+              </button>
+            </div>
             <ProbePreview state={probeState} />
           </div>
 
@@ -156,6 +168,18 @@ export function CreateProjectModal({
           </div>
         </form>
       </div>
+
+      {browsing && (
+        <FolderBrowser
+          initialPath={folderPath.trim() || projectsFolder}
+          onClose={() => setBrowsing(false)}
+          onSelect={(path) => {
+            setFolderPath(path);
+            setBrowsing(false);
+            probe(path);
+          }}
+        />
+      )}
     </div>
   );
 }
