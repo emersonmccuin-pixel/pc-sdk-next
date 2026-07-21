@@ -233,6 +233,19 @@ const AUTO_CONTINUE_MESSAGE =
   'dispatch. Your worktree, session, and contract are intact exactly as you left them. Pick up where ' +
   'you left off (check git status / your prior progress first) and continue toward completing the ' +
   'contract; do not restart from scratch.';
+/** "Jump back in" (boot-recovery re-engagement): the server restarted while
+ *  your OWN orchestrator turn was in flight — its delivery outcome is
+ *  uncertain and boot recovery already settled it failed for that reason
+ *  alone (not a real failure). Fired at most once per interrupted turn via
+ *  `deliverBootRecoveryReengagement`. */
+const BOOT_RECOVERY_REENGAGE_MESSAGE =
+  '[boot-recovery] The server restarted while your previous turn was still in flight. Delivery of ' +
+  'whatever you were doing then is uncertain, and that turn has been settled failed for exactly that ' +
+  'reason — it is not a reflection of anything you did wrong. Before doing anything else, review the ' +
+  'state that survived the restart: any agent runs still in-flight, parked awaiting review/landing, or ' +
+  'queued for a decision (pc_list_agents / pc_get_agent_run), and any uncommitted or unlanded repository ' +
+  'work in an active worktree. Then either continue the work you were mid-way through, or tell the user ' +
+  'plainly what was interrupted and what you found.';
 const RUNTIME_START_FAILURE_REASON = 'agent runtime session could not be started';
 const RUNTIME_SEND_FAILURE_REASON = 'agent runtime turn could not be sent';
 
@@ -475,6 +488,37 @@ export class DispatchService {
 
   hasLiveRun(runId: string): boolean {
     return this.live.has(runId);
+  }
+
+  /** "Jump back in" (interrupted-orchestrator-turn re-engagement): boot
+   *  recovery (boot-recovery.ts) calls this exactly once per turn it settles
+   *  failed because the server restarted mid-turn — never on a clean idle
+   *  boot, never twice for the same turn (the turn's own terminal state is
+   *  the durable bound: once settled it can never be re-selected by a later
+   *  boot sweep). Runs BEFORE `attach()` (boot recovery is a pre-attach
+   *  sweep — see server.ts/index.ts ordering), so this always goes through
+   *  the same F3 pendingEnvelopes queue a pre-attach agent terminal does:
+   *  `deliverToOrchestrator` queues it here and `attach()` replays the queue
+   *  once the registry/hub are live, which is what guarantees a runnable
+   *  session (`injectAgentEnvelope` → `ensureActiveSession`) instead of
+   *  firing a turn before the session can run one. There is no real agent
+   *  run behind this notice; `turnId` doubles as the envelope's correlation
+   *  id (display-only — never looked up as a run). */
+  deliverBootRecoveryReengagement(input: { projectId: ULID; turnId: string }): void {
+    this.deliverToOrchestrator(
+      input.projectId,
+      {
+        text: BOOT_RECOVERY_REENGAGE_MESSAGE,
+        // Display-only correlation id — never looked up as a real run; the
+        // turn id is always ULID-shaped in practice even though its column
+        // isn't branded at the schema layer.
+        runId: input.turnId as ULID,
+        agentName: 'system',
+        status: 'failed',
+        summary: 'Server restarted mid-turn — recovered state needs review.',
+      },
+      `boot-recovery-reengage:${input.turnId}`,
+    );
   }
 
   // ── dispatch (fresh) ─────────────────────────────────────────────────────────
