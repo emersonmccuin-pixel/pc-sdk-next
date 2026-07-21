@@ -96,7 +96,12 @@ export function mountRuntimes(app: Hono, deps: RuntimesHttpDeps): void {
     return c.json({ runtimeId: currentRuntimeId(projectId, active?.runtimeId) });
   });
 
-  // Set a project's default runtime. Switching mints a new session.
+  // Set a project's default runtime, and/or (same round-trip) the header
+  // model/effort/account pickers' selection. `runtimeId` alone stays exactly
+  // the pre-existing runtime-switch behavior; `accountId`/`model`/`effort`
+  // are optional additions layered on top for the header pickers. A
+  // model/effort-only change (same runtime + account) still mints a fresh
+  // session — see SessionService.changeSelection for why.
   app.post('/api/projects/:id/runtime', async (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ error: 'not found' }, 404);
@@ -105,24 +110,48 @@ export function mountRuntimes(app: Hono, deps: RuntimesHttpDeps): void {
     if (!deps.runtimes.has(runtimeId)) {
       return c.json({ error: { code: 'runtime-not-registered' } }, 400);
     }
+    const hasAccountId = typeof body.accountId === 'string' && body.accountId.length > 0;
+    const accountId = hasAccountId ? (body.accountId as string) : undefined;
+    const hasModel = Object.prototype.hasOwnProperty.call(body, 'model');
+    if (hasModel && typeof body.model !== 'string') {
+      return c.json({ error: { code: 'model-unsupported' } }, 400);
+    }
+    const model = hasModel ? (body.model as string) : undefined;
+    const hasEffort = Object.prototype.hasOwnProperty.call(body, 'effort');
+    if (hasEffort && body.effort !== null && typeof body.effort !== 'string') {
+      return c.json({ error: { code: 'effort-value-unsupported' } }, 400);
+    }
+    const effort = hasEffort ? (body.effort as string | null) : undefined;
 
     const service = registry.get(projectId);
     const active = service.activeRuntimeSelection();
     const current = currentRuntimeId(projectId, active?.runtimeId);
-    if (current !== runtimeId && !service.canSwitchSession()) {
+    const currentEffortValue = active?.effort.kind === 'selected' ? active.effort.value : null;
+    const runtimeChanged = current !== runtimeId;
+    const accountChanged = hasAccountId && accountId !== active?.accountId;
+    const modelChanged = hasModel && model !== active?.model;
+    const effortChanged = hasEffort && effort !== currentEffortValue;
+    const changed = runtimeChanged || accountChanged || modelChanged || effortChanged;
+    if (changed && !service.canSwitchSession()) {
       return c.json({ error: 'interrupt the active turn and wait for confirmation before switching runtimes' }, 409);
     }
-    // Switching runtimes can't continue the old session (a Claude session is
-    // never resumed as a Codex thread or vice versa). The runtime setting,
-    // old-session invalidation, queue cancellation, and replacement row commit
-    // atomically.
+    // A selection change can't continue the old session (a Claude session is
+    // never resumed as a Codex thread or vice versa, and a stamped session's
+    // selection is immutable once minted regardless of what changed). The
+    // selection, old-session invalidation, queue cancellation, and
+    // replacement row commit atomically.
     try {
-      const session = current !== runtimeId
-        ? await service.switchRuntimeSession(runtimeId)
+      const session = changed
+        ? await service.changeSelection({
+            ...(runtimeChanged ? { runtimeId } : {}),
+            ...(accountChanged ? { accountId } : {}),
+            ...(hasModel ? { model } : {}),
+            ...(hasEffort ? { effort } : {}),
+          })
         : null;
       return c.json({
         runtimeId,
-        switched: current !== runtimeId,
+        switched: changed,
         session: session ? toSessionSummary(session) : null,
       });
     } catch (error) {

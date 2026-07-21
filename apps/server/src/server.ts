@@ -32,7 +32,13 @@ import { attachSocket, type RouterSocket } from './ws/router.ts';
 export interface StartServerOptions {
   mintSession: RuntimeSessionFactory;
   resolveNewSessionSelection: (
-    input: { projectId: ULID; accountId?: string; runtimeId?: string },
+    input: {
+      projectId: ULID;
+      accountId?: string;
+      runtimeId?: string;
+      model?: string;
+      effort?: string | null;
+    },
   ) => Promise<RuntimeSelectionValidation>;
   preflightRuntimeSession: (
     selection: RuntimeSelection,

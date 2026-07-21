@@ -68,14 +68,24 @@ interface RuntimeSwitchResponse {
   session?: SessionSummary | null;
 }
 
+/** Body for POST /api/projects/:id/runtime. `runtimeId` alone is the
+ *  pre-existing runtime-switch shape; `accountId`/`model`/`effort` are
+ *  optional additions for the header model/effort pickers. */
+export interface RuntimeSelectionPatch {
+  runtimeId: string;
+  accountId?: string;
+  model?: string;
+  effort?: string | null;
+}
+
 const runtimesApi = {
   list: () => getJson<RuntimesListResponse>('/api/runtimes'),
   getForProject: (projectId: string) =>
     getJson<{ runtimeId: string }>(`/api/projects/${encodeURIComponent(projectId)}/runtime`),
-  setForProject: (projectId: string, runtimeId: string) =>
+  setForProject: (projectId: string, patch: RuntimeSelectionPatch) =>
     postJson<RuntimeSwitchResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/runtime`,
-      { runtimeId },
+      patch,
     ),
 };
 
@@ -126,115 +136,33 @@ interface RuntimesState {
   loadRegistry: () => Promise<void>;
   loadForProject: (projectId: string) => Promise<void>;
   switchRuntime: (projectId: string, runtimeId: string) => Promise<void>;
+  /** Same-runtime model change (header model picker). Carries the active
+   *  session's current account forward so only the model moves; effort is
+   *  intentionally NOT carried forward (a new model's supported effort values
+   *  can differ) — it falls back to the runtime's administered default,
+   *  mirroring switchRuntime/switchAccount, which already reset the model the
+   *  same way on every mint. Still mints a fresh session: see
+   *  SessionService.changeSelection for why a same-runtime selection change
+   *  can't continue the row in place today. */
+  setModel: (projectId: string, model: string) => Promise<void>;
+  /** Same-runtime, same-model effort change (header effort picker). `effort:
+   *  null` clears back to the runtime's default (no override). */
+  setEffort: (projectId: string, effort: string | null) => Promise<void>;
 }
 
-export const useRuntimes = create<RuntimesState>((set, get) => ({
-  runtimes: DEFAULT_RUNTIMES,
-  projectId: null,
-  selectedId: DEFAULT_RUNTIMES[0]!.id,
-  selectionResolved: true,
-  activeSession: null,
-  sessionStampVersion: 0,
-  status: 'idle',
-  pendingId: null,
-  error: null,
-
-  bindProject: (projectId) =>
-    set((state) => state.projectId === projectId ? state : ({
-      projectId,
-      activeSession: null,
-      selectionResolved: projectId === null,
-      sessionStampVersion: state.sessionStampVersion + 1,
-      status: 'idle',
-      pendingId: null,
-      error: null,
-    })),
-
-  applySessionChanged: (frame) =>
-    set((state) => {
-      if (state.projectId !== frame.projectId) return state;
-      const stampedRuntimeId = frame.session?.selection?.runtimeId;
-      return {
-        activeSession: frame.session,
-        selectedId: stampedRuntimeId ?? state.selectedId,
-        selectionResolved: stampedRuntimeId ? true : state.selectionResolved,
-        status: stampedRuntimeId ? 'idle' : state.status,
-        pendingId: stampedRuntimeId ? null : state.pendingId,
-        error: stampedRuntimeId ? null : state.error,
-        sessionStampVersion: state.sessionStampVersion + (stampedRuntimeId ? 1 : 0),
-      };
-    }),
-
-  applySessionUpdated: (frame) =>
-    set((state) => {
-      if (
-        state.projectId !== frame.projectId ||
-        state.activeSession?.id !== frame.session.id
-      ) return state;
-      return {
-        activeSession: frame.session,
-        selectedId: frame.session.selection?.runtimeId ?? state.selectedId,
-        selectionResolved: frame.session.selection ? true : state.selectionResolved,
-        status: frame.session.selection ? 'idle' : state.status,
-        pendingId: frame.session.selection ? null : state.pendingId,
-        error: frame.session.selection ? null : state.error,
-        sessionStampVersion: state.sessionStampVersion + 1,
-      };
-    }),
-
-  loadRegistry: async () => {
-    try {
-      const res = await runtimesApi.list();
-      const runtimes = res.runtimes.map(toRuntimeInfo);
-      if (runtimes.length > 0) set({ runtimes });
-    } catch {
-      /* keep the fallback list; the header still renders */
-    }
-  },
-
-  loadForProject: async (projectId) => {
-    get().bindProject(projectId);
-    if (!get().selectionResolved) {
-      set({ status: 'pending', pendingId: null, error: null });
-    }
-    const versionAtRead = get().sessionStampVersion;
-    try {
-      const { runtimeId } = await runtimesApi.getForProject(projectId);
-      const current = get();
-      if (
-        current.projectId !== projectId ||
-        current.sessionStampVersion !== versionAtRead ||
-        current.activeSession?.selection
-      ) return;
-      set({
-        selectedId: runtimeId,
-        selectionResolved: true,
-        status: 'idle',
-        pendingId: null,
-        error: null,
-      });
-    } catch {
-      const current = get();
-      if (
-        current.projectId === projectId &&
-        current.sessionStampVersion === versionAtRead &&
-        !current.selectionResolved
-      ) {
-        set({
-          status: 'error',
-          pendingId: null,
-          error: 'Runtime selection unavailable. Retry or reconnect.',
-        });
-      }
-    }
-  },
-
-  switchRuntime: async (projectId, runtimeId) => {
+export const useRuntimes = create<RuntimesState>((set, get) => {
+  /** Shared round-trip for switchRuntime/setModel/setEffort — same request
+   *  shape, same pending/error handling, same session-adoption rules. */
+  async function applySelectionChange(
+    projectId: string,
+    patch: RuntimeSelectionPatch,
+    pendingId: RuntimeId | null,
+  ): Promise<void> {
     if (get().status === 'pending') return;
     get().bindProject(projectId);
-    set({ status: 'pending', pendingId: runtimeId, error: null });
+    set({ status: 'pending', pendingId, error: null });
     try {
-      const res = await runtimesApi.setForProject(projectId, runtimeId);
+      const res = await runtimesApi.setForProject(projectId, patch);
       if (get().projectId !== projectId) return;
       const session = res.session && isSessionSummary(res.session) && res.session.projectId === projectId
         ? res.session
@@ -252,5 +180,134 @@ export const useRuntimes = create<RuntimesState>((set, get) => ({
       if (get().projectId !== projectId) return;
       set({ status: 'error', pendingId: null, error: (err as Error).message });
     }
-  },
-}));
+  }
+
+  return {
+    runtimes: DEFAULT_RUNTIMES,
+    projectId: null,
+    selectedId: DEFAULT_RUNTIMES[0]!.id,
+    selectionResolved: true,
+    activeSession: null,
+    sessionStampVersion: 0,
+    status: 'idle',
+    pendingId: null,
+    error: null,
+
+    bindProject: (projectId) =>
+      set((state) => state.projectId === projectId ? state : ({
+        projectId,
+        activeSession: null,
+        selectionResolved: projectId === null,
+        sessionStampVersion: state.sessionStampVersion + 1,
+        status: 'idle',
+        pendingId: null,
+        error: null,
+      })),
+
+    applySessionChanged: (frame) =>
+      set((state) => {
+        if (state.projectId !== frame.projectId) return state;
+        const stampedRuntimeId = frame.session?.selection?.runtimeId;
+        return {
+          activeSession: frame.session,
+          selectedId: stampedRuntimeId ?? state.selectedId,
+          selectionResolved: stampedRuntimeId ? true : state.selectionResolved,
+          status: stampedRuntimeId ? 'idle' : state.status,
+          pendingId: stampedRuntimeId ? null : state.pendingId,
+          error: stampedRuntimeId ? null : state.error,
+          sessionStampVersion: state.sessionStampVersion + (stampedRuntimeId ? 1 : 0),
+        };
+      }),
+
+    applySessionUpdated: (frame) =>
+      set((state) => {
+        if (
+          state.projectId !== frame.projectId ||
+          state.activeSession?.id !== frame.session.id
+        ) return state;
+        return {
+          activeSession: frame.session,
+          selectedId: frame.session.selection?.runtimeId ?? state.selectedId,
+          selectionResolved: frame.session.selection ? true : state.selectionResolved,
+          status: frame.session.selection ? 'idle' : state.status,
+          pendingId: frame.session.selection ? null : state.pendingId,
+          error: frame.session.selection ? null : state.error,
+          sessionStampVersion: state.sessionStampVersion + 1,
+        };
+      }),
+
+    loadRegistry: async () => {
+      try {
+        const res = await runtimesApi.list();
+        const runtimes = res.runtimes.map(toRuntimeInfo);
+        if (runtimes.length > 0) set({ runtimes });
+      } catch {
+        /* keep the fallback list; the header still renders */
+      }
+    },
+
+    loadForProject: async (projectId) => {
+      get().bindProject(projectId);
+      if (!get().selectionResolved) {
+        set({ status: 'pending', pendingId: null, error: null });
+      }
+      const versionAtRead = get().sessionStampVersion;
+      try {
+        const { runtimeId } = await runtimesApi.getForProject(projectId);
+        const current = get();
+        if (
+          current.projectId !== projectId ||
+          current.sessionStampVersion !== versionAtRead ||
+          current.activeSession?.selection
+        ) return;
+        set({
+          selectedId: runtimeId,
+          selectionResolved: true,
+          status: 'idle',
+          pendingId: null,
+          error: null,
+        });
+      } catch {
+        const current = get();
+        if (
+          current.projectId === projectId &&
+          current.sessionStampVersion === versionAtRead &&
+          !current.selectionResolved
+        ) {
+          set({
+            status: 'error',
+            pendingId: null,
+            error: 'Runtime selection unavailable. Retry or reconnect.',
+          });
+        }
+      }
+    },
+
+    switchRuntime: (projectId, runtimeId) =>
+      applySelectionChange(projectId, { runtimeId }, runtimeId),
+
+    setModel: (projectId, model) => {
+      const sel = get().activeSession?.selection;
+      const runtimeId = sel?.runtimeId ?? get().selectedId;
+      return applySelectionChange(projectId, {
+        runtimeId,
+        ...(sel?.accountId ? { accountId: sel.accountId } : {}),
+        model,
+      }, null);
+    },
+
+    setEffort: (projectId, effort) => {
+      const sel = get().activeSession?.selection;
+      // No active stamped selection to keep the model fixed under — nothing
+      // to apply (the effort picker is disabled in this state; see
+      // EffortSwitcher).
+      if (!sel?.model) return Promise.resolve();
+      return applySelectionChange(projectId, {
+        runtimeId: sel.runtimeId,
+        accountId: sel.accountId,
+        model: sel.model,
+        effort,
+      }, null);
+    },
+  };
+});

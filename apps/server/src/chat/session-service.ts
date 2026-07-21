@@ -89,7 +89,16 @@ export interface SessionServiceDeps {
   broadcast: (frame: ServerFrame) => void;
   mintSession: RuntimeSessionFactory;
   resolveNewSessionSelection: (
-    input: { projectId: ULID; accountId?: string; runtimeId?: string },
+    input: {
+      projectId: ULID;
+      accountId?: string;
+      runtimeId?: string;
+      /** Explicit model/effort overrides for a same-runtime selection change
+       *  (header model/effort pickers). Omitted ⇒ the composition root's
+       *  usual admin-default resolution (unchanged behavior). */
+      model?: string;
+      effort?: string | null;
+    },
   ) => Promise<RuntimeSelectionValidation>;
   preflightRuntimeSession: (
     selection: RuntimeSelection,
@@ -602,7 +611,7 @@ export class SessionService {
    * Prior stamped sessions retain their original account and remain eligible
    * for separately preflighted historical resume. */
   async switchAccountSession(accountId: string): Promise<OrchestratorSessionRow> {
-    return this.withSessionTransition(() => this.replaceSession('account switched', accountId));
+    return this.withSessionTransition(() => this.replaceSession('account switched', { accountId }));
   }
 
   /** Runtime default + a newly stamped session boundary are one DB transition.
@@ -612,20 +621,46 @@ export class SessionService {
    * their original runtime/account and remain eligible for separately
    * preflighted historical resume through their own adapter. */
   async switchRuntimeSession(runtimeId: string): Promise<OrchestratorSessionRow> {
-    return this.withSessionTransition(() => this.replaceSession('runtime switched', undefined, runtimeId));
+    return this.withSessionTransition(() => this.replaceSession('runtime switched', { runtimeId }));
+  }
+
+  /** Header model/effort (and optionally account/runtime) change + a newly
+   * stamped session boundary, one DB transition. A stamped session's
+   * selection is immutable once minted (orchestrator-sessions.ts), so even a
+   * same-runtime, same-account model/effort-only change cannot be applied to
+   * the live row in place — it mints a fresh session exactly like
+   * switchRuntimeSession/switchAccountSession above. Continuing the same
+   * conversation across a model/effort change is TODO follow-up work (would
+   * need the row's selection to become mutable, a materially bigger change
+   * than this endpoint's scope).
+   */
+  async changeSelection(input: {
+    runtimeId?: string;
+    accountId?: string;
+    model?: string;
+    effort?: string | null;
+  }): Promise<OrchestratorSessionRow> {
+    return this.withSessionTransition(() => this.replaceSession('selection changed', input));
   }
 
   private async replaceSession(
     reason: string,
-    accountId?: string,
-    runtimeId?: string,
+    options: {
+      accountId?: string;
+      runtimeId?: string;
+      model?: string;
+      effort?: string | null;
+    } = {},
   ): Promise<OrchestratorSessionRow> {
+    const { accountId, runtimeId, model, effort } = options;
     if (this.disposed) throw new Error('session service is disposed');
     const generation = this.lifecycleGeneration;
     const resolved = await this.resolveNewSessionSelection({
       projectId: this.projectId,
       ...(accountId ? { accountId } : {}),
       ...(runtimeId ? { runtimeId } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
     });
     if (this.disposed || generation !== this.lifecycleGeneration) {
       throw new Error('session service was disposed during selection resolution');
@@ -636,6 +671,12 @@ export class SessionService {
     }
     if (runtimeId !== undefined && resolved.selection.runtimeId !== runtimeId) {
       throw new RuntimeSelectionRejectedError('runtime-not-registered');
+    }
+    if (model !== undefined && resolved.selection.model !== model) {
+      throw new RuntimeSelectionRejectedError('model-unsupported');
+    }
+    if (effort !== undefined && !effortMatchesRequest(effort, resolved.selection.effort)) {
+      throw new RuntimeSelectionRejectedError('effort-value-unsupported');
     }
     if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
     const replacement = replaceOrchestratorSession({
@@ -653,6 +694,8 @@ export class SessionService {
             endedReason: 'runtime_switched' as const,
             settingsPatch: { defaultRuntimeId: runtimeId },
           }
+        : (model !== undefined || effort !== undefined)
+        ? { endedReason: 'selection_changed' as const }
         : {}),
     });
     this.publishCommittedEvents();
@@ -1537,6 +1580,16 @@ export class SessionService {
     this.health = health;
     if (health !== 'failed') this.failureReason = null;
   }
+}
+
+/** Defense-in-depth: the resolver is trusted to honor an explicit effort
+ * request, but (mirroring the accountId/runtimeId mismatch guards above) a
+ * resolved selection that silently dropped it must still fail closed rather
+ * than mint a session under a selection the caller never asked for. */
+function effortMatchesRequest(requested: string | null, effort: RuntimeSelection['effort']): boolean {
+  return requested === null
+    ? effort.kind !== 'selected'
+    : effort.kind === 'selected' && effort.value === requested;
 }
 
 function runtimeSelectionCacheKey(selection: RuntimeSelection): string {

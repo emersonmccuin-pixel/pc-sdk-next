@@ -144,10 +144,18 @@ async function main(): Promise<void> {
       ?? CLAUDE_RUNTIME_ID;
 
   const resolveNewSessionSelection = async (
-    input: { projectId: ULID; accountId?: string; runtimeId?: string },
+    input: {
+      projectId: ULID;
+      accountId?: string;
+      runtimeId?: string;
+      /** Explicit model/effort override from the header pickers. Omitted ⇒
+       *  the orchestrator row's administered default (unchanged behavior). */
+      model?: string;
+      effort?: string | null;
+    },
   ) => {
     const orchestrator = orchestratorRow();
-    const model = orchestrator?.model?.trim();
+    const model = (input.model ?? orchestrator?.model)?.trim();
     if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
     const runtimeId = input.runtimeId ?? projectRuntimeId(input.projectId);
     if (!runtimes.has(runtimeId)) {
@@ -169,16 +177,20 @@ async function main(): Promise<void> {
     // can drift out of sync with what the resolved runtime actually supports
     // right now (a runtime's discovered model list can change independently of
     // this stored value, e.g. a provider retiring a shorthand id). Every new
-    // orchestrator mint — same runtime or a switch — opts into the generic
-    // one-shot model-discovery fallback (resolveSelectionWithModelFallback):
-    // a rejection for 'model-unsupported' is retried exactly once against the
-    // resolved runtime's own first live-discovered model, never invented here.
+    // orchestrator mint that uses the administered default — same runtime or a
+    // switch — opts into the generic one-shot model-discovery fallback
+    // (resolveSelectionWithModelFallback): a rejection for 'model-unsupported'
+    // is retried exactly once against the resolved runtime's own first
+    // live-discovered model, never invented here. A caller-supplied model
+    // (the header model picker) is an explicit user choice instead — it never
+    // silently falls back to a different model; an unsupported pick surfaces
+    // as a typed rejection the caller must see.
     const result = await resolveSelectionWithModelFallback(runtimes, {
       runtimeId,
       accountId: account.id,
       model,
-      effort: orchestrator?.effort ?? null,
-    }, true);
+      effort: input.effort !== undefined ? input.effort : (orchestrator?.effort ?? null),
+    }, input.model === undefined);
     if (result.status === 'valid' && result.selection.model !== model) {
       console.warn(
         `[pc-sdk][runtime-selection] stored orchestrator model '${model}' is no longer ` +

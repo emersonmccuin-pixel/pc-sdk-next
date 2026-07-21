@@ -353,6 +353,98 @@ test('runtime switch rejects a resolver result that does not match the requested
   await service.dispose();
 });
 
+test('changeSelection with a new model/effort stamps a fresh session and ends the prior one as selection_changed', async () => {
+  freshDb();
+  const project = newProject('selection-change-roundtrip');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async (input) => ({
+      status: 'valid',
+      selection: {
+        runtimeId: input.runtimeId ?? TEST_SELECTION.runtimeId,
+        accountId: input.accountId ?? TEST_SELECTION.accountId,
+        model: input.model ?? TEST_SELECTION.model,
+        effort: input.effort !== undefined
+          ? (input.effort ? { kind: 'selected' as const, value: input.effort } : { kind: 'none' as const })
+          : TEST_SELECTION.effort,
+      },
+    }),
+    preflightRuntimeSession: testSessionSelectionDeps().preflightRuntimeSession,
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+  assert.equal(getOrchestratorSession(original.id)?.model, TEST_SELECTION.model);
+
+  const updated = await service.changeSelection({ model: 'sonnet', effort: 'high' });
+  assert.notEqual(updated.id, original.id);
+  assert.equal(getOrchestratorSession(updated.id)?.runtimeId, TEST_SELECTION.runtimeId);
+  assert.equal(getOrchestratorSession(updated.id)?.accountId, TEST_SELECTION.accountId);
+  assert.equal(getOrchestratorSession(updated.id)?.model, 'sonnet');
+  assert.equal(getOrchestratorSession(updated.id)?.effortState, 'selected');
+  assert.equal(getOrchestratorSession(updated.id)?.effort, 'high');
+  assert.equal(getOrchestratorSession(original.id)?.status, 'ended');
+  assert.equal(getOrchestratorSession(original.id)?.endedReason, 'selection_changed');
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, updated.id);
+  // A pure model/effort change is not a runtime/account default — the
+  // project's stamped defaults stay untouched (unlike switchRuntimeSession/
+  // switchAccountSession, which persist their own default).
+  assert.equal(getProjectById(project.id)?.settings.defaultRuntimeId, null);
+  assert.equal(getProjectById(project.id)?.settings.defaultAccountId, null);
+  await service.dispose();
+});
+
+test('changeSelection rejects a resolver result that does not match the requested model', async () => {
+  freshDb();
+  const project = newProject('resolver-model-mismatch');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async () => ({
+      status: 'valid', selection: structuredClone(TEST_SELECTION),
+    }),
+    preflightRuntimeSession: testSessionSelectionDeps().preflightRuntimeSession,
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+
+  await assert.rejects(
+    () => service.changeSelection({ model: 'sonnet' }),
+    (error: unknown) =>
+      error instanceof RuntimeSelectionRejectedError && error.code === 'model-unsupported',
+  );
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, original.id);
+  assert.equal(getOrchestratorSession(original.id)?.model, TEST_SELECTION.model);
+  await service.dispose();
+});
+
+test('changeSelection rejects a resolver result that does not match the requested effort', async () => {
+  freshDb();
+  const project = newProject('resolver-effort-mismatch');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async () => ({
+      status: 'valid', selection: structuredClone(TEST_SELECTION),
+    }),
+    preflightRuntimeSession: testSessionSelectionDeps().preflightRuntimeSession,
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+
+  await assert.rejects(
+    () => service.changeSelection({ effort: 'high' }),
+    (error: unknown) =>
+      error instanceof RuntimeSelectionRejectedError && error.code === 'effort-value-unsupported',
+  );
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, original.id);
+  assert.equal(getOrchestratorSession(original.id)?.effortState, TEST_SELECTION.effort.kind);
+  await service.dispose();
+});
+
 test('a recovered resume-pending session is re-preflighted and never falls back to create', async () => {
   freshDb();
   const project = newProject('resume-pending-revalidation');
