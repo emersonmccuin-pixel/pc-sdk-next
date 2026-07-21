@@ -201,6 +201,11 @@ export interface CreateRuntimeSession {
   ask?: AskHandler;
   /** Non-interactive dispatch: never block on permissions. */
   bypassPermissions?: boolean;
+  /** This app server's own live listen port. Adapters that can enforce a
+   *  self-preservation guard (never let a session kill/restart its own host
+   *  process) use this to recognize the process/port it must never target;
+   *  adapters that don't support such a guard simply ignore it. */
+  hostPort?: number;
 }
 
 export interface ResumeRuntimeSession extends CreateRuntimeSession {

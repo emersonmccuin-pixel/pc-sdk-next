@@ -23,9 +23,12 @@ import {
   query,
   tool,
   type EffortLevel,
+  type HookCallback,
+  type HookJSONOutput,
   type ModelInfo,
   type Options,
   type PermissionResult,
+  type PreToolUseHookInput,
   type Query,
   type SDKMessage,
   type SDKUserMessage,
@@ -46,6 +49,7 @@ import {
   type SubscriptionQuotaUnavailableReason,
 } from '@pc/contracts';
 import { scrubProviderDetail } from '@pc/utils';
+import { evaluateShellCommandSafety } from '../chat/tool-safety.ts';
 import type { BridgeBuild } from '../mcp/bridge.ts';
 import { buildChildEnvironment } from '../operations/child-environment.ts';
 import type { AccountRegistry } from './account-env.ts';
@@ -120,6 +124,10 @@ export interface ClaudeSessionConfig {
   maxTurns?: number;
   /** Non-interactive dispatch: never block on permissions. */
   bypassPermissions?: boolean;
+  /** This app server's own live listen port — see tool-safety.ts's host
+   *  self-preservation guard, wired below as a PreToolUse hook so it holds
+   *  even under bypassPermissions (canUseTool is never consulted there). */
+  hostPort?: number;
 }
 
 /** Reduce a caller-provided runtime environment to the shared ambient
@@ -675,6 +683,11 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(opts.ask ? { canUseTool: this.makeCanUseTool(opts.ask) } : {}),
+      // Host self-preservation guard. A PreToolUse hook denial bypasses (and
+      // so still holds under) permissionMode 'bypassPermissions', unlike
+      // canUseTool above — the only interception point that actually fires
+      // for the orchestrator's always-bypassed sessions.
+      hooks: { PreToolUse: [{ hooks: [this.makeToolSafetyHook()] }] },
       ...(resume ? { resume } : {}),
     };
 
@@ -952,6 +965,47 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       },
     });
   }
+
+  /** PreToolUse hook: the host self-preservation guard (tool-safety.ts). Runs
+   *  regardless of permission mode — unlike canUseTool, a PreToolUse deny is
+   *  never bypassed by 'bypassPermissions'. A deny is surfaced as an ordinary
+   *  denied tool-state (the same shape a canUseTool/runtime denial produces)
+   *  via observeToolState's own requested→denied backfill, so it renders in
+   *  chat exactly like any other denied tool call. */
+  private makeToolSafetyHook(): HookCallback {
+    return async (input): Promise<HookJSONOutput> => {
+      if (input.hook_event_name !== 'PreToolUse') return {};
+      const { tool_name: toolName, tool_input: toolInput, tool_use_id: toolUseId } =
+        input as PreToolUseHookInput;
+      const verdict = evaluateShellCommandSafety(toolName, toolInput, {
+        pid: process.pid,
+        port: this.config.hostPort ?? 0,
+      });
+      if (verdict.allowed) return {};
+      const turn = this.currentTurn;
+      if (turn) {
+        const scope = (input as PreToolUseHookInput).agent_id ? 'sidechain' : 'primary';
+        for (const event of observeToolState(this.keys, {
+          nativeId: toolUseId,
+          name: toolName,
+          scope,
+          state: 'denied',
+          approval: { status: 'denied', source: 'runtime', requestId: null },
+        })) {
+          turn.push(event);
+        }
+      }
+      return {
+        decision: 'block',
+        reason: verdict.reason,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: verdict.reason,
+        },
+      };
+    };
+  }
 }
 
 /** Interpret a browser's `rawAnswer` for an answer-style tool (AskUserQuestion,
@@ -1226,6 +1280,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       ...(input.allowedNativeTools ? { allowedTools: input.allowedNativeTools } : {}),
       maxTurns: input.maxTurns,
       bypassPermissions: input.bypassPermissions,
+      hostPort: input.hostPort,
     });
     await session.start({
       appSessionId: input.appSessionId,
