@@ -5,6 +5,7 @@
 // and maps runtime events into the claimed conversation context.
 
 import {
+  clearPendingHandoffSeed,
   commitConversationEvent,
   confirmRuntimeSessionReceipt,
   continueOrchestratorSessionAcrossSelection,
@@ -16,6 +17,7 @@ import {
   getActiveOrchestratorSession,
   getConversationHighWaterSequence,
   getConversationQueueSnapshot,
+  handoffOrchestratorSession,
   hasConversationContextObservation,
   getOrchestratorSession,
   getProjectById,
@@ -70,6 +72,7 @@ import {
   type RuntimeSessionFactory,
 } from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
+import { compileHandoffSeedContext, hasReplayableTranscript } from './handoff.ts';
 import { priorSessionTranscript, replayConversationEvents } from './replay.ts';
 import { SendQueue } from './send-queue.ts';
 import { runTurn, type TurnRunnerDeps } from './turn-runner.ts';
@@ -611,9 +614,85 @@ export class SessionService {
 
   /** Account default + a newly stamped session boundary are one DB transition.
    * Prior stamped sessions retain their original account and remain eligible
-   * for separately preflighted historical resume. */
+   * for separately preflighted historical resume. A same-runtime account
+   * change is never a native resume — each account is an isolated credential
+   * home (docs/agent-runtime-architecture.md "Sessions and switching") — so
+   * when the prior session has a replayable transcript this instead performs
+   * an app-owned context handoff into a fresh native session under the new
+   * account. A prior session with nothing to hand off (no replayable
+   * transcript) falls back to today's clean mint plus a visible notice. */
   async switchAccountSession(accountId: string): Promise<OrchestratorSessionRow> {
-    return this.withSessionTransition(() => this.replaceSession('account switched', { accountId }));
+    return this.withSessionTransition(() => this.switchAccountSessionUnserialized(accountId));
+  }
+
+  private async switchAccountSessionUnserialized(accountId: string): Promise<OrchestratorSessionRow> {
+    const prior = this.session;
+    const selection = await this.resolveReplacementSelection({ accountId });
+    if (prior) {
+      const handed = await this.handoffAcrossAccount(prior, selection, { defaultAccountId: accountId });
+      if (handed) return handed;
+    }
+    const session = await this.commitSessionReplacement('account switched', { accountId }, selection);
+    if (prior) this.emitContinuationUnavailableNotice(session);
+    return session;
+  }
+
+  /** App-owned context handoff for a same-runtime account change (docs/agent-
+   * runtime-architecture.md "Sessions and switching"). Each account is an
+   * isolated credential home, so the prior native session id can never carry
+   * over: this always mints a fresh native session under the new account,
+   * durably marked to compile and inject the prior session's transcript as
+   * `seedContext` on its first delivered turn (see ensureRuntime below).
+   * Returns null (no side effect) when the prior session has no replayable
+   * transcript to hand off — callers fall back to a clean mint + notice. */
+  private async handoffAcrossAccount(
+    prior: OrchestratorSessionRow,
+    selection: RuntimeSelection,
+    settingsPatch: Record<string, unknown>,
+  ): Promise<OrchestratorSessionRow | null> {
+    if (!hasReplayableTranscript(prior.id)) return null;
+    if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
+    const handoff = handoffOrchestratorSession({
+      projectId: this.projectId,
+      expectedSessionId: prior.id,
+      selection,
+      queueCancellationReason: 'account switched',
+      settingsPatch,
+    });
+    if (!handoff) return null;
+    this.publishCommittedEvents();
+    this.teardownRunner('new-session');
+    this.session = handoff.session;
+    this.broadcast(this.sessionChangedFrame('new-session'));
+    this.emitAccountHandoffNotice(handoff.session, selection.accountId);
+    this.broadcast(this.orchestratorStateFrame());
+    return this.session;
+  }
+
+  /** A provider-neutral, visible chat notice on every successful cross-
+   * account handoff — the reduced-fidelity counterpart of a native resume's
+   * silent continuity. Never provider-branched copy. */
+  private emitAccountHandoffNotice(session: OrchestratorSessionRow, toAccountId: string): void {
+    const event: ChatEvent = {
+      kind: 'system',
+      subtype: 'account-handoff',
+      level: 'notice',
+      message: `Switched to ${toAccountId} — continuing this conversation in a fresh session `
+        + 'seeded with its history (reduced fidelity).',
+    };
+    commitConversationEvent({
+      projectId: session.projectId,
+      conversationId: session.id,
+      sessionId: session.id,
+      family: conversationFamilyForEvent(event),
+      event,
+      turnId: null,
+      itemId: newId(),
+      clientMessageId: null,
+      occurredAt: Date.now(),
+      deliveryKind: 'chat',
+    });
+    this.publishCommittedEvents();
   }
 
   /** Runtime default + a newly stamped session boundary are one DB transition.
@@ -659,10 +738,22 @@ export class SessionService {
     const prior = this.session;
     const selection = await this.resolveReplacementSelection(input);
     const isPureSelectionChange = input.runtimeId === undefined && input.accountId === undefined;
+    const isAccountOnlyChange = input.runtimeId === undefined && input.accountId !== undefined;
 
     if (isPureSelectionChange && prior) {
       const continued = await this.tryContinueAcrossSelection(prior, selection);
       if (continued) return continued;
+      const session = await this.commitSessionReplacement('selection changed', input, selection);
+      this.emitContinuationUnavailableNotice(session);
+      return session;
+    }
+    if (isAccountOnlyChange && prior) {
+      const handed = await this.handoffAcrossAccount(
+        prior,
+        selection,
+        { defaultAccountId: input.accountId! },
+      );
+      if (handed) return handed;
       const session = await this.commitSessionReplacement('selection changed', input, selection);
       this.emitContinuationUnavailableNotice(session);
       return session;
@@ -1073,6 +1164,27 @@ export class SessionService {
     } else {
       throw new RuntimeSelectionRejectedError('native-session-missing');
     }
+    // Phase 2 app-owned cross-account handoff: an unconsumed marker on a
+    // freshly created (never resumed) native session means the first
+    // delivered turn must compile and inject the source session's transcript
+    // as seedContext. The marker itself is cleared only once the adapter
+    // positively confirms the create receipt (onRuntimeSessionReceipt below)
+    // — a mint that never binds must retry the exact same seed.
+    let seedContext: string | undefined;
+    if (
+      continuation.mode === 'create' &&
+      session.pendingHandoffSeed &&
+      typeof session.sourceSessionId === 'string' &&
+      session.sourceSessionId.trim().length > 0
+    ) {
+      const sourceSession = getOrchestratorSession(session.sourceSessionId);
+      const compiled = compileHandoffSeedContext({
+        sourceSessionId: session.sourceSessionId,
+        fromAccountId: sourceSession?.accountId ?? 'unknown',
+        toAccountId: selection.accountId,
+      });
+      if (compiled) seedContext = compiled.seedContext;
+    }
     let runtime: RuntimeSession;
     try {
       runtime = await this.mintSession({
@@ -1081,6 +1193,7 @@ export class SessionService {
         continuationAttemptId,
         selection,
         continuation,
+        ...(seedContext ? { seedContext } : {}),
         cwd: this.cwd,
         ask: this.askRegistry.ask,
       });
@@ -1558,8 +1671,15 @@ export class SessionService {
           throw new Error(`runtime session receipt rejected: ${confirmation.reason}`);
         }
         acquisition.receiptConfirmed = true;
-        Object.assign(session, confirmation.session);
-        if (this.session?.id === session.id) this.session = confirmation.session;
+        let confirmedSession = confirmation.session;
+        // The handoff-seed marker is consumed only once the create receipt
+        // it seeded is positively confirmed — a mint that never binds must
+        // retry with the exact same seed, never a silently unseeded one.
+        if (receipt.mode === 'created' && confirmedSession.pendingHandoffSeed) {
+          confirmedSession = clearPendingHandoffSeed(confirmedSession.id) ?? confirmedSession;
+        }
+        Object.assign(session, confirmedSession);
+        if (this.session?.id === session.id) this.session = confirmedSession;
         if (!confirmation.duplicate) this.broadcastSessionUpdated();
       },
       onSubscriptionQuota: (batch) => {

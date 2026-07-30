@@ -20,12 +20,19 @@ function shortSelection(selection: RuntimeSelection | null | undefined): string 
 }
 
 /** "sonnet -> opus"-style label for the divider between two selections in a
- *  same-runtime, same-account continuation chain. Provider-neutral — never
- *  branches on runtimeId/accountId, only formats the model/effort delta. */
-function selectionDeltaLabel(
+ *  continuation chain — either a same-runtime, same-account model/effort
+ *  continuation, or a same-runtime cross-account context handoff (Phase 2).
+ *  Provider-neutral — never branches on runtimeId, only formats whichever of
+ *  the account or the model/effort actually changed. An account change wins
+ *  the label (docs/agent-runtime-architecture.md "Sessions and switching":
+ *  the account, not the model, is the meaningful delta for a handoff). */
+export function selectionDeltaLabel(
   from: RuntimeSelection | null | undefined,
   to: RuntimeSelection | null | undefined,
 ): string {
+  if (from && to && from.accountId !== to.accountId) {
+    return `account: ${from.accountId} → ${to.accountId}`;
+  }
   return `${shortSelection(from)} → ${shortSelection(to)}`;
 }
 

@@ -114,6 +114,13 @@ export interface ClaudeSessionConfig {
   /** Receipt clock used by adapter-authored observations. */
   now?: () => number;
   systemPrompt?: string;
+  /** Provider-neutral compiled prior-conversation context (app-owned handoff,
+   *  e.g. a same-runtime cross-account switch). Only meaningful for a fresh
+   *  create — `start()` injects it as one leading user turn ahead of the
+   *  first real one exactly when there is no requested native resume id; a
+   *  resumed native thread already carries its own history and this is
+   *  ignored. */
+  seedContext?: string;
   /** Working directory for the loop. `start`'s cwd wins; then this; then
    *  `process.cwd()`. */
   cwd?: string;
@@ -693,6 +700,22 @@ export class ClaudeRuntimeSession implements RuntimeSession {
 
     this.q = (this.config.queryFactory ?? query)({ prompt: promptQueue, options });
     void this.consume(this.q);
+
+    // App-owned handoff seed: a leading context message ahead of the first
+    // real user turn, native to this fresh thread. Only for a genuine create
+    // — a resumed native thread already carries its own history. Its
+    // assistant reply is native-real but deliberately unrouted: `route()`
+    // drops any message that arrives with no active `currentTurn`, so this
+    // extra round trip never surfaces to the app or perturbs turn
+    // correlation for the caller's first real `sendTurn`.
+    if (this.requestedNativeSessionId === null && this.config.seedContext) {
+      const seedMsg = {
+        type: 'user',
+        message: { role: 'user', content: this.config.seedContext },
+        parent_tool_use_id: null,
+      } as unknown as SDKUserMessage;
+      this.promptQueue?.push(seedMsg);
+    }
   }
 
   sendTurn(text: string): AsyncIterable<RuntimeEvent> {
@@ -1281,6 +1304,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       queryFactory: this.queryFactory,
       now: this.now,
       systemPrompt: input.instructions,
+      seedContext: input.seedContext,
       cwd: input.cwd,
       bridge: input.tools,
       ...(input.allowedNativeTools ? { allowedTools: input.allowedNativeTools } : {}),

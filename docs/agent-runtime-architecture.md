@@ -246,6 +246,14 @@ Runtime/account/model changes are session boundaries:
 2. end or suspend the current PC-SDK app session;
 3. retain its bind-once native runtime session id for eligible same-runtime,
    same-account resume;
+
+   A same-runtime **account** change is never a native resume, even though
+   the runtime is unchanged. Each account is an isolated credential home
+   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) and the native transcript lives inside
+   the originating home, so the prior native session id can never cross into
+   the new home. An account change instead continues the conversation
+   through an app-owned context handoff (below) — the same family as
+   cross-runtime continuity — never by reusing the prior native session id.
 4. create a new app session stamped with the new runtime selection;
 5. start a new native runtime session.
 
@@ -258,11 +266,18 @@ the new app session starts a new native session with a handoff.
 A Claude session is never resumed as a Codex thread or vice versa. Returning to
 an older app session resumes it through its original adapter and account.
 
-Cross-runtime continuity is an app-owned handoff, not fake native resume. A
-future handoff compiler may seed the new session with selected transcript,
-project facts, open contracts, tool state, and an explicit provenance link to
-the source session. The initial provider-switch implementation may start clean;
-it must say so visibly.
+Cross-runtime AND same-runtime cross-account continuity is an app-owned
+handoff, not fake native resume: the new native session is created under the
+NEW runtime/account, seeded with compiled prior context, carrying an explicit
+provenance link to the source session, and paired with a visible reduced-
+fidelity notice. A handoff compiler seeds the new session from selected
+transcript (recent turns verbatim, older turns summarized, bounded, with any
+truncation surfaced in the seed itself); project facts, open contracts, and
+tool state are future extensions of the same mechanism. Unlike native resume,
+a handoff requires no adapter capability or receipt — it never touches native
+identity. The initial provider-switch implementation may start clean when the
+source session has nothing replayable to seed; it must say so visibly either
+way.
 
 ## Prompts and specialist definitions
 
@@ -400,6 +415,9 @@ move in one pass.
     for its run; task size and provider do not weaken isolation.
 12. Native create/resume and their failure callbacks must carry the exact
     current attempt identity; stale attempt evidence writes nothing.
+13. A same-runtime account change is a handoff, exactly like cross-runtime
+    continuity — never a native resume and never a reused native session id,
+    even though the runtime binary is unchanged.
 
 ## Anti-patterns
 
@@ -407,6 +425,10 @@ move in one pass.
   code instead of adapter selection at the composition root;
 - adding Codex fields to Claude-shaped `RunnerMessage` variants;
 - treating model ids as a hardcoded global enum instead of runtime discovery;
+- copying a native session/thread file (or any native transcript artifact)
+  between credential homes to fake continuity across an account change —
+  each account's native transcript stays inside its own originating home;
+  continuity across accounts is only ever the app-owned handoff above;
 - reusing one native session id across runtime or account changes;
 - exposing every runtime's built-in tools by default;
 - claiming quota parity when a runtime has not supplied equivalent telemetry;

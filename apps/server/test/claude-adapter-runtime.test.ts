@@ -277,6 +277,75 @@ function sessionQueryWithPreInitHookNoise(
   return queryObject(messages(), MODELS, stopped.resolve);
 }
 
+/** Like `sessionQuery`, but records every user message pulled off the prompt
+ * async iterable instead of consuming exactly one. Used to prove a leading
+ * seedContext message is queued ahead of the real user turn. */
+function sessionQueryCapturingPrompts(
+  prompt: string | AsyncIterable<SDKUserMessage>,
+  nativeSessionId: string,
+  capturedPrompts: SDKUserMessage[],
+): Query {
+  const stopped = gate();
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    if (typeof prompt === 'string') {
+      yield {
+        type: 'system', subtype: 'init', uuid: 'init-1', session_id: nativeSessionId,
+      } as unknown as SDKMessage;
+      await stopped.promise;
+      return;
+    }
+    const iter = prompt[Symbol.asyncIterator]();
+    const first = await iter.next();
+    if (!first.done) capturedPrompts.push(first.value);
+    yield {
+      type: 'system', subtype: 'init', uuid: 'init-1', session_id: nativeSessionId,
+    } as unknown as SDKMessage;
+    const second = await iter.next();
+    if (!second.done) capturedPrompts.push(second.value);
+    yield {
+      type: 'assistant', uuid: 'assistant-1', session_id: nativeSessionId,
+      parent_tool_use_id: null,
+      message: { id: 'message-1', content: [], usage: { iterations: null } },
+    } as unknown as SDKMessage;
+    yield {
+      type: 'result', subtype: 'success', is_error: false,
+      uuid: 'result-1', session_id: nativeSessionId,
+      usage: {
+        input_tokens: 1, output_tokens: 2,
+        cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      },
+      modelUsage: { opus: {} },
+    } as unknown as SDKMessage;
+    await stopped.promise;
+  }
+  return queryObject(messages(), MODELS, stopped.resolve);
+}
+
+/** Like `sessionQuery`, but records the single user message it consumes. */
+function sessionQuerySingleCapture(
+  prompt: string | AsyncIterable<SDKUserMessage>,
+  nativeSessionId: string,
+  capturedPrompts: SDKUserMessage[],
+): Query {
+  const stopped = gate();
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    if (typeof prompt === 'string') {
+      yield {
+        type: 'system', subtype: 'init', uuid: 'init-1', session_id: nativeSessionId,
+      } as unknown as SDKMessage;
+      await stopped.promise;
+      return;
+    }
+    const first = await prompt[Symbol.asyncIterator]().next();
+    if (!first.done) capturedPrompts.push(first.value);
+    yield {
+      type: 'system', subtype: 'init', uuid: 'init-1', session_id: nativeSessionId,
+    } as unknown as SDKMessage;
+    await stopped.promise;
+  }
+  return queryObject(messages(), MODELS, stopped.resolve);
+}
+
 function factoryWithSession(
   nativeSessionId: string,
   captures: Array<Parameters<ClaudeQueryFactory>[0]>,
@@ -433,6 +502,19 @@ const claudeRuntimeAdapterConformanceFixture: RuntimeAdapterConformanceFactory =
 
 runtimeAdapterConformance('generic fake', genericRuntimeAdapterConformanceFixture);
 runtimeAdapterConformance('Claude', claudeRuntimeAdapterConformanceFixture);
+
+test('generic fake adapter accepts an app-owned seedContext with no native effect', async () => {
+  const fixture = await genericRuntimeAdapterConformanceFixture('receipts');
+  const session = await fixture.adapter.createSession({
+    appSessionId: 'generic-seed-context', projectId: 'conformance-project',
+    continuationAttemptId: 'conformance-create-attempt', selection: fixture.selection,
+    cwd: fixture.cwd, seedContext: 'PRIOR CONVERSATION SEED',
+  });
+  const events = [];
+  for await (const event of session.sendTurn('one conformance turn')) events.push(event);
+  assert.equal(events.at(-1)?.type, 'result');
+  await session.dispose();
+});
 
 test('Claude adapter declares app-tool bridging supported', async () => {
   const fixture = await claudeRuntimeAdapterConformanceFixture('discovery');
@@ -1139,6 +1221,58 @@ test("Claude create omits options.model for the 'default' selection instead of p
     // chosen — only the SDK-facing option is omitted, not the receipt.
     assert.equal(started.receipt.selection.model, 'default');
   }
+  await runtime.dispose();
+});
+
+test('Claude create with seedContext injects a leading context message before the first real user turn', async () => {
+  const capturedPrompts: SDKUserMessage[] = [];
+  let calls = 0;
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(DIRTY_RUNTIME_ENV),
+    queryFactory: (params) => {
+      calls += 1;
+      return calls % 2 === 1
+        ? discoveryQuery(MODELS)
+        : sessionQueryCapturingPrompts(params.prompt, 'native-seeded', capturedPrompts);
+    },
+  });
+  const runtime = await adapter.createSession({
+    appSessionId: 'app-1', projectId: 'project-1',
+    continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    seedContext: 'PRIOR CONVERSATION SEED',
+  });
+  const events: RuntimeEvent[] = [];
+  for await (const event of runtime.sendTurn('real turn text')) events.push(event);
+
+  assert.equal(capturedPrompts.length, 2);
+  assert.deepEqual(capturedPrompts[0]?.message, { role: 'user', content: 'PRIOR CONVERSATION SEED' });
+  assert.deepEqual(capturedPrompts[1]?.message, { role: 'user', content: 'real turn text' });
+  // The seed's own native reply is out-of-turn (no active `currentTurn` yet)
+  // and must never surface as a second session-started/result pair.
+  assert.equal(events.filter((e) => e.type === 'session-started').length, 1);
+  assert.equal(events.filter((e) => e.type === 'result').length, 1);
+  await runtime.dispose();
+});
+
+test('Claude create without seedContext queues only the real user turn, unchanged', async () => {
+  const capturedPrompts: SDKUserMessage[] = [];
+  let calls = 0;
+  const adapter = new ClaudeRuntimeAdapter({
+    accounts: accounts(DIRTY_RUNTIME_ENV),
+    queryFactory: (params) => {
+      calls += 1;
+      return calls % 2 === 1
+        ? discoveryQuery(MODELS)
+        : sessionQuerySingleCapture(params.prompt, 'native-unseeded', capturedPrompts);
+    },
+  });
+  const runtime = await adapter.createSession({
+    appSessionId: 'app-1', projectId: 'project-1',
+    continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+  });
+  await firstEvent(runtime);
+  assert.equal(capturedPrompts.length, 1);
+  assert.deepEqual(capturedPrompts[0]?.message, { role: 'user', content: 'hello' });
   await runtime.dispose();
 });
 

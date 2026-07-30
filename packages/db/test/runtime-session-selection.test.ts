@@ -80,6 +80,7 @@ test('new rows persist one complete flattened immutable selection', () => {
     endedAt: null,
     deletedAt: null,
     sourceSessionId: null,
+    pendingHandoffSeed: false,
   });
   assert.deepEqual(db.runtimeSelectionForSession(session), selected);
   assert.throws(
@@ -635,6 +636,119 @@ test('continueOrchestratorSessionAcrossSelection refuses to mutate anything whil
       expectedSessionId: current.id,
       selection: selection('account-a', { kind: 'selected', value: 'high' }),
       queueCancellationReason: 'selection changed',
+    }),
+    /cannot switch sessions while a turn is active/,
+  );
+  assert.equal(db.getOrchestratorSession(current.id)?.status, 'active');
+  assert.equal(db.getActiveConversationTurn(current.id)?.id, activeTurn.turnId);
+});
+
+test('handoffOrchestratorSession mints a fresh unbound row under the new account with provenance and pendingHandoffSeed', () => {
+  const p = project('Account handoff');
+  const selectedA = selection('personal');
+  const prior = db.createOrchestratorSession({ projectId: p.id, selection: selectedA, now: 100 });
+  const priorCreate = prepareCreate(prior);
+  db.confirmRuntimeSessionReceipt({
+    sessionId: prior.id,
+    receipt: createdReceipt(priorCreate, selectedA, 'native-handoff-1'),
+  });
+  db.enqueueConversationSend({
+    projectId: p.id,
+    conversationId: prior.id,
+    sessionId: prior.id,
+    commandId: 'handoff-command',
+    clientMessageId: 'handoff-client',
+    text: 'queued before handoff',
+    origin: 'user',
+  });
+  const selectedB = selection('work');
+
+  const handed = db.handoffOrchestratorSession({
+    projectId: p.id,
+    expectedSessionId: prior.id,
+    selection: selectedB,
+    queueCancellationReason: 'account switched',
+    settingsPatch: { defaultAccountId: 'work' },
+    now: 500,
+  });
+
+  assert.ok(handed);
+  assert.notEqual(handed!.session.id, prior.id);
+  assert.deepEqual(db.runtimeSelectionForSession(handed!.session), selectedB);
+  // Each account is an isolated credential home — the new row never borrows
+  // the prior native session id. It earns its own create receipt.
+  assert.equal(handed!.session.nativeSessionId, null);
+  assert.equal(handed!.session.nativeIdentityState, 'unbound');
+  assert.equal(handed!.session.continuationState, 'clean-pending');
+  assert.equal(handed!.session.sourceSessionId, prior.id);
+  assert.equal(handed!.session.pendingHandoffSeed, true);
+  assert.ok(handed!.session.continuationAttemptId);
+
+  const priorAfter = db.getOrchestratorSession(prior.id)!;
+  assert.equal(priorAfter.status, 'ended');
+  assert.equal(priorAfter.endedReason, 'account_switched');
+  assert.equal(priorAfter.nativeSessionId, 'native-handoff-1', 'the source row keeps its own native evidence');
+  assert.equal(db.getActiveOrchestratorSession(p.id)?.id, handed!.session.id);
+  assert.deepEqual(db.getConversationQueueSnapshot(prior.id).items, [], 'the cancelled item drops out of the live queue snapshot');
+  assert.equal(handed!.cancelledQueueItemIds.length, 1);
+  assert.equal(db.getProjectById(p.id)?.settings.defaultAccountId, 'work');
+
+  const created = db.prepareRuntimeSessionCreate(handed!.session.id);
+  assert.ok(created);
+  const receipt: RuntimeSessionReceipt = {
+    mode: 'created',
+    continuationAttemptId: created!.continuationAttemptId!,
+    selection: selectedB,
+    nativeSessionId: 'native-handoff-2',
+    requestedNativeSessionId: null,
+  };
+  assert.equal(db.confirmRuntimeSessionReceipt({ sessionId: handed!.session.id, receipt }).status, 'confirmed');
+  assert.equal(db.getOrchestratorSession(handed!.session.id)?.continuationState, 'clean-started');
+});
+
+test('handoffOrchestratorSession rejects an expectedSessionId that does not match the current active session', () => {
+  const p = project('Account handoff wrong expectation');
+  const current = db.createOrchestratorSession({ projectId: p.id, selection: selection('personal') });
+  assert.throws(
+    () => db.handoffOrchestratorSession({
+      projectId: p.id,
+      expectedSessionId: 'some-other-session-id',
+      selection: selection('work'),
+      queueCancellationReason: 'account switched',
+    }),
+    /active session changed during transition/,
+  );
+  assert.equal(db.getActiveOrchestratorSession(p.id)?.id, current.id);
+  assert.equal(db.listOrchestratorSessionsForProject(p.id).length, 1);
+});
+
+test('handoffOrchestratorSession refuses to mutate anything while the active session has an unsettled turn', () => {
+  const p = project('Account handoff busy turn');
+  const selectedA = selection('personal');
+  const current = db.createOrchestratorSession({ projectId: p.id, selection: selectedA });
+  const currentCreate = prepareCreate(current);
+  db.confirmRuntimeSessionReceipt({
+    sessionId: current.id,
+    receipt: createdReceipt(currentCreate, selectedA, 'native-busy-handoff'),
+  });
+  db.enqueueConversationSend({
+    projectId: p.id,
+    conversationId: current.id,
+    sessionId: current.id,
+    commandId: 'busy-handoff-command',
+    clientMessageId: 'busy-handoff-client',
+    text: 'uncertain work',
+    origin: 'user',
+  });
+  const activeTurn = db.claimNextConversationTurn(current.id, 300);
+  assert.ok(activeTurn);
+
+  assert.throws(
+    () => db.handoffOrchestratorSession({
+      projectId: p.id,
+      expectedSessionId: current.id,
+      selection: selection('work'),
+      queueCancellationReason: 'account switched',
     }),
     /cannot switch sessions while a turn is active/,
   );
