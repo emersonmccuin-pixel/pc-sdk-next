@@ -274,12 +274,16 @@ export function ChatComposer({
     if (!pendingSend || !pendingStatus || pendingStatus === 'sending') return;
     if (pendingStatus !== 'failed' && pendingStatus !== 'cancelled') {
       rememberCommittedPrompt(pendingSend.text);
-      setText((current) => current === pendingSend.text ? '' : current);
-    } else if (pendingStatus === 'cancelled') {
-      setSocketError(
-        cancelledClientMessages[pendingSend.clientMessageId] ??
-          'Queued message was cancelled before delivery — the draft was kept',
-      );
+      setText((current) => current.trim() === pendingSend.text ? '' : current);
+    } else {
+      // Send did not commit — restore the draft unless the user already typed something new.
+      setText((current) => current.trim() ? current : pendingSend.text);
+      if (pendingStatus === 'cancelled') {
+        setSocketError(
+          cancelledClientMessages[pendingSend.clientMessageId] ??
+            'Queued message was cancelled before delivery — the draft was restored',
+        );
+      }
     }
     setPendingDurably(null);
   // The transition is keyed by durable client identity; historyKey is stable for this composer.
@@ -299,7 +303,8 @@ export function ChatComposer({
     if (!sessionContextReady) return;
     if (pendingSend.sessionId !== sessionId) {
       setPendingDurably(null);
-      setSocketError('Session changed before delivery was confirmed — the draft was kept');
+      setText((current) => current.trim() ? current : pendingSend.text);
+      setSocketError('Session changed before delivery was confirmed — the draft was restored');
     }
   // Session context is authoritative only after replay/snapshot; terminal evidence wins first.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -335,6 +340,9 @@ export function ChatComposer({
       setSocketError('Not connected — draft was kept');
       return;
     }
+    // Clear immediately on a successful socket write; the pending-status effect
+    // restores the draft if the send later fails or is cancelled.
+    setText('');
     setSocketError(null);
   }
 
@@ -411,6 +419,7 @@ export function ChatComposer({
       setSocketError('Interrupt-and-send was not submitted');
       return;
     }
+    setText('');
     setSocketError(null);
     setPendingInterruptId(result.requestId);
     setPendingDurably({ ...pending, submitted: true });
