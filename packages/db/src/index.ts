@@ -236,6 +236,7 @@ export {
   cancelQueuedConversationSends,
   cancelLegacyUnavailableSessionQueues,
   claimNextConversationTurn,
+  continueOrchestratorSessionAcrossSelection,
   editQueuedConversationSend,
   enqueueConversationSend,
   failConversationInterrupt,
@@ -253,6 +254,7 @@ export {
 } from './repos/conversation-queue.ts';
 export type {
   ClaimedConversationTurn,
+  ContinueOrchestratorSessionAcrossSelectionInput,
   ConversationCommandResult,
   ConversationQueueItemRow,
   ConversationQueueRevisionRow,

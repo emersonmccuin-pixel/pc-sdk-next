@@ -10,6 +10,7 @@ import {
   type ContextObservation,
   type ConversationCommandReceiptFrame,
   type ConversationEventFrame,
+  type PriorSessionTranscriptBlock,
   type SendQueueItem,
   type SendQueueSnapshotFrame,
   type SessionChangedFrame,
@@ -209,6 +210,12 @@ export interface ChatState {
   /** Fail-closed protocol/data conflicts; accepted projection is preserved. */
   integrityConflicts: string[];
   projector: ProjectorState;
+  /** Continuation-chain transcript from a same-runtime, same-account
+   * selection-change source session, oldest first. Empty unless the live/
+   * replayed session native-continued across a selection change. Set only by
+   * a replay checkpoint (`reduceReplay`) — a plain session-changed frame
+   * resets it via `initialChatState`'s default. */
+  priorTranscript: PriorSessionTranscriptBlock[];
 }
 
 export type ProjectionPath =
@@ -314,6 +321,7 @@ export function initialChatState(
     answeredAsks: {},
     integrityConflicts: [],
     projector: emptyProjector(),
+    priorTranscript: [],
   };
 }
 
@@ -1271,6 +1279,7 @@ export function reduceReplay(state: ChatState, replay: SessionReplayFrame): Proj
     projectedThroughSequence: checkpoint,
     sessionContextReady: true,
     contextProjectionReady: true,
+    priorTranscript: replay.priorTranscript ?? [],
   };
   return { state: next, work: receiptWork };
 }

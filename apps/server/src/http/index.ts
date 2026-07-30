@@ -16,7 +16,7 @@ import {
 import { getDataDir } from '@pc/utils';
 import type { ULID } from '@pc/domain';
 import type { SessionRegistry } from '../chat/registry.ts';
-import { replayConversationEvents } from '../chat/replay.ts';
+import { priorSessionTranscript, replayConversationEvents } from '../chat/replay.ts';
 import { toSessionSummary } from './dto.ts';
 import { mountAgents } from './agents.ts';
 import { mountAgentRuns } from './agent-runs.ts';
@@ -164,6 +164,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
       ok: true,
       events: replayConversationEvents(sessionId),
       highWaterSequence: getConversationHighWaterSequence(sessionId),
+      priorTranscript: priorSessionTranscript(session),
     });
   });
 

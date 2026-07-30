@@ -581,7 +581,7 @@ test('session-changed + orchestrator-state + ask guards', () => {
         title: null, status: 'active', nativeSessionIdPresent: false,
         continuationState: 'clean-pending',
         resumeAvailability: { status: 'unavailable', code: 'session-active' },
-        startedAt: 1,
+        startedAt: 1, sourceSessionId: null,
       },
     }),
     true,
@@ -630,7 +630,7 @@ test('session-changed + orchestrator-state + ask guards', () => {
       title: null, status: 'active', nativeSessionIdPresent: true,
       continuationState: 'clean-started',
       resumeAvailability: { status: 'unavailable', code: 'session-active' },
-      startedAt: 1,
+      startedAt: 1, sourceSessionId: null,
     },
   };
   assert.equal(isSessionUpdatedFrame(sessionUpdated), true);
@@ -890,24 +890,47 @@ test('session replay validates every canonical event identity', () => {
   };
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1, events: [event],
+    priorTranscript: [],
   }), true);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 'other', highWaterSequence: 1, events: [event],
+    priorTranscript: [],
   }), false);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1,
-    events: [event], raw: 'SECRET',
+    events: [event], priorTranscript: [], raw: 'SECRET',
   }), false);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 0, events: [event],
+    priorTranscript: [],
   }), false);
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 2,
+    priorTranscript: [],
     events: [
       event,
       { ...event, eventId: 'other-conversation', conversationId: 'other', sequence: 2 },
     ],
   }), false);
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1, events: [event],
+    priorTranscript: [{
+      sessionId: 'prior-session',
+      selection: null,
+      events: [{ ...event, sessionId: 'not-referenced' }],
+    }],
+  }), false, "a prior block's events must belong to that block's own sessionId");
+  assert.equal(isSessionReplayFrame({
+    type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 1, events: [event],
+    priorTranscript: [{
+      sessionId: 'prior-session',
+      selection: {
+        runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'opus',
+        effort: { kind: 'none' },
+      },
+      events: [{ ...event, sessionId: 'prior-session', conversationId: 'prior-session' }],
+    }],
+  }), true, 'a well-formed continuation-chain block is valid replay evidence');
 
   // Migration 0009 cannot safely infer turn ownership for legacy terminals.
   // They remain valid replay evidence even though the DB new-write door now
@@ -919,7 +942,7 @@ test('session replay validates every canonical event identity', () => {
   };
   assert.equal(isSessionReplayFrame({
     type: 'session-replay', projectId: 'p', sessionId: 's', highWaterSequence: 2,
-    events: [event, legacyTerminal],
+    events: [event, legacyTerminal], priorTranscript: [],
   }), true);
 });
 

@@ -71,5 +71,6 @@ export function toSessionSummary(
     continuationState: row.continuationState,
     resumeAvailability: staticSessionResumeAvailability(row, dynamicError),
     startedAt: row.startedAt,
+    sourceSessionId: row.sourceSessionId,
   };
 }

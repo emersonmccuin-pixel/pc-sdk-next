@@ -38,6 +38,11 @@ export interface RuntimeCapabilities {
   runtimeId: string;
   accountId: string;
   nativeContinuation: RuntimeCapabilityState;
+  /** Same-runtime, same-account native thread survives a model/effort change
+   * (docs/agent-runtime-architecture.md "Sessions and switching"). Distinct
+   * from `nativeContinuation`, which only covers resuming under the SAME
+   * stamped selection (e.g. returning to a historical app session). */
+  continuationAcrossSelectionChange: RuntimeCapabilityState;
   modelDiscovery: RuntimeCapabilityState;
   effortControl: RuntimeCapabilityState;
   context: RuntimeContextCapabilities;
@@ -80,6 +85,7 @@ export const RUNTIME_SELECTION_ERROR_CODES = [
   'repository-identity-unavailable',
   'session-active',
   'resume-failed',
+  'selection-change-continuation-unsupported',
 ] as const;
 export type RuntimeSelectionErrorCode = (typeof RUNTIME_SELECTION_ERROR_CODES)[number];
 
@@ -168,6 +174,7 @@ export function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilit
       'runtimeId',
       'accountId',
       'nativeContinuation',
+      'continuationAcrossSelectionChange',
       'modelDiscovery',
       'effortControl',
       'context',
@@ -176,6 +183,7 @@ export function isRuntimeCapabilities(value: unknown): value is RuntimeCapabilit
     exactNonEmptyString(value.runtimeId) &&
     exactNonEmptyString(value.accountId) &&
     isRuntimeCapabilityState(value.nativeContinuation) &&
+    isRuntimeCapabilityState(value.continuationAcrossSelectionChange) &&
     isRuntimeCapabilityState(value.modelDiscovery) &&
     isRuntimeCapabilityState(value.effortControl) &&
     isRuntimeContextCapabilities(value.context) &&

@@ -20,6 +20,10 @@ export interface SessionSummary {
   continuationState: SessionContinuationState;
   resumeAvailability: SessionResumeAvailability;
   startedAt: number;
+  /** Provenance link only — the app-session id this one native-continued
+   * from across a selection change. Null for a clean/historical-resumed
+   * session. Shared with a future cross-account handoff link. */
+  sourceSessionId: string | null;
 }
 
 export const SESSION_CONTINUATION_STATES = [
@@ -51,6 +55,16 @@ export interface SessionUpdatedFrame {
   session: SessionSummary;
 }
 
+/** One ended app session in a same-runtime, same-account continuation chain,
+ * dimmed and shown ahead of the live transcript with a divider expressing its
+ * selection relative to the next block (e.g. "sonnet -> opus"). Oldest first. */
+export interface PriorSessionTranscriptBlock {
+  sessionId: string;
+  /** Null only for a conservatively migrated legacy source row. */
+  selection: RuntimeSelection | null;
+  events: ConversationEventFrame[];
+}
+
 /** Full checkpoint of the active session — same frame shape as live. `new-session`
  *  wipes the client timeline + aggregates; replay re-seeds wholesale and
  *  recomputes aggregates from the set. */
@@ -60,6 +74,10 @@ export interface SessionReplayFrame {
   sessionId: string;
   highWaterSequence: number;
   events: ConversationEventFrame[];
+  /** Continuation-chain transcript from the source session(s), oldest first.
+   * Empty unless the live session native-continued across a selection change.
+   * Bounded by a fixed chain-walk depth (see replay.ts). */
+  priorTranscript: PriorSessionTranscriptBlock[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,6 +102,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
       'continuationState',
       'resumeAvailability',
       'startedAt',
+      'sourceSessionId',
     ]) ||
     typeof value.id !== 'string' || value.id.length === 0 ||
     typeof value.projectId !== 'string' || value.projectId.length === 0 ||
@@ -93,7 +112,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof value.nativeSessionIdPresent !== 'boolean' ||
     !isSessionContinuationState(value.continuationState) ||
     !isSessionResumeAvailability(value.resumeAvailability) ||
-    typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt)
+    typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt) ||
+    !(value.sourceSessionId === null || (typeof value.sourceSessionId === 'string' && value.sourceSessionId.length > 0))
   ) return false;
   if (value.selection === null) {
     return value.status === 'ended' &&
@@ -150,16 +170,32 @@ export function isSessionUpdatedFrame(value: unknown): value is SessionUpdatedFr
   );
 }
 
+function isPriorSessionTranscriptBlock(value: unknown): value is PriorSessionTranscriptBlock {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['sessionId', 'selection', 'events']) ||
+    typeof value.sessionId !== 'string' || value.sessionId.length === 0 ||
+    !(value.selection === null || isRuntimeSelection(value.selection)) ||
+    !Array.isArray(value.events)
+  ) return false;
+  return value.events.every((event) =>
+    isConversationEventFrame(event) && event.sessionId === value.sessionId);
+}
+
 export function isSessionReplayFrame(value: unknown): value is SessionReplayFrame {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['type', 'projectId', 'sessionId', 'highWaterSequence', 'events']) ||
+    !hasOnlyKeys(value, [
+      'type', 'projectId', 'sessionId', 'highWaterSequence', 'events', 'priorTranscript',
+    ]) ||
     value.type !== 'session-replay' ||
     typeof value.projectId !== 'string' || value.projectId.length === 0 ||
     typeof value.sessionId !== 'string' || value.sessionId.length === 0 ||
     !Number.isSafeInteger(value.highWaterSequence) ||
     (value.highWaterSequence as number) < 0 ||
-    !Array.isArray(value.events)
+    !Array.isArray(value.events) ||
+    !Array.isArray(value.priorTranscript) ||
+    !value.priorTranscript.every(isPriorSessionTranscriptBlock)
   ) return false;
   let conversationId: string | null = null;
   return value.events.every((event) => {

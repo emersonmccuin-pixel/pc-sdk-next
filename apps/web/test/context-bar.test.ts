@@ -209,10 +209,62 @@ test('past-session history uses the same replay projector and renders the footer
   const markup = renderToStaticMarkup(createElement(PastSessionTimeline, {
     replay: {
       type: 'session-replay', projectId: 'project-1', sessionId: 'session-history',
-      highWaterSequence: 3, events: frames,
+      highWaterSequence: 3, events: frames, priorTranscript: [],
     },
   }));
   assert.match(markup, /data-context-state="available"/);
   assert.match(markup, /aria-valuenow="60"/);
   assert.match(markup, /Read-only session history/);
+});
+
+test('a native-continuation chain renders dimmed prior blocks with a selection-delta divider', () => {
+  const priorEvent: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'prior-1',
+    projectId: 'project-1',
+    conversationId: 'session-prior',
+    sessionId: 'session-prior',
+    sequence: 1,
+    family: 'assistant',
+    itemId: 'prior-item-1',
+    occurredAt: 1,
+    event: { kind: 'assistant-text', text: 'from the sonnet session', midLoop: false },
+  };
+  const liveEvent: ConversationEventFrame = {
+    type: 'conversation-event',
+    eventId: 'live-1',
+    projectId: 'project-1',
+    conversationId: 'session-live',
+    sessionId: 'session-live',
+    sequence: 1,
+    family: 'assistant',
+    itemId: 'live-item-1',
+    occurredAt: 1,
+    event: { kind: 'assistant-text', text: 'from the opus session', midLoop: false },
+  };
+  const markup = renderToStaticMarkup(createElement(PastSessionTimeline, {
+    replay: {
+      type: 'session-replay',
+      projectId: 'project-1',
+      sessionId: 'session-live',
+      highWaterSequence: 1,
+      events: [liveEvent],
+      priorTranscript: [{
+        sessionId: 'session-prior',
+        selection: {
+          runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'sonnet',
+          effort: { kind: 'none' },
+        },
+        events: [priorEvent],
+      }],
+    },
+  }));
+  // Both the dimmed prior block and the live block render (no continuation
+  // ⇒ no divider/prior-block coverage would silently drop history).
+  assert.match(markup, /from the sonnet session/);
+  assert.match(markup, /from the opus session/);
+  // Trailing divider into the live transcript — this test doesn't wire a
+  // liveSelection prop, so it degrades to "unknown selection" honestly
+  // instead of inventing the live model.
+  assert.match(markup, /sonnet → unknown selection/);
 });

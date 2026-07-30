@@ -44,6 +44,7 @@ function sessionChanged(
       continuationState,
       resumeAvailability: { status: 'unavailable', code: 'session-active' },
       startedAt: 1,
+      sourceSessionId: null,
     },
   };
 }

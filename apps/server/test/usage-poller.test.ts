@@ -47,6 +47,7 @@ function adapter(runtimeId: string, observe: ObserveQuota): AgentRuntimeAdapter 
       runtimeId,
       accountId,
       nativeContinuation: { status: 'supported' },
+      continuationAcrossSelectionChange: { status: 'supported' },
       modelDiscovery: { status: 'supported' },
       effortControl: { status: 'supported' },
       context: {

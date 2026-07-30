@@ -46,6 +46,7 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
     runtimeId: selection.runtimeId,
     accountId: selection.accountId,
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {
@@ -57,7 +58,33 @@ test('capabilities and model discovery retain supported/unsupported/unavailable 
   assert.equal(isRuntimeCapabilities({
     runtimeId: selection.runtimeId,
     accountId: selection.accountId,
+    nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'unsupported', code: 'not-supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
+    subscriptionQuota,
+  }), true, 'continuationAcrossSelectionChange is independently unsupported from plain nativeContinuation');
+  assert.equal(isRuntimeCapabilities({
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
+    nativeContinuation: { status: 'supported' },
+    modelDiscovery: { status: 'supported' },
+    effortControl: { status: 'supported' },
+    context: {
+      currentUse: { status: 'supported', confidences: ['exact', 'derived'] },
+      compaction: { status: 'supported' },
+    },
+    subscriptionQuota,
+  }), false, 'continuationAcrossSelectionChange is required');
+  assert.equal(isRuntimeCapabilities({
+    runtimeId: selection.runtimeId,
+    accountId: selection.accountId,
     nativeContinuation: { status: 'unsupported', code: '' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {

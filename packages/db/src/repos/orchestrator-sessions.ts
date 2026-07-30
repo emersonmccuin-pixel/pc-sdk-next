@@ -55,6 +55,8 @@ export interface OrchestratorSessionRow {
   startedAt: number;
   endedAt: number | null;
   deletedAt: number | null;
+  /** Provenance only — see schema.ts. Never used to authorize a transition. */
+  sourceSessionId: ULID | null;
 }
 
 interface FlattenedSelection {
@@ -133,6 +135,9 @@ export interface CreateOrchestratorSessionInput {
   selection: RuntimeSelection;
   title?: string | null;
   now?: number;
+  /** Provenance only — the prior app session this one native-continued from
+   * across a selection change. Never influences bind/continuation state. */
+  sourceSessionId?: ULID | null;
 }
 
 export function newStampedOrchestratorSession(
@@ -153,6 +158,7 @@ export function newStampedOrchestratorSession(
     startedAt: input.now ?? Date.now(),
     endedAt: null,
     deletedAt: null,
+    sourceSessionId: input.sourceSessionId ?? null,
   };
 }
 

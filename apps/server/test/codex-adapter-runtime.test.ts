@@ -718,6 +718,9 @@ test('Codex discovery, capabilities, context, and quota degrade with exact attri
     runtimeId: CODEX_RUNTIME_ID,
     accountId: ACCOUNT_ID,
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: {
+      status: 'unsupported', code: 'codex-selection-change-continuation-unsupported',
+    },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {
@@ -730,6 +733,7 @@ test('Codex discovery, capabilities, context, and quota degrade with exact attri
     runtimeId: CODEX_RUNTIME_ID,
     accountId: MISSING_ACCOUNT_ID,
     nativeContinuation: { status: 'unavailable', code: 'account-unavailable' },
+    continuationAcrossSelectionChange: { status: 'unavailable', code: 'account-unavailable' },
     modelDiscovery: { status: 'unavailable', code: 'account-unavailable' },
     effortControl: { status: 'unavailable', code: 'account-unavailable' },
     context: {

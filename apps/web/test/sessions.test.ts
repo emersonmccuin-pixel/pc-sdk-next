@@ -26,6 +26,7 @@ function session(over: Partial<SessionSummary>): SessionSummary {
     continuationState: 'clean-started',
     resumeAvailability: { status: 'available' },
     startedAt: 1,
+    sourceSessionId: null,
     ...over,
   };
 }
@@ -136,4 +137,20 @@ test('past-session HTTP checkpoints are strictly validated and preserve server h
   assert.throws(() => parseSessionEventsResponse({
     ok: true, events: [event], highWaterSequence: 0,
   }, 'project-1', 'session-1'), /invalid session events response/);
+
+  const withProvenance = parseSessionEventsResponse({
+    ok: true,
+    events: [event],
+    highWaterSequence: 7,
+    priorTranscript: [{
+      sessionId: 'prior-session',
+      selection: {
+        runtimeId: 'claude-agent-sdk', accountId: 'personal', model: 'sonnet',
+        effort: { kind: 'none' },
+      },
+      events: [{ ...event, eventId: 'prior-1', sessionId: 'prior-session', conversationId: 'prior-session' }],
+    }],
+  }, 'project-1', 'session-1');
+  assert.equal(withProvenance.priorTranscript.length, 1);
+  assert.equal(withProvenance.priorTranscript[0]?.sessionId, 'prior-session');
 });

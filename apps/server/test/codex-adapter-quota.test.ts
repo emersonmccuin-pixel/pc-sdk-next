@@ -264,6 +264,9 @@ test('a fake that only implements discover reports unsupported, never invoked', 
     runtimeId: CODEX_RUNTIME_ID,
     accountId: ACCOUNT_ID,
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: {
+      status: 'unsupported', code: 'codex-selection-change-continuation-unsupported',
+    },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'unsupported', code: 'codex-effort-unsupported' },
     context: {

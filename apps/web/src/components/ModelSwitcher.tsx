@@ -2,10 +2,13 @@
 // level further down: selects which discovered model the active session's
 // runtime+account run under. Lists exactly the models GET /api/runtimes
 // discovered for the CURRENT session's runtime+account (never a stale
-// cross-runtime list). Like the other switchers, changing it is a deliberate,
-// visible control — it mints a fresh session (see SessionService.
-// changeSelection for why a same-runtime selection change can't continue the
-// row in place today).
+// cross-runtime list). Like the other switchers, changing it always mints a
+// new immutable-selection app session (a stamped row can never mutate in
+// place) — but the server may native-continue the prior thread into it when
+// the adapter positively supports continuing across this exact selection
+// change (see SessionService.changeSelection). This component never branches
+// on that outcome; it always shows the same provider-neutral copy and lets
+// the replay/provenance UI show what actually happened.
 
 import { useEffect, useRef, useState } from 'react';
 
@@ -160,7 +163,9 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
             </div>
           )}
           <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground/70">
-            {projectId ? 'Switching starts a new session.' : 'Select a project to switch model.'}
+            {projectId
+              ? 'Switching continues this conversation when possible, or starts a fresh one.'
+              : 'Select a project to switch model.'}
           </div>
         </div>
       )}
