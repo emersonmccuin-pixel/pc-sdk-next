@@ -148,6 +148,7 @@ import {
 } from './pc-bridge.ts';
 import { buildAskEnvelope, buildReviewBrief, buildSpecialistInstructions, buildTerminalEnvelope } from './prompt.ts';
 import { autoLandBlockers, verifyContract, type VerificationOutcome } from './verification.ts';
+import { reconcileStrandedWorktreesAtBoot } from '../boot-recovery.ts';
 import {
   requireRepositoryWorktreeRoot,
   RepositoryLeaseError,
@@ -172,6 +173,8 @@ import {
   settleAbandonedWorktree,
   settleLandedWorktree,
   sweepOrphanedWorktreeDirs,
+  TEARDOWN_RETRY_DELAYS_MS,
+  WORKTREE_JANITOR_INTERVAL_MS,
 } from './worktrees.ts';
 
 const WALL_CLOCK_DEFAULT_MS = 2 * 60 * 60 * 1000;
@@ -319,6 +322,13 @@ export interface DispatchServiceDeps {
    * pc_submit_deliverable — the file-based delivery door is opened for it. The
    * dispatcher stays provider-neutral: it reads the fact, never the adapter. */
   appToolBridgeForRuntime?: (runtimeId: string) => 'supported' | 'unsupported';
+  /** Injectable retry backoff for mid-session landed-teardown reclaim.
+   *  Production uses TEARDOWN_RETRY_DELAYS_MS; tests shrink it to observe
+   *  convergence without real wall-clock waits. */
+  teardownRetryDelaysMs?: readonly number[];
+  /** Injectable interval for the in-session worktree janitor. Production uses
+   *  WORKTREE_JANITOR_INTERVAL_MS. */
+  worktreeJanitorIntervalMs?: number;
 }
 
 interface AttachContext {
@@ -470,6 +480,16 @@ export class DispatchService {
    *  takes, so a replayed envelope still renders through the typed
    *  `injectAgentEnvelope` path (Part A), never a plain-text fallback. */
   private readonly pendingEnvelopes: Array<{ projectId: ULID; envelope: AgentEnvelope; clientMessageId: string }> = [];
+  /** Mid-session landed-teardown retry (docs/worktree-lifecycle.md Recovery —
+   *  "merge positively complete but teardown incomplete → resume teardown"
+   *  must converge WITHOUT a restart). One retry train per contract. */
+  private readonly teardownRetries = new Map<ULID, NodeJS.Timeout>();
+  /** Dedupes concurrent landed-teardown attempts for the SAME contract across
+   *  the retry scheduler, the periodic janitor, and boot recovery. */
+  private readonly teardownAttemptsInFlight = new Map<ULID, Promise<boolean>>();
+  private janitorTimer: NodeJS.Timeout | null = null;
+  private janitorInFlight: Promise<void> | null = null;
+  private janitorPendingRerun = false;
 
   constructor(deps: DispatchServiceDeps) {
     this.deps = deps;
@@ -477,13 +497,16 @@ export class DispatchService {
 
   /** Late-bind the server context (registry/hub/port exist only after listen).
    *  Flushes any envelope queued while ctx was still null (F3) — never a
-   *  silent drop. */
+   *  silent drop. Starts the in-session worktree janitor: boot recovery only
+   *  reconciles/sweeps once at startup, so this keeps stranded/orphaned state
+   *  converging for the rest of the server session. */
   attach(ctx: AttachContext): void {
     this.ctx = ctx;
     const queued = this.pendingEnvelopes.splice(0);
     for (const item of queued) {
       this.deliverToOrchestrator(item.projectId, item.envelope, item.clientMessageId);
     }
+    this.startWorktreeJanitor();
   }
 
   hasLiveRun(runId: string): boolean {
@@ -627,7 +650,7 @@ export class DispatchService {
             queuedAt: now,
           }),
       });
-      this.gateway.commitTerminal({
+      this.commitRunTerminal({
         runId,
         status: 'failed',
         result: null,
@@ -775,7 +798,7 @@ export class DispatchService {
     });
     const linkedContract = this.contracts.setRun(contract.id, runId);
     if (!linkedContract) {
-      this.gateway.commitTerminal({
+      this.commitRunTerminal({
         runId,
         status: 'failed',
         result: null,
@@ -1089,7 +1112,7 @@ export class DispatchService {
     }
     const linkedContract = this.contracts.setRun(contract.id, runId);
     if (!linkedContract) {
-      this.gateway.commitTerminal({
+      this.commitRunTerminal({
         runId,
         status: 'failed',
         result: null,
@@ -1541,7 +1564,7 @@ export class DispatchService {
     const reason =
       `${phase} command failed (exit ${failed?.exitCode ?? '?'}${failed?.timedOut ? ', timed out' : ''}): ` +
       `${failed?.command ?? '(none)'} — receipt persisted; worktree preserved for debugging`;
-    this.gateway.commitTerminal({
+    this.commitRunTerminal({
       runId,
       status: 'failed',
       result: null,
@@ -1559,7 +1582,7 @@ export class DispatchService {
    * Preserve the worktree and settle loudly; no runtime or command may start. */
   private failRepositoryAuthority(runId: ULID, error: unknown): void {
     const failure = repositoryLeaseFailure(error);
-    this.gateway.commitTerminal({
+    this.commitRunTerminal({
       runId,
       status: 'failed',
       result: null,
@@ -1576,7 +1599,7 @@ export class DispatchService {
   /** Missing or malformed builder workspace evidence is a typed provisioning
    * failure. It can never be repaired by inference at the runtime door. */
   private failPhaseEvidence(runId: ULID, reason: string): void {
-    this.gateway.commitTerminal({
+    this.commitRunTerminal({
       runId,
       status: 'failed',
       result: null,
@@ -2593,6 +2616,10 @@ export class DispatchService {
     // A killed REVIEW run must not wedge its target: route the (verdict-less)
     // terminal into the review gate — re-dispatch or the exhausted park.
     if (publication !== null) {
+      // A kill settles a run same as a natural completion — whatever it was
+      // holding (a repository lease, a Windows file handle) may be exactly
+      // what a stuck landed-teardown was waiting on.
+      this.triggerLandedTeardownRecheck();
       const reviewTargetId = findContractByReviewRun(runId)?.id ?? this.reviewTargetsByRun.get(runId);
       const reviewCheckout = getReviewCheckoutForReviewer(runId);
       const isReviewCheckout = reviewCheckout !== null &&
@@ -3158,7 +3185,7 @@ export class DispatchService {
       row.lifecycleState === null || status === 'completed' || !canTransition(row.lifecycleState, lifecycleTarget)
         ? undefined
         : lifecycleTarget;
-    const publication = this.gateway.commitTerminal({
+    const publication = this.commitRunTerminal({
       runId,
       status,
       result: input.result,
@@ -4230,7 +4257,7 @@ export class DispatchService {
     });
     const linkedReviewContract = this.contracts.setRun(reviewContract.id, runId);
     if (!linkedReviewContract) {
-      this.gateway.commitTerminal({
+      this.commitRunTerminal({
         runId,
         status: 'failed',
         result: null,
@@ -5035,7 +5062,14 @@ export class DispatchService {
       // orphan-prune work remains in flight once observers see it.
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
-      if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
+      if (toreDown) {
+        this.resolvePreservedRuns(contract.id as ULID);
+      } else {
+        // Mid-session self-heal (docs/worktree-lifecycle.md Recovery): never
+        // wait for the next boot — schedule the bounded backoff retry now.
+        this.scheduleTeardownRetry(contract.id as ULID);
+      }
+      void this.triggerWorktreeJanitor();
       return updated;
     }
     // Guard 7 — stale verification never silently lands: the target must still
@@ -5110,7 +5144,14 @@ export class DispatchService {
       );
       stamp(toreDown ? 'completed' : 'stranded');
       // Landed + reclaimed ⇒ resolve earlier preserved parks of this contract.
-      if (toreDown) this.resolvePreservedRuns(contract.id as ULID);
+      if (toreDown) {
+        this.resolvePreservedRuns(contract.id as ULID);
+      } else {
+        // Mid-session self-heal (docs/worktree-lifecycle.md Recovery): never
+        // wait for the next boot — schedule the bounded backoff retry now.
+        this.scheduleTeardownRetry(contract.id as ULID);
+      }
+      void this.triggerWorktreeJanitor();
       return updated;
     }
     // conflict + stale-base both land on the lifecycle 'conflict' gate;
@@ -5201,6 +5242,195 @@ export class DispatchService {
       await sweepOrphanedWorktreeDirs(project.folderPath, repositoryIdentity);
     } catch (err) {
       console.error(`[pc-sdk][worktree] orphan sweep failed for project ${project.id}:`, err);
+    }
+  }
+
+  // ── in-session worktree self-healing (mid-session teardown retry + janitor) ──
+
+  /** Start the periodic in-session janitor. Boot recovery already runs the
+   *  identical reconcile + sweep + landed-teardown pair once at startup
+   *  (runPreAttachRepositoryRecovery); this keeps it converging for the rest
+   *  of the server session so a mid-session stranding never needs a restart
+   *  (docs/worktree-lifecycle.md Recovery). Re-entrant start is a no-op. */
+  private startWorktreeJanitor(): void {
+    if (this.janitorTimer) return;
+    const intervalMs = positiveDuration(this.deps.worktreeJanitorIntervalMs, WORKTREE_JANITOR_INTERVAL_MS);
+    this.janitorTimer = setInterval(() => void this.triggerWorktreeJanitor(), intervalMs);
+    this.janitorTimer.unref?.();
+  }
+
+  private stopWorktreeJanitor(): void {
+    if (this.janitorTimer) clearInterval(this.janitorTimer);
+    this.janitorTimer = null;
+  }
+
+  /** Fire a janitor sweep now. The interval above, every run settlement
+   *  (`commitRunTerminal`), and every contract landing (`landAcceptedContract`)
+   *  all funnel through this one door. Single-flighted: a trigger that lands
+   *  while a sweep is already running queues exactly one more pass instead of
+   *  racing a second sweep against the first — repositoryLeaseManager is
+   *  re-entrant per engine, but two overlapping sweeps mutating the same
+   *  directory/registration/branch is still worth avoiding outright. A
+   *  pre-attach trigger (boot recovery drives the identical pair explicitly,
+   *  in order, before attach) is a deliberate no-op — this door only runs
+   *  once the server is live. */
+  triggerWorktreeJanitor(): Promise<void> {
+    if (!this.ctx) return Promise.resolve();
+    if (this.janitorInFlight) {
+      this.janitorPendingRerun = true;
+      return this.janitorInFlight;
+    }
+    let sweep: Promise<void>;
+    sweep = this.runWorktreeJanitorSweep()
+      .catch((err) => console.error('[pc-sdk][worktree-janitor] sweep failed:', err))
+      .finally(() => {
+        if (this.janitorInFlight === sweep) this.janitorInFlight = null;
+        if (this.janitorPendingRerun) {
+          this.janitorPendingRerun = false;
+          void this.triggerWorktreeJanitor();
+        }
+      });
+    this.janitorInFlight = sweep;
+    return sweep;
+  }
+
+  /** Landed contracts whose worktree survived a mid-session teardown failure
+   *  go through the exact positive teardown door first (registration/branch
+   *  cleanup + row settlement — the same door `attemptLandedTeardown` and boot
+   *  recovery use). Then the same reconcile + orphan-sweep pair boot recovery
+   *  runs converges everything else (self-heal, dir-missing/no-live-run
+   *  stranding, settled-abandonment catch-up, orphan directories). */
+  private async runWorktreeJanitorSweep(): Promise<void> {
+    await this.recoverIncompleteTeardowns();
+    await reconcileStrandedWorktreesAtBoot();
+  }
+
+  /** Every run-terminal publish funnels through here so a landed-teardown
+   *  recheck fires the moment ANY run settles — never only at the next
+   *  interval tick or the next boot (docs/worktree-lifecycle.md Recovery:
+   *  stranding must converge within the same server session). Deliberately
+   *  NOT the full janitor sweep (reconcile + orphan sweep): that touches every
+   *  project's git registry and is reserved for the interval and
+   *  contract-landing triggers below, so a burst of unrelated terminations
+   *  (e.g. review rounds) never pays its cost. */
+  private commitRunTerminal(
+    input: Parameters<AgentRunMutationGateway['commitTerminal']>[0],
+  ): ReturnType<AgentRunMutationGateway['commitTerminal']> {
+    const result = this.gateway.commitTerminal(input);
+    if (result) this.triggerLandedTeardownRecheck();
+    return result;
+  }
+
+  /** Cheap, safe-to-call-often recheck: ANY run settling might have just
+   *  released whatever was blocking a landed contract's teardown (a Windows
+   *  file lock the terminating process held, a transient repository lease
+   *  contention, ...). `listContractsLandedTeardownIncomplete` is a narrow DB
+   *  read that is empty in the common case, and `attemptLandedTeardown` dedups
+   *  concurrent attempts per contract, so firing this after every settlement
+   *  is inexpensive and safe. */
+  private triggerLandedTeardownRecheck(): void {
+    if (this.shuttingDown) return;
+    void this.recoverIncompleteTeardowns().catch((err) =>
+      console.error('[pc-sdk][worktree] post-settlement landed-teardown recheck failed:', err),
+    );
+  }
+
+  /** One attempt at the positive landed-teardown door for a single contract —
+   *  shared by boot recovery (`recoverIncompleteTeardowns`), the bounded
+   *  retry scheduler, and the janitor, so every caller re-verifies eligibility
+   *  through the exact same guarded path (never a bare filesystem retry on a
+   *  stale path). Concurrent callers for the SAME contract share one in-flight
+   *  attempt instead of racing two teardown mutations against each other. */
+  private attemptLandedTeardown(contractId: ULID): Promise<boolean> {
+    const existing = this.teardownAttemptsInFlight.get(contractId);
+    if (existing) return existing;
+    let attempt: Promise<boolean>;
+    attempt = this.attemptLandedTeardownUnguarded(contractId).finally(() => {
+      if (this.teardownAttemptsInFlight.get(contractId) === attempt) {
+        this.teardownAttemptsInFlight.delete(contractId);
+      }
+    });
+    this.teardownAttemptsInFlight.set(contractId, attempt);
+    return attempt;
+  }
+
+  private async attemptLandedTeardownUnguarded(contractId: ULID): Promise<boolean> {
+    const contract = this.contracts.get(contractId);
+    // Already resolved (destroyed row, abandoned, or never actually landed) —
+    // nothing left for this door to do; treat as converged, not a failure.
+    if (!contract || contract.landingStatus !== 'landed') return true;
+    const project = getProjectById(contract.projectId as ULID);
+    if (!project?.folderPath || !contract.worktreePath) return false;
+    const producing = contract.agentRunId ? getAgentRunRow(contract.agentRunId as ULID) : null;
+    const repositoryIdentity = producing?.gitReceipt?.repositoryIdentity ?? null;
+    if (!repositoryIdentity) {
+      console.warn(
+        `[pc-sdk][worktree] teardown reclaim for contract ${contract.id} deferred: repository identity unavailable.`,
+      );
+      return false;
+    }
+    try {
+      await this.repositoryLeases.acquire(project.folderPath, repositoryIdentity);
+    } catch (error) {
+      console.warn(
+        `[pc-sdk][worktree] teardown reclaim for contract ${contract.id} deferred: repository lease unavailable (${
+          error instanceof Error ? error.message : String(error)
+        }).`,
+      );
+      return false;
+    }
+    const runId = (contract.agentRunId ?? null) as ULID | null;
+    this.stampLifecycleWhenLegal(runId, 'merged');
+    this.stampLifecycleWhenLegal(runId, 'tearing-down');
+    const ok = await this.settleLandedCleanup(contract, project, repositoryIdentity);
+    this.stampLifecycleWhenLegal(runId, ok ? 'completed' : 'stranded');
+    if (ok) this.resolvePreservedRuns(contract.id as ULID);
+    return ok;
+  }
+
+  /** Bounded backoff retry for a landed contract whose teardown just failed
+   *  (Windows file-lock lifetimes routinely outlast the ~1s rmSync fallback in
+   *  forceRemoveDir). Re-runs the SAME guarded teardown door on every attempt,
+   *  which re-verifies eligibility from scratch — never a bare filesystem
+   *  retry. One retry train per contract; a fresh failure replaces rather than
+   *  stacks a prior one. Exhausting the bounded budget leaves the row
+   *  genuinely stranded (logged) — the periodic janitor and the next boot both
+   *  keep retrying through the identical door independently. */
+  private scheduleTeardownRetry(contractId: ULID, attempt = 0): void {
+    if (this.shuttingDown) return;
+    const delays = this.deps.teardownRetryDelaysMs ?? TEARDOWN_RETRY_DELAYS_MS;
+    const existing = this.teardownRetries.get(contractId);
+    if (existing) clearTimeout(existing);
+    if (attempt >= delays.length) {
+      this.teardownRetries.delete(contractId);
+      console.warn(
+        `[pc-sdk][worktree] teardown retry budget exhausted for contract ${contractId} — remains stranded; ` +
+          'the periodic janitor and next boot continue retrying through the same door.',
+      );
+      return;
+    }
+    const delayMs = delays[attempt]!;
+    const timer = setTimeout(() => void this.runTeardownRetry(contractId, attempt), delayMs);
+    timer.unref?.();
+    this.teardownRetries.set(contractId, timer);
+    console.warn(
+      `[pc-sdk][worktree] teardown retry ${attempt + 1}/${delays.length} for contract ${contractId} scheduled in ${delayMs}ms.`,
+    );
+  }
+
+  private async runTeardownRetry(contractId: ULID, attempt: number): Promise<void> {
+    this.teardownRetries.delete(contractId);
+    if (this.shuttingDown) return;
+    try {
+      const ok = await this.attemptLandedTeardown(contractId);
+      if (ok) {
+        console.warn(`[pc-sdk][worktree] teardown retry reclaimed contract ${contractId} on attempt ${attempt + 1}.`);
+        return;
+      }
+      this.scheduleTeardownRetry(contractId, attempt + 1);
+    } catch (err) {
+      console.error(`[pc-sdk][worktree] teardown retry attempt ${attempt + 1} failed for contract ${contractId}:`, err);
+      this.scheduleTeardownRetry(contractId, attempt + 1);
     }
   }
 
@@ -5306,7 +5536,7 @@ export class DispatchService {
         ) {
           lifecycleState = 'verifying';
         }
-        const publication = this.gateway.commitTerminal({
+        const publication = this.commitRunTerminal({
           runId: run.id,
           status: 'completed',
           result: null,
@@ -5407,41 +5637,22 @@ export class DispatchService {
   async recoverIncompleteTeardowns(): Promise<void> {
     const { listContractsLandedTeardownIncomplete } = await import('@pc/db');
     for (const row of listContractsLandedTeardownIncomplete()) {
-      // Per-contract isolation: one bad row never aborts boot.
+      // Per-contract isolation: one bad row never aborts boot (or a janitor pass).
       try {
         const contract = this.contracts.get(row.id);
         if (!contract || contract.landingStatus !== 'landed') continue;
-        const project = getProjectById(contract.projectId as ULID);
-        if (!project?.folderPath || !contract.worktreePath) continue;
-        const producing = contract.agentRunId
-          ? getAgentRunRow(contract.agentRunId as ULID)
-          : null;
-        const repositoryIdentity = producing?.gitReceipt?.repositoryIdentity ?? null;
-        if (!repositoryIdentity) {
-          console.warn(
-            `[pc-sdk][boot-recovery] teardown for contract ${contract.id} deferred: repository identity unavailable.`,
-          );
-          continue;
-        }
-        await this.repositoryLeases.acquire(project.folderPath, repositoryIdentity);
         console.warn(
-          `[pc-sdk][boot-recovery] contract ${contract.id} landed but its worktree survived — resuming teardown of ${contract.worktreePath}.`,
+          `[pc-sdk][worktree] contract ${contract.id} landed but its worktree survived — resuming teardown of ${contract.worktreePath}.`,
         );
-        const runId = (contract.agentRunId ?? null) as ULID | null;
-        // Crash mid-'merging': the durable receipt proves the merge happened.
-        this.stampLifecycleWhenLegal(runId, 'merged');
-        this.stampLifecycleWhenLegal(runId, 'tearing-down');
-        const ok = await this.settleLandedCleanup(
-          contract,
-          project,
-          repositoryIdentity,
-        );
-        this.stampLifecycleWhenLegal(runId, ok ? 'completed' : 'stranded');
-        // A reclaim that finally succeeded resolves earlier preserved parks
-        // (a previously 'stranded' run exits the feed here).
-        if (ok) this.resolvePreservedRuns(contract.id as ULID);
+        // Shared with the bounded retry scheduler and the janitor: exactly the
+        // same guarded door, re-verifying eligibility every time. A failure
+        // here (mid-session — this method also runs from the periodic
+        // janitor, not only at boot) schedules the bounded backoff retry
+        // instead of leaving the row to wait for the next janitor tick alone.
+        const ok = await this.attemptLandedTeardown(contract.id as ULID);
+        if (!ok) this.scheduleTeardownRetry(contract.id as ULID);
       } catch (err) {
-        console.error(`[pc-sdk][boot-recovery] teardown resume failed for contract ${row.id} — continuing with the rest:`, err);
+        console.error(`[pc-sdk][worktree] teardown resume failed for contract ${row.id} — continuing with the rest:`, err);
       }
     }
   }
@@ -5474,6 +5685,9 @@ export class DispatchService {
 
   async disposeAll(): Promise<void> {
     this.shuttingDown = true;
+    this.stopWorktreeJanitor();
+    for (const timer of this.teardownRetries.values()) clearTimeout(timer);
+    this.teardownRetries.clear();
     for (const [runId, liveRun] of [...this.live]) {
       if (getReviewCheckoutForReviewer(runId as ULID)) {
         const reviewer = getAgentRunRow(runId as ULID);
@@ -5522,6 +5736,7 @@ export class DispatchService {
         ...[...this.retiringRuns.values()]
           .filter((retirement) => retirement.status === 'pending')
           .map((retirement) => retirement.promise),
+        ...(this.janitorInFlight ? [this.janitorInFlight] : []),
       ];
       if (pendingWork.length === 0) break;
       await Promise.allSettled(pendingWork);
@@ -5553,6 +5768,10 @@ export class DispatchService {
     if (checkout.verdictReceipt) return checkout.verdictAppliedAt !== null;
     return findContractByReviewRun(runId) === null;
   }
+}
+
+function positiveDuration(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : fallback;
 }
 
 function requireProjectRepositoryIdentityBinding(

@@ -73,6 +73,21 @@ const PROFILE_CMD_TIMEOUT_MS = 10 * 60 * 1000;
 const CLEANUP_CMD_TIMEOUT_MS = 60_000;
 const RECEIPT_TAIL_BYTES = 4096;
 
+/** Bounded backoff for mid-session landed-teardown retries. A locked Windows
+ *  file handle (e.g. a prior agent's `pnpm install` under node_modules) can
+ *  outlive forceRemoveDir's own ~1s rmSync retry window by a wide margin —
+ *  DispatchService's retry scheduler re-runs the exact guarded teardown door
+ *  (settleLandedWorktree, via settleLandedCleanup) at each of these delays
+ *  instead of leaving the row permanently stranded until the next boot. */
+export const TEARDOWN_RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000, 600_000];
+
+/** Interval for the in-session worktree janitor (reconcileStrandedWorktrees +
+ *  sweepOrphanedWorktreeDirs + landed-teardown resolution). Boot recovery
+ *  already runs the identical pair once at startup; this keeps stranded/
+ *  orphaned state converging for the rest of the server session so genuine
+ *  recovery never silently waits for a restart. */
+export const WORKTREE_JANITOR_INTERVAL_MS = 12 * 60_000;
+
 function receiptTail(s: string): string {
   return s.length > RECEIPT_TAIL_BYTES ? s.slice(-RECEIPT_TAIL_BYTES) : s;
 }
@@ -2295,7 +2310,12 @@ export interface StrandedReconcileResult {
  *  A stranded row whose dir + live run are back flips to active (self-heal).
  *  Only positively settled abandonment may resolve a missing row here.
  *  Landing proves merge history, not registration/branch cleanup, so landed
- *  rows remain retryable for the dedicated positive teardown door. */
+ *  rows remain retryable for the dedicated positive teardown door
+ *  (settleLandedWorktree, via DispatchService.settleLandedCleanup) — never
+ *  resolved directly by this synchronous scan. DispatchService drives that
+ *  door automatically mid-session (a bounded backoff retry right after a
+ *  failed teardown, plus the periodic worktree janitor as a slower backstop),
+ *  so a landed-but-stranded row converges without a server restart. */
 export function reconcileStrandedWorktrees(
   authorizedProjectIds?: ReadonlySet<string>,
 ): StrandedReconcileResult {
@@ -2381,16 +2401,25 @@ function isSettledAbandonment(contractId: ULID | null): boolean {
 }
 
 /** True when the worktree's contract is parked for review/landing: verification
- *  passed (merge-ready), or pending/failed WITH a deliverable ('pending' =
- *  review tier / restart-parked sealed work; 'failed' = verification-failed
- *  or review-rejected, whose declared recovery is a fix continuation IN this
+ *  passed (merge-ready), not-yet-resolved (null — a live in-session run just
+ *  delivered and its post-terminal verify/land task hasn't written an outcome
+ *  yet) or pending/failed WITH a deliverable ('pending' = review tier /
+ *  restart-parked sealed work; 'failed' = verification-failed or
+ *  review-rejected, whose declared recovery is a fix continuation IN this
  *  worktree), and the work is neither landed nor abandoned. Such worktrees
  *  are deliberately runless — landing + teardown, a fix continuation, or
  *  abandonment reclaims them, never the stranded scan. A contract with
  *  NOTHING delivered has no reclaim path — its dead run's worktree is
  *  genuinely stranded (doc Recovery: worktree present without a live run →
  *  stranded and surfaced) and must not hide behind the boot sweep's
- *  verification-'pending' park. */
+ *  verification-'pending' park.
+ *
+ *  The null case matters because the in-session worktree janitor (unlike the
+ *  boot sweep, which only ever runs after every non-terminal run has already
+ *  been failed/re-verified synchronously) can observe this scan WHILE a just-
+ *  completed run's verify/land task is still in flight — `deliverable != null`
+ *  is the same non-widened safety condition the 'pending'/'failed' cases
+ *  already rely on. */
 function awaitingReviewOrLanding(contractId: ULID | null): boolean {
   if (!contractId) return false;
   const contract = getContract(contractId);
@@ -2398,7 +2427,9 @@ function awaitingReviewOrLanding(contractId: ULID | null): boolean {
   if (contract.landingStatus === 'landed' || contract.landingStatus === 'abandoned') return false;
   if (contract.verificationStatus === 'passed') return true;
   return (
-    (contract.verificationStatus === 'pending' || contract.verificationStatus === 'failed') &&
+    (contract.verificationStatus === 'pending' ||
+      contract.verificationStatus === 'failed' ||
+      contract.verificationStatus === null) &&
     contract.deliverable != null
   );
 }
