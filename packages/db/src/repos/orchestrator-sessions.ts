@@ -57,6 +57,10 @@ export interface OrchestratorSessionRow {
   deletedAt: number | null;
   /** Provenance only — see schema.ts. Never used to authorize a transition. */
   sourceSessionId: ULID | null;
+  /** Phase 2 app-owned cross-account handoff marker — see schema.ts. The
+   * delivery path clears it after the first successful create bind; it never
+   * gates the bind/continuation state machine itself. */
+  pendingHandoffSeed: boolean;
 }
 
 interface FlattenedSelection {
@@ -138,6 +142,9 @@ export interface CreateOrchestratorSessionInput {
   /** Provenance only — the prior app session this one native-continued from
    * across a selection change. Never influences bind/continuation state. */
   sourceSessionId?: ULID | null;
+  /** Phase 2 app-owned cross-account handoff — see schema.ts. Only ever true
+   * for a freshly minted row created by `handoffOrchestratorSession`. */
+  pendingHandoffSeed?: boolean;
 }
 
 export function newStampedOrchestratorSession(
@@ -159,6 +166,7 @@ export function newStampedOrchestratorSession(
     endedAt: null,
     deletedAt: null,
     sourceSessionId: input.sourceSessionId ?? null,
+    pendingHandoffSeed: input.pendingHandoffSeed ?? false,
   };
 }
 
@@ -486,4 +494,16 @@ export function failRuntimeSessionResume(id: ULID, continuationAttemptId: string
 /** Set or update the title. Caller decides when. */
 export function setOrchestratorSessionTitle(id: ULID, title: string): void {
   getDb().update(orchestratorSessions).set({ title }).where(eq(orchestratorSessions.id, id)).run();
+}
+
+/** Clear the Phase 2 app-owned handoff-seed marker once the first delivered
+ * turn has successfully compiled and injected it as native `seedContext`.
+ * Idempotent — a row without the marker set is a harmless no-op. */
+export function clearPendingHandoffSeed(id: ULID): OrchestratorSessionRow | null {
+  getDb()
+    .update(orchestratorSessions)
+    .set({ pendingHandoffSeed: false })
+    .where(and(eq(orchestratorSessions.id, id), eq(orchestratorSessions.pendingHandoffSeed, true)))
+    .run();
+  return getOrchestratorSession(id);
 }

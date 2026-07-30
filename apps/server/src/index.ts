@@ -333,6 +333,7 @@ async function main(): Promise<void> {
       continuationAttemptId: ctx.continuationAttemptId,
       selection: ctx.selection,
       instructions: composeOrchestratorInstructions(orchestrator?.prompt, process.pid, portRef.port),
+      ...(ctx.seedContext ? { seedContext: ctx.seedContext } : {}),
       cwd,
       tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,

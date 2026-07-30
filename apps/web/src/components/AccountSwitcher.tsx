@@ -175,12 +175,25 @@ export function AccountSwitcher({ projectId }: { projectId: string | null }) {
             </div>
           )}
           <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground/70">
-            {projectId ? 'Switching starts a new session.' : 'Select a project to switch account.'}
+            {accountSwitcherFooterCopy(projectId)}
           </div>
         </div>
       )}
     </div>
   );
+}
+
+/** Continuity is a server decision made from this session's own transcript,
+ *  never something the UI infers or brands by provider: a new native session
+ *  starts either way, and the server seeds it from this conversation's
+ *  history when there is something to seed it with (docs/agent-runtime-
+ *  architecture.md "Sessions and switching"). The chat itself always shows a
+ *  visible notice once the switch actually lands — this footer line only
+ *  sets the expectation, never asserts which path was taken. */
+export function accountSwitcherFooterCopy(projectId: string | null): string {
+  return projectId
+    ? 'Switching starts a new session — continuing from this conversation when possible.'
+    : 'Select a project to switch account.';
 }
 
 function labelOf(accounts: { id: string; label: string }[], id: string): string {

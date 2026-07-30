@@ -243,6 +243,7 @@ export {
   getActiveConversationTurn,
   getConversationQueueSnapshot,
   getTurnInterruptRequest,
+  handoffOrchestratorSession,
   listProjectsWithQueuedConversationSends,
   recoverActiveConversationTurns,
   replaceOrchestratorSession,
@@ -261,6 +262,7 @@ export type {
   ConversationTurnRow,
   EditQueuedConversationSendInput,
   EnqueueConversationSendInput,
+  HandoffOrchestratorSessionInput,
   RemoveQueuedConversationSendInput,
   ReplaceOrchestratorSessionInput,
   ReplaceOrchestratorSessionResult,
@@ -339,6 +341,7 @@ export type {
 } from './repos/agent-runs.ts';
 
 export {
+  clearPendingHandoffSeed,
   confirmRuntimeSessionReceipt,
   createOrchestratorSession,
   endOrchestratorSession,

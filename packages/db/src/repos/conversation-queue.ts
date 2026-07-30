@@ -158,6 +158,18 @@ export interface ContinueOrchestratorSessionAcrossSelectionInput {
   now?: number;
 }
 
+export interface HandoffOrchestratorSessionInput {
+  projectId: ULID;
+  /** Must be the currently active session — the handoff ends it in place. */
+  expectedSessionId: ULID;
+  /** Complete adapter-validated selection under the new account (same
+   * runtime, new credential home). */
+  selection: RuntimeSelection;
+  queueCancellationReason: string;
+  settingsPatch?: Partial<ProjectSettings>;
+  now?: number;
+}
+
 export type SoftDeleteProjectConversationResult =
   | { status: 'deleted'; project: Project; cancelledQueueItemIds: ULID[] }
   | { status: 'not-found' }
@@ -1266,6 +1278,85 @@ export function continueOrchestratorSessionAcrossSelection(
       },
       cancelledQueueItemIds,
     };
+  });
+}
+
+/** Atomic counterpart to replaceOrchestratorSession for a same-runtime
+ * cross-account context handoff (Phase 2). Each account is an isolated
+ * credential home and the native transcript lives inside the originating
+ * home, so the prior native session id is never reused: this ends the active
+ * session as `account_switched` and mints its replacement as an ordinary
+ * clean-pending row — it earns its own create receipt — carrying a durable
+ * `sourceSessionId` provenance link and a `pendingHandoffSeed` marker that the
+ * first delivered turn must compile app-owned context from the source
+ * session and inject it before the marker is consumed. Returns null when
+ * there is no active session to hand off from. */
+export function handoffOrchestratorSession(
+  input: HandoffOrchestratorSessionInput,
+): ReplaceOrchestratorSessionResult | null {
+  if (!input.queueCancellationReason.trim()) {
+    throw new Error('queue cancellation reason must be non-empty');
+  }
+  const now = input.now ?? Date.now();
+  return getDb().transaction((tx) => {
+    if (!getProjectByIdInDb(tx, input.projectId)) return null;
+    const active = tx
+      .select()
+      .from(orchestratorSessions)
+      .where(and(
+        eq(orchestratorSessions.projectId, input.projectId),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .get() as OrchestratorSessionRow | undefined;
+    if ((active?.id ?? null) !== input.expectedSessionId) {
+      throw new Error('active session changed during transition');
+    }
+    if (!active) return null;
+    if (tx
+      .select({ id: conversationTurns.id })
+      .from(conversationTurns)
+      .where(and(
+        eq(conversationTurns.sessionId, active.id),
+        eq(conversationTurns.status, 'active'),
+      ))
+      .get()) {
+      throw new Error('cannot switch sessions while a turn is active; interrupt it and wait for confirmation first');
+    }
+
+    const cancelledQueueItemIds = cancelQueuedConversationSendsInDb(
+      tx,
+      active.id,
+      input.queueCancellationReason,
+      now,
+    );
+    const ended = tx.update(orchestratorSessions)
+      .set({ status: 'ended', endedReason: 'account_switched', endedAt: now })
+      .where(and(
+        eq(orchestratorSessions.id, active.id),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .run();
+    if (ended.changes !== 1) {
+      throw new Error('active session changed during transition');
+    }
+
+    const created = newStampedOrchestratorSession({
+      projectId: input.projectId,
+      selection: input.selection,
+      now,
+      sourceSessionId: active.id,
+      pendingHandoffSeed: true,
+    });
+    tx.insert(orchestratorSessions).values(created).run();
+    if (input.settingsPatch && !updateProjectMetaInDb(tx, input.projectId, {
+      settings: input.settingsPatch,
+    })) {
+      throw new Error('project settings changed during session transition');
+    }
+
+    return { session: created, cancelledQueueItemIds };
   });
 }
 

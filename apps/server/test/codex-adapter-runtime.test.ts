@@ -877,6 +877,19 @@ test('Codex create emits the exact challenge and closed stable thread request', 
   await session.dispose();
 });
 
+test('Codex accepts an app-owned seedContext without threading it into native thread params', async () => {
+  const control = makeControl('manual');
+  const adapter = adapterFor(control);
+  const session = await adapter.createSession(sessionInput({
+    seedContext: 'PRIOR CONVERSATION SEED',
+  }));
+  // Codex has no native leading-context mechanism wired yet; the field is
+  // accepted for cross-adapter conformance and simply has no native effect —
+  // it must never appear in the native thread start request.
+  assert.equal(JSON.stringify(control.peers[0]?.threadParams ?? []).includes('PRIOR CONVERSATION SEED'), false);
+  await session.dispose();
+});
+
 test('Codex preserves literal user text and enforces the captured turn limit locally', async () => {
   const control = makeControl('receipts');
   const session = await adapterFor(control).createSession(sessionInput({ maxTurns: 1 }));

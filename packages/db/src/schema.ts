@@ -213,6 +213,13 @@ export const orchestratorSessions = sqliteTable(
      * continuation state machine; shared with a future cross-account
      * handoff link. */
     sourceSessionId: text('source_session_id').$type<ULID>(),
+    /** Phase 2 app-owned cross-account handoff: durable row-level marker that
+     * the first delivered turn must compile and inject `sourceSessionId`'s
+     * transcript as native `seedContext` before it counts as consumed. Never
+     * set for a clean/historical-resumed/same-account-continued session. */
+    pendingHandoffSeed: integer('pending_handoff_seed', { mode: 'boolean' })
+      .notNull()
+      .default(false),
   },
   (t) => [
     /** One active session per project (DB-enforced). */

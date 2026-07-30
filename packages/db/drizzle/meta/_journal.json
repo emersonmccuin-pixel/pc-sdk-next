@@ -162,6 +162,13 @@
       "when": 1783958400000,
       "tag": "0022_orchestrator_session_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1783962000000,
+      "tag": "0023_handoff_pending_seed",
+      "breakpoints": true
     }
   ]
 }

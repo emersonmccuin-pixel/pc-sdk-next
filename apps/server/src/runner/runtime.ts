@@ -191,6 +191,13 @@ export interface CreateRuntimeSession {
   selection: RuntimeSelection;
   /** Charter / system prompt (provider-neutral text). */
   instructions?: string;
+  /** Provider-neutral compiled prior-conversation context for a fresh native
+   *  session that continues an app-owned handoff (e.g. a same-runtime
+   *  cross-account switch) rather than a native resume. An adapter that
+   *  supports leading context compiles this into its own native shape before
+   *  the first user turn; adapters that don't simply ignore it — no native
+   *  session id is ever carried across this seam. */
+  seedContext?: string;
   cwd?: string;
   /** App-owned tool policy (bound pc_* + bridged MCP tools as plain defs). */
   tools?: BridgeBuild;
@@ -805,6 +812,10 @@ export interface MintRuntimeSession {
   /** Durable app-session stamp; composition must never re-resolve defaults. */
   selection: RuntimeSelection;
   continuation: RuntimeContinuationRequest;
+  /** Compiled app-owned handoff seed for this exact create — see
+   *  CreateRuntimeSession.seedContext. Only ever set alongside `continuation:
+   *  { mode: 'create' }`; a native resume never carries a seed. */
+  seedContext?: string;
   cwd?: string;
   ask?: AskHandler;
 }

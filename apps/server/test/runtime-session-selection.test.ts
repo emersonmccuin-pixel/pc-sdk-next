@@ -184,6 +184,145 @@ test('account A to B then historical A resume routes through A while B stays the
   await service.dispose();
 });
 
+test('account switch hands off into a fresh session under the new account, seeded from the prior transcript', async () => {
+  freshDb();
+  const project = newProject('account-handoff');
+  const minted: MintRuntimeSession[] = [];
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt((ctx) => {
+      minted.push(copyContext(ctx));
+      return new FakeRuntime({ turns: [[terminal]] });
+    }),
+    ...testSessionSelectionDeps(),
+  });
+
+  const accountA = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'handoff-a', sessionId: accountA.id,
+    text: 'remember the launch date is March 3rd', clientMessageId: 'handoff-a-client',
+  });
+  await until(() => terminalCount(accountA.id) === 1);
+
+  const accountB = await service.switchAccountSession('work');
+  assert.notEqual(accountB.id, accountA.id);
+  assert.equal(accountB.sourceSessionId, accountA.id);
+  assert.equal(accountB.nativeIdentityState, 'unbound');
+  assert.equal(accountB.continuationState, 'clean-pending');
+  assert.equal(getOrchestratorSession(accountA.id)?.status, 'ended');
+  assert.equal(getOrchestratorSession(accountA.id)?.endedReason, 'account_switched');
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, accountB.id);
+  assert.equal(getProjectById(project.id)?.settings.defaultAccountId, 'work');
+  // A successful handoff emits its own visible reduced-fidelity notice —
+  // never the generic "continuation unavailable" fallback copy.
+  const handoffNotice = listConversationEvents(accountB.id).find((row) => row.eventType === 'system');
+  assert.equal((handoffNotice?.payload as { subtype?: unknown } | undefined)?.subtype, 'account-handoff');
+  assert.match(
+    (handoffNotice?.payload as { message?: string } | undefined)?.message ?? '',
+    /reduced fidelity/,
+  );
+
+  await service.handleSend({
+    type: 'send', commandId: 'handoff-b', sessionId: accountB.id,
+    text: 'continue', clientMessageId: 'handoff-b-client',
+  });
+  await until(() => terminalCount(accountB.id) === 1);
+
+  const bMint = minted.at(-1)!;
+  assert.equal(bMint.continuation.mode, 'create');
+  assert.ok(bMint.seedContext, 'the create carries a compiled seed');
+  assert.match(bMint.seedContext!, /launch date is March 3rd/);
+  assert.match(bMint.seedContext!, /personal→work/);
+  assert.equal(
+    getOrchestratorSession(accountB.id)?.pendingHandoffSeed,
+    false,
+    'the marker is consumed once the create receipt binds',
+  );
+  await service.dispose();
+});
+
+test('account switch with an empty prior transcript falls back to a fresh session plus notice', async () => {
+  freshDb();
+  const project = newProject('account-handoff-empty-transcript');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    ...testSessionSelectionDeps(),
+    queueDrainEnabled: false,
+  });
+
+  const accountA = await service.ensureActiveSession();
+  const accountB = await service.switchAccountSession('work');
+  assert.notEqual(accountB.id, accountA.id);
+  assert.equal(accountB.sourceSessionId, null, 'nothing replayable to hand off — an ordinary fresh mint');
+  assert.equal(getOrchestratorSession(accountA.id)?.status, 'ended');
+  assert.equal(getOrchestratorSession(accountA.id)?.endedReason, 'account_switched');
+  assert.equal(getProjectById(project.id)?.settings.defaultAccountId, 'work');
+  const notice = listConversationEvents(accountB.id).find((row) => row.eventType === 'system');
+  assert.equal(
+    (notice?.payload as { subtype?: unknown } | undefined)?.subtype,
+    'selection-change-continuation-unavailable',
+  );
+  await service.dispose();
+});
+
+test('runtime switch never attempts a handoff even when the prior session has a replayable transcript', async () => {
+  freshDb();
+  const project = newProject('runtime-switch-no-handoff');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    ...testSessionSelectionDeps(),
+  });
+  const claudeSession = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'runtime-switch-a', sessionId: claudeSession.id,
+    text: 'some content worth handing off', clientMessageId: 'runtime-switch-a-client',
+  });
+  await until(() => terminalCount(claudeSession.id) === 1);
+
+  const codexSession = await service.switchRuntimeSession('openai-codex');
+  assert.equal(codexSession.sourceSessionId, null);
+  assert.equal(getOrchestratorSession(claudeSession.id)?.endedReason, 'runtime_switched');
+  await service.dispose();
+});
+
+test('account handoff never consults adapter preflight — it is not a native resume and needs no capability', async () => {
+  freshDb();
+  const project = newProject('account-handoff-no-preflight');
+  let preflightCalls = 0;
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: testSessionSelectionDeps().resolveNewSessionSelection,
+    preflightRuntimeSession: async () => {
+      preflightCalls += 1;
+      return { status: 'invalid', code: 'selection-change-continuation-unsupported' };
+    },
+  });
+
+  const accountA = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'no-preflight-a', sessionId: accountA.id,
+    text: 'some content worth handing off', clientMessageId: 'no-preflight-a-client',
+  });
+  await until(() => terminalCount(accountA.id) === 1);
+  assert.equal(preflightCalls, 0);
+
+  const accountB = await service.switchAccountSession('work');
+  assert.equal(accountB.sourceSessionId, accountA.id, 'the handoff succeeded despite a preflight that always rejects');
+  assert.equal(
+    preflightCalls,
+    0,
+    'handoff never calls adapter preflight/capability — unlike native resume, it needs none',
+  );
+  await service.dispose();
+});
+
 test('negative resume preflight preserves the active session, FIFO, and project default', async () => {
   freshDb();
   const project = newProject('resume-preflight-rollback');
