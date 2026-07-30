@@ -79,6 +79,7 @@ test('new rows persist one complete flattened immutable selection', () => {
     startedAt: 10,
     endedAt: null,
     deletedAt: null,
+    sourceSessionId: null,
   });
   assert.deepEqual(db.runtimeSelectionForSession(session), selected);
   assert.throws(
@@ -521,4 +522,122 @@ test('invalid replacement selection rolls back queue, session, and project setti
   assert.equal(db.getConversationQueueSnapshot(current.id).items[0]?.status, 'queued');
   assert.deepEqual(db.getProjectById(p.id)?.settings, originalSettings);
   assert.equal(db.listOrchestratorSessionsForProject(p.id).length, 1);
+});
+
+test('continueOrchestratorSessionAcrossSelection native-continues a bound active session into a fresh row', () => {
+  const p = project('Selection continuation');
+  const selectedA = selection('account-a', { kind: 'selected', value: 'low' });
+  const prior = db.createOrchestratorSession({ projectId: p.id, selection: selectedA, now: 100 });
+  const priorCreate = prepareCreate(prior);
+  db.confirmRuntimeSessionReceipt({
+    sessionId: prior.id,
+    receipt: createdReceipt(priorCreate, selectedA, 'native-continue-1'),
+  });
+  db.enqueueConversationSend({
+    projectId: p.id,
+    conversationId: prior.id,
+    sessionId: prior.id,
+    commandId: 'continue-command',
+    clientMessageId: 'continue-client',
+    text: 'queued before continuation',
+    origin: 'user',
+  });
+  const selectedB = selection('account-a', { kind: 'selected', value: 'high' });
+
+  const continued = db.continueOrchestratorSessionAcrossSelection({
+    projectId: p.id,
+    expectedSessionId: prior.id,
+    selection: selectedB,
+    queueCancellationReason: 'selection changed',
+    now: 500,
+  });
+
+  assert.ok(continued);
+  assert.notEqual(continued!.session.id, prior.id);
+  assert.deepEqual(db.runtimeSelectionForSession(continued!.session), selectedB);
+  assert.equal(continued!.session.nativeSessionId, 'native-continue-1');
+  assert.equal(continued!.session.nativeIdentityState, 'bound');
+  assert.equal(continued!.session.continuationState, 'resume-pending');
+  assert.equal(continued!.session.sourceSessionId, prior.id);
+  assert.notEqual(continued!.session.continuationAttemptId, priorCreate.continuationAttemptId);
+  assert.ok(continued!.session.continuationAttemptId);
+
+  const priorAfter = db.getOrchestratorSession(prior.id)!;
+  assert.equal(priorAfter.status, 'ended');
+  assert.equal(priorAfter.endedReason, 'selection_changed');
+  assert.equal(priorAfter.nativeSessionId, 'native-continue-1', 'the source row keeps its own native evidence');
+  assert.equal(db.getActiveOrchestratorSession(p.id)?.id, continued!.session.id);
+  assert.deepEqual(db.getConversationQueueSnapshot(prior.id).items, [], 'the cancelled item drops out of the live queue snapshot');
+  assert.equal(continued!.cancelledQueueItemIds.length, 1);
+
+  const receipt: RuntimeSessionReceipt = {
+    mode: 'resumed',
+    continuationAttemptId: continued!.session.continuationAttemptId!,
+    selection: selectedB,
+    nativeSessionId: 'native-continue-1',
+    requestedNativeSessionId: 'native-continue-1',
+  };
+  assert.equal(db.confirmRuntimeSessionReceipt({ sessionId: continued!.session.id, receipt }).status, 'confirmed');
+  assert.equal(db.getOrchestratorSession(continued!.session.id)?.continuationState, 'native-resumed');
+});
+
+test('continueOrchestratorSessionAcrossSelection returns null for an unbound active session', () => {
+  const p = project('Continuation ineligible');
+  const current = db.createOrchestratorSession({ projectId: p.id, selection: selection('account-a') });
+  db.enqueueConversationSend({
+    projectId: p.id,
+    conversationId: current.id,
+    sessionId: current.id,
+    commandId: 'ineligible-command',
+    clientMessageId: 'ineligible-client',
+    text: 'preserve me',
+    origin: 'user',
+  });
+
+  const result = db.continueOrchestratorSessionAcrossSelection({
+    projectId: p.id,
+    expectedSessionId: current.id,
+    selection: selection('account-a', { kind: 'selected', value: 'high' }),
+    queueCancellationReason: 'selection changed',
+  });
+
+  assert.equal(result, null);
+  assert.equal(db.getActiveOrchestratorSession(p.id)?.id, current.id);
+  assert.equal(db.getOrchestratorSession(current.id)?.status, 'active');
+  assert.equal(db.getConversationQueueSnapshot(current.id).items[0]?.status, 'queued');
+  assert.equal(db.listOrchestratorSessionsForProject(p.id).length, 1);
+});
+
+test('continueOrchestratorSessionAcrossSelection refuses to mutate anything while the active session has an unsettled turn', () => {
+  const p = project('Continuation busy turn');
+  const selectedA = selection('account-a');
+  const current = db.createOrchestratorSession({ projectId: p.id, selection: selectedA });
+  const currentCreate = prepareCreate(current);
+  db.confirmRuntimeSessionReceipt({
+    sessionId: current.id,
+    receipt: createdReceipt(currentCreate, selectedA, 'native-busy-continue'),
+  });
+  db.enqueueConversationSend({
+    projectId: p.id,
+    conversationId: current.id,
+    sessionId: current.id,
+    commandId: 'busy-continue-command',
+    clientMessageId: 'busy-continue-client',
+    text: 'uncertain work',
+    origin: 'user',
+  });
+  const activeTurn = db.claimNextConversationTurn(current.id, 300);
+  assert.ok(activeTurn);
+
+  assert.throws(
+    () => db.continueOrchestratorSessionAcrossSelection({
+      projectId: p.id,
+      expectedSessionId: current.id,
+      selection: selection('account-a', { kind: 'selected', value: 'high' }),
+      queueCancellationReason: 'selection changed',
+    }),
+    /cannot switch sessions while a turn is active/,
+  );
+  assert.equal(db.getOrchestratorSession(current.id)?.status, 'active');
+  assert.equal(db.getActiveConversationTurn(current.id)?.id, activeTurn.turnId);
 });

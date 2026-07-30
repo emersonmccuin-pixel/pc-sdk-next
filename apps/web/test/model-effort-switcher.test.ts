@@ -98,6 +98,7 @@ function sessionSummary(overrides: {
     continuationState: 'clean-started',
     resumeAvailability: { status: 'unavailable', code: 'session-active' },
     startedAt: 1,
+    sourceSessionId: null,
   };
 }
 

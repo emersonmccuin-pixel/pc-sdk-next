@@ -207,6 +207,12 @@ export const orchestratorSessions = sqliteTable(
     startedAt: integer('started_at').notNull(),
     endedAt: integer('ended_at'),
     deletedAt: integer('deleted_at'),
+    /** Provenance only — the app session this one native-continued from
+     * across a same-runtime, same-account selection (model/effort) change.
+     * Null for a clean/historical-resumed session. Not part of the bind/
+     * continuation state machine; shared with a future cross-account
+     * handoff link. */
+    sourceSessionId: text('source_session_id').$type<ULID>(),
   },
   (t) => [
     /** One active session per project (DB-enforced). */

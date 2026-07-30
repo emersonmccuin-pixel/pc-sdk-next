@@ -75,6 +75,7 @@ function resumeUnavailableReason(code: RuntimeSelectionErrorCode): string {
     case 'native-resume-mismatch': return 'native resume could not be confirmed';
     case 'session-active': return 'live';
     case 'resume-failed': return 'native resume failed';
+    case 'selection-change-continuation-unsupported': return 'continuation across this change unsupported';
   }
 }
 
@@ -101,7 +102,8 @@ export function parseSessionEventsResponse(
 ): SessionReplayFrame {
   if (
     !isRecord(value) ||
-    Object.keys(value).some((key) => !['ok', 'events', 'highWaterSequence'].includes(key)) ||
+    Object.keys(value).some((key) =>
+      !['ok', 'events', 'highWaterSequence', 'priorTranscript'].includes(key)) ||
     value.ok !== true
   ) {
     throw new Error('invalid session events response');
@@ -112,6 +114,7 @@ export function parseSessionEventsResponse(
     sessionId,
     highWaterSequence: value.highWaterSequence,
     events: value.events,
+    priorTranscript: value.priorTranscript ?? [],
   };
   if (!isSessionReplayFrame(replay)) throw new Error('invalid session events response');
   return replay;

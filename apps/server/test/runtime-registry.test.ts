@@ -30,6 +30,7 @@ class FakeAdapter implements AgentRuntimeAdapter {
     runtimeId: this.id,
     accountId: 'account-a',
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {
@@ -232,6 +233,65 @@ test('validation and resume preflight retain typed negative states', async () =>
   });
 });
 
+test('acrossSelectionChange preflight requires the separate continuationAcrossSelectionChange capability', async () => {
+  const registry = new RuntimeRegistry();
+  const adapter = new FakeAdapter();
+  registry.register(adapter);
+  const selection = {
+    runtimeId: adapter.id,
+    accountId: 'account-a',
+    model: 'alias-model',
+    effort: { kind: 'selected' as const, value: 'high' },
+  };
+
+  // Plain historical resume (no acrossSelectionChange) only needs
+  // nativeContinuation — unaffected by continuationAcrossSelectionChange.
+  adapter.capabilitiesValue = {
+    ...adapter.capabilitiesValue,
+    continuationAcrossSelectionChange: {
+      status: 'unsupported', code: 'no-selection-change-continuation',
+    },
+  };
+  assert.deepEqual(
+    await registry.preflight(selection, { mode: 'resume', nativeSessionId: 'native-a' }),
+    { status: 'valid', selection },
+  );
+
+  // The exact same request WITH acrossSelectionChange now requires the
+  // separate capability and fails closed with its own typed code.
+  assert.deepEqual(
+    await registry.preflight(
+      selection,
+      { mode: 'resume', nativeSessionId: 'native-a', acrossSelectionChange: true },
+    ),
+    { status: 'invalid', code: 'selection-change-continuation-unsupported' },
+  );
+
+  adapter.capabilitiesValue = {
+    ...adapter.capabilitiesValue,
+    continuationAcrossSelectionChange: { status: 'supported' },
+  };
+  assert.deepEqual(
+    await registry.preflight(
+      selection,
+      { mode: 'resume', nativeSessionId: 'native-a', acrossSelectionChange: true },
+    ),
+    { status: 'valid', selection },
+  );
+
+  adapter.capabilitiesValue = {
+    ...adapter.capabilitiesValue,
+    continuationAcrossSelectionChange: { status: 'unavailable', code: 'account-unavailable' },
+  };
+  assert.deepEqual(
+    await registry.preflight(
+      selection,
+      { mode: 'resume', nativeSessionId: 'native-a', acrossSelectionChange: true },
+    ),
+    { status: 'invalid', code: 'account-unavailable' },
+  );
+});
+
 test('registry fails closed on malformed boundary values and adapter facts', async () => {
   const registry = new RuntimeRegistry();
   const adapter = new FakeAdapter();
@@ -276,6 +336,7 @@ test('registry fails closed on malformed boundary values and adapter facts', asy
     runtimeId: adapter.id,
     accountId: 'account-a',
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {
@@ -333,6 +394,7 @@ test('validation snapshots mutable selections and capability facts before awaits
     runtimeId: adapter.id,
     accountId: 'account-a',
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {

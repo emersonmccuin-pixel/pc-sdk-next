@@ -119,6 +119,13 @@ export class CodexRuntimeAdapter implements AgentRuntimeAdapter {
       // conformance peer only. The adapter has no default/native constructor
       // and remains statically unreachable from production composition.
       nativeContinuation: { status: 'supported' },
+      // Phase 1 does not implement same-runtime, same-account model/effort
+      // continuation for Codex — unsupported until a positive capability
+      // decision is made for this adapter.
+      continuationAcrossSelectionChange: {
+        status: 'unsupported',
+        code: 'codex-selection-change-continuation-unsupported',
+      },
       modelDiscovery: { status: 'supported' },
       effortControl: effortSupported
         ? { status: 'supported' }
@@ -409,6 +416,7 @@ function unavailableCapabilities(accountId: string, discoveryCode: string): Runt
     runtimeId: CODEX_RUNTIME_ID,
     accountId,
     nativeContinuation: unavailable(),
+    continuationAcrossSelectionChange: unavailable(),
     modelDiscovery: unavailable(),
     effortControl: unavailable(),
     context: { currentUse: unavailable(), compaction: unavailable() },

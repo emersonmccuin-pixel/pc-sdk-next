@@ -108,6 +108,9 @@ export function isConversationSessionDto(value: unknown): value is ConversationS
       continuationState: value.continuationState,
       resumeAvailability: value.resumeAvailability,
       startedAt: value.startedAt,
+      // This expanded read DTO does not carry provenance (out of scope here);
+      // fill the shared shape's required field rather than expanding the DTO.
+      sourceSessionId: null,
     })
   );
 }

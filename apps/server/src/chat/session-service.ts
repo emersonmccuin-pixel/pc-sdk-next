@@ -7,6 +7,7 @@
 import {
   commitConversationEvent,
   confirmRuntimeSessionReceipt,
+  continueOrchestratorSessionAcrossSelection,
   editQueuedConversationSend,
   enqueueConversationSend,
   failConversationInterrupt,
@@ -19,6 +20,7 @@ import {
   getOrchestratorSession,
   getProjectById,
   getTurnInterruptRequest,
+  isOrchestratorSessionResumeReady,
   newId,
   prepareRuntimeSessionCreate,
   prepareRuntimeSessionResume,
@@ -68,7 +70,7 @@ import {
   type RuntimeSessionFactory,
 } from '../runner/runtime.ts';
 import { AskRegistry } from './ask-registry.ts';
-import { replayConversationEvents } from './replay.ts';
+import { priorSessionTranscript, replayConversationEvents } from './replay.ts';
 import { SendQueue } from './send-queue.ts';
 import { runTurn, type TurnRunnerDeps } from './turn-runner.ts';
 
@@ -628,11 +630,16 @@ export class SessionService {
    * stamped session boundary, one DB transition. A stamped session's
    * selection is immutable once minted (orchestrator-sessions.ts), so even a
    * same-runtime, same-account model/effort-only change cannot be applied to
-   * the live row in place — it mints a fresh session exactly like
-   * switchRuntimeSession/switchAccountSession above. Continuing the same
-   * conversation across a model/effort change is TODO follow-up work (would
-   * need the row's selection to become mutable, a materially bigger change
-   * than this endpoint's scope).
+   * the live row in place — it always mints a new row. When the change is
+   * PURELY model/effort (no account/runtime change) and the prior row is a
+   * resume-ready bound native session, this native-continues that thread into
+   * the new row instead of starting clean, gated on a positive adapter
+   * `continuationAcrossSelectionChange` capability/preflight (docs/agent-
+   * runtime-architecture.md "Sessions and switching"). Any other case —
+   * capability missing, prior unbound, or preflight failure — falls back to
+   * today's clean mint plus a visible provider-neutral system notice. Account
+   * or runtime changes are untouched: they always mint clean, exactly like
+   * switchRuntimeSession/switchAccountSession above.
    */
   async changeSelection(input: {
     runtimeId?: string;
@@ -640,18 +647,107 @@ export class SessionService {
     model?: string;
     effort?: string | null;
   }): Promise<OrchestratorSessionRow> {
-    return this.withSessionTransition(() => this.replaceSession('selection changed', input));
+    return this.withSessionTransition(() => this.changeSelectionUnserialized(input));
   }
 
-  private async replaceSession(
-    reason: string,
-    options: {
-      accountId?: string;
-      runtimeId?: string;
-      model?: string;
-      effort?: string | null;
-    } = {},
-  ): Promise<OrchestratorSessionRow> {
+  private async changeSelectionUnserialized(input: {
+    runtimeId?: string;
+    accountId?: string;
+    model?: string;
+    effort?: string | null;
+  }): Promise<OrchestratorSessionRow> {
+    const prior = this.session;
+    const selection = await this.resolveReplacementSelection(input);
+    const isPureSelectionChange = input.runtimeId === undefined && input.accountId === undefined;
+
+    if (isPureSelectionChange && prior) {
+      const continued = await this.tryContinueAcrossSelection(prior, selection);
+      if (continued) return continued;
+      const session = await this.commitSessionReplacement('selection changed', input, selection);
+      this.emitContinuationUnavailableNotice(session);
+      return session;
+    }
+    return this.commitSessionReplacement('selection changed', input, selection);
+  }
+
+  /** Native-continue `prior`'s bound thread into a fresh row stamped with
+   * `selection`, iff the prior row is resume-ready and the adapter positively
+   * confirms `continuationAcrossSelectionChange` for this exact resume.
+   * Returns null (no side effect) for any ineligibility or preflight
+   * rejection — callers fall back to a clean mint. */
+  private async tryContinueAcrossSelection(
+    prior: OrchestratorSessionRow,
+    selection: RuntimeSelection,
+  ): Promise<OrchestratorSessionRow | null> {
+    // Re-fetch fresh: a receipt binding the prior row's native identity may
+    // have committed to the DB without (yet, or ever, in a defensive sense)
+    // refreshing this cached `this.session` copy — resumeSessionUnserialized
+    // re-fetches for the same reason.
+    const freshPrior = getOrchestratorSession(prior.id);
+    const priorSelection = freshPrior && runtimeSelectionForSession(freshPrior);
+    if (
+      !freshPrior ||
+      !priorSelection ||
+      priorSelection.runtimeId !== selection.runtimeId ||
+      priorSelection.accountId !== selection.accountId ||
+      !isOrchestratorSessionResumeReady(freshPrior)
+    ) return null;
+    const generation = this.lifecycleGeneration;
+    const preflight = await this.preflightRuntimeSession(selection, {
+      mode: 'resume',
+      nativeSessionId: freshPrior.nativeSessionId!,
+      acrossSelectionChange: true,
+    });
+    if (this.disposed || generation !== this.lifecycleGeneration) {
+      throw new Error('session service was disposed during selection resolution');
+    }
+    if (preflight.status === 'invalid') return null;
+    if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
+    const continued = continueOrchestratorSessionAcrossSelection({
+      projectId: this.projectId,
+      expectedSessionId: freshPrior.id,
+      selection,
+      queueCancellationReason: 'selection changed',
+    });
+    if (!continued) return null;
+    this.publishCommittedEvents();
+    this.teardownRunner('new-session');
+    this.session = continued.session;
+    this.broadcast(this.sessionChangedFrame('new-session'));
+    this.broadcast(this.orchestratorStateFrame());
+    return this.session;
+  }
+
+  /** A provider-neutral, visible chat notice — never provider-branched copy —
+   * for a selection change that could not native-continue the prior thread. */
+  private emitContinuationUnavailableNotice(session: OrchestratorSessionRow): void {
+    const event: ChatEvent = {
+      kind: 'system',
+      subtype: 'selection-change-continuation-unavailable',
+      level: 'notice',
+      message: "Couldn't continue the conversation — started a fresh session.",
+    };
+    commitConversationEvent({
+      projectId: session.projectId,
+      conversationId: session.id,
+      sessionId: session.id,
+      family: conversationFamilyForEvent(event),
+      event,
+      turnId: null,
+      itemId: newId(),
+      clientMessageId: null,
+      occurredAt: Date.now(),
+      deliveryKind: 'chat',
+    });
+    this.publishCommittedEvents();
+  }
+
+  private async resolveReplacementSelection(options: {
+    accountId?: string;
+    runtimeId?: string;
+    model?: string;
+    effort?: string | null;
+  }): Promise<RuntimeSelection> {
     const { accountId, runtimeId, model, effort } = options;
     if (this.disposed) throw new Error('session service is disposed');
     const generation = this.lifecycleGeneration;
@@ -678,11 +774,25 @@ export class SessionService {
     if (effort !== undefined && !effortMatchesRequest(effort, resolved.selection.effort)) {
       throw new RuntimeSelectionRejectedError('effort-value-unsupported');
     }
+    return resolved.selection;
+  }
+
+  private async commitSessionReplacement(
+    reason: string,
+    options: {
+      accountId?: string;
+      runtimeId?: string;
+      model?: string;
+      effort?: string | null;
+    },
+    selection: RuntimeSelection,
+  ): Promise<OrchestratorSessionRow> {
+    const { accountId, runtimeId, model, effort } = options;
     if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
     const replacement = replaceOrchestratorSession({
       projectId: this.projectId,
       expectedSessionId: this.session?.id ?? null,
-      selection: resolved.selection,
+      selection,
       queueCancellationReason: reason,
       ...(accountId !== undefined
         ? {
@@ -704,6 +814,19 @@ export class SessionService {
     this.broadcast(this.sessionChangedFrame('new-session'));
     this.broadcast(this.orchestratorStateFrame());
     return this.session;
+  }
+
+  private async replaceSession(
+    reason: string,
+    options: {
+      accountId?: string;
+      runtimeId?: string;
+      model?: string;
+      effort?: string | null;
+    } = {},
+  ): Promise<OrchestratorSessionRow> {
+    const selection = await this.resolveReplacementSelection(options);
+    return this.commitSessionReplacement(reason, options, selection);
   }
 
   async resumeSession(sessionId: ULID): Promise<OrchestratorSessionRow | null> {
@@ -1519,6 +1642,7 @@ export class SessionService {
       continuationState: session.continuationState,
       resumeAvailability: { status: 'unavailable', code: 'session-active' },
       startedAt: session.startedAt,
+      sourceSessionId: session.sourceSessionId,
     };
   }
 
@@ -1546,6 +1670,7 @@ export class SessionService {
       sessionId: session.id,
       highWaterSequence: Math.max(getConversationHighWaterSequence(session.id), events.at(-1)?.sequence ?? 0),
       events,
+      priorTranscript: priorSessionTranscript(session),
     };
   }
 

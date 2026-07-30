@@ -147,6 +147,17 @@ export interface ResumeOrchestratorSessionInput {
   now?: number;
 }
 
+export interface ContinueOrchestratorSessionAcrossSelectionInput {
+  projectId: ULID;
+  /** Must be the currently active session — this transition continues it in
+   * place, it never reaches into history. */
+  expectedSessionId: ULID;
+  /** Complete adapter-validated replacement selection (new model/effort). */
+  selection: RuntimeSelection;
+  queueCancellationReason: string;
+  now?: number;
+}
+
 export type SoftDeleteProjectConversationResult =
   | { status: 'deleted'; project: Project; cancelledQueueItemIds: ULID[] }
   | { status: 'not-found' }
@@ -1131,6 +1142,125 @@ export function resumeOrchestratorSessionTransition(
         status: 'active',
         endedReason: null,
         endedAt: null,
+        continuationState: 'resume-pending',
+        continuationAttemptId,
+      },
+      cancelledQueueItemIds,
+    };
+  });
+}
+
+/** Atomic counterpart to replaceOrchestratorSession for a same-runtime,
+ * same-account model/effort change that native-continues the prior thread
+ * instead of minting a blank successor. Ends the active session as
+ * 'selection_changed' and mints its replacement already bound to the prior
+ * native session id, resume-pending under a fresh attempt, with a durable
+ * `sourceSessionId` provenance link. Returns null when the active session is
+ * not resume-ready (unbound, legacy, or otherwise ineligible) — callers must
+ * fall back to a plain replaceOrchestratorSession in that case. */
+export function continueOrchestratorSessionAcrossSelection(
+  input: ContinueOrchestratorSessionAcrossSelectionInput,
+): ReplaceOrchestratorSessionResult | null {
+  if (!input.queueCancellationReason.trim()) {
+    throw new Error('queue cancellation reason must be non-empty');
+  }
+  const now = input.now ?? Date.now();
+  return getDb().transaction((tx) => {
+    if (!getProjectByIdInDb(tx, input.projectId)) return null;
+    const active = tx
+      .select()
+      .from(orchestratorSessions)
+      .where(and(
+        eq(orchestratorSessions.projectId, input.projectId),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .get() as OrchestratorSessionRow | undefined;
+    if ((active?.id ?? null) !== input.expectedSessionId) {
+      throw new Error('active session changed during transition');
+    }
+    if (!active || !isOrchestratorSessionResumeReady(active)) return null;
+    if (tx
+      .select({ id: conversationTurns.id })
+      .from(conversationTurns)
+      .where(and(
+        eq(conversationTurns.sessionId, active.id),
+        eq(conversationTurns.status, 'active'),
+      ))
+      .get()) {
+      throw new Error('cannot switch sessions while a turn is active; interrupt it and wait for confirmation first');
+    }
+
+    const cancelledQueueItemIds = cancelQueuedConversationSendsInDb(
+      tx,
+      active.id,
+      input.queueCancellationReason,
+      now,
+    );
+    const ended = tx.update(orchestratorSessions)
+      .set({ status: 'ended', endedReason: 'selection_changed', endedAt: now })
+      .where(and(
+        eq(orchestratorSessions.id, active.id),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .run();
+    if (ended.changes !== 1) {
+      throw new Error('active session changed during transition');
+    }
+
+    const created = newStampedOrchestratorSession({
+      projectId: input.projectId,
+      selection: input.selection,
+      now,
+      sourceSessionId: active.id,
+    });
+    tx.insert(orchestratorSessions).values(created).run();
+
+    // Bind the new row to the prior native thread through the same two
+    // trigger-legal transitions a historical resume goes through: bind (clean
+    // -started), then rotate into resume-pending under a fresh attempt. This
+    // reuses 0012's enforced state machine rather than inserting an already-
+    // bound row, which its insert guard forbids.
+    const nativeSessionId = active.nativeSessionId!;
+    const bound = tx.update(orchestratorSessions)
+      .set({
+        nativeSessionId,
+        nativeIdentityState: 'bound',
+        continuationState: 'clean-started',
+      })
+      .where(and(
+        eq(orchestratorSessions.id, created.id),
+        eq(orchestratorSessions.nativeIdentityState, 'unbound'),
+        eq(orchestratorSessions.continuationState, 'clean-pending'),
+        isNull(orchestratorSessions.nativeSessionId),
+      ))
+      .run();
+    if (bound.changes !== 1) {
+      throw new Error('continuation target changed during transition');
+    }
+    let continuationAttemptId = newId();
+    while (continuationAttemptId === created.continuationAttemptId) {
+      continuationAttemptId = newId();
+    }
+    const resumePending = tx.update(orchestratorSessions)
+      .set({ continuationState: 'resume-pending', continuationAttemptId })
+      .where(and(
+        eq(orchestratorSessions.id, created.id),
+        eq(orchestratorSessions.nativeIdentityState, 'bound'),
+        eq(orchestratorSessions.nativeSessionId, nativeSessionId),
+        eq(orchestratorSessions.continuationState, 'clean-started'),
+      ))
+      .run();
+    if (resumePending.changes !== 1) {
+      throw new Error('continuation target changed during transition');
+    }
+
+    return {
+      session: {
+        ...created,
+        nativeSessionId,
+        nativeIdentityState: 'bound',
         continuationState: 'resume-pending',
         continuationAttemptId,
       },

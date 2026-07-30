@@ -258,7 +258,16 @@ export function sessionToolsForAdapter(
 
 export type RuntimeContinuationRequest =
   | { mode: 'create' }
-  | { mode: 'resume'; nativeSessionId: string };
+  | {
+      mode: 'resume';
+      nativeSessionId: string;
+      /** True only for a same-runtime, same-account model/effort change
+       * continuing a prior native thread into a new app session. Preflight
+       * additionally requires `continuationAcrossSelectionChange` support;
+       * omitted/false keeps today's plain historical-resume capability
+       * check (`nativeContinuation`) unchanged. */
+      acrossSelectionChange?: boolean;
+    };
 
 /** User/default selection request before adapter facts normalize effort into
  * the explicit durable union. Null is never guessed: it becomes `none` only
@@ -331,6 +340,7 @@ function cloneRuntimeCapabilities(capabilities: RuntimeCapabilities): RuntimeCap
     runtimeId: capabilities.runtimeId,
     accountId: capabilities.accountId,
     nativeContinuation: cloneState(capabilities.nativeContinuation),
+    continuationAcrossSelectionChange: cloneState(capabilities.continuationAcrossSelectionChange),
     modelDiscovery: cloneState(capabilities.modelDiscovery),
     effortControl: cloneState(capabilities.effortControl),
     context: {
@@ -553,6 +563,7 @@ export async function preflightRuntimeSelection(
     capturedContinuation = {
       mode: 'resume',
       nativeSessionId: continuation.nativeSessionId,
+      acrossSelectionChange: continuation.acrossSelectionChange === true,
     };
   } else {
     return invalid('selection-unavailable');
@@ -579,6 +590,17 @@ export async function preflightRuntimeSelection(
   }
   if (capabilities.nativeContinuation.status !== 'supported') {
     return invalid('native-resume-unsupported');
+  }
+  if (capturedContinuation.acrossSelectionChange) {
+    const acrossSelection = capabilities.continuationAcrossSelectionChange;
+    if (acrossSelection.status === 'unavailable') {
+      return invalid(acrossSelection.code === 'account-unavailable'
+        ? 'account-unavailable'
+        : 'capabilities-unavailable');
+    }
+    if (acrossSelection.status !== 'supported') {
+      return invalid('selection-change-continuation-unsupported');
+    }
   }
   return validation;
 }

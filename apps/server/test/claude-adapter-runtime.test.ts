@@ -999,6 +999,7 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
     runtimeId: CLAUDE_RUNTIME_ID,
     accountId: 'missing',
     nativeContinuation: { status: 'unavailable', code: 'account-unavailable' },
+    continuationAcrossSelectionChange: { status: 'unavailable', code: 'account-unavailable' },
     modelDiscovery: { status: 'unavailable', code: 'account-unavailable' },
     effortControl: { status: 'unavailable', code: 'account-unavailable' },
     context: {
@@ -1016,6 +1017,7 @@ test('Claude discovery is account-scoped and retains per-model effort truth', as
     runtimeId: CLAUDE_RUNTIME_ID,
     accountId: 'personal',
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {

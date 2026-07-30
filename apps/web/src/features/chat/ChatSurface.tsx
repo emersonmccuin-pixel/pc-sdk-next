@@ -10,6 +10,7 @@ import type { Project } from '@/features/projects/client';
 import type { SessionReplayFrame } from '@pc/contracts';
 import { useChatStore } from '@/state/chat-store';
 import { useConnectionStore } from '@/state/connection';
+import { useRuntimes } from '@/state/runtimes';
 import { sessionsApi } from '@/state/sessions';
 import { useViewingSession } from '@/store/viewing-session';
 import { randomId, type SocketApi } from '@/lib/ws-client';
@@ -25,6 +26,7 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
   const addOptimistic = useChatStore((s) => s.addOptimistic);
   const answerAsk = useChatStore((s) => s.answerAsk);
   const activeTurnId = useConnectionStore((s) => s.activeTurnId);
+  const liveSelection = useRuntimes((s) => s.activeSession?.selection ?? null);
   const viewingSessionId = useViewingSession((s) => s.bySlug[project.slug] ?? null);
   const setViewing = useViewingSession((s) => s.setViewing);
 
@@ -129,7 +131,7 @@ export function ChatSurface({ project, api }: { project: Project; api: SocketApi
 
   return (
     <>
-      <ChatTimeline state={state} onAskReply={handleAskReply} />
+      <ChatTimeline state={state} onAskReply={handleAskReply} liveSelection={liveSelection} />
       <ChatComposer
         key={project.id}
         projectId={project.id}

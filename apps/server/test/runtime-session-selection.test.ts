@@ -392,6 +392,126 @@ test('changeSelection with a new model/effort stamps a fresh session and ends th
   // switchAccountSession, which persist their own default).
   assert.equal(getProjectById(project.id)?.settings.defaultRuntimeId, null);
   assert.equal(getProjectById(project.id)?.settings.defaultAccountId, null);
+  // The prior row was never bound to a native session, so there was nothing
+  // to native-continue: a fresh session plus a visible provider-neutral
+  // notice, never a fabricated provenance link.
+  assert.equal(getOrchestratorSession(updated.id)?.sourceSessionId, null);
+  const notice = listConversationEvents(updated.id).find((row) => row.eventType === 'system');
+  assert.equal(
+    (notice?.payload as { subtype?: unknown } | undefined)?.subtype,
+    'selection-change-continuation-unavailable',
+  );
+  await service.dispose();
+});
+
+test('changeSelection native-continues a bound resume-ready prior session across a model/effort change', async () => {
+  freshDb();
+  const project = newProject('selection-change-continuation');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async (input) => ({
+      status: 'valid',
+      selection: {
+        runtimeId: input.runtimeId ?? TEST_SELECTION.runtimeId,
+        accountId: input.accountId ?? TEST_SELECTION.accountId,
+        model: input.model ?? TEST_SELECTION.model,
+        effort: input.effort !== undefined
+          ? (input.effort ? { kind: 'selected' as const, value: input.effort } : { kind: 'none' as const })
+          : TEST_SELECTION.effort,
+      },
+    }),
+    preflightRuntimeSession: testSessionSelectionDeps().preflightRuntimeSession,
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+  const nativeSessionId = `native-${original.id}`;
+  assert.equal(confirmRuntimeSessionReceipt({
+    sessionId: original.id,
+    receipt: {
+      mode: 'created', selection: TEST_SELECTION, nativeSessionId,
+      continuationAttemptId: original.continuationAttemptId!,
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
+
+  const updated = await service.changeSelection({ model: 'sonnet' });
+  assert.notEqual(updated.id, original.id);
+  const updatedRow = getOrchestratorSession(updated.id)!;
+  assert.equal(updatedRow.model, 'sonnet');
+  assert.equal(updatedRow.nativeSessionId, nativeSessionId, 'the same native thread carries over');
+  assert.equal(updatedRow.nativeIdentityState, 'bound');
+  assert.equal(updatedRow.continuationState, 'resume-pending');
+  assert.equal(updatedRow.sourceSessionId, original.id);
+  assert.notEqual(updatedRow.continuationAttemptId, original.continuationAttemptId);
+
+  const originalAfter = getOrchestratorSession(original.id)!;
+  assert.equal(originalAfter.status, 'ended');
+  assert.equal(originalAfter.endedReason, 'selection_changed');
+  assert.equal(getActiveOrchestratorSession(project.id)?.id, updated.id);
+  // A successful native continuation never announces a fallback notice.
+  assert.equal(listConversationEvents(updated.id).some((row) => row.eventType === 'system'), false);
+  await service.dispose();
+});
+
+test('changeSelection falls back to a fresh session plus notice when the adapter rejects continuation across the change', async () => {
+  freshDb();
+  const project = newProject('selection-change-continuation-rejected');
+  const service = new SessionService({
+    projectId: project.id,
+    broadcast: () => {},
+    mintSession: withRuntimeReceipt(() => new FakeRuntime({ turns: [[terminal]] })),
+    resolveNewSessionSelection: async (input) => ({
+      status: 'valid',
+      selection: {
+        runtimeId: input.runtimeId ?? TEST_SELECTION.runtimeId,
+        accountId: input.accountId ?? TEST_SELECTION.accountId,
+        model: input.model ?? TEST_SELECTION.model,
+        effort: TEST_SELECTION.effort,
+      },
+    }),
+    preflightRuntimeSession: async (selection, continuation) => {
+      if (continuation.mode === 'resume' && continuation.acrossSelectionChange) {
+        return { status: 'invalid', code: 'selection-change-continuation-unsupported' };
+      }
+      return { status: 'valid', selection };
+    },
+    queueDrainEnabled: false,
+  });
+  const original = await service.ensureActiveSession();
+  const nativeSessionId = `native-${original.id}`;
+  assert.equal(confirmRuntimeSessionReceipt({
+    sessionId: original.id,
+    receipt: {
+      mode: 'created', selection: TEST_SELECTION, nativeSessionId,
+      continuationAttemptId: original.continuationAttemptId!,
+      requestedNativeSessionId: null,
+    },
+  }).status, 'confirmed');
+
+  const updated = await service.changeSelection({ model: 'sonnet' });
+  assert.notEqual(updated.id, original.id);
+  const updatedRow = getOrchestratorSession(updated.id)!;
+  assert.equal(updatedRow.model, 'sonnet');
+  assert.equal(updatedRow.sourceSessionId, null);
+  assert.equal(updatedRow.nativeIdentityState, 'unbound');
+  assert.equal(updatedRow.continuationState, 'clean-pending');
+
+  const originalAfter = getOrchestratorSession(original.id)!;
+  assert.equal(originalAfter.status, 'ended');
+  assert.equal(originalAfter.endedReason, 'selection_changed');
+  assert.equal(originalAfter.nativeSessionId, nativeSessionId, 'the source row keeps its own native evidence');
+
+  const notice = listConversationEvents(updated.id).find((row) => row.eventType === 'system');
+  assert.equal(
+    (notice?.payload as { subtype?: unknown; message?: unknown } | undefined)?.subtype,
+    'selection-change-continuation-unavailable',
+  );
+  assert.match(
+    (notice?.payload as { message?: string } | undefined)?.message ?? '',
+    /fresh session/,
+  );
   await service.dispose();
 });
 

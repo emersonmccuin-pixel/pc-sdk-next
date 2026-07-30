@@ -89,6 +89,7 @@ test('0011 retains legacy raw tools and provider notices but removes them from v
     }>;
   const replay = {
     type: 'session-replay', projectId: 'p1', sessionId: 's1', highWaterSequence: 7,
+    priorTranscript: [],
     events: visible.map((row) => ({
       type: 'conversation-event', eventId: row.event_id, projectId: 'p1',
       conversationId: 's1', sessionId: 's1', sequence: row.sequence,

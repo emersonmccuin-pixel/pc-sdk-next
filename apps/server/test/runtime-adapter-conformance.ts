@@ -376,6 +376,9 @@ class GenericConformanceAdapter implements AgentRuntimeAdapter {
       runtimeId: this.id,
       accountId,
       nativeContinuation: { status: 'supported' },
+      continuationAcrossSelectionChange: {
+        status: 'unsupported', code: 'generic-selection-change-continuation-unsupported',
+      },
       modelDiscovery: { status: 'supported' },
       effortControl: { status: 'supported' },
       context: {
@@ -577,6 +580,7 @@ function unavailableCapabilities(accountId: string): RuntimeCapabilities {
     runtimeId: GENERIC_RUNTIME_ID,
     accountId,
     nativeContinuation: unavailable,
+    continuationAcrossSelectionChange: unavailable,
     modelDiscovery: unavailable,
     effortControl: unavailable,
     context: { currentUse: unavailable, compaction: unavailable },

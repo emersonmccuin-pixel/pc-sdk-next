@@ -1094,6 +1094,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
         runtimeId: this.id,
         accountId,
         nativeContinuation: unavailable,
+        continuationAcrossSelectionChange: unavailable,
         modelDiscovery: unavailable,
         effortControl: unavailable,
         context: {
@@ -1107,6 +1108,11 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       runtimeId: this.id,
       accountId,
       nativeContinuation: { status: 'supported' },
+      // A same-runtime, same-account native thread survives a model/effort
+      // change; the SDK resume machinery only takes a `resume` session id
+      // plus per-query model/effort options (docs/agent-runtime-architecture.md
+      // "Sessions and switching").
+      continuationAcrossSelectionChange: { status: 'supported' },
       modelDiscovery: { status: 'supported' },
       effortControl: { status: 'supported' },
       context: {

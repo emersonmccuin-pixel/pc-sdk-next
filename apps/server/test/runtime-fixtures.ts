@@ -27,6 +27,7 @@ export function testCapabilities(
     runtimeId,
     accountId,
     nativeContinuation: { status: 'supported' },
+    continuationAcrossSelectionChange: { status: 'supported' },
     modelDiscovery: { status: 'supported' },
     effortControl: { status: 'supported' },
     context: {
