@@ -666,6 +666,10 @@ export class SessionService {
     this.broadcast(this.sessionChangedFrame('new-session'));
     this.emitAccountHandoffNotice(handoff.session, selection.accountId);
     this.broadcast(this.orchestratorStateFrame());
+    // Same as tryContinueAcrossSelection: the session-changed reset needs a
+    // follow-up replay (with priorTranscript) or the handed-off conversation
+    // renders blank. Sent after the notice commit so the replay includes it.
+    this.broadcast(this.sessionReplayFrame());
     return this.session;
   }
 
@@ -806,6 +810,11 @@ export class SessionService {
     this.session = continued.session;
     this.broadcast(this.sessionChangedFrame('new-session'));
     this.broadcast(this.orchestratorStateFrame());
+    // A session-changed frame resets the client timeline; without a follow-up
+    // replay the continued conversation renders blank even though the native
+    // thread carried over. Mirror resumeSessionUnserialized: replay carries
+    // priorTranscript (the sourceSessionId chain) for the dimmed prior blocks.
+    this.broadcast(this.sessionReplayFrame());
     return this.session;
   }
 
