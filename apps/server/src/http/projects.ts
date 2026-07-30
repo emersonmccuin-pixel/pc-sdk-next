@@ -2,7 +2,7 @@
 // (projectRoutes). Wraps the @pc/db project repos + the create-flow folder
 // probe. The old minimal `{name,slug,folderPath}` CRUD is gone (one path).
 
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Hono } from 'hono';
@@ -233,6 +233,36 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
     }
 
     return c.json({ ok: true, listing: { path, parent, entries } });
+  });
+
+  // Create-project folder browser — make a new subfolder inside the current
+  // directory so the user can create a project folder without leaving the app.
+  app.post('/api/fs/mkdir', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const parentRaw = typeof body.path === 'string' ? body.path.trim() : '';
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!parentRaw) return c.json({ ok: false, error: 'path required' }, 400);
+    if (!name) return c.json({ ok: false, error: 'name required' }, 400);
+    // Reject path traversal and characters Windows forbids in folder names.
+    if (name === '.' || name === '..' || /[<>:"/\\|?*]/.test(name) || name.endsWith('.')) {
+      return c.json({ ok: false, error: 'invalid folder name' }, 400);
+    }
+    const parent = resolve(parentRaw);
+    let parentIsDir = false;
+    try {
+      parentIsDir = statSync(parent).isDirectory();
+    } catch {
+      parentIsDir = false;
+    }
+    if (!parentIsDir) return c.json({ ok: false, error: 'parent folder not found' }, 404);
+    const target = join(parent, name);
+    if (existsSync(target)) return c.json({ ok: false, error: 'a folder with that name already exists' }, 409);
+    try {
+      mkdirSync(target);
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message }, 500);
+    }
+    return c.json({ ok: true, path: target });
   });
 }
 

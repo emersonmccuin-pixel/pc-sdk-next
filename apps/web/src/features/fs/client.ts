@@ -36,4 +36,6 @@ export const fsApi = {
     postJson<{ ok: true; listing: DirListing }>('/api/fs/list', { path: path ?? '' }).then(
       (r) => r.listing,
     ),
+  mkdir: (path: string, name: string) =>
+    postJson<{ ok: true; path: string }>('/api/fs/mkdir', { path, name }).then((r) => r.path),
 };

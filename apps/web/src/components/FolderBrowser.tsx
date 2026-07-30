@@ -1,10 +1,11 @@
 // Lightweight folder picker for the create-project flow. Browses the local
 // filesystem via POST /api/fs/list (server has full local fs access; the
-// browser can't read absolute paths itself). Read-only — never creates,
-// renames, or deletes anything. The full files browser was deleted; this is
-// a narrow, purpose-built replacement scoped to "pick a folder".
+// browser can't read absolute paths itself). Can create a new subfolder via
+// POST /api/fs/mkdir; never renames or deletes. The full files browser was
+// deleted; this is a narrow, purpose-built replacement scoped to "pick a
+// folder".
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { fsApi, type DirListing } from '@/features/fs/client';
 
@@ -21,6 +22,8 @@ type ListState =
 
 export function FolderBrowser({ initialPath, onClose, onSelect }: FolderBrowserProps) {
   const [state, setState] = useState<ListState>({ status: 'loading' });
+  const [newFolder, setNewFolder] = useState<{ name: string; error: string | null } | null>(null);
+  const newFolderInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     load(initialPath);
@@ -29,6 +32,7 @@ export function FolderBrowser({ initialPath, onClose, onSelect }: FolderBrowserP
 
   function load(path?: string) {
     setState({ status: 'loading' });
+    setNewFolder(null);
     fsApi
       .listDir(path)
       .then((listing) => setState({ status: 'ready', listing }))
@@ -43,7 +47,21 @@ export function FolderBrowser({ initialPath, onClose, onSelect }: FolderBrowserP
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  useEffect(() => {
+    if (newFolder) newFolderInput.current?.focus();
+  }, [newFolder !== null]);
+
   const current = state.status === 'ready' ? state.listing : null;
+
+  function createFolder() {
+    if (!current || !newFolder) return;
+    const name = newFolder.name.trim();
+    if (!name) return;
+    fsApi
+      .mkdir(current.path, name)
+      .then((path) => load(path))
+      .catch((e) => setNewFolder({ name, error: (e as Error).message }));
+  }
 
   return (
     <div
@@ -76,9 +94,55 @@ export function FolderBrowser({ initialPath, onClose, onSelect }: FolderBrowserP
           <code className="flex-1 truncate bg-muted px-2 py-1 font-mono text-xs">
             {current?.path ?? '…'}
           </code>
+          <button
+            type="button"
+            onClick={() => setNewFolder({ name: '', error: null })}
+            disabled={!current || newFolder !== null}
+            className="border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-40"
+          >
+            New folder
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2">
+          {newFolder && current && (
+            <div className="mb-1 px-2">
+              <div className="flex items-center gap-2">
+                <input
+                  ref={newFolderInput}
+                  value={newFolder.name}
+                  onChange={(e) => setNewFolder({ name: e.target.value, error: null })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') createFolder();
+                    if (e.key === 'Escape') {
+                      e.stopPropagation();
+                      setNewFolder(null);
+                    }
+                  }}
+                  placeholder="Folder name"
+                  className="flex-1 border border-border bg-background px-2 py-1 text-sm outline-none focus:border-primary"
+                />
+                <button
+                  type="button"
+                  onClick={createFolder}
+                  disabled={!newFolder.name.trim()}
+                  className="border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-40"
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewFolder(null)}
+                  className="border border-border px-2 py-1 text-xs hover:bg-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+              {newFolder.error && (
+                <div className="mt-1 text-xs text-destructive">{newFolder.error}</div>
+              )}
+            </div>
+          )}
           {state.status === 'loading' && (
             <div className="px-2 py-1 text-xs text-muted-foreground">Loading…</div>
           )}
