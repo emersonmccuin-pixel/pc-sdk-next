@@ -50,7 +50,8 @@ test('0020 adds every health column to mcp_servers', () => {
 test('0020 creates mcp_consumer_attachments', () => {
   const raw = getRawDb();
   const cols = (raw.pragma('table_info("mcp_consumer_attachments")') as { name: string }[]).map((c) => c.name);
-  assert.deepEqual(cols.sort(), ['consumer', 'created_at', 'id', 'mcp_server_id']);
+  // pc-sdk-15 (0024) added the nullable `tool_filter` allowlist column.
+  assert.deepEqual(cols.sort(), ['consumer', 'created_at', 'id', 'mcp_server_id', 'tool_filter']);
 });
 
 test('assertSchemaIntact passes after migration', () => {

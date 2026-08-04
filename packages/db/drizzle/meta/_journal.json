@@ -169,6 +169,13 @@
       "when": 1783962000000,
       "tag": "0023_handoff_pending_seed",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1783965600000,
+      "tag": "0024_mcp_tool_filter",
+      "breakpoints": true
     }
   ]
 }

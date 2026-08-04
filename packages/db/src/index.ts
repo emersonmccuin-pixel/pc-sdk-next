@@ -447,6 +447,7 @@ export type { UpsertMcpAttachmentInput } from './repos/mcp-attachments.ts';
 export {
   attachMcpConsumer,
   detachMcpConsumer,
+  listMcpConsumerAttachmentsForConsumer,
   listMcpConsumersForServer,
   listMcpServerIdsForConsumer,
 } from './repos/mcp-consumer-attachments.ts';

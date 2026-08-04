@@ -8,10 +8,12 @@ import {
   attachMcpConsumer,
   createMcpServerRegistry,
   getMcpServerRegistry,
+  listMcpConsumerAttachmentsForConsumer,
+  listMcpServersRegistry,
 } from '@pc/db';
 import type { McpServerTransport, ULID } from '@pc/domain';
 import type { DiscoverResult, RemoteTool } from '../src/mcp/client.ts';
-import { McpManager } from '../src/mcp/manager.ts';
+import { AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER, McpManager } from '../src/mcp/manager.ts';
 import { freshDb } from './helpers.ts';
 
 const tool = (name: string): RemoteTool => ({ name, description: '', inputSchema: { type: 'object' } });
@@ -180,6 +182,63 @@ test('the bridge only exposes servers attached to the consumer (default orchestr
   assert.ok(!fooBridge.toolDefs.some((d) => d.name.endsWith('__orch_tool')));
 });
 
+test('pc-sdk-15: a null tool_filter bridges every discovered tool (unchanged default)', async () => {
+  freshDb();
+  const { probeFn, push } = scriptedProbe();
+  const url = 'https://unfiltered.example/mcp';
+  const id = makeServer('unfiltered-srv', url);
+  attachMcpConsumer({ mcpServerId: id, consumer: 'orchestrator' });
+
+  const mcp = new McpManager({ probeFn });
+  mcp.syncFromRegistry();
+  push(url, { ok: true, tools: [tool('alpha'), tool('beta')] });
+  await mcp.probe(id);
+
+  const bridge = mcp.buildBridge();
+  assert.equal(bridge.toolDefs.length, 2);
+  assert.ok(bridge.toolDefs.some((d) => d.name.endsWith('__alpha')));
+  assert.ok(bridge.toolDefs.some((d) => d.name.endsWith('__beta')));
+});
+
+test('pc-sdk-15: a non-null tool_filter restricts the bridge to its intersection with discovery', async () => {
+  freshDb();
+  const { probeFn, push } = scriptedProbe();
+  const url = 'https://filtered.example/mcp';
+  const id = makeServer('filtered-srv', url);
+  attachMcpConsumer({
+    mcpServerId: id,
+    consumer: 'orchestrator',
+    toolFilter: ['alpha', 'missing_from_discovery'],
+  });
+
+  const mcp = new McpManager({ probeFn });
+  mcp.syncFromRegistry();
+  push(url, { ok: true, tools: [tool('alpha'), tool('beta'), tool('gamma')] });
+  await mcp.probe(id);
+
+  const bridge = mcp.buildBridge();
+  // Only the intersection is bridged — 'beta'/'gamma' are filtered out, and
+  // 'missing_from_discovery' (present in the filter, absent from discovery)
+  // is silently ignored rather than erroring.
+  assert.deepEqual(bridge.toolDefs.map((d) => d.name), ['filtered_srv__alpha']);
+});
+
+test('pc-sdk-15: attachMcpConsumer only updates toolFilter when passed explicitly', async () => {
+  freshDb();
+  const id = makeServer('reattach-srv', 'https://reattach.example/mcp');
+  const first = attachMcpConsumer({ mcpServerId: id, consumer: 'orchestrator', toolFilter: ['alpha'] });
+  assert.deepEqual(first.toolFilter, ['alpha']);
+  // Re-attaching without toolFilter must not clear the existing filter.
+  const second = attachMcpConsumer({ mcpServerId: id, consumer: 'orchestrator' });
+  assert.deepEqual(second.toolFilter, ['alpha']);
+  // An explicit different value updates it.
+  const third = attachMcpConsumer({ mcpServerId: id, consumer: 'orchestrator', toolFilter: ['beta', 'gamma'] });
+  assert.deepEqual(third.toolFilter, ['beta', 'gamma']);
+  // An explicit null clears it back to "all tools".
+  const fourth = attachMcpConsumer({ mcpServerId: id, consumer: 'orchestrator', toolFilter: null });
+  assert.equal(fourth.toolFilter, null);
+});
+
 test('a down server never blocks the bridge — it is simply absent', async () => {
   freshDb();
   const { probeFn, push } = scriptedProbe();
@@ -200,4 +259,35 @@ test('a down server never blocks the bridge — it is simply absent', async () =
   const bridge = mcp.buildBridge();
   assert.ok(bridge.toolDefs.some((d) => d.name.endsWith('__live')));
   assert.equal(bridge.toolDefs.length, 1, 'only the healthy server is bridged');
+});
+
+test('pc-sdk-15: booting seeds the orchestrator↔AInativePM attachment with the fixed default tool filter', async () => {
+  freshDb();
+  const prevCmd = process.env.PC_AINATIVE_PM_CMD;
+  const prevArgs = process.env.PC_AINATIVE_PM_ARGS;
+  const prevUrl = process.env.PC_AINATIVE_PM_URL;
+  process.env.PC_AINATIVE_PM_CMD = 'pc-ainative-pm-fixture';
+  delete process.env.PC_AINATIVE_PM_ARGS;
+  delete process.env.PC_AINATIVE_PM_URL;
+  try {
+    const mcp = new McpManager({ probeFn: async () => ({ ok: false, error: 'not probed in this test' }) });
+    await mcp.initFromBoot();
+    const [pm] = listMcpServersRegistry({ scope: 'global' }).filter((r) => r.name === 'AInativePM');
+    assert.ok(pm, 'AInativePM was seeded');
+    const attachments = listMcpConsumerAttachmentsForConsumer('orchestrator');
+    const attachment = attachments.find((a) => a.mcpServerId === pm!.id);
+    assert.ok(attachment, 'orchestrator is attached to the seeded AInativePM server');
+    assert.deepEqual(attachment!.toolFilter, AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER);
+
+    // A second boot (re-run) re-applies the same fixed filter rather than
+    // drifting or clearing it.
+    const mcp2 = new McpManager({ probeFn: async () => ({ ok: false, error: 'not probed in this test' }) });
+    await mcp2.initFromBoot();
+    const attachment2 = listMcpConsumerAttachmentsForConsumer('orchestrator').find((a) => a.mcpServerId === pm!.id);
+    assert.deepEqual(attachment2!.toolFilter, AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER);
+  } finally {
+    if (prevCmd === undefined) delete process.env.PC_AINATIVE_PM_CMD; else process.env.PC_AINATIVE_PM_CMD = prevCmd;
+    if (prevArgs === undefined) delete process.env.PC_AINATIVE_PM_ARGS; else process.env.PC_AINATIVE_PM_ARGS = prevArgs;
+    if (prevUrl === undefined) delete process.env.PC_AINATIVE_PM_URL; else process.env.PC_AINATIVE_PM_URL = prevUrl;
+  }
 });
