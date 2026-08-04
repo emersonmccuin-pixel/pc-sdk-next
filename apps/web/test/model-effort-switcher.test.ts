@@ -8,7 +8,12 @@ import assert from 'node:assert/strict';
 
 import type { SessionSummary } from '@pc/contracts';
 import { useRuntimes, type RuntimeInfo } from '../src/state/runtimes.ts';
-import { modelLabel, modelsForSelection } from '../src/components/ModelSwitcher.tsx';
+import {
+  canListModelsWithoutSession,
+  effectiveRuntimeAccount,
+  modelLabel,
+  modelsForSelection,
+} from '../src/components/ModelSwitcher.tsx';
 import { effortOptionsForSelection } from '../src/components/EffortSwitcher.tsx';
 
 const PROJECT_ID = 'project-model-effort';
@@ -74,6 +79,29 @@ test('effortOptionsForSelection offers exactly the supported model\'s values, an
 
   const noSelection = effortOptionsForSelection(RUNTIMES, null, 'personal', 'opus');
   assert.deepEqual(noSelection, { supported: false, reasonCode: null, values: [] });
+});
+
+test('canListModelsWithoutSession requires a project and both defaults resolved', () => {
+  assert.equal(canListModelsWithoutSession('project-1', true, true), true);
+  assert.equal(canListModelsWithoutSession(null, true, true), false);
+  assert.equal(canListModelsWithoutSession('project-1', false, true), false);
+  assert.equal(canListModelsWithoutSession('project-1', true, false), false);
+});
+
+test('effectiveRuntimeAccount falls back to the project defaults with no stamped selection, and prefers the stamp otherwise', () => {
+  assert.deepEqual(effectiveRuntimeAccount(null, 'claude-agent-sdk', 'personal'), {
+    runtimeId: 'claude-agent-sdk',
+    accountId: 'personal',
+  });
+  assert.deepEqual(
+    effectiveRuntimeAccount({ runtimeId: 'openai-codex', accountId: 'work' }, 'claude-agent-sdk', 'personal'),
+    { runtimeId: 'openai-codex', accountId: 'work' },
+  );
+});
+
+test('the pre-session fallback lists the project default runtime/account models', () => {
+  const { runtimeId, accountId } = effectiveRuntimeAccount(null, 'claude-agent-sdk', 'personal');
+  assert.deepEqual(modelsForSelection(RUNTIMES, runtimeId, accountId).map((m) => m.id), ['opus', 'fable']);
 });
 
 // ── store round-trip ──────────────────────────────────────────────────────

@@ -9,10 +9,21 @@
 // change (see SessionService.changeSelection). This component never branches
 // on that outcome; it always shows the same provider-neutral copy and lets
 // the replay/provenance UI show what actually happened.
+//
+// Before a session is stamped (fresh project, no messages sent yet) there is
+// no session selection to read models off of. RuntimeSwitcher/AccountSwitcher
+// already work in that state by acting on the project's default runtime/
+// account (`useRuntimes`/`useAccounts` `selectedId` + `selectionResolved`);
+// this picker mirrors that — it lists models for the project defaults and
+// labels the button "default" (nothing stamped yet). Picking one calls the
+// same setModel, which mints the first session. Only while either default is
+// still unresolved (or there's no project) does this fall back to the
+// disabled placeholder.
 
 import { useEffect, useRef, useState } from 'react';
 
 import { useRuntimes, type RuntimeInfo } from '@/state/runtimes';
+import { useAccounts } from '@/state/accounts';
 import { useConnectionStore } from '@/state/connection';
 import type { RuntimeModel } from '@pc/contracts';
 
@@ -34,6 +45,32 @@ export function modelLabel(models: RuntimeModel[], modelId: string): string {
   return model?.label ?? modelId;
 }
 
+/** True once there's enough to render the picker even with no stamped
+ *  session: a project is selected and its default runtime+account have both
+ *  resolved. Exported for direct testing without a DOM — this is the
+ *  pre-session enable/disable gate. */
+export function canListModelsWithoutSession(
+  projectId: string | null,
+  runtimeDefaultResolved: boolean,
+  accountDefaultResolved: boolean,
+): boolean {
+  return projectId !== null && runtimeDefaultResolved && accountDefaultResolved;
+}
+
+/** The runtime+account to list models for: the stamped session's when one
+ *  exists, otherwise the project's defaults. Exported for direct testing
+ *  without a DOM — this is the pre-session fallback contract. */
+export function effectiveRuntimeAccount(
+  selection: { runtimeId: string; accountId: string } | null,
+  defaultRuntimeId: string,
+  defaultAccountId: string,
+): { runtimeId: string; accountId: string } {
+  return {
+    runtimeId: selection?.runtimeId ?? defaultRuntimeId,
+    accountId: selection?.accountId ?? defaultAccountId,
+  };
+}
+
 export function ModelSwitcher({ projectId }: { projectId: string | null }) {
   const runtimes = useRuntimes((s) => s.runtimes);
   const activeSession = useRuntimes((s) => s.activeSession);
@@ -41,6 +78,10 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
   const error = useRuntimes((s) => s.error);
   const setModel = useRuntimes((s) => s.setModel);
   const loadRegistry = useRuntimes((s) => s.loadRegistry);
+  const defaultRuntimeId = useRuntimes((s) => s.selectedId);
+  const runtimeDefaultResolved = useRuntimes((s) => s.selectionResolved);
+  const defaultAccountId = useAccounts((s) => s.selectedId);
+  const accountDefaultResolved = useAccounts((s) => s.selectionResolved);
   const connectionEpoch = useConnectionStore((s) => s.epoch);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -67,12 +108,11 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
   }, [open]);
 
   const selection = activeSession?.selection ?? null;
-  const models = modelsForSelection(runtimes, selection?.runtimeId, selection?.accountId);
   const pending = status === 'pending';
 
-  // No stamped selection yet (no session minted for this project). There is
-  // nothing to pick a model for — never invents a runtime/account guess.
-  if (!selection) {
+  // No stamped selection yet, and the project's default runtime/account
+  // aren't resolved either (or there's no project) — nothing to list yet.
+  if (!selection && !canListModelsWithoutSession(projectId, runtimeDefaultResolved, accountDefaultResolved)) {
     return (
       <div className="relative" role="status" aria-live="polite">
         <button
@@ -88,11 +128,15 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
     );
   }
 
-  const currentLabel = modelLabel(models, selection.model);
+  // With no stamped selection, list the project's default runtime+account
+  // models instead — picking one mints the first session under it.
+  const { runtimeId, accountId } = effectiveRuntimeAccount(selection, defaultRuntimeId, defaultAccountId);
+  const models = modelsForSelection(runtimes, runtimeId, accountId);
+  const currentLabel = selection ? modelLabel(models, selection.model) : 'default';
   const unavailable = models.length === 0;
 
   async function choose(modelId: string) {
-    if (!projectId || pending || modelId === selection!.model) {
+    if (!projectId || pending || (selection && modelId === selection.model)) {
       setOpen(false);
       return;
     }
@@ -136,7 +180,7 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
             <div className="px-3 py-1.5 text-[10px] text-muted-foreground">no models discovered</div>
           )}
           {models.map((m) => {
-            const active = m.id === selection.model;
+            const active = selection ? m.id === selection.model : false;
             return (
               <button
                 key={m.id}
@@ -163,9 +207,11 @@ export function ModelSwitcher({ projectId }: { projectId: string | null }) {
             </div>
           )}
           <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground/70">
-            {projectId
-              ? 'Switching continues this conversation when possible, or starts a fresh one.'
-              : 'Select a project to switch model.'}
+            {!projectId
+              ? 'Select a project to switch model.'
+              : !selection
+                ? 'Picking a model starts this project\'s first session with it.'
+                : 'Switching continues this conversation when possible, or starts a fresh one.'}
           </div>
         </div>
       )}

@@ -5,6 +5,12 @@
 // without effort support renders disabled with its typed reason — never
 // hidden, never silently clickable (mirrors RuntimeSwitcher's unavailable
 // runtimes).
+//
+// Unlike ModelSwitcher, this one has no pre-session fallback: effort is
+// scoped to a specific model, and before a session is stamped there is no
+// model to scope it to (`setEffort` is a no-op without one — see
+// `state/runtimes.ts`). It stays disabled until the model picker mints the
+// first session, then lights up immediately.
 
 import { useEffect, useRef, useState } from 'react';
 
@@ -86,13 +92,13 @@ export function EffortSwitcher({ projectId }: { projectId: string | null }) {
   // all — render disabled with its reason instead of hiding (consistent with
   // RuntimeSwitcher's unavailable-runtime treatment).
   if (!selection || !options.supported) {
-    const reason = selection ? reasonLabel(options.reasonCode) : 'resolving';
+    const reason = selection ? reasonLabel(options.reasonCode) : null;
     return (
       <div className="relative" role="status" aria-live="polite">
         <button
           type="button"
           disabled
-          title={selection ? `Effort: ${reason}` : 'Resolving the active session'}
+          title={selection ? `Effort: ${reason}` : 'Pick a model first — effort applies once a session is started'}
           className="flex items-center gap-1.5 px-2 py-1 text-[11px] uppercase tracking-[0.06em] text-muted-foreground opacity-60"
         >
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground" aria-hidden />
