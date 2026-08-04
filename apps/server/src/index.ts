@@ -338,6 +338,7 @@ async function main(): Promise<void> {
       tools,
       maxTurns: orchestrator?.maxTurns ?? undefined,
       ask: ctx.ask,
+      onUnsolicitedTurn: ctx.onUnsolicitedTurn,
       // Tool prompting policy remains disabled for the current product slice.
       // The adapter still maps approval lifecycles when prompting is enabled.
       // Enabling prompts is a separate product/security-policy decision; the

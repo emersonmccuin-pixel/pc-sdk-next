@@ -68,6 +68,7 @@ import type { ULID } from '@pc/domain';
 import {
   RuntimeSelectionRejectedError,
   type RuntimeContinuationRequest,
+  type RuntimeEvent,
   type RuntimeSession,
   type RuntimeSessionFactory,
 } from '../runner/runtime.ts';
@@ -151,6 +152,15 @@ interface RuntimeObservationFence {
   signal: AbortSignal;
   invalidate: () => void;
 }
+
+/** The identity a turn's events are persisted/published against. A durable
+ * `ClaimedConversationTurn` satisfies this structurally; an unsolicited
+ * runtime turn (pc-sdk-16) uses a lighter, locally-minted one instead — it
+ * never touches the durable send-queue/conversation_turns bookkeeping a real
+ * `sendTurn` turn does, since the adapter itself already guarantees only one
+ * such sequence is ever open per runtime (see claude-adapter.ts
+ * `admitUnsolicitedTurn`). */
+type TurnEventContext = Pick<ClaimedConversationTurn, 'projectId' | 'conversationId' | 'sessionId' | 'turnId'>;
 
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 15_000;
 const DEFAULT_CONTEXT_OBSERVATION_TIMEOUT_MS = 2_000;
@@ -1205,6 +1215,16 @@ export class SessionService {
         ...(seedContext ? { seedContext } : {}),
         cwd: this.cwd,
         ask: this.askRegistry.ask,
+        onUnsolicitedTurn: (events) => {
+          const current = this.runtime;
+          if (!current || this.runtimeSessionId !== session.id) {
+            console.warn(
+              `[pc-sdk][session-service] dropped an unsolicited runtime turn: no runtime is currently bound to session ${session.id}`,
+            );
+            return;
+          }
+          this.handleUnsolicitedTurn(session, current, events);
+        },
       });
     } catch (error) {
       if (continuation.mode === 'resume') {
@@ -1593,6 +1613,132 @@ export class SessionService {
     this.publishCommittedEvents();
   }
 
+  // ── unsolicited (runtime self-resume) turns ────────────────────────────────
+
+  /** Registered as `onUnsolicitedTurn` alongside `ask` (ensureRuntime). A
+   * turn-bearing event sequence the adapter produced with no correlated
+   * `sendTurn` call — a background self-resume, a completed subagent's task
+   * notification, or a scheduled wakeup (pc-sdk-16) — is minted into its own
+   * turn identity here, mirroring injectAgentEnvelope's turn-minting shape: a
+   * leading, visibly attributed system marker, then the runtime's ordinary
+   * assistant-text/tool-state events, then exactly one terminal, all
+   * persisted and streamed through the same event/outbox door as any other
+   * turn. Unlike a real turn this never touches the durable send-queue/
+   * conversation_turns "one active turn" row — the adapter itself already
+   * guarantees only one such sequence is ever open per runtime (its
+   * `currentTurn` is shared by `sendTurn` and this path), so a second,
+   * independent mutual-exclusion mechanism here would be redundant. */
+  private handleUnsolicitedTurn(
+    session: OrchestratorSessionRow,
+    runtime: RuntimeSession,
+    events: AsyncIterable<RuntimeEvent>,
+  ): void {
+    if (
+      this.disposed ||
+      this.session?.id !== session.id ||
+      this.runtime !== runtime ||
+      this.runtimeSessionId !== session.id
+    ) {
+      console.warn(
+        `[pc-sdk][session-service] dropped an unsolicited runtime turn: session ${session.id} is no longer current`,
+      );
+      return;
+    }
+    const context: TurnEventContext = {
+      projectId: session.projectId,
+      conversationId: session.id,
+      sessionId: session.id,
+      turnId: newId(),
+    };
+    try {
+      this.persistAndPublish(context, {
+        kind: 'system',
+        subtype: 'runtime-unsolicited-turn',
+        level: 'notice',
+        message: 'The assistant continued this conversation on its own.',
+      }, { itemId: newId() });
+    } catch (error) {
+      console.warn(
+        `[pc-sdk][session-service] dropped an unsolicited runtime turn ${context.turnId}: `
+          + 'its leading marker could not be persisted:',
+        error,
+      );
+      return;
+    }
+    this.setHealth('busy');
+    this.broadcast(this.orchestratorStateFrame());
+    void runTurn(events, this.unsolicitedTurnDeps(context, session, runtime))
+      .catch((error) => {
+        console.warn(
+          `[pc-sdk][session-service] unsolicited runtime turn ${context.turnId} ended abnormally:`,
+          error,
+        );
+      })
+      .finally(() => {
+        if (this.disposed || this.session?.id !== session.id || this.runtime !== runtime) return;
+        this.setHealth('idle');
+        this.broadcast(this.orchestratorStateFrame());
+      });
+  }
+
+  private unsolicitedTurnDeps(
+    context: TurnEventContext,
+    session: OrchestratorSessionRow,
+    runtime: RuntimeSession,
+  ): TurnRunnerDeps {
+    return {
+      emitChat: (event, identity) => {
+        if (event.kind === 'turn-end' || event.kind === 'turn-failed') {
+          try {
+            this.persistAndPublish(context, event, { itemId: newId() });
+          } catch (error) {
+            console.warn(
+              `[pc-sdk][session-service] failed to persist unsolicited runtime turn terminal for ${context.turnId}:`,
+              error,
+            );
+          }
+          this.askRegistry.clear('unsolicited turn ended');
+          return;
+        }
+        this.persistAndPublish(context, event, {
+          itemId: identity?.itemId ?? newId(),
+          streamId: identity?.streamId,
+        });
+        if (
+          event.kind === 'tool-state' &&
+          event.state === 'approval-needed' &&
+          event.approval.status === 'pending'
+        ) this.askRegistry.publish(event.approval.requestId);
+      },
+      emitDelta: (itemId, deltaIndex, delta) =>
+        this.persistAndPublish(context, { kind: 'stream-delta', delta }, {
+          itemId, streamId: itemId, deltaIndex,
+        }),
+      onSubscriptionQuota: (batch) => {
+        const selection = runtimeSelectionForSession(session);
+        if (
+          this.disposed ||
+          this.runtime !== runtime ||
+          this.runtimeSessionId !== session.id ||
+          !selection ||
+          batch.runtimeId !== selection.runtimeId ||
+          batch.accountId !== selection.accountId
+        ) {
+          console.warn('[pc-sdk][subscription-quota] dropped unattributed unsolicited-turn observation');
+          return;
+        }
+        try {
+          this.onSubscriptionQuota?.(batch);
+        } catch {
+          console.warn('[pc-sdk][subscription-quota] unsolicited-turn observation was not recorded');
+        }
+      },
+      onDropped: (reason, message) => {
+        console.warn(`[pc-sdk][turn] dropped (unsolicited): ${reason}`, summarize(message));
+      },
+    };
+  }
+
   private turnDeps(
     turn: ClaimedConversationTurn,
     session: OrchestratorSessionRow,
@@ -1724,7 +1870,7 @@ export class SessionService {
   // ── event/outbox publication ───────────────────────────────────────────────
 
   private persistAndPublish(
-    turn: ClaimedConversationTurn,
+    turn: TurnEventContext,
     event: ConversationEvent,
     opts: { itemId: string; streamId?: string; deltaIndex?: number; occurredAt?: number },
   ): void {

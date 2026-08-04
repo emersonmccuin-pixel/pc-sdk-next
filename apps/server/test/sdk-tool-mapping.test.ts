@@ -569,6 +569,85 @@ test('Claude runtime drops out-of-turn native frames and resets correlation at t
   await session.dispose();
 });
 
+test('Claude runtime surfaces an out-of-turn message via onUnsolicitedTurn instead of dropping it', async () => {
+  let capturedEvents!: AsyncIterable<RuntimeEvent>;
+  let handlerCalls = 0;
+  const session = new ClaudeRuntimeSession({
+    env: TEST_CLAUDE_ENV, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+    onUnsolicitedTurn: (events) => {
+      handlerCalls += 1;
+      capturedEvents = events;
+    },
+  });
+  const internals = session as unknown as {
+    started: boolean;
+    route: (message: SDKMessage) => void;
+  };
+  internals.started = true;
+
+  // Establish the native session first (unrelated to any turn — same as a
+  // real query loop's init) so the out-of-turn message below is a genuine
+  // post-init self-resume, not pre-init noise.
+  internals.route(sdk({
+    type: 'system', subtype: 'init', uuid: 'init-1', session_id: 'native-unsolicited',
+  }));
+  internals.route(assistantTool('unsolicited-tool'));
+  internals.route(result('unsolicited-tool'));
+  internals.route(sdk({
+    type: 'result', subtype: 'success', is_error: false, uuid: 'result-1',
+    session_id: 'native-unsolicited',
+  }));
+
+  assert.equal(handlerCalls, 1);
+  const captured: RuntimeEvent[] = [];
+  for await (const event of capturedEvents) captured.push(event);
+  assert.ok(
+    captured.some((event) => event.type === 'tool-state'),
+    'the unsolicited tool activity must be surfaced, not dropped',
+  );
+  assert.ok(
+    captured.some((event) => event.type === 'result'),
+    'the unsolicited turn must still terminate with exactly one result',
+  );
+  await session.dispose();
+});
+
+test("Claude runtime keeps suppressing the handoff seed's own reply even with an onUnsolicitedTurn handler", async () => {
+  let handlerCalls = 0;
+  const session = new ClaudeRuntimeSession({
+    env: TEST_CLAUDE_ENV, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
+    onUnsolicitedTurn: () => { handlerCalls += 1; },
+  });
+  const internals = session as unknown as {
+    started: boolean;
+    suppressNextUnsolicitedReply: boolean;
+    route: (message: SDKMessage) => void;
+  };
+  internals.started = true;
+  internals.route(sdk({
+    type: 'system', subtype: 'init', uuid: 'init-1', session_id: 'native-seed',
+  }));
+  // Mirrors what `start()` does right before pushing the seed message onto
+  // the prompt queue — narrowly scoped to that one round trip, never the
+  // default behavior for an unbound message (pc-sdk-16).
+  internals.suppressNextUnsolicitedReply = true;
+
+  internals.route(assistantTool('seed-reply-tool'));
+  internals.route(result('seed-reply-tool'));
+  internals.route(sdk({
+    type: 'result', subtype: 'success', is_error: false, uuid: 'result-1',
+    session_id: 'native-seed',
+  }));
+
+  assert.equal(handlerCalls, 0, "the seed's own out-of-turn reply must still be dropped");
+  assert.equal(
+    internals.suppressNextUnsolicitedReply,
+    false,
+    "the seed's own terminal must clear the suppression window",
+  );
+  await session.dispose();
+});
+
 test('Claude runtime records an idle query-loop death and rejects the next turn', async () => {
   const session = new ClaudeRuntimeSession({
     env: TEST_CLAUDE_ENV, continuationAttemptId: CONTINUATION_ATTEMPT_ID, selection: SELECTION,
