@@ -190,6 +190,16 @@ export interface RuntimeSession {
   interrupt(): Promise<void>;
   /** Tear the session down (ends the native loop). Idempotent. */
   dispose(): Promise<void>;
+  /** pc-sdk-15 — trigger native context compaction out-of-turn (no active
+   *  `sendTurn` may be open). Presence of this method IS the capability
+   *  signal: an adapter that cannot trigger native compaction simply omits
+   *  it, so callers feature-detect with `typeof session.compact ===
+   *  'function'` rather than a separate capability lookup. Resolves
+   *  `'succeeded'` only on a positive native compaction receipt; any other
+   *  outcome (unsupported, timeout, native failure) resolves `'failed'` —
+   *  it never throws, so the caller's fallback (a visible notice) is
+   *  unconditional. */
+  compact?(): Promise<{ status: 'succeeded' | 'failed' }>;
 }
 
 /** Adapter-facing session inputs — the provider-neutral instruction package.

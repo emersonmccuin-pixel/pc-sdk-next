@@ -27,6 +27,19 @@ test('buildBridge namespaces tools and lists fully-qualified allowed names', () 
   assert.deepEqual(build.allowedToolNames, ['mcp__pc__ainativepm__wi_create', 'mcp__pc__ainativepm__wi_list']);
 });
 
+test('pc-sdk-15: buildBridge honors a per-server toolFilter (intersection, tolerant of missing entries)', () => {
+  const build = buildBridge([{ ...pmServer, toolFilter: ['wi_list', 'wi_delete_not_discovered'] }]);
+  assert.deepEqual(build.toolDefs.map((d) => d.name), ['ainativepm__wi_list']);
+});
+
+test('pc-sdk-15: buildBridge with a null toolFilter bridges every discovered tool', () => {
+  const build = buildBridge([{ ...pmServer, toolFilter: null }]);
+  assert.deepEqual(
+    build.toolDefs.map((d) => d.name),
+    ['ainativepm__wi_create', 'ainativepm__wi_list'],
+  );
+});
+
 test('buildBridge with no servers yields nothing', () => {
   const build = buildBridge([]);
   assert.equal(build.toolDefs.length, 0);

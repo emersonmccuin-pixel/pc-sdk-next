@@ -128,6 +128,18 @@ export interface JsonlSettings {
 export const JSONL_RETENTION_DAYS_MIN = 1;
 export const JSONL_RETENTION_DAYS_MAX = 3650;
 
+/** pc-sdk-15 — orchestrator context-size policy. When observed context tokens
+ *  exceed `thresholdTokens`, the session service triggers native compaction
+ *  (if the runtime adapter advertises it) or, failing that, surfaces one
+ *  visible system notice recommending a new session. */
+export interface ContextPolicySettings {
+  thresholdTokens: number;
+}
+
+export const CONTEXT_POLICY_THRESHOLD_TOKENS_MIN = 10_000;
+export const CONTEXT_POLICY_THRESHOLD_TOKENS_MAX = 1_000_000;
+export const CONTEXT_POLICY_THRESHOLD_TOKENS_DEFAULT = 100_000;
+
 export type OrchestratorSurfacePreference = 'chat' | 'terminal';
 
 export interface GlobalSettings {
@@ -211,6 +223,8 @@ export interface GlobalSettings {
    *  web app's font registry. Defaults: chat/workItems → System (sans); ui →
    *  IBM Plex Sans; code → JetBrains Mono. */
   fonts: FontSettings;
+  /** pc-sdk-15 — orchestrator context-size policy (compaction/notice threshold). */
+  contextPolicy: ContextPolicySettings;
 }
 
 export const FONT_SCALE_MIN = 0.85;
@@ -259,6 +273,7 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     showCommandSpace: true,
     commandIntroDismissed: false,
     fonts: { ...FONT_GROUP_DEFAULTS },
+    contextPolicy: { thresholdTokens: CONTEXT_POLICY_THRESHOLD_TOKENS_DEFAULT },
   };
 }
 
@@ -295,6 +310,15 @@ export function normalizeJsonlRetention(v: unknown): number | 'never' {
   if (v < JSONL_RETENTION_DAYS_MIN) return JSONL_RETENTION_DAYS_MIN;
   if (v > JSONL_RETENTION_DAYS_MAX) return JSONL_RETENTION_DAYS_MAX;
   return Math.floor(v);
+}
+
+/** Clamp `contextPolicy.thresholdTokens` to [10_000, 1_000_000]. Default 100_000
+ *  on non-finite / out-of-band, matching the `clampMaxConcurrent` pattern. */
+export function clampContextPolicyThresholdTokens(n: unknown): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return CONTEXT_POLICY_THRESHOLD_TOKENS_DEFAULT;
+  if (n < CONTEXT_POLICY_THRESHOLD_TOKENS_MIN) return CONTEXT_POLICY_THRESHOLD_TOKENS_MIN;
+  if (n > CONTEXT_POLICY_THRESHOLD_TOKENS_MAX) return CONTEXT_POLICY_THRESHOLD_TOKENS_MAX;
+  return Math.floor(n);
 }
 
 export function normalizeOrchestratorSurfacePreference(
@@ -346,6 +370,11 @@ export function withSettingsDefaults(
     showCommandSpace: stored.showCommandSpace ?? defaults.showCommandSpace,
     commandIntroDismissed: stored.commandIntroDismissed ?? defaults.commandIntroDismissed,
     fonts: normalizeFontSettings((stored as { fonts?: unknown }).fonts ?? defaults.fonts),
+    contextPolicy: {
+      thresholdTokens: clampContextPolicyThresholdTokens(
+        stored.contextPolicy?.thresholdTokens ?? defaults.contextPolicy.thresholdTokens,
+      ),
+    },
     jsonl: {
       retentionDays: normalizeJsonlRetention(
         stored.jsonl?.retentionDays ?? defaults.jsonl.retentionDays,

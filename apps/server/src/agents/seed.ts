@@ -100,6 +100,31 @@ export interface SeedSummary {
   unchanged: number;
 }
 
+/** pc-sdk-15 — model tiers PC has fully retired as stock defaults (the
+ *  `[1m]` variants moved orchestrator/researcher to plain `sonnet` and
+ *  planner/contract-reviewer to plain `opus`). A live row still holding one
+ *  of these isn't a value a user could deliberately pick going forward — it
+ *  can only be a stale default from before the change — so it is safe to
+ *  migrate forward even under `insert-only` (see `upgradeRetiredModel`
+ *  below), unlike an ordinary reseed-on-drift patch. */
+const RETIRED_STOCK_MODELS: readonly string[] = ['opus[1m]'];
+
+/** `insert-only` rows (the orchestrator) never get seed-owned fields patched
+ *  on drift — the user's own edits (prompt, tools, and the model picker)
+ *  must survive every boot, and the seeding logic has no way to tell "user
+ *  picked this" apart from "stock default" once the row exists. A model
+ *  value PC has fully retired is the one exception: it can never be a live
+ *  user choice (it no longer exists as an option), so it is migrated to the
+ *  content's current default exactly once. Any other value — the new
+ *  default, the old default the row already carries unchanged pre-upgrade,
+ *  or anything the user actually selected — is left untouched. No-op for
+ *  authoritative-mode content, which already reseeds every drifted field. */
+function upgradeRetiredModel(content: CreateAgentInput): void {
+  const live = getAgentByName({ name: content.name, scope: 'global' });
+  if (!live || !live.model || !RETIRED_STOCK_MODELS.includes(live.model)) return;
+  updateAgent(live.id, { model: content.model }, SEED_AUDIT);
+}
+
 /** Boot entry: 6 specialists authoritative, orchestrator insert-only. */
 export function seedStockAgents(): SeedSummary {
   const summary: SeedSummary = { inserted: 0, reseeded: 0, unchanged: 0 };
@@ -107,6 +132,7 @@ export function seedStockAgents(): SeedSummary {
     summary[action === 'inserted' ? 'inserted' : action === 'reseeded' ? 'reseeded' : 'unchanged']++;
   };
   bump(seedAgent(ORCHESTRATOR_AGENT_CONTENT, 'insert-only'));
+  upgradeRetiredModel(ORCHESTRATOR_AGENT_CONTENT);
   for (const content of STOCK_AGENT_CONTENT) bump(seedAgent(content, 'authoritative'));
   return summary;
 }

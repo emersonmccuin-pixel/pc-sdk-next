@@ -17,7 +17,7 @@ import {
   createMcpServerRegistry,
   getDb,
   insertLiveEvent,
-  listMcpServerIdsForConsumer,
+  listMcpConsumerAttachmentsForConsumer,
   listMcpServersRegistry,
   setMcpServerHealth,
 } from '@pc/db';
@@ -271,18 +271,28 @@ export class McpManager {
   }
 
   /** Bridge build for a consumer (default: orchestrator). Only ENABLED,
-   *  HEALTHY servers ATTACHED to that consumer are exposed. */
+   *  HEALTHY servers ATTACHED to that consumer are exposed, each filtered to
+   *  its attachment's `toolFilter` (pc-sdk-15) when set. */
   buildBridge(consumer: McpConsumer = { kind: 'orchestrator' }): BridgeBuild {
-    const attached = new Set(listMcpServerIdsForConsumer(consumerKey(consumer)));
+    const attachments = new Map(
+      listMcpConsumerAttachmentsForConsumer(consumerKey(consumer)).map((a) => [a.mcpServerId, a]),
+    );
     const servers: BridgeServer[] = [];
     for (const state of this.states.values()) {
       if (!state.row.enabled) continue;
       if (state.status.status !== 'healthy') continue;
-      if (!attached.has(state.row.id as ULID)) continue;
+      const attachment = attachments.get(state.row.id as ULID);
+      if (!attachment) continue;
       if (state.tools.length === 0) continue;
       const resolved = resolveConfig(state.row.transport);
       if (!resolved.ok) continue;
-      servers.push({ id: state.row.id, name: state.row.name, config: resolved.config, tools: state.tools });
+      servers.push({
+        id: state.row.id,
+        name: state.row.name,
+        config: resolved.config,
+        tools: state.tools,
+        toolFilter: attachment.toolFilter,
+      });
     }
     return buildBridge(servers, (serverId, toolName) => this.isToolLive(serverId, toolName));
   }
@@ -335,16 +345,27 @@ export class McpManager {
   }
 
   /** Seed a global AInativePM registry row from env when configured and absent,
-   *  and attach it to the orchestrator (default orchestrator-only). Idempotent:
-   *  a re-run finds the existing row and skips.
+   *  and attach it to the orchestrator (default orchestrator-only) with the
+   *  default orchestrator↔AInativePM tool filter (pc-sdk-15, usage audit
+   *  pc-sdk-15 — 77 schemas re-sent every turn shrunk to this subset).
+   *  Idempotent: a re-run finds the existing row and re-applies the same
+   *  fixed default filter, so a later boot can never drift from it; a user
+   *  who wants every tool re-exposed clears the filter explicitly through
+   *  the MCP manager UI/HTTP, which persists past the next restart.
    *  `PC_AINATIVE_PM_URL` → HTTP (+ `PC_AINATIVE_PM_TOKEN` Bearer);
    *  else `PC_AINATIVE_PM_CMD` (+ `PC_AINATIVE_PM_ARGS` space-split) → stdio. */
   private seedAiNativePmFromEnv(): void {
     const name = 'AInativePM';
     const existing = listMcpServersRegistry({ scope: 'global' }).find((r) => r.name === name);
     if (existing) {
-      // Keep the default attachment intact across restarts (idempotent).
-      attachMcpConsumer({ mcpServerId: existing.id, consumer: 'orchestrator' });
+      // Keep the default attachment (and its default filter) intact across
+      // restarts (idempotent) — attachMcpConsumer only updates toolFilter
+      // when it is passed explicitly, never silently on an unrelated call.
+      attachMcpConsumer({
+        mcpServerId: existing.id,
+        consumer: 'orchestrator',
+        toolFilter: AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER,
+      });
       return;
     }
 
@@ -366,10 +387,43 @@ export class McpManager {
       description: 'AInativePM — project management over MCP (seeded from env).',
       transport,
     });
-    attachMcpConsumer({ mcpServerId: row.id, consumer: 'orchestrator' });
-    console.log('[pc-sdk][mcp] seeded AInativePM from env (attached to orchestrator)');
+    attachMcpConsumer({
+      mcpServerId: row.id,
+      consumer: 'orchestrator',
+      toolFilter: AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER,
+    });
+    console.log('[pc-sdk][mcp] seeded AInativePM from env (attached to orchestrator, filtered tool set)');
   }
 }
+
+/** pc-sdk-15 — default orchestrator↔AInativePM tool allowlist. The 5-day
+ *  usage audit found every one of AInativePM's ~77 tool schemas re-sent to
+ *  the orchestrator on every turn; this fixed subset covers the workflows
+ *  the orchestrator actually drives (capture/organize/advance/recall work
+ *  items) without the long tail of admin/automation/calendar/recipe tools. */
+export const AINATIVE_PM_ORCHESTRATOR_TOOL_FILTER: string[] = [
+  'get_started',
+  'register_folder',
+  'resolve_project',
+  'suggest_destination',
+  'capture',
+  'create_item',
+  'create_items',
+  'get_item',
+  'list_items',
+  'update_item',
+  'update_items',
+  'set_done',
+  'advance_item',
+  'archive_item',
+  'break_down_item',
+  'next_action',
+  'get_brief',
+  'update_brief',
+  'add_context',
+  'recall_items',
+  'set_relation',
+];
 
 /** Resolve a stored transport to a plain client config for bridging. Shares the
  *  vault resolver so bridged calls use the same secrets as the probe. */

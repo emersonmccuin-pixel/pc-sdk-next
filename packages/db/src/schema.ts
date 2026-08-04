@@ -475,6 +475,9 @@ export const mcpConsumerAttachments = sqliteTable(
       .$type<ULID>()
       .references(() => mcpServers.id),
     consumer: text('consumer').notNull().$type<McpConsumerKey>(),
+    /** pc-sdk-15 — optional per-attachment tool allowlist. Null = all
+     *  discovered tools bridged (unchanged default behavior). */
+    toolFilter: text('tool_filter', { mode: 'json' }).$type<string[] | null>(),
     createdAt: integer('created_at').notNull(),
   },
   (t) => [

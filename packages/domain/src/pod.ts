@@ -387,10 +387,16 @@ export function consumerKey(consumer: McpConsumer): McpConsumerKey {
   return consumer.kind === 'orchestrator' ? 'orchestrator' : `agent:${consumer.name}`;
 }
 
-/** One row of `mcp_consumer_attachments`. */
+/** One row of `mcp_consumer_attachments`. `toolFilter` is an optional
+ *  per-attachment allowlist of bare remote tool names (pc-sdk-15): `null`
+ *  (the historical default) bridges every discovered tool, unchanged; a
+ *  non-null array bridges only its intersection with what the server
+ *  actually discovers — a filter entry with no matching discovered tool is
+ *  silently ignored, never an error. */
 export interface McpConsumerAttachmentRow {
   id: ULID;
   mcpServerId: ULID;
   consumer: McpConsumerKey;
+  toolFilter: string[] | null;
   createdAt: number;
 }

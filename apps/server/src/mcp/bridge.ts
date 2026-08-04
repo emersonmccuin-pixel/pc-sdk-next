@@ -32,6 +32,11 @@ export interface BridgeServer {
   name: string;
   config: PodMcpServerConfig;
   tools: RemoteTool[];
+  /** pc-sdk-15 — optional per-attachment allowlist of bare remote tool names.
+   *  Null/undefined bridges every discovered tool (unchanged default
+   *  behavior). Intersection semantics: a filter entry with no matching
+   *  discovered tool is silently ignored, never an error. */
+  toolFilter?: string[] | null;
 }
 
 /** Liveness gate (N6 requirement 5 — stale tools can't be called). Returns
@@ -62,7 +67,9 @@ export function buildBridge(servers: BridgeServer[], isToolLive?: IsToolLive): B
   const seen = new Set<string>();
   for (const server of servers) {
     const prefix = slug(server.name || server.id);
+    const allowed = server.toolFilter ? new Set(server.toolFilter) : null;
     for (const remote of server.tools) {
+      if (allowed && !allowed.has(remote.name)) continue;
       let name = `${prefix}__${remote.name}`;
       // Collision guard (two servers exposing the same tool name).
       if (seen.has(name)) name = `${prefix}_${server.id.slice(-4).toLowerCase()}__${remote.name}`;

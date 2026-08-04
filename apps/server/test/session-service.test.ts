@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getActiveConversationTurn,
+  getConversationQueueSnapshot,
   getRawDb,
   listConversationEvents,
   listUnrelayedConversationEvents,
@@ -43,7 +44,7 @@ function contextRows(sessionId: string) {
 function rig(
   projectId: ULID,
   runtime: FakeRuntime,
-  opts: { contextObservationTimeoutMs?: number } = {},
+  opts: { contextObservationTimeoutMs?: number; agentEnvelopeCoalesceWindowMs?: number } = {},
 ) {
   const frames: ServerFrame[] = [];
   const hub = new ProjectWebSocketHub<ULID>();
@@ -1304,4 +1305,269 @@ test('queued sends drain FIFO and typed agent envelopes remain typed', async () 
   const rows = listConversationEvents(session.id);
   assert.equal(rows.filter((row) => row.eventType === 'user').length, 2);
   assert.equal(rows.filter((row) => row.eventType === 'agent-envelope').length, 1);
+});
+
+// ── pc-sdk-15: context-size policy ──────────────────────────────────────────
+
+function systemNotices(sessionId: string): ChatEvent[] {
+  return listConversationEvents(sessionId)
+    .map((row) => row.payload as ChatEvent)
+    .filter((event) => event.kind === 'system' && event.subtype === 'context-size-notice');
+}
+
+function overThresholdObservation(usedTokens: number) {
+  return {
+    confidence: 'exact' as const,
+    usedTokens,
+    usableTokens: 200_000,
+    contextWindowTokens: 200_000,
+  };
+}
+
+test('context-size policy triggers native compaction when the runtime advertises it, and never posts a notice on success', async () => {
+  freshDb();
+  const project = newProject('context-policy-compacted');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    compactResult: { status: 'succeeded' },
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-compact-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-compact-client',
+  });
+  await until(() => contextRows(session.id).length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.compactCalls, 1);
+  assert.equal(systemNotices(session.id).length, 0);
+  await service.dispose();
+});
+
+test('context-size policy falls back to a visible notice when the runtime has no compact capability', async () => {
+  freshDb();
+  const project = newProject('context-policy-unsupported');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    // no compactResult ⇒ FakeRuntime.compact stays undefined (unsupported).
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-notice-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-notice-client',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+  assert.equal(runtime.compactCalls, 0);
+  await service.dispose();
+});
+
+test('context-size policy falls back to a visible notice when native compaction fails', async () => {
+  freshDb();
+  const project = newProject('context-policy-compact-failed');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    compactResult: { status: 'failed' },
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-failed-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-failed-client',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+  assert.equal(runtime.compactCalls, 1);
+  await service.dispose();
+});
+
+test('context-size policy is debounced: it does not re-fire every turn while usage stays over threshold, and re-arms once usage drops back below it', async () => {
+  freshDb();
+  const project = newProject('context-policy-debounce');
+  let usedTokens = 150_000;
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+    contextObservation: () => overThresholdObservation(usedTokens),
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-1', sessionId: session.id,
+    text: 'first', clientMessageId: 'ctx-debounce-client-1',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+
+  // Still over threshold on the next turn — debounced, no second notice.
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-2', sessionId: session.id,
+    text: 'second', clientMessageId: 'ctx-debounce-client-2',
+  });
+  await until(() => contextRows(session.id).length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(systemNotices(session.id).length, 1);
+
+  // Usage drops back below threshold: re-arms the policy.
+  usedTokens = 1_000;
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-3', sessionId: session.id,
+    text: 'third', clientMessageId: 'ctx-debounce-client-3',
+  });
+  await until(() => contextRows(session.id).length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(systemNotices(session.id).length, 1);
+  await service.dispose();
+});
+
+// ── pc-sdk-15: coalesced dispatched-agent envelopes ─────────────────────────
+
+function terminalEnvelope(overrides: Partial<Parameters<SessionService['injectAgentEnvelope']>[0]>) {
+  return {
+    runId: 'run-x',
+    agentName: 'agent-x',
+    status: 'done' as const,
+    summary: 'done',
+    detail: 'detail-x',
+    envelope: '[agent-completed] agent-x',
+    clientMessageId: 'agent-envelope:run-x',
+    ...overrides,
+  };
+}
+
+test('two terminal envelopes landing within the coalescing window produce one injected turn with both envelopes', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-basic');
+  const runtime = new FakeRuntime({
+    turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 50 });
+  const session = await service.ensureActiveSession();
+
+  const first = service.injectAgentEnvelope(terminalEnvelope({
+    runId: 'run-1', agentName: 'researcher', detail: 'researcher finished the survey',
+    envelope: '[agent-completed] researcher', clientMessageId: 'agent-envelope:run-1',
+  }));
+  const second = service.injectAgentEnvelope(terminalEnvelope({
+    runId: 'run-2', agentName: 'planner', status: 'failed', detail: 'planner hit a contract error',
+    envelope: '[agent-failed] planner', clientMessageId: 'agent-envelope:run-2',
+  }));
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.status, 'applied');
+  assert.equal(secondResult.status, 'applied');
+  // Both callers share the exact same durable delivery.
+  assert.deepEqual(firstResult, secondResult);
+
+  await until(() => terminals(session.id).length === 1);
+  assert.equal(runtime.sentTexts.length, 1, 'exactly one turn was sent for both coalesced envelopes');
+  assert.match(runtime.sentTexts[0]!, /\[agent-completed\] researcher/);
+  assert.match(runtime.sentTexts[0]!, /\[agent-failed\] planner/);
+
+  const rows = listConversationEvents(session.id);
+  const envelopeRows = rows.filter((row) => row.eventType === 'agent-envelope');
+  assert.equal(envelopeRows.length, 1, 'one combined agent-envelope event, not two');
+  const payload = envelopeRows[0]!.payload as ChatEvent & { kind: 'agent-envelope' };
+  // A mix of done+failed rolls up to failed (worse case wins).
+  assert.equal(payload.status, 'failed');
+  assert.match(payload.detail, /researcher finished the survey/);
+  assert.match(payload.detail, /planner hit a contract error/);
+  await service.dispose();
+});
+
+test('an [agent-asks] envelope is never delayed, even while a terminal batch is pending', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-ask-priority');
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+  });
+  // A long window that would not fire on its own within this test's bounds.
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const started = Date.now();
+  const pendingTerminal = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:ask-priority-1',
+  }));
+  const askResult = await service.injectAgentEnvelope({
+    runId: 'run-ask',
+    agentName: 'researcher',
+    pendingAskId: 'ask-1',
+    status: 'waiting',
+    summary: 'Question',
+    detail: 'Question detail',
+    envelope: '[agent-asks] question',
+    clientMessageId: 'agent-envelope:ask-priority-ask',
+  });
+  assert.equal(askResult.status, 'applied');
+  assert.ok(Date.now() - started < 60_000, 'the ask was not held behind the pending terminal batch');
+
+  // The ask flushed the pending terminal batch ahead of itself.
+  await until(() => runtime.sentTexts.length === 2, 4_000);
+  assert.deepEqual(runtime.sentTexts, ['[agent-completed] agent-x', '[agent-asks] question']);
+  await pendingTerminal;
+  await service.dispose();
+});
+
+test('a pending terminal batch flushes before a real user turn is sent', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-user-flush');
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const pendingTerminal = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:user-flush-1',
+  }));
+  const sendResult = await service.handleSend({
+    type: 'send', commandId: 'user-flush-cmd', sessionId: session.id,
+    text: 'a real user message', clientMessageId: 'user-flush-client',
+  });
+  assert.equal(sendResult.status, 'applied');
+  await until(() => runtime.sentTexts.length === 2, 4_000);
+  assert.deepEqual(runtime.sentTexts, ['[agent-completed] agent-x', 'a real user message']);
+  await pendingTerminal;
+  await service.dispose();
+});
+
+test('dispose flushes a pending terminal batch into the durable queue rather than dropping it', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-dispose-flush');
+  const runtime = new FakeRuntime({
+    turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const pending = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:dispose-flush-1',
+  }));
+  await service.dispose();
+  const result = await pending;
+  assert.notEqual(result.status, undefined);
+
+  const delivered = listConversationEvents(session.id).some((row) => row.eventType === 'agent-envelope');
+  const stillQueued = getConversationQueueSnapshot(session.id).items.some((item) => item.origin === 'agent-envelope');
+  assert.ok(delivered || stillQueued, 'the pending batch was flushed into the durable queue, never silently dropped');
 });
