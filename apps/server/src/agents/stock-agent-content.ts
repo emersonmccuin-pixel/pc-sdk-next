@@ -75,7 +75,7 @@ export const ORCHESTRATOR_AGENT_CONTENT: CreateAgentInput = {
   // Runtime tool surface is owned by the chat runner (BASE_ALLOWED_TOOLS +
   // ask-gated everything else) — this list is display-only until Phase 3.
   tools: [],
-  model: 'opus[1m]',
+  model: 'sonnet',
   effort: null,
   maxTurns: null,
   description:
@@ -296,7 +296,7 @@ export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
     origin: 'stock',
     prompt: RESEARCHER_PROMPT.trim(),
     tools: ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
-    model: 'opus[1m]',
+    model: 'sonnet',
     effort: null,
     maxTurns: null,
     description:
@@ -339,7 +339,7 @@ export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
     prompt: CONTRACT_REVIEWER_PROMPT.trim(),
     // Read-only intent: no Edit/Write; Bash is charter-bound to inspection.
     tools: ['Read', 'Glob', 'Grep', 'Bash'],
-    model: 'opus[1m]',
+    model: 'opus',
     effort: 'high',
     maxTurns: 25,
     description:
@@ -353,7 +353,7 @@ export const STOCK_AGENT_CONTENT: readonly CreateAgentInput[] = [
     origin: 'stock',
     prompt: PLANNER_PROMPT.trim(),
     tools: ['Read', 'Glob', 'Grep'],
-    model: 'opus[1m]',
+    model: 'opus',
     effort: 'high',
     maxTurns: 15,
     description:

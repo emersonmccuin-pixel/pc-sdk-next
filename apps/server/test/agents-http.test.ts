@@ -112,7 +112,7 @@ test('stock lock: specialists 409, orchestrator editable except name; delete + r
     // Orchestrator: prompt/model editable, name locked, reset restores.
     const edit = await fetch(
       `${base}/api/agents/pods/${orchestrator.id}`,
-      json('PATCH', { prompt: 'custom orchestrator', model: 'sonnet' }),
+      json('PATCH', { prompt: 'custom orchestrator', model: 'haiku' }),
     ).then(body);
     assert.equal(edit.ok, true);
     assert.equal(edit.pod.prompt, 'custom orchestrator');

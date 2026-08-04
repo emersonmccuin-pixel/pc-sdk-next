@@ -46,19 +46,19 @@ test('orchestrator edits survive boots (insert-only); reset restores the seed', 
   freshDb();
   seedStockAgents();
   const orch = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
-  updateAgent(orch.id, { prompt: 'my customized orchestrator prompt', model: 'sonnet' }, audit);
+  updateAgent(orch.id, { prompt: 'my customized orchestrator prompt', model: 'haiku' }, audit);
 
   const summary = seedStockAgents();
   assert.equal(summary.reseeded, 0, 'orchestrator must never be drift-reseeded');
   const kept = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
   assert.equal(kept.prompt, 'my customized orchestrator prompt');
-  assert.equal(kept.model, 'sonnet');
+  assert.equal(kept.model, 'haiku');
 
   const resetFields = resetAgentToSeed(kept);
   assert.ok(resetFields && resetFields.includes('prompt') && resetFields.includes('model'));
   const restored = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
   assert.equal(restored.prompt, ORCHESTRATOR_AGENT_CONTENT.prompt);
-  assert.equal(restored.model, 'opus[1m]');
+  assert.equal(restored.model, 'sonnet');
 });
 
 test('resetAgentToSeed refuses non-seeded agents', () => {
@@ -86,4 +86,58 @@ test('an existing install with a stale code-writer maxTurns converges to 100 on 
   assert.equal(summary.reseeded, 1, 'authoritative reseed heals the stale maxTurns');
   const healed = getAgentByName({ name: 'code-writer', scope: 'global' })!;
   assert.equal(healed.maxTurns, 100);
+});
+
+// ── pc-sdk-15: model tiering ─────────────────────────────────────────────────
+
+test('stock content moved off the expensive opus[1m] tier', () => {
+  assert.equal(ORCHESTRATOR_AGENT_CONTENT.model, 'sonnet');
+  const byName = (name: string) => STOCK_AGENT_CONTENT.find((c) => c.name === name)!;
+  assert.equal(byName('researcher').model, 'sonnet');
+  assert.equal(byName('planner').model, 'opus');
+  assert.equal(byName('contract-reviewer').model, 'opus');
+  for (const content of [ORCHESTRATOR_AGENT_CONTENT, ...STOCK_AGENT_CONTENT]) {
+    assert.notEqual(content.model, 'opus[1m]', `${content.name} must not seed the retired opus[1m] tier`);
+  }
+});
+
+test('a specialist row still holding the retired opus[1m] model heals via the existing authoritative reseed', () => {
+  freshDb();
+  seedStockAgents();
+  for (const name of ['researcher', 'planner', 'contract-reviewer']) {
+    const row = getAgentByName({ name, scope: 'global' })!;
+    updateAgent(row.id, { model: 'opus[1m]' }, audit);
+  }
+
+  const summary = seedStockAgents();
+  assert.equal(summary.reseeded, 3, 'each stale opus[1m] specialist reseeds');
+  assert.equal(getAgentByName({ name: 'researcher', scope: 'global' })!.model, 'sonnet');
+  assert.equal(getAgentByName({ name: 'planner', scope: 'global' })!.model, 'opus');
+  assert.equal(getAgentByName({ name: 'contract-reviewer', scope: 'global' })!.model, 'opus');
+});
+
+test('an orchestrator row still holding the retired opus[1m] model migrates on the next boot without touching a customized prompt', () => {
+  freshDb();
+  seedStockAgents();
+  const orch = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  // Simulate a pre-existing install seeded before this change, whose user
+  // separately customized the prompt through the (orchestrator-only) UI edit
+  // path — the retired-model upgrade must not touch that.
+  updateAgent(orch.id, { model: 'opus[1m]', prompt: 'my customized orchestrator prompt' }, audit);
+
+  const summary = seedStockAgents();
+  assert.equal(summary.reseeded, 0, 'the orchestrator is still never drift-reseeded');
+  const migrated = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  assert.equal(migrated.model, 'sonnet', 'the retired model value migrates to the current default');
+  assert.equal(migrated.prompt, 'my customized orchestrator prompt', 'the unrelated customized prompt survives');
+});
+
+test('the retired-model upgrade never overrides an orchestrator model the user actually chose', () => {
+  freshDb();
+  seedStockAgents();
+  const orch = getAgentByName({ name: 'orchestrator', scope: 'global' })!;
+  updateAgent(orch.id, { model: 'haiku' }, audit);
+
+  seedStockAgents();
+  assert.equal(getAgentByName({ name: 'orchestrator', scope: 'global' })!.model, 'haiku');
 });
