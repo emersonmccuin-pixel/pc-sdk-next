@@ -33,6 +33,8 @@ export interface SessionRegistryDeps {
   cwd?: string;
   askTimeoutMs?: number;
   interruptTimeoutMs?: number;
+  /** pc-sdk-15 — coalescing window for terminal dispatched-agent envelopes. */
+  agentEnvelopeCoalesceWindowMs?: number;
   onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   orchestratorRev?: () => number | null;
 }
@@ -75,6 +77,7 @@ export class SessionRegistry {
         cwd: this.deps.cwd,
         askTimeoutMs: this.deps.askTimeoutMs,
         interruptTimeoutMs: this.deps.interruptTimeoutMs,
+        agentEnvelopeCoalesceWindowMs: this.deps.agentEnvelopeCoalesceWindowMs,
         queueDrainEnabled: this.queueDrainReady,
         onSubscriptionQuota: this.deps.onSubscriptionQuota,
         orchestratorRev: this.deps.orchestratorRev,

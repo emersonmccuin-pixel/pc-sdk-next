@@ -53,6 +53,8 @@ export interface StartServerOptions {
   cwd?: string;
   askTimeoutMs?: number;
   interruptTimeoutMs?: number;
+  /** pc-sdk-15 — coalescing window for terminal dispatched-agent envelopes. */
+  agentEnvelopeCoalesceWindowMs?: number;
   /** Composition root defers chat execution until dispatch/MCP boot is ready. */
   deferConversationQueueDrain?: boolean;
   onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
@@ -136,6 +138,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     cwd: opts.cwd,
     askTimeoutMs: opts.askTimeoutMs,
     interruptTimeoutMs: opts.interruptTimeoutMs,
+    agentEnvelopeCoalesceWindowMs: opts.agentEnvelopeCoalesceWindowMs,
     onSubscriptionQuota: opts.onSubscriptionQuota,
     orchestratorRev: opts.orchestratorRev,
   });

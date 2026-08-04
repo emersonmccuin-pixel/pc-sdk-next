@@ -125,6 +125,11 @@ export interface SessionServiceDeps {
   queueDrainEnabled?: boolean;
   onSubscriptionQuota?: (batch: SubscriptionQuotaObservationBatch) => void;
   orchestratorRev?: () => number | null;
+  /** pc-sdk-15 — coalescing window for terminal ([agent-completed]/
+   *  [agent-failed]) dispatched-agent envelopes: further terminal envelopes
+   *  arriving within this window of the first batch into one injected turn.
+   *  [agent-asks] envelopes are never delayed. Default 20s. */
+  agentEnvelopeCoalesceWindowMs?: number;
 }
 
 interface RuntimeReady {
@@ -165,6 +170,15 @@ type TurnEventContext = Pick<ClaimedConversationTurn, 'projectId' | 'conversatio
 
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 15_000;
 const DEFAULT_CONTEXT_OBSERVATION_TIMEOUT_MS = 2_000;
+const DEFAULT_AGENT_ENVELOPE_COALESCE_WINDOW_MS = 20_000;
+
+/** pc-sdk-15 — a batch of terminal agent envelopes held for the coalescing
+ *  window before being injected as one combined turn. */
+interface PendingAgentEnvelopeBatch {
+  items: InjectAgentEnvelopeInput[];
+  resolvers: Array<(result: ConversationCommandResult) => void>;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 type ContextObservationOutcome =
   | { kind: 'observed'; value: unknown }
@@ -204,6 +218,43 @@ function sessionChanged(sessionId: string | null): ConversationCommandResult {
   };
 }
 
+/** pc-sdk-15 — the exact leading tags `buildTerminalEnvelope` (dispatch/
+ *  prompt.ts) writes for a real dispatched-agent completion/failure. Boot
+ *  recovery's `[boot-recovery]` re-engagement notice reuses the same
+ *  `injectAgentEnvelope`/`status: 'failed'` delivery path but is not a
+ *  dispatched-agent run, so it is identified — and excluded from
+ *  coalescing — by tag, not by `status` alone. */
+const COALESCABLE_ENVELOPE_TAGS = ['[agent-completed]', '[agent-failed]'];
+
+function isCoalescableTerminalAgentEnvelope(input: InjectAgentEnvelopeInput): boolean {
+  return input.status !== 'waiting'
+    && COALESCABLE_ENVELOPE_TAGS.some((tag) => input.envelope.startsWith(tag));
+}
+
+const AGENT_ENVELOPE_BATCH_SEPARATOR = '\n\n---\n\n';
+
+/** pc-sdk-15 — combine terminal envelopes coalesced within the window into
+ *  ONE injected turn. A single-item batch passes through verbatim so the
+ *  unbatched path is byte-identical to prior behavior. For 2+, transport
+ *  text and detail concatenate with a clear separator; `QueuedAgentEnvelope`
+ *  is a single-run shape, so the displayed card carries the first
+ *  envelope's run identity plus a summary naming every coalesced run. */
+function mergeAgentEnvelopeBatch(items: InjectAgentEnvelopeInput[]): InjectAgentEnvelopeInput {
+  const first = items[0];
+  if (!first) throw new Error('mergeAgentEnvelopeBatch: empty batch');
+  if (items.length === 1) return first;
+  const anyFailed = items.some((item) => item.status === 'failed');
+  return {
+    runId: first.runId,
+    agentName: first.agentName,
+    status: anyFailed ? 'failed' : 'done',
+    summary: `${items.length} agents finished: ${items.map((item) => item.agentName).join(', ')}`,
+    detail: items.map((item) => item.detail).join(AGENT_ENVELOPE_BATCH_SEPARATOR),
+    envelope: items.map((item) => item.envelope).join(AGENT_ENVELOPE_BATCH_SEPARATOR),
+    clientMessageId: first.clientMessageId,
+  };
+}
+
 export class SessionService {
   private readonly projectId: ULID;
   private readonly broadcast: (frame: ServerFrame) => void;
@@ -217,6 +268,7 @@ export class SessionService {
   private readonly orchestratorRev?: () => number | null;
   private readonly interruptTimeoutMs: number;
   private readonly contextObservationTimeoutMs: number;
+  private readonly agentEnvelopeCoalesceWindowMs: number;
   private queueDrainEnabled: boolean;
 
   private session: OrchestratorSessionRow | null;
@@ -234,6 +286,11 @@ export class SessionService {
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
   private disposed = false;
+  /** pc-sdk-15 — reentrancy guard for the dispose-time envelope-batch flush:
+   *  a concurrent dispose() call must not double-run shutdown while the
+   *  first call is still awaiting the flush (which itself needs `disposed`
+   *  to stay false a little longer to reach the normal enqueue path). */
+  private disposing = false;
   private lifecycleGeneration = 0;
   private resolveDisposed!: () => void;
   private readonly disposedSignal = new Promise<void>((resolve) => {
@@ -243,6 +300,8 @@ export class SessionService {
   private readonly sendQueue: SendQueue;
   private readonly askRegistry: AskRegistry;
   private readonly interruptControls = new Map<string, InterruptControl>();
+  /** pc-sdk-15 — the single in-flight coalescing batch, if any. */
+  private pendingAgentEnvelopeBatch: PendingAgentEnvelopeBatch | null = null;
 
   constructor(deps: SessionServiceDeps) {
     this.projectId = deps.projectId;
@@ -260,6 +319,8 @@ export class SessionService {
     this.interruptTimeoutMs = deps.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
     this.contextObservationTimeoutMs = deps.contextObservationTimeoutMs
       ?? DEFAULT_CONTEXT_OBSERVATION_TIMEOUT_MS;
+    this.agentEnvelopeCoalesceWindowMs = deps.agentEnvelopeCoalesceWindowMs
+      ?? DEFAULT_AGENT_ENVELOPE_COALESCE_WINDOW_MS;
     this.queueDrainEnabled = deps.queueDrainEnabled ?? true;
     this.session = getActiveOrchestratorSession(this.projectId);
     this.askRegistry = new AskRegistry({
@@ -349,10 +410,14 @@ export class SessionService {
     return this.enqueueUserSend(session, command);
   }
 
-  private enqueueUserSend(
+  private async enqueueUserSend(
     session: OrchestratorSessionRow,
     command: SendMessage,
-  ): ConversationCommandResult {
+  ): Promise<ConversationCommandResult> {
+    // pc-sdk-15 — a real user turn is about to be sent: flush any pending
+    // agent-envelope batch first so it lands ahead of the user's message,
+    // never coalesced past it.
+    await this.flushPendingAgentEnvelopeBatch();
     if (this.disposed || !this.session || this.session.id !== session.id) {
       return sessionChanged(this.disposed ? null : this.session?.id ?? null);
     }
@@ -400,7 +465,81 @@ export class SessionService {
     return result;
   }
 
+  /** pc-sdk-15 — only genuine dispatched-agent terminal envelopes
+   *  ([agent-completed]/[agent-failed]) coalesce within a short window, so N
+   *  agent completions landing together cost one injected orchestrator turn
+   *  rather than N. [agent-asks] envelopes (a paused agent blocked on the
+   *  answer) are never delayed. Other `status: 'failed'` envelopes that
+   *  share the same delivery path — e.g. boot recovery's `[boot-recovery]`
+   *  re-engagement notice, which is not a dispatched-agent run at all — are
+   *  identified by their envelope tag, not by `status` alone, and also go
+   *  straight through. */
   async injectAgentEnvelope(input: InjectAgentEnvelopeInput): Promise<ConversationCommandResult> {
+    if (this.disposed) return sessionChanged(null);
+    // A non-positive window disables coalescing outright (immediate
+    // delivery, no hold) rather than scheduling a same-tick timer.
+    if (this.agentEnvelopeCoalesceWindowMs <= 0 || !isCoalescableTerminalAgentEnvelope(input)) {
+      await this.flushPendingAgentEnvelopeBatch();
+      return this.injectAgentEnvelopeNow(input);
+    }
+    return this.coalesceTerminalAgentEnvelope(input);
+  }
+
+  /** Hold a terminal envelope for `agentEnvelopeCoalesceWindowMs`; further
+   *  terminal envelopes arriving inside that window join the same batch and
+   *  share its eventual (single) delivery result. */
+  private coalesceTerminalAgentEnvelope(
+    input: InjectAgentEnvelopeInput,
+  ): Promise<ConversationCommandResult> {
+    return new Promise((resolve) => {
+      if (this.disposed) {
+        resolve(sessionChanged(null));
+        return;
+      }
+      if (!this.pendingAgentEnvelopeBatch) {
+        // Deliberately NOT unref'd: unlike a best-effort background timer,
+        // this one must fire to deliver an already-accepted envelope — a
+        // process that would otherwise go idle must stay alive for it
+        // rather than silently never flushing (dispose() flushes eagerly
+        // for the normal shutdown path; this covers everything else).
+        const timer = setTimeout(() => {
+          void this.flushPendingAgentEnvelopeBatch();
+        }, this.agentEnvelopeCoalesceWindowMs);
+        this.pendingAgentEnvelopeBatch = { items: [], resolvers: [], timer };
+      }
+      this.pendingAgentEnvelopeBatch.items.push(input);
+      this.pendingAgentEnvelopeBatch.resolvers.push(resolve);
+    });
+  }
+
+  /** Deliver the pending batch (if any) as one injected turn and resolve
+   *  every waiting caller with the same result. A no-op when nothing is
+   *  pending — safe to call unconditionally before an ask, a real user
+   *  turn, or on dispose. */
+  private async flushPendingAgentEnvelopeBatch(): Promise<void> {
+    const batch = this.pendingAgentEnvelopeBatch;
+    if (!batch) return;
+    this.pendingAgentEnvelopeBatch = null;
+    clearTimeout(batch.timer);
+    const merged = mergeAgentEnvelopeBatch(batch.items);
+    let result: ConversationCommandResult;
+    try {
+      result = await this.injectAgentEnvelopeNow(merged);
+    } catch (error) {
+      console.error(
+        `[pc-sdk][agent-envelope] coalesced batch delivery failed for project ${this.projectId}:`,
+        error,
+      );
+      result = {
+        status: 'rejected',
+        sessionId: this.session?.id ?? null,
+        error: { code: 'internal', message: 'agent envelope batch delivery failed' },
+      };
+    }
+    for (const resolve of batch.resolvers) resolve(result);
+  }
+
+  private async injectAgentEnvelopeNow(input: InjectAgentEnvelopeInput): Promise<ConversationCommandResult> {
     if (this.disposed) return sessionChanged(null);
     const session = await this.ensureActiveSession();
     if (this.disposed || !this.session || this.session.id !== session.id) {
@@ -1068,7 +1207,13 @@ export class SessionService {
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
+    this.disposing = true;
+    // pc-sdk-15 — flush rather than drop a pending coalesced batch. Runs
+    // while `this.disposed` is still false so the normal enqueue path
+    // durably persists it; a durably-queued item survives teardown even if
+    // the runtime disposed below never gets to deliver it.
+    await this.flushPendingAgentEnvelopeBatch();
     this.disposed = true;
     this.lifecycleGeneration += 1;
     this.resolveDisposed();

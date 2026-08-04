@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getActiveConversationTurn,
+  getConversationQueueSnapshot,
   getRawDb,
   listConversationEvents,
   listUnrelayedConversationEvents,
@@ -43,7 +44,7 @@ function contextRows(sessionId: string) {
 function rig(
   projectId: ULID,
   runtime: FakeRuntime,
-  opts: { contextObservationTimeoutMs?: number } = {},
+  opts: { contextObservationTimeoutMs?: number; agentEnvelopeCoalesceWindowMs?: number } = {},
 ) {
   const frames: ServerFrame[] = [];
   const hub = new ProjectWebSocketHub<ULID>();
@@ -1431,4 +1432,142 @@ test('context-size policy is debounced: it does not re-fire every turn while usa
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(systemNotices(session.id).length, 1);
   await service.dispose();
+});
+
+// ── pc-sdk-15: coalesced dispatched-agent envelopes ─────────────────────────
+
+function terminalEnvelope(overrides: Partial<Parameters<SessionService['injectAgentEnvelope']>[0]>) {
+  return {
+    runId: 'run-x',
+    agentName: 'agent-x',
+    status: 'done' as const,
+    summary: 'done',
+    detail: 'detail-x',
+    envelope: '[agent-completed] agent-x',
+    clientMessageId: 'agent-envelope:run-x',
+    ...overrides,
+  };
+}
+
+test('two terminal envelopes landing within the coalescing window produce one injected turn with both envelopes', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-basic');
+  const runtime = new FakeRuntime({
+    turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 50 });
+  const session = await service.ensureActiveSession();
+
+  const first = service.injectAgentEnvelope(terminalEnvelope({
+    runId: 'run-1', agentName: 'researcher', detail: 'researcher finished the survey',
+    envelope: '[agent-completed] researcher', clientMessageId: 'agent-envelope:run-1',
+  }));
+  const second = service.injectAgentEnvelope(terminalEnvelope({
+    runId: 'run-2', agentName: 'planner', status: 'failed', detail: 'planner hit a contract error',
+    envelope: '[agent-failed] planner', clientMessageId: 'agent-envelope:run-2',
+  }));
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.status, 'applied');
+  assert.equal(secondResult.status, 'applied');
+  // Both callers share the exact same durable delivery.
+  assert.deepEqual(firstResult, secondResult);
+
+  await until(() => terminals(session.id).length === 1);
+  assert.equal(runtime.sentTexts.length, 1, 'exactly one turn was sent for both coalesced envelopes');
+  assert.match(runtime.sentTexts[0]!, /\[agent-completed\] researcher/);
+  assert.match(runtime.sentTexts[0]!, /\[agent-failed\] planner/);
+
+  const rows = listConversationEvents(session.id);
+  const envelopeRows = rows.filter((row) => row.eventType === 'agent-envelope');
+  assert.equal(envelopeRows.length, 1, 'one combined agent-envelope event, not two');
+  const payload = envelopeRows[0]!.payload as ChatEvent & { kind: 'agent-envelope' };
+  // A mix of done+failed rolls up to failed (worse case wins).
+  assert.equal(payload.status, 'failed');
+  assert.match(payload.detail, /researcher finished the survey/);
+  assert.match(payload.detail, /planner hit a contract error/);
+  await service.dispose();
+});
+
+test('an [agent-asks] envelope is never delayed, even while a terminal batch is pending', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-ask-priority');
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+  });
+  // A long window that would not fire on its own within this test's bounds.
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const started = Date.now();
+  const pendingTerminal = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:ask-priority-1',
+  }));
+  const askResult = await service.injectAgentEnvelope({
+    runId: 'run-ask',
+    agentName: 'researcher',
+    pendingAskId: 'ask-1',
+    status: 'waiting',
+    summary: 'Question',
+    detail: 'Question detail',
+    envelope: '[agent-asks] question',
+    clientMessageId: 'agent-envelope:ask-priority-ask',
+  });
+  assert.equal(askResult.status, 'applied');
+  assert.ok(Date.now() - started < 60_000, 'the ask was not held behind the pending terminal batch');
+
+  // The ask flushed the pending terminal batch ahead of itself.
+  await until(() => runtime.sentTexts.length === 2, 4_000);
+  assert.deepEqual(runtime.sentTexts, ['[agent-completed] agent-x', '[agent-asks] question']);
+  await pendingTerminal;
+  await service.dispose();
+});
+
+test('a pending terminal batch flushes before a real user turn is sent', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-user-flush');
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const pendingTerminal = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:user-flush-1',
+  }));
+  const sendResult = await service.handleSend({
+    type: 'send', commandId: 'user-flush-cmd', sessionId: session.id,
+    text: 'a real user message', clientMessageId: 'user-flush-client',
+  });
+  assert.equal(sendResult.status, 'applied');
+  await until(() => runtime.sentTexts.length === 2, 4_000);
+  assert.deepEqual(runtime.sentTexts, ['[agent-completed] agent-x', 'a real user message']);
+  await pendingTerminal;
+  await service.dispose();
+});
+
+test('dispose flushes a pending terminal batch into the durable queue rather than dropping it', async () => {
+  freshDb();
+  const project = newProject('envelope-coalesce-dispose-flush');
+  const runtime = new FakeRuntime({
+    turns: [[{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }]],
+  });
+  const { service } = rig(project.id, runtime, { agentEnvelopeCoalesceWindowMs: 60_000 });
+  const session = await service.ensureActiveSession();
+
+  const pending = service.injectAgentEnvelope(terminalEnvelope({
+    envelope: '[agent-completed] agent-x', clientMessageId: 'agent-envelope:dispose-flush-1',
+  }));
+  await service.dispose();
+  const result = await pending;
+  assert.notEqual(result.status, undefined);
+
+  const delivered = listConversationEvents(session.id).some((row) => row.eventType === 'agent-envelope');
+  const stillQueued = getConversationQueueSnapshot(session.id).items.some((item) => item.origin === 'agent-envelope');
+  assert.ok(delivered || stillQueued, 'the pending batch was flushed into the durable queue, never silently dropped');
 });

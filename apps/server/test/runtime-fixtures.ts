@@ -87,6 +87,11 @@ export function testSessionSelectionDeps() {
     preflightRuntimeSession: async (
       selection: RuntimeSelection,
     ): Promise<RuntimeSelectionValidation> => ({ status: 'valid', selection }),
+    // pc-sdk-15 — most of the suite predates envelope coalescing and asserts
+    // near-immediate delivery; 0 disables the hold (see session-service.ts
+    // `coalesceTerminalAgentEnvelope`). Tests exercising coalescing itself
+    // override this explicitly (see session-service.test.ts).
+    agentEnvelopeCoalesceWindowMs: 0,
   };
 }
 
