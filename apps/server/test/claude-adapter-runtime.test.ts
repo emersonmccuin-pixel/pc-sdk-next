@@ -686,6 +686,91 @@ test('Claude accepts valid primary evidence emitted after compaction as exact', 
   await session.dispose();
 });
 
+/** pc-sdk-15 — a query that, after `init`, keeps pulling user messages off
+ *  the streaming prompt and answers a literal `/compact` with either a
+ *  native `compact_boundary` or a failed `status` message, mirroring the
+ *  two native outcomes `ClaudeRuntimeSession.compact()` distinguishes. */
+function sessionQueryAnsweringCompact(
+  prompt: string | AsyncIterable<SDKUserMessage>,
+  nativeSessionId: string,
+  outcome: 'succeeded' | 'failed',
+): Query {
+  const stopped = gate();
+  async function* messages(): AsyncGenerator<SDKMessage, void> {
+    yield {
+      type: 'system', subtype: 'init', uuid: 'init-compact', session_id: nativeSessionId,
+    } as unknown as SDKMessage;
+    if (typeof prompt === 'string') {
+      await stopped.promise;
+      return;
+    }
+    const iter = prompt[Symbol.asyncIterator]();
+    for (;;) {
+      const raced = await Promise.race([
+        iter.next().then((r) => ({ kind: 'next' as const, r })),
+        stopped.promise.then(() => ({ kind: 'stop' as const })),
+      ]);
+      if (raced.kind === 'stop') return;
+      if (raced.r.done) {
+        await stopped.promise;
+        return;
+      }
+      const pushed = raced.r.value as unknown as { message?: { content?: unknown } };
+      if (pushed.message?.content === '/compact') {
+        yield outcome === 'succeeded'
+          ? {
+              type: 'system', subtype: 'compact_boundary', uuid: 'compact-manual',
+              session_id: nativeSessionId,
+              compact_metadata: { trigger: 'manual', pre_tokens: 50, post_tokens: 10 },
+            } as unknown as SDKMessage
+          : {
+              type: 'system', subtype: 'status', uuid: 'compact-status-failed',
+              session_id: nativeSessionId, compact_result: 'failed',
+            } as unknown as SDKMessage;
+      }
+    }
+  }
+  return queryObject(messages(), MODELS, stopped.resolve);
+}
+
+test('Claude compact() resolves succeeded on a native compact_boundary, failed on a status compact_result', async () => {
+  for (const outcome of ['succeeded', 'failed'] as const) {
+    const session = new ClaudeRuntimeSession({
+      env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+      queryFactory: ({ prompt }) => sessionQueryAnsweringCompact(prompt, `native-compact-${outcome}`, outcome),
+    });
+    await session.start({ appSessionId: `app-compact-${outcome}` });
+    assert.deepEqual(await session.compact(), { status: outcome });
+    await session.dispose();
+  }
+});
+
+test('Claude compact() never wedges an active turn: it refuses to run while currentTurn is open', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => completedSessionQuery({
+      prompt,
+      context: async () => ({ totalTokens: 1, maxTokens: 100, rawMaxTokens: 100 }),
+    }),
+  });
+  await session.start({ appSessionId: 'app-compact-busy' });
+  const turnEvents = runCompletedTurn(session);
+  assert.deepEqual(await session.compact(), { status: 'failed' });
+  assert.equal((await turnEvents).at(-1)?.type, 'result');
+  await session.dispose();
+});
+
+test('Claude compact() resolves failed rather than hanging when disposed mid-wait', async () => {
+  const session = new ClaudeRuntimeSession({
+    env: TEST_CLAUDE_ENV, continuationAttemptId: ATTEMPT_ID, selection: selection({ kind: 'none' }),
+    queryFactory: ({ prompt }) => sessionQuery(prompt, 'native-compact-disposed'),
+  });
+  await session.start({ appSessionId: 'app-compact-disposed' });
+  const pending = session.compact();
+  await session.dispose();
+  assert.deepEqual(await pending, { status: 'failed' });
+});
+
 test('Claude fails closed when malformed assistant ownership follows exact evidence', async () => {
   for (const parentToolUseId of [undefined, '', 42]) {
     const malformedAssistant = {

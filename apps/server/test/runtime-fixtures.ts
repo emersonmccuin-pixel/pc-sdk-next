@@ -131,6 +131,11 @@ export function withRuntimeReceipt(
       observeContext: () => inner.observeContext(),
       interrupt: () => inner.interrupt(),
       dispose: () => inner.dispose(),
+      // pc-sdk-15 — forward `compact` only when the wrapped test runtime
+      // exposes it, so capability-by-method-presence still holds through
+      // this wrapper (an absent `compact` must stay absent, not become a
+      // no-op function).
+      ...(typeof inner.compact === 'function' ? { compact: () => inner.compact!() } : {}),
     };
   };
 }

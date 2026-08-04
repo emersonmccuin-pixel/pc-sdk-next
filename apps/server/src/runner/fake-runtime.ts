@@ -29,6 +29,14 @@ export interface FakeRuntimeOptions {
   /** Current-context observation or a scripted observer. Defaults to explicit
    *  unsupported rather than inventing context from scripted turn usage. */
   contextObservation?: ContextObservation | (() => ContextObservation | Promise<ContextObservation>);
+  /** pc-sdk-15 — when set, FakeRuntime exposes `compact()` (mirrors capability
+   *  advertisement by method presence: omit this option to model an adapter
+   *  that cannot trigger native compaction). A function lets a test observe
+   *  call count / vary the outcome across calls; a bare literal result
+   *  applies to every call. */
+  compactResult?:
+    | { status: 'succeeded' | 'failed' }
+    | (() => { status: 'succeeded' | 'failed' } | Promise<{ status: 'succeeded' | 'failed' }>);
 }
 
 /** A resolved abort signal the current hung turn awaits. */
@@ -56,6 +64,11 @@ export class FakeRuntime implements RuntimeSession {
 
   /** Observability for tests. */
   sentTexts: string[] = [];
+  /** pc-sdk-15 — observability for tests: one entry per `compact()` call. */
+  compactCalls = 0;
+  /** pc-sdk-15 — present only when `opts.compactResult` was supplied, so a
+   *  test can model "adapter has no compact capability" by omitting it. */
+  compact?: () => Promise<{ status: 'succeeded' | 'failed' }>;
 
   constructor(opts: FakeRuntimeOptions = {}) {
     this.turns = opts.turns ?? [];
@@ -64,6 +77,13 @@ export class FakeRuntime implements RuntimeSession {
       confidence: 'unavailable',
       reason: 'unsupported',
     };
+    if (opts.compactResult !== undefined) {
+      const compactResult = opts.compactResult;
+      this.compact = async () => {
+        this.compactCalls += 1;
+        return typeof compactResult === 'function' ? await compactResult() : compactResult;
+      };
+    }
   }
 
   async observeContext(): Promise<ContextObservation> {

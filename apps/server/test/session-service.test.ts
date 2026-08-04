@@ -1305,3 +1305,130 @@ test('queued sends drain FIFO and typed agent envelopes remain typed', async () 
   assert.equal(rows.filter((row) => row.eventType === 'user').length, 2);
   assert.equal(rows.filter((row) => row.eventType === 'agent-envelope').length, 1);
 });
+
+// ── pc-sdk-15: context-size policy ──────────────────────────────────────────
+
+function systemNotices(sessionId: string): ChatEvent[] {
+  return listConversationEvents(sessionId)
+    .map((row) => row.payload as ChatEvent)
+    .filter((event) => event.kind === 'system' && event.subtype === 'context-size-notice');
+}
+
+function overThresholdObservation(usedTokens: number) {
+  return {
+    confidence: 'exact' as const,
+    usedTokens,
+    usableTokens: 200_000,
+    contextWindowTokens: 200_000,
+  };
+}
+
+test('context-size policy triggers native compaction when the runtime advertises it, and never posts a notice on success', async () => {
+  freshDb();
+  const project = newProject('context-policy-compacted');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    compactResult: { status: 'succeeded' },
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-compact-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-compact-client',
+  });
+  await until(() => contextRows(session.id).length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(runtime.compactCalls, 1);
+  assert.equal(systemNotices(session.id).length, 0);
+  await service.dispose();
+});
+
+test('context-size policy falls back to a visible notice when the runtime has no compact capability', async () => {
+  freshDb();
+  const project = newProject('context-policy-unsupported');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    // no compactResult ⇒ FakeRuntime.compact stays undefined (unsupported).
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-notice-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-notice-client',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+  assert.equal(runtime.compactCalls, 0);
+  await service.dispose();
+});
+
+test('context-size policy falls back to a visible notice when native compaction fails', async () => {
+  freshDb();
+  const project = newProject('context-policy-compact-failed');
+  const runtime = new FakeRuntime({
+    turns: [[{
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    }]],
+    contextObservation: overThresholdObservation(150_000),
+    compactResult: { status: 'failed' },
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-policy-failed-cmd', sessionId: session.id,
+    text: 'go', clientMessageId: 'ctx-policy-failed-client',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+  assert.equal(runtime.compactCalls, 1);
+  await service.dispose();
+});
+
+test('context-size policy is debounced: it does not re-fire every turn while usage stays over threshold, and re-arms once usage drops back below it', async () => {
+  freshDb();
+  const project = newProject('context-policy-debounce');
+  let usedTokens = 150_000;
+  const runtime = new FakeRuntime({
+    turns: [
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+      [{ type: 'result', ok: true, stopReason: 'complete', usage: null, durationMs: 1, error: null, outcome: 'ok', numTurns: null }],
+    ],
+    contextObservation: () => overThresholdObservation(usedTokens),
+  });
+  const { service } = rig(project.id, runtime);
+  const session = await service.ensureActiveSession();
+
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-1', sessionId: session.id,
+    text: 'first', clientMessageId: 'ctx-debounce-client-1',
+  });
+  await until(() => systemNotices(session.id).length === 1);
+
+  // Still over threshold on the next turn — debounced, no second notice.
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-2', sessionId: session.id,
+    text: 'second', clientMessageId: 'ctx-debounce-client-2',
+  });
+  await until(() => contextRows(session.id).length === 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(systemNotices(session.id).length, 1);
+
+  // Usage drops back below threshold: re-arms the policy.
+  usedTokens = 1_000;
+  await service.handleSend({
+    type: 'send', commandId: 'ctx-debounce-cmd-3', sessionId: session.id,
+    text: 'third', clientMessageId: 'ctx-debounce-client-3',
+  });
+  await until(() => contextRows(session.id).length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(systemNotices(session.id).length, 1);
+  await service.dispose();
+});

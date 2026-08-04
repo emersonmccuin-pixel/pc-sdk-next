@@ -17,6 +17,7 @@ import {
   getActiveOrchestratorSession,
   getConversationHighWaterSequence,
   getConversationQueueSnapshot,
+  getGlobalSettings,
   handoffOrchestratorSession,
   hasConversationContextObservation,
   getOrchestratorSession,
@@ -64,7 +65,7 @@ import {
   type SessionUpdatedFrame,
   type SubscriptionQuotaObservationBatch,
 } from '@pc/contracts';
-import type { ULID } from '@pc/domain';
+import { clampContextPolicyThresholdTokens, type ULID } from '@pc/domain';
 import {
   RuntimeSelectionRejectedError,
   type RuntimeContinuationRequest,
@@ -225,6 +226,10 @@ export class SessionService {
   private runtimeReady: RuntimeReady | null = null;
   private runtimeQuarantine: Promise<void> = Promise.resolve();
   private runtimeObservationFence = createRuntimeObservationFence(0);
+  /** pc-sdk-15 — debounce for the context-size policy: true once a
+   *  compaction attempt or notice has fired for the current overage; reset
+   *  to false the next time observed usage drops back below threshold. */
+  private contextPolicyTriggered = false;
   private sessionTransitionTail: Promise<void> = Promise.resolve();
   private health: OrchestratorHealth = 'idle';
   private failureReason: string | null = null;
@@ -1410,6 +1415,54 @@ export class SessionService {
       observation,
       observedAt,
     );
+    await this.applyContextSizePolicy(turn, session, runtime, fence, observation);
+  }
+
+  /** pc-sdk-15 — orchestrator context-size policy. Debounced: once triggered
+   *  (a compaction attempt or a visible notice), it holds until a later
+   *  observation reports usage back below the configured threshold. Never
+   *  auto-rotates the session — session rotation stays user-initiated. */
+  private async applyContextSizePolicy(
+    turn: ClaimedConversationTurn,
+    session: OrchestratorSessionRow,
+    runtime: RuntimeSession,
+    fence: RuntimeObservationFence,
+    observation: ContextObservation,
+  ): Promise<void> {
+    if (observation.confidence === 'unavailable') return;
+    if (!this.contextObservationFenceIsActive(session, runtime, fence)) return;
+    const thresholdTokens = this.contextPolicyThresholdTokens();
+    if (observation.usedTokens < thresholdTokens) {
+      this.contextPolicyTriggered = false;
+      return;
+    }
+    if (this.contextPolicyTriggered) return;
+    this.contextPolicyTriggered = true;
+    let compacted = false;
+    if (typeof runtime.compact === 'function') {
+      try {
+        compacted = (await runtime.compact()).status === 'succeeded';
+      } catch {
+        compacted = false;
+      }
+    }
+    if (compacted) return;
+    if (!this.contextObservationFenceIsActive(session, runtime, fence)) return;
+    this.persistAndPublish(turn, {
+      kind: 'system',
+      subtype: 'context-size-notice',
+      level: 'notice',
+      message:
+        'This session has accumulated a large amount of context. Consider starting a new session for better performance.',
+    }, { itemId: newId() });
+  }
+
+  private contextPolicyThresholdTokens(): number {
+    try {
+      return clampContextPolicyThresholdTokens(getGlobalSettings()?.contextPolicy?.thresholdTokens);
+    } catch {
+      return clampContextPolicyThresholdTokens(undefined);
+    }
   }
 
   private captureContextObservation(value: unknown): ContextObservation | null {

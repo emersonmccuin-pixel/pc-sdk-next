@@ -86,6 +86,10 @@ const STRICT_ISO_TIMESTAMP =
  *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
 const CLAUDE_EFFORT_LEVELS = new Set<EffortLevel>(['low', 'medium', 'high', 'xhigh', 'max']);
+// pc-sdk-15 — bounded wait for a manual `/compact` local command's native
+// receipt. A CLI that never reports either boundary leaves `compact()`
+// resolving 'failed' rather than hanging the context-size policy forever.
+const COMPACTION_TIMEOUT_MS = 30_000;
 
 export type ClaudeQueryFactory = (params: Parameters<typeof query>[0]) => Query;
 export type ClaudeQuotaFetch = typeof fetch;
@@ -619,6 +623,14 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   /** Exact last-iteration context evidence from the latest primary assistant
    *  message in the current app turn. It never crosses the adapter boundary. */
   private latestPrimaryContextEvidence: ContextNumeratorEvidence = { status: 'absent' };
+  /** pc-sdk-15 — the sole in-flight `compact()` waiter, if any. `route()`
+   *  resolves it directly from the native `compact_boundary`/`status`
+   *  messages, entirely outside `currentTurn`/`admitUnsolicitedTurn`: a
+   *  manual `/compact` is a local CLI command with no correlated `result`,
+   *  so it must never be dispatched through the ordinary turn machinery
+   *  (that would leave `currentTurn` permanently open and wedge every
+   *  subsequent `sendTurn`). */
+  private compactionWaiter: { resolve: (ok: boolean) => void } | null = null;
 
   constructor(config: ClaudeSessionConfig) {
     this.continuationAttemptId = assertExactContinuationAttemptId(
@@ -805,9 +817,57 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     await this.q.interrupt();
   }
 
+  /** pc-sdk-15 — manually trigger native compaction via the CLI's `/compact`
+   *  local command. Deliberately never reuses `sendTurn`/`currentTurn`: a
+   *  local command produces no correlated `result`, so routing it through
+   *  the ordinary turn queue would leave the turn permanently open. The
+   *  caller (session-service's context-size policy) must only invoke this
+   *  while idle — no `sendTurn` is in flight. */
+  async compact(): Promise<{ status: 'succeeded' | 'failed' }> {
+    if (
+      this.disposed
+      || this.queryClosed
+      || this.sessionStartFailure !== null
+      || this.currentTurn !== null
+      || this.compactionWaiter !== null
+      || !this.promptQueue
+    ) {
+      return { status: 'failed' };
+    }
+    const ok = await new Promise<boolean>((resolve) => {
+      this.compactionWaiter = { resolve };
+      const timer = setTimeout(() => {
+        if (this.compactionWaiter?.resolve === resolve) {
+          this.compactionWaiter = null;
+          resolve(false);
+        }
+      }, COMPACTION_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+      const compactMsg = {
+        type: 'user',
+        message: { role: 'user', content: '/compact' },
+        parent_tool_use_id: null,
+      } as unknown as SDKUserMessage;
+      this.promptQueue?.push(compactMsg);
+    });
+    return { status: ok ? 'succeeded' : 'failed' };
+  }
+
+  /** Resolve the in-flight `compact()` waiter, if any, and report whether the
+   *  message was consumed here (so `route()` never also dispatches it
+   *  through `currentTurn`/`admitUnsolicitedTurn`). */
+  private resolveCompactionWaiter(ok: boolean): boolean {
+    const waiter = this.compactionWaiter;
+    if (!waiter) return false;
+    this.compactionWaiter = null;
+    waiter.resolve(ok);
+    return true;
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.resolveCompactionWaiter(false);
     this.pendingSessionStarted = null;
     this.promptQueue?.end();
     this.endCurrentTurnIfOpen('session disposed');
@@ -832,6 +892,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       this.failCurrentTurn(err);
     } finally {
       this.queryClosed = true;
+      this.resolveCompactionWaiter(false);
       this.endCurrentTurnIfOpen('sdk query loop ended');
     }
   }
@@ -881,6 +942,17 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     // even if native delivery races just after the turn's terminal event.
     if (anyMsg.type === 'system' && anyMsg.subtype === 'compact_boundary') {
       this.latestPrimaryContextEvidence = { status: 'absent' };
+      if (this.resolveCompactionWaiter(true)) return;
+    }
+    // A failed manual compaction surfaces as a `status` system message
+    // carrying `compact_result: 'failed'` (mapSystem's existing
+    // 'runtime-compaction-failed' case), never a `compact_boundary`.
+    if (
+      anyMsg.type === 'system'
+      && anyMsg.subtype === 'status'
+      && (msg as unknown as { compact_result?: string }).compact_result === 'failed'
+    ) {
+      if (this.resolveCompactionWaiter(false)) return;
     }
 
     let turn = this.currentTurn;
