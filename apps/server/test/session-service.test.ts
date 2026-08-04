@@ -19,7 +19,7 @@ import type { ULID } from '@pc/domain';
 import { ConversationRelay } from '../src/chat/conversation-relay.ts';
 import { infrastructureFailureMessage, providerDetailFromError, SessionService } from '../src/chat/session-service.ts';
 import { FakeRuntime } from '../src/runner/fake-runtime.ts';
-import type { MintRuntimeSession, RuntimeSession } from '../src/runner/runtime.ts';
+import type { MintRuntimeSession, RuntimeEvent, RuntimeSession } from '../src/runner/runtime.ts';
 import { ProjectWebSocketHub, type WebSocketLike } from '../src/ws/hub.ts';
 import { freshDb, newProject, until } from './helpers.ts';
 import {
@@ -177,6 +177,85 @@ test('a stale disposed orchestrator attempt cannot publish passive quota or fail
     JSON.stringify(listConversationEvents(session.id)).includes('window-500'),
     false,
   );
+});
+
+test('an unsolicited runtime turn (no app-initiated sendTurn) is persisted and streamed like any other turn', async () => {
+  freshDb();
+  const project = newProject('orchestrator-unsolicited-turn');
+  let fireUnsolicited!: (events: AsyncIterable<RuntimeEvent>) => void;
+  const frames: ServerFrame[] = [];
+  const hub = new ProjectWebSocketHub<ULID>();
+  const socket: WebSocketLike = {
+    OPEN: 1,
+    readyState: 1,
+    send: (data) => frames.push(JSON.parse(data) as ServerFrame),
+  };
+  hub.subscribe(project.id, socket);
+  const relay = new ConversationRelay({ hub });
+  const service = new SessionService({
+    projectId: project.id,
+    mintSession: withRuntimeReceipt((ctx): RuntimeSession => {
+      assert.ok(ctx.onUnsolicitedTurn, 'onUnsolicitedTurn must be registered when the runtime is minted');
+      fireUnsolicited = ctx.onUnsolicitedTurn!;
+      return {
+        async *sendTurn() {
+          yield {
+            type: 'result', ok: true, stopReason: 'complete', usage: null,
+            durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+          };
+        },
+        observeContext: async () => ({ confidence: 'unavailable', reason: 'unsupported' }),
+        interrupt: async () => {},
+        dispose: async () => {},
+      };
+    }),
+    ...testSessionSelectionDeps(),
+    broadcast: (frame) => hub.broadcast(project.id, frame),
+    drainConversationOutbox: () => relay.drain(),
+  });
+  const session = await service.ensureActiveSession();
+  assert.equal((await service.handleSend({
+    type: 'send', commandId: 'unsolicited-setup-command', sessionId: session.id,
+    text: 'go', clientMessageId: 'unsolicited-setup-client',
+  })).status, 'applied');
+  await until(() => terminals(session.id).length === 1);
+
+  // No sendTurn was ever called for this — it models a background self-resume
+  // (task notification / scheduled wakeup) the adapter surfaces on its own.
+  async function* backgroundTurn(): AsyncGenerator<RuntimeEvent> {
+    yield {
+      type: 'assistant-block', itemId: 'unsolicited-item-1', scope: 'primary',
+      block: { kind: 'text', text: 'background update' },
+    };
+    yield {
+      type: 'result', ok: true, stopReason: 'complete', usage: null,
+      durationMs: 1, error: null, outcome: 'ok', numTurns: null,
+    };
+  }
+  fireUnsolicited(backgroundTurn());
+  await until(() => terminals(session.id).length === 2);
+
+  const rows = listConversationEvents(session.id);
+  const events = rows.map((row) => row.payload as ChatEvent);
+  assert.ok(
+    events.some((event) => event.kind === 'system' && event.subtype === 'runtime-unsolicited-turn'),
+    'a visible system/runtime-attributed marker must precede the turn',
+  );
+  assert.ok(
+    events.some((event) => event.kind === 'assistant-text' && event.text === 'background update'),
+    'the unsolicited assistant text must be persisted',
+  );
+  assert.deepEqual(terminals(session.id).map((event) => event.kind), ['turn-end', 'turn-end']);
+
+  const turnIds = new Set(rows.map((row) => row.turnId).filter((id): id is string => Boolean(id)));
+  assert.equal(turnIds.size, 2, "the unsolicited turn must mint its own turnId, distinct from the real turn's");
+
+  const liveKinds = frames
+    .filter((frame): frame is ConversationEventFrame => frame.type === 'conversation-event')
+    .map((frame) => frame.event.kind);
+  assert.ok(liveKinds.includes('assistant-text'), 'the unsolicited turn must stream live too');
+
+  await service.dispose();
 });
 
 test('event, sequence, and outbox commit before the one relay path broadcasts', async () => {

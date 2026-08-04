@@ -163,6 +163,18 @@ export interface AskHandle {
 }
 export type AskHandler = (req: AskRequest) => AskHandle;
 
+/** Surfaces one turn-bearing event sequence (assistant text/tool activity
+ *  through its terminal `result`) that the runtime produced with no
+ *  correlated `sendTurn` call — e.g. a background self-resume, a completed
+ *  subagent's task notification, or a scheduled wakeup the native runtime
+ *  drives on its own (pc-sdk-16). The iterable follows the exact same
+ *  contract as a `sendTurn` stream: it yields until, and completes at, its
+ *  own terminal `result` event. Registered once per session alongside `ask`;
+ *  an adapter that never self-resumes simply never calls it. An adapter must
+ *  not silently drop such a sequence when no handler is registered — it logs
+ *  instead (see the adapter's own drop-site comment). */
+export type UnsolicitedTurnHandler = (events: AsyncIterable<RuntimeEvent>) => void;
+
 /** One live runtime session (adapter-owned native thread/session). Returned
  *  already started — there is no separate start step. */
 export interface RuntimeSession {
@@ -206,6 +218,10 @@ export interface CreateRuntimeSession {
   maxTurns?: number;
   /** Permission callback; omit ⇒ the adapter's non-interactive default. */
   ask?: AskHandler;
+  /** Surfaces a runtime-originated turn with no correlated `sendTurn` call;
+   *  omit ⇒ the adapter logs and drops such a sequence rather than silently
+   *  discarding it (see `UnsolicitedTurnHandler`). */
+  onUnsolicitedTurn?: UnsolicitedTurnHandler;
   /** Non-interactive dispatch: never block on permissions. */
   bypassPermissions?: boolean;
   /** This app server's own live listen port. Adapters that can enforce a
@@ -818,6 +834,8 @@ export interface MintRuntimeSession {
   seedContext?: string;
   cwd?: string;
   ask?: AskHandler;
+  /** See `CreateRuntimeSession.onUnsolicitedTurn` — threaded through unchanged. */
+  onUnsolicitedTurn?: UnsolicitedTurnHandler;
 }
 export type RuntimeSessionFactory = (
   ctx: MintRuntimeSession,

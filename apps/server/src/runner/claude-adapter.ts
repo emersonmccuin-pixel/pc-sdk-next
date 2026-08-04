@@ -70,6 +70,7 @@ import {
   type RuntimeSessionReceipt,
   type RuntimeSession,
   type RuntimeUsage,
+  type UnsolicitedTurnHandler,
 } from './runtime.ts';
 
 export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
@@ -128,6 +129,8 @@ export interface ClaudeSessionConfig {
   allowedTools?: string[];
   /** Bridge build (app-owned tool policy; may be empty). */
   bridge?: BridgeBuild;
+  /** See `CreateRuntimeSession.onUnsolicitedTurn` (docs pc-sdk-16). */
+  onUnsolicitedTurn?: UnsolicitedTurnHandler;
   maxTurns?: number;
   /** Non-interactive dispatch: never block on permissions. */
   bypassPermissions?: boolean;
@@ -606,6 +609,12 @@ export class ClaudeRuntimeSession implements RuntimeSession {
   private sdkSessionId: string | null = null;
   private appSessionId = '';
   private requestedNativeSessionId: string | null = null;
+  /** True from the moment the app-owned handoff seed (see `start()`) is
+   *  pushed until its own out-of-turn round trip is observed to end (or the
+   *  caller's first real `sendTurn` supersedes it). Narrowly scopes the
+   *  seed's deliberate suppression so it never silently widens into the
+   *  default drop behavior for every out-of-turn message (pc-sdk-16). */
+  private suppressNextUnsolicitedReply = false;
   private contextObservationInFlight = false;
   /** Exact last-iteration context evidence from the latest primary assistant
    *  message in the current app turn. It never crosses the adapter boundary. */
@@ -714,6 +723,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         message: { role: 'user', content: this.config.seedContext },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessage;
+      this.suppressNextUnsolicitedReply = true;
       this.promptQueue?.push(seedMsg);
     }
   }
@@ -726,6 +736,12 @@ export class ClaudeRuntimeSession implements RuntimeSession {
     if (this.currentTurn) throw new Error('ClaudeRuntimeSession already has an active turn');
     this.turnGeneration += 1;
     this.latestPrimaryContextEvidence = { status: 'absent' };
+    // A real, app-initiated turn structurally ends the seed's suppression
+    // window (docs comment on `start()`): whether or not the seed's own
+    // round trip ever produced a terminal, nothing after this point belongs
+    // to it, and a later genuine unsolicited turn must never inherit a stuck
+    // suppression flag.
+    this.suppressNextUnsolicitedReply = false;
     resetTurnCorrelation(this.keys);
     const turn = new AsyncQueue<RuntimeEvent>();
     this.currentTurn = turn;
@@ -867,8 +883,16 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       this.latestPrimaryContextEvidence = { status: 'absent' };
     }
 
-    const turn = this.currentTurn;
-    if (!turn) return; // out-of-turn telemetry must not mutate successor-turn correlation
+    let turn = this.currentTurn;
+    if (!turn) {
+      // No active app-initiated turn. This is either pre-init noise, the
+      // app-owned handoff seed's own deliberately-suppressed round trip, or
+      // a genuine unsolicited turn (background self-resume, task
+      // notification, scheduled wakeup — pc-sdk-16) that must be surfaced,
+      // never silently dropped.
+      turn = this.admitUnsolicitedTurn(anyMsg);
+      if (!turn) return;
+    }
     if (this.sdkSessionId === null) {
       if (anyMsg.type === 'system') {
         // Pre-init system noise (e.g. SessionStart hook_started/hook_response) is
@@ -908,6 +932,44 @@ export class ClaudeRuntimeSession implements RuntimeSession {
         return;
       }
     }
+  }
+
+  /** Lazily opens `currentTurn` for a turn-bearing native message that
+   *  arrived with no active app turn (pc-sdk-16). Reuses the exact same
+   *  `currentTurn`/correlation machinery `sendTurn` uses, so a real
+   *  `sendTurn` and this path can never both be open at once — the adapter's
+   *  own "already has an active turn" guard is the mutual-exclusion fence.
+   *  Returns null when the message must still be dropped: pre-init noise
+   *  (nothing established to attach it to yet), the app-owned handoff seed's
+   *  own suppressed round trip (see `start()`), or no `onUnsolicitedTurn`
+   *  handler registered — logged, never silent. */
+  private admitUnsolicitedTurn(
+    anyMsg: { type: string; subtype?: string },
+  ): AsyncQueue<RuntimeEvent> | null {
+    if (this.sdkSessionId === null) return null;
+    if (this.suppressNextUnsolicitedReply) {
+      if (anyMsg.type === 'result') this.suppressNextUnsolicitedReply = false;
+      return null;
+    }
+    const handler = this.config.onUnsolicitedTurn;
+    if (!handler) {
+      console.warn(
+        '[pc-sdk][claude-adapter] dropping a turn-bearing runtime message: no active app turn '
+          + 'and no onUnsolicitedTurn handler registered',
+      );
+      return null;
+    }
+    this.turnGeneration += 1;
+    this.latestPrimaryContextEvidence = { status: 'absent' };
+    resetTurnCorrelation(this.keys);
+    const turn = new AsyncQueue<RuntimeEvent>();
+    this.currentTurn = turn;
+    if (this.pendingSessionStarted) {
+      turn.push(this.pendingSessionStarted);
+      this.pendingSessionStarted = null;
+    }
+    handler(turn);
+    return turn;
   }
 
   private rejectSessionStart(reason: string): void {
@@ -1307,6 +1369,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       seedContext: input.seedContext,
       cwd: input.cwd,
       bridge: input.tools,
+      onUnsolicitedTurn: input.onUnsolicitedTurn,
       ...(input.allowedNativeTools ? { allowedTools: input.allowedNativeTools } : {}),
       maxTurns: input.maxTurns,
       bypassPermissions: input.bypassPermissions,
