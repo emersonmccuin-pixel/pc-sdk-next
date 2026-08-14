@@ -39,10 +39,100 @@ function Test-Health {
     }
 }
 
-# 1. Is the server already up?
-if (-not (Test-Health)) {
-    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+function Get-HeadCommit {
+    try {
+        $head = git -C $RepoRoot rev-parse HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $head) { return $head.Trim() }
+    } catch {}
+    return $null
+}
 
+# ── 0. Freshness gate ────────────────────────────────────────────────────────
+# The UI is a static build (apps/web/dist) the server reads from disk on every
+# request. Agents land code without rebuilding it, so the launcher rebuilds
+# whenever dist is older than the code — otherwise a stale UI runs against a
+# newer server and misbehaves in confusing ways (2026-08-13: sends silently
+# bounced). Runs even when the server is already up: a rebuild takes effect on
+# the next page refresh, no restart needed.
+$WebDistIndex = Join-Path $RepoRoot 'apps\web\dist\index.html'
+$BuildStamp   = Join-Path $RepoRoot 'apps\web\dist\.build-commit'
+$ServerStamp  = Join-Path $LogDir 'server.commit'
+$BuildLog     = Join-Path $LogDir 'web-build.log'
+
+function Test-WebDistStale {
+    if (-not (Test-Path $WebDistIndex)) { return $true }
+    $head = Get-HeadCommit
+    if ($head) {
+        if (-not (Test-Path $BuildStamp)) { return $true }
+        if ((Get-Content $BuildStamp -Raw).Trim() -ne $head) { return $true }
+    }
+    # Uncommitted edits: any web/shared source newer than the built index.
+    $distTime = (Get-Item $WebDistIndex).LastWriteTimeUtc
+    $srcRoots = @((Join-Path $RepoRoot 'apps\web\src'), (Join-Path $RepoRoot 'packages'))
+    foreach ($root in $srcRoots) {
+        if (-not (Test-Path $root)) { continue }
+        $newer = Get-ChildItem $root -Recurse -File |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\|\\dist\\|\\\.turbo\\|\\coverage\\' } |
+            Where-Object { $_.LastWriteTimeUtc -gt $distTime } |
+            Select-Object -First 1
+        if ($newer) { return $true }
+    }
+    return $false
+}
+
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+if (Test-WebDistStale) {
+    $build = Start-Process -FilePath $env:ComSpec `
+        -ArgumentList @("/c", "pnpm", "--filter", "@pc-sdk/web", "build") `
+        -WorkingDirectory $RepoRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $BuildLog `
+        -RedirectStandardError "$BuildLog.err" `
+        -PassThru -Wait
+    if ($build.ExitCode -ne 0) {
+        Show-FatalError "The PC-SDK Next app UI is out of date and rebuilding it failed (exit $($build.ExitCode)).`n`nBuild log:`n$BuildLog.err"
+    }
+    $head = Get-HeadCommit
+    if ($head) { Set-Content -Path $BuildStamp -Value $head }
+}
+
+# 1. Is the server already up?
+if (Test-Health) {
+    # Running server loads its code once at boot — if the repo has moved on
+    # since (launcher stamps the commit it started from), offer a clean
+    # restart via the server's own restart endpoint. Open app windows poll
+    # /health and reload themselves afterwards.
+    $head = Get-HeadCommit
+    if ($head -and (Test-Path $ServerStamp) -and ((Get-Content $ServerStamp -Raw).Trim() -ne $head)) {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+        $choice = [System.Windows.MessageBox]::Show(
+            "The PC-SDK Next server is running older code than what's in the repo.`n`nRestart it now to pick up the new code? (Open app windows reload themselves.)",
+            "PC-SDK Next Launcher", 'YesNo', 'Question')
+        if ($choice -eq 'Yes') {
+            try {
+                Invoke-RestMethod -Method Post -Uri "http://localhost:$Port/api/admin/restart" -TimeoutSec 5 -ErrorAction Stop | Out-Null
+            } catch {
+                Show-FatalError "Asked the server to restart but the request failed.`n`n$($_.Exception.Message)"
+            }
+            # Wait for the NEW process: healthy again with a fresh uptime.
+            $restarted = $false
+            foreach ($i in 1..30) {
+                Start-Sleep -Seconds 1
+                try {
+                    $health = Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 2 -ErrorAction Stop
+                    if ($health.ok -eq $true -and $health.instanceId -eq $InstanceId -and $health.uptimeMs -lt 30000) {
+                        $restarted = $true; break
+                    }
+                } catch {}
+            }
+            if (-not $restarted) {
+                Show-FatalError "The server did not come back healthy within 30 seconds of restarting.`n`nCheck the log:`n$LogFile"
+            }
+            Set-Content -Path $ServerStamp -Value $head
+        }
+    }
+} else {
     # pnpm is a .cmd — CreateProcess (used when redirecting) can't exec it directly.
     $exe        = $env:ComSpec
     $serverArgs = @("/c", "pnpm", "--filter", "@pc-sdk/server", "start")
@@ -81,6 +171,9 @@ if (-not (Test-Health)) {
     if (-not $healthy) {
         Show-FatalError "PC-SDK Next server did not become healthy within $timeoutSec seconds.`n`nCheck the log:`n$LogFile"
     }
+
+    $head = Get-HeadCommit
+    if ($head) { Set-Content -Path $ServerStamp -Value $head }
 }
 
 # 3. Launch the app window: msedge --app, then chrome, then default browser.

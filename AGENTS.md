@@ -30,6 +30,10 @@ No installer/releases/marketing until it earns them; code stays packageable.
 - Browser plus one local server process. No Electron, agent-host, supervisor,
   or general workflow engine.
 - One-click hidden launcher; DB-backed boot recovery replaces babysitting.
+  Launching is also the refresh flow: the launcher rebuilds a stale
+  `apps/web/dist` and offers a server restart when the running process
+  predates HEAD (see `launcher/README.md`). Landed code is not live until
+  the next launch/restart — never assume a running instance has it.
 - Preserve the existing visual shell. Rework behavior/state ownership where an
   accepted requirement demands it; do not use architecture work as a redesign.
 - UI surfaces: chat/session/run views, specialist builder/roster, MCP manager,
