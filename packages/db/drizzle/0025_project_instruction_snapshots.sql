@@ -20,4 +20,3 @@ WHEN OLD.`project_instruction_snapshot` IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'agent run project instruction snapshot is immutable');
 END;
-

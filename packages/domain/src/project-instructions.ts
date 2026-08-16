@@ -18,7 +18,6 @@ export type ProjectInstructionSnapshot =
 function isSha256Revision(value: unknown): value is string {
   return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
-
 export function isProjectInstructionSnapshot(
   value: unknown,
 ): value is ProjectInstructionSnapshot {

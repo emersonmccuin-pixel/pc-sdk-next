@@ -17,7 +17,6 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-
 function root(): string {
   const path = realpathSync.native(mkdtempSync(join(tmpdir(), 'pc-project-instructions-')));
   roots.push(path);
