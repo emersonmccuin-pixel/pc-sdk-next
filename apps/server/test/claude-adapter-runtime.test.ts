@@ -50,8 +50,9 @@ const MODELS: ModelInfo[] = [
 ];
 
 const ATTEMPT_ID = 'continuation-attempt-1';
+const TEST_CLAUDE_HOME = resolve('test-fixtures/claude-personal');
 const TEST_CLAUDE_ENV = Object.freeze({
-  CLAUDE_CONFIG_DIR: resolve('test-fixtures/claude-personal'),
+  CLAUDE_CONFIG_DIR: TEST_CLAUDE_HOME,
 });
 
 const DIRTY_RUNTIME_ENV: NodeJS.ProcessEnv = {
@@ -73,7 +74,7 @@ class TestAccountRegistry extends AccountRegistry {
     super([{
       id: 'personal',
       runtimeId: CLAUDE_RUNTIME_ID,
-      configDir: 'C:/claude-personal',
+      configDir: TEST_CLAUDE_HOME,
     }]);
   }
 
@@ -93,7 +94,7 @@ function accounts(base?: NodeJS.ProcessEnv): AccountRegistry {
 function assertLeastPrivilegeClaudeEnv(env: NodeJS.ProcessEnv | undefined): void {
   assert.deepEqual(env, {
     PATH: 'C:/safe-bin',
-    CLAUDE_CONFIG_DIR: 'C:/claude-personal',
+    CLAUDE_CONFIG_DIR: TEST_CLAUDE_HOME,
   });
 }
 
@@ -543,7 +544,7 @@ test('Claude final query seam re-sanitizes a direct dirty session environment', 
   const session = new ClaudeRuntimeSession({
     env: {
       ...DIRTY_RUNTIME_ENV,
-      CLAUDE_CONFIG_DIR: 'C:/claude-personal',
+      CLAUDE_CONFIG_DIR: TEST_CLAUDE_HOME,
     } as Record<string, string>,
     continuationAttemptId: ATTEMPT_ID,
     selection: selection({ kind: 'none' }),

@@ -4,6 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve, sep } from 'node:path';
 import { updateProjectMeta } from '@pc/db';
 import type { ULID } from '@pc/domain';
 import {
@@ -14,6 +15,9 @@ import {
   defaultCodexAccounts,
 } from '../src/runner/account-env.ts';
 import { freshDb, newProject } from './helpers.ts';
+
+const TEST_HOME = resolve('test-fixtures/account-home');
+const TEST_CLAUDE_HOME = resolve(TEST_HOME, '.claude-work');
 
 test('buildAccountEnv allowlists OS essentials, then forces only the selected CLAUDE_CONFIG_DIR', () => {
   const base = {
@@ -32,10 +36,10 @@ test('buildAccountEnv allowlists OS essentials, then forces only the selected CL
     UNRELATED_CANARY: 'ambient-value-should-be-removed',
     NODE_OPTIONS: '--require=/malicious/preload.js',
   };
-  const env = buildAccountEnv('C:/Users/emers/.claude-work', base);
+  const env = buildAccountEnv(TEST_CLAUDE_HOME, base);
   assert.deepEqual(env, {
     PATH: '/usr/bin',
-    CLAUDE_CONFIG_DIR: 'C:/Users/emers/.claude-work',
+    CLAUDE_CONFIG_DIR: TEST_CLAUDE_HOME,
   });
 });
 
@@ -61,7 +65,7 @@ test('registry.buildEnv applies the positive allowlist for a named account', () 
 });
 
 test('defaultAccounts seeds personal + work under the home dir', () => {
-  const accts = defaultAccounts('C:/Users/emers');
+  const accts = defaultAccounts(TEST_HOME);
   assert.deepEqual(
     accts.map((a) => a.id),
     ['personal', 'work'],
@@ -71,7 +75,7 @@ test('defaultAccounts seeds personal + work under the home dir', () => {
 });
 
 test('defaultCodexAccounts seeds one personal account under <home>/.codex', () => {
-  const accts = defaultCodexAccounts('C:/Users/emers');
+  const accts = defaultCodexAccounts(TEST_HOME);
   assert.deepEqual(accts.map((a) => ({ id: a.id, runtimeId: a.runtimeId })), [
     { id: 'personal', runtimeId: 'openai-codex' },
   ]);
@@ -80,8 +84,8 @@ test('defaultCodexAccounts seeds one personal account under <home>/.codex', () =
 
 test('Claude and Codex seeds combine into one runtime-scoped registry', () => {
   const reg = new AccountRegistry([
-    ...defaultAccounts('C:/Users/emers'),
-    ...defaultCodexAccounts('C:/Users/emers'),
+    ...defaultAccounts(TEST_HOME),
+    ...defaultCodexAccounts(TEST_HOME),
   ]);
   assert.equal(reg.has('claude-agent-sdk', 'personal'), true);
   assert.equal(reg.has('claude-agent-sdk', 'work'), true);
@@ -137,59 +141,62 @@ test('account identity is runtime-scoped and scoped duplicates are rejected', ()
 });
 
 test('account records are isolated from constructor and read-result mutation', () => {
+  const originalHome = resolve(TEST_HOME, 'original-home');
   const source = {
-    id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'C:/original-home',
+    id: 'personal', runtimeId: 'claude-agent-sdk', configDir: originalHome,
   };
   const reg = new AccountRegistry([source]);
   source.id = 'mutated';
-  source.configDir = 'C:/mutated-source';
+  source.configDir = resolve(TEST_HOME, 'mutated-source');
   const fromGet = reg.get('claude-agent-sdk', 'personal');
   assert.ok(fromGet);
-  fromGet.configDir = 'C:/mutated-get';
+  fromGet.configDir = resolve(TEST_HOME, 'mutated-get');
   const fromList = reg.list()[0]!;
-  fromList.configDir = 'C:/mutated-list';
+  fromList.configDir = resolve(TEST_HOME, 'mutated-list');
 
   assert.equal(reg.has('claude-agent-sdk', 'personal'), true);
   assert.equal(
     reg.buildEnv('claude-agent-sdk', 'personal', {}).CLAUDE_CONFIG_DIR,
-    'C:/original-home',
+    originalHome,
   );
 });
 
 test('credential homes are unique per runtime after path normalization', () => {
+  const sharedHome = resolve(TEST_HOME, 'shared');
+  const sharedHomeAlias = `${resolve(TEST_HOME, 'homes')}${sep}..${sep}shared`;
   assert.throws(() => new AccountRegistry([
-    { id: 'first', runtimeId: 'claude-agent-sdk', configDir: 'C:/homes/../shared' },
-    { id: 'second', runtimeId: 'claude-agent-sdk', configDir: 'C:/shared' },
+    { id: 'first', runtimeId: 'claude-agent-sdk', configDir: sharedHomeAlias },
+    { id: 'second', runtimeId: 'claude-agent-sdk', configDir: sharedHome },
   ]), /duplicate runtime credential home/);
 
   const peers = new AccountRegistry([
-    { id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'C:/shared' },
-    { id: 'personal', runtimeId: 'openai-codex', configDir: 'C:/shared' },
+    { id: 'personal', runtimeId: 'claude-agent-sdk', configDir: sharedHome },
+    { id: 'personal', runtimeId: 'openai-codex', configDir: sharedHome },
   ]);
   assert.equal(peers.list().length, 2);
 });
 
 test('registry rejects malformed identities and non-absolute credential homes', () => {
   assert.throws(() => new AccountRegistry([{
-    id: ' personal ', runtimeId: 'claude-agent-sdk', configDir: 'C:/home',
+    id: ' personal ', runtimeId: 'claude-agent-sdk', configDir: TEST_HOME,
   }]), /identity must be canonical/);
   assert.throws(() => new AccountRegistry([{
-    id: 'personal', runtimeId: 'claude-agent-sdk\u0000peer', configDir: 'C:/home',
+    id: 'personal', runtimeId: 'claude-agent-sdk\u0000peer', configDir: TEST_HOME,
   }]), /identity must be canonical/);
   for (const id of ['a'.repeat(201), 'account-😀', '\taccount', '\u00a0account']) {
     assert.throws(() => new AccountRegistry([{
-      id, runtimeId: 'claude-agent-sdk', configDir: 'C:/home',
+      id, runtimeId: 'claude-agent-sdk', configDir: TEST_HOME,
     }]), /identity must be canonical/);
   }
   assert.throws(() => new AccountRegistry([{
     id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'relative-home',
   }]), /absolute canonical path/);
   assert.throws(() => new AccountRegistry([{
-    id: 7, runtimeId: 'claude-agent-sdk', configDir: 'C:/home',
+    id: 7, runtimeId: 'claude-agent-sdk', configDir: TEST_HOME,
   } as never]), /identity must be canonical/);
   assert.throws(
     () => new AccountRegistry([{
-      id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'C:/home',
+      id: 'personal', runtimeId: 'claude-agent-sdk', configDir: TEST_HOME,
     }]).buildEnv('openai-codex', 'personal'),
     /unknown account for runtime/,
   );

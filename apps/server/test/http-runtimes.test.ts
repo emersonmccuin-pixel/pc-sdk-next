@@ -5,6 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import type { ULID } from '@pc/domain';
 import { mountRuntimes } from '../src/http/runtimes.ts';
@@ -65,10 +66,11 @@ class FakeAdapter implements AgentRuntimeAdapter {
 }
 
 function fixtureAccounts(): AccountRegistry {
+  const home = resolve('test-fixtures/runtime-accounts');
   return new AccountRegistry([
-    { id: 'personal', runtimeId: 'claude-agent-sdk', configDir: 'C:/home/.claude' },
-    { id: 'work', runtimeId: 'claude-agent-sdk', configDir: 'C:/home/.claude-work' },
-    { id: 'personal', runtimeId: 'openai-codex', configDir: 'C:/home/.codex' },
+    { id: 'personal', runtimeId: 'claude-agent-sdk', configDir: resolve(home, '.claude') },
+    { id: 'work', runtimeId: 'claude-agent-sdk', configDir: resolve(home, '.claude-work') },
+    { id: 'personal', runtimeId: 'openai-codex', configDir: resolve(home, '.codex') },
   ]);
 }
 

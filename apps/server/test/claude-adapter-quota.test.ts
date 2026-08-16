@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 import { AccountRegistry } from '../src/runner/account-env.ts';
@@ -15,12 +16,13 @@ import {
 const NOW = Date.parse('2026-07-12T12:00:00.000Z');
 const FIVE_HOUR_RESET = '2026-07-12T17:00:00.000000+00:00';
 const SEVEN_DAY_RESET = '2026-07-19T12:00:00.000000+00:00';
+const TEST_CLAUDE_HOME = resolve('test-fixtures/claude-personal');
 
 function accounts(): AccountRegistry {
   return new AccountRegistry([{
     id: 'personal',
     runtimeId: CLAUDE_RUNTIME_ID,
-    configDir: 'C:/claude-personal',
+    configDir: TEST_CLAUDE_HOME,
   }]);
 }
 
@@ -71,7 +73,7 @@ test('Claude OAuth quota observation is adapter-owned, complete, and keeps enfor
   });
 
   assert.equal(requestedUrl, 'https://api.anthropic.com/api/oauth/usage');
-  assert.equal(requestedConfigDir, 'C:/claude-personal');
+  assert.equal(requestedConfigDir, TEST_CLAUDE_HOME);
   assert.equal(requestedSignal, controller.signal);
   assert.equal(authorization, 'Bearer oauth-token');
   assert.equal(beta, 'oauth-2025-04-20');

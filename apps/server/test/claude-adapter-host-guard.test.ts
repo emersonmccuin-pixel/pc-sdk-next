@@ -7,6 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
 import type {
   HookJSONOutput,
   ModelInfo,
@@ -21,7 +22,11 @@ import { CLAUDE_RUNTIME_ID, ClaudeRuntimeAdapter } from '../src/runner/claude-ad
 const MODELS: ModelInfo[] = [{ value: 'opus', displayName: 'Opus', description: '', supportsEffort: false }];
 
 function accounts(): AccountRegistry {
-  return new AccountRegistry([{ id: 'personal', runtimeId: CLAUDE_RUNTIME_ID, configDir: 'C:/claude-personal' }]);
+  return new AccountRegistry([{
+    id: 'personal',
+    runtimeId: CLAUDE_RUNTIME_ID,
+    configDir: resolve('test-fixtures/claude-personal'),
+  }]);
 }
 
 interface Gate { promise: Promise<void>; resolve: () => void }
