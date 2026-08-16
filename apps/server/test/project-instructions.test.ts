@@ -79,4 +79,3 @@ test('oversized and malformed instruction sources fail closed', () => {
       error.code === 'project-instruction-source-not-utf8',
   );
 });
-
