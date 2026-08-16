@@ -1,6 +1,16 @@
 # Current execution handoff
 
-Updated: 2026-07-20. CX-004 is descoped (ADR-0003) and `packages/windows-containment`
+Updated: 2026-08-16. PI-001 is complete on
+`codex/pi-001-project-instructions`: PC-SDK now owns and durably snapshots the
+root `AGENTS.md` for both Claude and Codex orchestrator/specialist sessions,
+Codex native project-document discovery is disabled per session, native
+continuations retain the parent snapshot, and the tracked `CLAUDE.md` stub is
+removed. Full `pnpm ci:check`, focused persistence/adapter/loader guards, and a
+real no-turn Codex session mint passed. Next safe action is to restart PC-SDK
+Next through the launcher so the running server applies the landed migration
+and composition changes, then create a fresh app session.
+
+Prior handoff (2026-07-20): CX-004 is descoped (ADR-0003) and `packages/windows-containment`
 is removed; everything below this line is historical record from before the descope.
 Current work follows the approved finish plan: N5 completion (live Codex peer,
 composition, runtime switching) then N6 (MCP manager, usage dashboard, policy UX).

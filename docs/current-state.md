@@ -1,6 +1,16 @@
 # Current state
 
-Last updated: 2026-07-20 (evening). Finish plan executed (WF-0..WF-4):
+Last updated: 2026-08-16.
+
+- PI-001 complete: root `AGENTS.md` is now the sole repository instruction
+  source. PC-SDK snapshots it durably per orchestrator session and specialist
+  run, injects the same compiled instructions into Claude and Codex, disables
+  duplicate Codex-native project-document discovery, and preserves the
+  snapshot across re-mint/native continuation. A new app session receives a
+  later file revision. The tracked `CLAUDE.md` stub is removed. Full
+  `pnpm ci:check` and a real no-turn Codex session mint passed.
+
+Prior state (2026-07-20 evening). Finish plan executed (WF-0..WF-4):
 - CX-004 descoped (ADR-0003); `packages/windows-containment` removed.
 - N5 essentially complete: live Codex peer + transport, dual-runtime composition,
   project-scoped runtime switching, model-rot fallback, hook-tolerant Claude
