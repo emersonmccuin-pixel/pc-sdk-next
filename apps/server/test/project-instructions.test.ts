@@ -36,7 +36,6 @@ test('loads and hashes the one root AGENTS.md as UTF-8', () => {
     revision: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
   });
 });
-
 test('a missing AGENTS.md produces an explicit empty snapshot', () => {
   const snapshot = loadProjectInstructionSnapshot(root());
   assert.equal(snapshot.state, 'missing');

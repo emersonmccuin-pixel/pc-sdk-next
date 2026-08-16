@@ -37,4 +37,3 @@ export function isProjectInstructionSnapshot(
   if (record.state === 'missing') return record.content === '';
   return record.state === 'loaded' && record.content.length > 0;
 }
-
