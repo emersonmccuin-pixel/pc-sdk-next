@@ -13,7 +13,13 @@ import {
   type RuntimeSelection,
   type RuntimeSessionReceipt,
 } from '@pc/contracts';
-import type { SessionEndedReason, SessionStatus, ULID } from '@pc/domain';
+import {
+  isProjectInstructionSnapshot,
+  type ProjectInstructionSnapshot,
+  type SessionEndedReason,
+  type SessionStatus,
+  type ULID,
+} from '@pc/domain';
 import { getDb } from '../connection.ts';
 import { newId } from '../id.ts';
 import { orchestratorSessions } from '../schema.ts';
@@ -61,6 +67,9 @@ export interface OrchestratorSessionRow {
    * delivery path clears it after the first successful create bind; it never
    * gates the bind/continuation state machine itself. */
   pendingHandoffSeed: boolean;
+  /** Immutable root AGENTS.md snapshot bound before this app session's first
+   * native mint. Undefined/null is retained only for pre-migration test/legacy rows. */
+  projectInstructionSnapshot?: ProjectInstructionSnapshot | null;
 }
 
 interface FlattenedSelection {
@@ -167,7 +176,45 @@ export function newStampedOrchestratorSession(
     deletedAt: null,
     sourceSessionId: input.sourceSessionId ?? null,
     pendingHandoffSeed: input.pendingHandoffSeed ?? false,
+    projectInstructionSnapshot: null,
   };
+}
+
+/** Bind the one app-owned project-instruction snapshot for this app session.
+ * Matching retries return the stored snapshot; later file changes cannot
+ * alter a session that already crossed the bind door. */
+export function bindOrGetOrchestratorProjectInstructionSnapshot(
+  id: ULID,
+  candidate: ProjectInstructionSnapshot,
+): ProjectInstructionSnapshot | null {
+  if (!isProjectInstructionSnapshot(candidate)) {
+    throw new Error('orchestrator project instruction snapshot is invalid');
+  }
+  return getDb().transaction((tx) => {
+    const row = tx.select({
+      status: orchestratorSessions.status,
+      deletedAt: orchestratorSessions.deletedAt,
+      snapshot: orchestratorSessions.projectInstructionSnapshot,
+    }).from(orchestratorSessions).where(eq(orchestratorSessions.id, id)).get();
+    if (!row || row.status !== 'active' || row.deletedAt !== null) return null;
+    if (row.snapshot !== null) {
+      if (!isProjectInstructionSnapshot(row.snapshot)) {
+        throw new Error('stored orchestrator project instruction snapshot is invalid');
+      }
+      return structuredClone(row.snapshot);
+    }
+    const bound = tx.update(orchestratorSessions)
+      .set({ projectInstructionSnapshot: structuredClone(candidate) })
+      .where(and(
+        eq(orchestratorSessions.id, id),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+        isNull(orchestratorSessions.projectInstructionSnapshot),
+      ))
+      .run();
+    if (bound.changes !== 1) return null;
+    return structuredClone(candidate);
+  });
 }
 
 export function createOrchestratorSession(

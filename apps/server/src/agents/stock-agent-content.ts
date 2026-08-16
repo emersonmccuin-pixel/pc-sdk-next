@@ -216,8 +216,6 @@ ${AMBIGUITY_RULE}
 - Don't add feature flags, backwards-compat shims, or defensive validation at internal boundaries.
 - Trust framework + internal guarantees; validate only at system boundaries (user input, external APIs).
 
-If the project has a \`CLAUDE.md\` at root or in the touched subdirectory, read it before writing — project-specific conventions override these defaults.
-
 ## Style
 
 - Terse. The diff or the path list speaks for itself.

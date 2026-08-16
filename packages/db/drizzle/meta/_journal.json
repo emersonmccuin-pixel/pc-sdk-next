@@ -176,6 +176,13 @@
       "when": 1783965600000,
       "tag": "0024_mcp_tool_filter",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1783969200000,
+      "tag": "0025_project_instruction_snapshots",
+      "breakpoints": true
     }
   ]
 }

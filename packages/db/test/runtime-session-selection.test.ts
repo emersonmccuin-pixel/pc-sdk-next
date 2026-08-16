@@ -81,6 +81,7 @@ test('new rows persist one complete flattened immutable selection', () => {
     deletedAt: null,
     sourceSessionId: null,
     pendingHandoffSeed: false,
+    projectInstructionSnapshot: null,
   });
   assert.deepEqual(db.runtimeSelectionForSession(session), selected);
   assert.throws(

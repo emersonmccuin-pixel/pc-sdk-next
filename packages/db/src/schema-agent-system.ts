@@ -28,6 +28,7 @@ import type {
   PendingAskKind,
   PendingAskOption,
   PendingAskStatus,
+  ProjectInstructionSnapshot,
   RepositoryIdentityReceipt,
   ReviewCheckoutProvisionReceipt,
   ReviewCheckoutPhaseReceipt,
@@ -71,6 +72,10 @@ export const agentRuns = sqliteTable(
     }).notNull().default('legacy-unavailable').$type<AgentRunSnapshotState>(),
     specialistSnapshot: text('specialist_snapshot', { mode: 'json' })
       .$type<SpecialistExecutionSnapshot | null>(),
+    /** Immutable app-owned root AGENTS.md snapshot bound before the first
+     * native mint. Null is retained only until a new/legacy row first mints. */
+    projectInstructionSnapshot: text('project_instruction_snapshot', { mode: 'json' })
+      .$type<ProjectInstructionSnapshot | null>(),
     nativeSessionId: text('native_session_id'),
     nativeIdentityState: text('native_identity_state', {
       enum: ['unbound', 'bound', 'legacy-untrusted'],

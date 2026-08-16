@@ -377,7 +377,7 @@ function threadStartParams(input: CapturedSessionInput) {
     approvalPolicy: 'on-request' as const,
     approvalsReviewer: 'user' as const,
     sandbox: 'workspace-write' as const,
-    config: effortConfig(input.selection),
+    config: sessionConfig(input.selection),
     baseInstructions: null,
     developerInstructions: input.instructions,
     ephemeral: false,
@@ -395,16 +395,22 @@ function threadResumeParams(input: CapturedSessionInput) {
     approvalPolicy: 'on-request' as const,
     approvalsReviewer: 'user' as const,
     sandbox: 'workspace-write' as const,
-    config: effortConfig(input.selection),
+    config: sessionConfig(input.selection),
     baseInstructions: null,
     developerInstructions: input.instructions,
   };
 }
 
-function effortConfig(selection: RuntimeSelection): Record<string, string> | null {
-  return selection.effort.kind === 'selected'
-    ? { model_reasoning_effort: selection.effort.value }
-    : null;
+function sessionConfig(selection: RuntimeSelection): Record<string, string | number> {
+  return {
+    // PC-SDK owns and snapshots the root AGENTS.md before this adapter seam.
+    // Disable Codex's native discovery so the same instructions are not loaded
+    // twice or changed independently of the durable app session/run snapshot.
+    project_doc_max_bytes: 0,
+    ...(selection.effort.kind === 'selected'
+      ? { model_reasoning_effort: selection.effort.value }
+      : {}),
+  };
 }
 
 function unavailableCapabilities(accountId: string, discoveryCode: string): RuntimeCapabilities {

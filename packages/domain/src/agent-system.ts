@@ -9,6 +9,7 @@ import type { ULID } from './ulid.ts';
 import type { PendingAskOption } from './agent-comms.ts';
 import type { RunLifecycleState } from './run-lifecycle.ts';
 import type { WorktreeGitReceipt, WorktreePhaseReceipt } from './worktree.ts';
+import type { ProjectInstructionSnapshot } from './project-instructions.ts';
 
 /** One context document frozen into the exact specialist execution package. */
 export interface SpecialistContextSnapshot {
@@ -205,6 +206,9 @@ export interface AgentRunRow {
    * execution-effective revision cannot be reconstructed honestly. */
   snapshotState: AgentRunSnapshotState;
   specialistSnapshot: SpecialistExecutionSnapshot | null;
+  /** Immutable root AGENTS.md snapshot bound before this run's first native
+   * mint. Undefined/null is retained only for pre-migration test/legacy rows. */
+  projectInstructionSnapshot?: ProjectInstructionSnapshot | null;
   /** Adapter-native identity. New clean runs bind it from one exact positive
    * receipt; continuations inherit only a positively bound parent identity. */
   nativeSessionId: string | null;

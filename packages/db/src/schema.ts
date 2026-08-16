@@ -25,6 +25,7 @@ import type {
   PodAuditActor,
   PodAuditField,
   PodScope,
+  ProjectInstructionSnapshot,
   RepositoryIdentityReceipt,
   SessionEndedReason,
   SessionStatus,
@@ -220,6 +221,10 @@ export const orchestratorSessions = sqliteTable(
     pendingHandoffSeed: integer('pending_handoff_seed', { mode: 'boolean' })
       .notNull()
       .default(false),
+    /** Immutable app-owned root AGENTS.md snapshot bound before the first
+     * native mint. Null is retained only until a new/legacy row first mints. */
+    projectInstructionSnapshot: text('project_instruction_snapshot', { mode: 'json' })
+      .$type<ProjectInstructionSnapshot | null>(),
   },
   (t) => [
     /** One active session per project (DB-enforced). */

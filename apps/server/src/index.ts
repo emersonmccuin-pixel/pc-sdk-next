@@ -18,6 +18,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   bindProjectRepositoryIdentity,
+  bindOrGetAgentRunProjectInstructionSnapshot,
+  bindOrGetOrchestratorProjectInstructionSnapshot,
   closeDb,
   getAgentByName,
   getProjectById,
@@ -43,6 +45,10 @@ import { CODEX_RUNTIME_ID, CodexRuntimeAdapter } from './runner/codex/adapter.ts
 import { createCodexLiveDeps } from './runner/codex/live-peer.ts';
 import { seedStockAgents } from './agents/seed.ts';
 import { composeOrchestratorInstructions } from './agents/host-safety-notice.ts';
+import {
+  composeProjectInstructions,
+  loadProjectInstructionSnapshot,
+} from './agents/project-instructions.ts';
 import { DispatchService, type DispatchServiceDeps } from './dispatch/service.ts';
 import { buildPcToolDefs, mergePcTools, ORCHESTRATOR_PC_TOOLS } from './dispatch/pc-bridge.ts';
 import {
@@ -246,8 +252,17 @@ async function main(): Promise<void> {
     mintSpecialistRuntimeSession: async (input) => {
       const { continuation, ...sessionInput } = input;
       const adapter = runtimes.get(sessionInput.selection.runtimeId);
+      if (!sessionInput.cwd) throw new Error('specialist project instruction cwd is unavailable');
+      const projectInstructions = bindOrGetAgentRunProjectInstructionSnapshot(
+        sessionInput.appSessionId as ULID,
+        loadProjectInstructionSnapshot(sessionInput.cwd),
+      );
+      if (!projectInstructions) {
+        throw new Error('specialist project instruction snapshot could not be bound');
+      }
       const gatedSessionInput = {
         ...sessionInput,
+        instructions: composeProjectInstructions(sessionInput.instructions, projectInstructions),
         tools: sessionToolsForAdapter(adapter, () => sessionInput.tools),
         // Same self-preservation fact as the orchestrator mint — a specialist
         // dispatch is a live runtime session in this same process too.
@@ -315,6 +330,14 @@ async function main(): Promise<void> {
         repositoryLease.identity,
       );
     }
+    if (!cwd) throw new Error('orchestrator project instruction cwd is unavailable');
+    const projectInstructions = bindOrGetOrchestratorProjectInstructionSnapshot(
+      ctx.appSessionId as ULID,
+      loadProjectInstructionSnapshot(cwd),
+    );
+    if (!projectInstructions) {
+      throw new Error('orchestrator project instruction snapshot could not be bound');
+    }
     const tools = sessionToolsForAdapter(adapter, () =>
       portRef.port > 0
         ? mergePcTools(
@@ -332,7 +355,11 @@ async function main(): Promise<void> {
       projectId: ctx.projectId,
       continuationAttemptId: ctx.continuationAttemptId,
       selection: ctx.selection,
-      instructions: composeOrchestratorInstructions(orchestrator?.prompt, process.pid, portRef.port),
+      instructions: composeOrchestratorInstructions(
+        composeProjectInstructions(orchestrator?.prompt, projectInstructions),
+        process.pid,
+        portRef.port,
+      ),
       ...(ctx.seedContext ? { seedContext: ctx.seedContext } : {}),
       cwd,
       tools,

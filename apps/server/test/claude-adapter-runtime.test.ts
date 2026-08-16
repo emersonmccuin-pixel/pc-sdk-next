@@ -1240,6 +1240,7 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
   const runtime = await adapter.createSession({
     appSessionId: 'app-1', projectId: 'project-1',
     continuationAttemptId: ATTEMPT_ID, selection: selected,
+    instructions: 'canonical shared instructions',
   });
   selected.model = 'mutated-after-mint';
   if (selected.effort.kind === 'selected') selected.effort.value = 'low';
@@ -1248,6 +1249,7 @@ test('Claude create revalidates selection, passes selected effort, and emits a p
   assert.equal(captures[1]?.options?.model, 'opus');
   assert.equal(captures[1]?.options?.effort, 'high');
   assert.equal(captures[1]?.options?.resume, undefined);
+  assert.equal(captures[1]?.options?.systemPrompt, 'canonical shared instructions');
   assertLeastPrivilegeClaudeEnv(captures[0]?.options?.env);
   assertLeastPrivilegeClaudeEnv(captures[1]?.options?.env);
   const started = await firstEvent(runtime);

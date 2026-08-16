@@ -35,6 +35,8 @@ function agentRun(runId = 'RUN1') {
     failureReason: null,
     failureCause: null,
     endedAt: null,
+    dismissedAt: null,
+    continues: null,
     rev: 1,
   };
 }

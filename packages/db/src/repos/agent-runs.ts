@@ -29,6 +29,7 @@ import {
   isPositiveWorktreePhaseReceipt,
   isReviewCheckoutGitReceipt,
   isReviewCheckoutPhaseReceipt,
+  isProjectInstructionSnapshot,
   isWorktreePhaseReceipt,
   isSpecialistExecutionSnapshot,
   type AgentRunFailureCause,
@@ -36,6 +37,7 @@ import {
   type AgentRunStatus,
   type RunLifecycleState,
   type ReviewCheckoutPhaseReceipt,
+  type ProjectInstructionSnapshot,
   type SpecialistExecutionSnapshot,
   type ULID,
   type WorktreeGitReceipt,
@@ -124,6 +126,7 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
     dispatcherSessionId: input.dispatcherSessionId,
     snapshotState: 'stamped',
     specialistSnapshot: structuredClone(input.specialistSnapshot),
+    projectInstructionSnapshot: null,
     nativeSessionId,
     nativeIdentityState: nativeSessionId === null ? 'unbound' : 'bound',
     continuationState: nativeSessionId === null ? 'clean-pending' : 'resume-pending',
@@ -163,6 +166,55 @@ export function insertAgentRunRow(input: InsertAgentRunRowInput): AgentRunRow {
   };
   getDb().insert(agentRuns).values(row).run();
   return row;
+}
+
+/** Bind the one app-owned project-instruction snapshot for this run. Matching
+ * retries and native resumes return the stored snapshot rather than reading a
+ * changed file into an already-stamped run. */
+export function bindOrGetAgentRunProjectInstructionSnapshot(
+  id: ULID,
+  candidate: ProjectInstructionSnapshot,
+): ProjectInstructionSnapshot | null {
+  if (!isProjectInstructionSnapshot(candidate)) {
+    throw new Error('agent run project instruction snapshot is invalid');
+  }
+  return getDb().transaction((tx) => {
+    const row = tx.select({
+      status: agentRuns.status,
+      snapshot: agentRuns.projectInstructionSnapshot,
+      continues: agentRuns.continues,
+    }).from(agentRuns).where(eq(agentRuns.id, id)).get();
+    if (!row || !['queued', 'spawning', 'running', 'paused'].includes(row.status)) return null;
+    if (row.snapshot !== null) {
+      if (!isProjectInstructionSnapshot(row.snapshot)) {
+        throw new Error('stored agent run project instruction snapshot is invalid');
+      }
+      return structuredClone(row.snapshot);
+    }
+    let effective = candidate;
+    if (row.continues) {
+      const parent = tx.select({ snapshot: agentRuns.projectInstructionSnapshot })
+        .from(agentRuns)
+        .where(eq(agentRuns.id, row.continues))
+        .get();
+      if (parent?.snapshot !== null && parent?.snapshot !== undefined) {
+        if (!isProjectInstructionSnapshot(parent.snapshot)) {
+          throw new Error('stored parent agent run project instruction snapshot is invalid');
+        }
+        effective = parent.snapshot;
+      }
+    }
+    const bound = tx.update(agentRuns)
+      .set({ projectInstructionSnapshot: structuredClone(effective) })
+      .where(and(
+        eq(agentRuns.id, id),
+        inArray(agentRuns.status, ['queued', 'spawning', 'running', 'paused']),
+        isNull(agentRuns.projectInstructionSnapshot),
+      ))
+      .run();
+    if (bound.changes !== 1) return null;
+    return structuredClone(effective);
+  });
 }
 
 function exactNonEmpty(value: string, field: string): string {

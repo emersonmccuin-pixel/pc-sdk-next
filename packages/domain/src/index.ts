@@ -90,6 +90,12 @@ export {
   resolveRemoteControlEnabled,
   withProjectSettingsDefaults,
 } from './project.ts';
+export type { ProjectInstructionSnapshot } from './project-instructions.ts';
+export {
+  PROJECT_INSTRUCTION_MAX_BYTES,
+  PROJECT_INSTRUCTION_SOURCE,
+  isProjectInstructionSnapshot,
+} from './project-instructions.ts';
 export type { SessionEndedReason, SessionStatus } from './orchestrator.ts';
 export type {
   ActivityPanelSettings,

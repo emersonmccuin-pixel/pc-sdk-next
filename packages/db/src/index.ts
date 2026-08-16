@@ -319,6 +319,7 @@ export {
   isAgentRunNativeResumeReady,
   prepareAgentRunCreate,
   prepareAgentRunResume,
+  bindOrGetAgentRunProjectInstructionSnapshot,
   prepareAgentRunResumeInDb,
   runtimeSelectionForAgentRun,
   specialistSnapshotForAgentRun,
@@ -342,6 +343,7 @@ export type {
 
 export {
   clearPendingHandoffSeed,
+  bindOrGetOrchestratorProjectInstructionSnapshot,
   confirmRuntimeSessionReceipt,
   createOrchestratorSession,
   endOrchestratorSession,

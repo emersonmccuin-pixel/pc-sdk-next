@@ -72,6 +72,7 @@ test('resetAgentToSeed refuses non-seeded agents', () => {
 test('code-writer stock content carries a durable 100-turn budget', () => {
   const codeWriter = STOCK_AGENT_CONTENT.find((c) => c.name === 'code-writer')!;
   assert.equal(codeWriter.maxTurns, 100);
+  assert.equal(codeWriter.prompt?.includes('CLAUDE.md'), false);
 });
 
 test('an existing install with a stale code-writer maxTurns converges to 100 on reboot', () => {
