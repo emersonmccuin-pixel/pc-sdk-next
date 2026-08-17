@@ -45,6 +45,9 @@ export interface GlobalSettings {
   commandIntroDismissed: boolean;
   onboardingCompletedAt: string | null;
   fonts: FontSettings;
+  /** Per-runtime default model for NEW orchestrator sessions (runtime id →
+   *  model id). Missing key = fall back to the orchestrator agent's model. */
+  defaultModels: Record<string, string>;
 }
 
 export const FONT_SCALE_MIN = 0.85;

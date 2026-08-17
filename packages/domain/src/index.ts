@@ -128,6 +128,7 @@ export {
   defaultGlobalSettings,
   FONT_SCALE_MAX,
   FONT_SCALE_MIN,
+  normalizeDefaultModels,
   normalizeFontKey,
   normalizeFontSettings,
   normalizeJsonlRetention,

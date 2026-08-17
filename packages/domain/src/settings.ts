@@ -225,6 +225,13 @@ export interface GlobalSettings {
   fonts: FontSettings;
   /** pc-sdk-15 — orchestrator context-size policy (compaction/notice threshold). */
   contextPolicy: ContextPolicySettings;
+  /** Per-runtime default model for NEW orchestrator sessions, keyed by runtime
+   *  id (e.g. 'claude-agent-sdk', 'openai-codex'). A set entry wins over the
+   *  orchestrator agent row's stored model; a missing key keeps that row as
+   *  the default source. Runtime ids and model ids are opaque to this package
+   *  — the composition root owns what exists, and mint-time discovery
+   *  fallback heals a stored id the runtime no longer supports. */
+  defaultModels: Record<string, string>;
 }
 
 export const FONT_SCALE_MIN = 0.85;
@@ -274,7 +281,21 @@ export function defaultGlobalSettings(dataDir: string, homeDir: string): GlobalS
     commandIntroDismissed: false,
     fonts: { ...FONT_GROUP_DEFAULTS },
     contextPolicy: { thresholdTokens: CONTEXT_POLICY_THRESHOLD_TOKENS_DEFAULT },
+    defaultModels: {},
   };
+}
+
+/** Normalize a stored `defaultModels` map: keep only entries whose runtime id
+ *  and model are non-empty trimmed strings; anything malformed drops to `{}`. */
+export function normalizeDefaultModels(v: unknown): Record<string, string> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
+    const runtimeId = key.trim();
+    const model = typeof value === 'string' ? value.trim() : '';
+    if (runtimeId && model) out[runtimeId] = model;
+  }
+  return out;
 }
 
 export function clampFontScale(n: number): number {
@@ -380,6 +401,9 @@ export function withSettingsDefaults(
         stored.jsonl?.retentionDays ?? defaults.jsonl.retentionDays,
       ),
     },
+    defaultModels: normalizeDefaultModels(
+      (stored as { defaultModels?: unknown }).defaultModels ?? defaults.defaultModels,
+    ),
   };
 }
 

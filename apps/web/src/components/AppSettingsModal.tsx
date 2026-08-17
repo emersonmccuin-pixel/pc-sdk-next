@@ -5,7 +5,7 @@
 // Accounts (the login registry) + MCP servers (N6 reliability bar) + Usage
 // (every registered runtime+account's subscription quota).
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   FONT_SCALE_MAX,
@@ -18,6 +18,7 @@ import { postJson } from '@/api/http';
 import { FONT_REGISTRY, applyFontCssVars, fontsForGroup } from '@/features/settings/fonts';
 import type { FontGroup, FontKey } from '@/features/settings/types';
 import { useAccounts } from '@/state/accounts';
+import { useRuntimes, type RuntimeInfo } from '@/state/runtimes';
 import { McpManagerPanel } from '@/features/mcp/McpManagerPanel';
 import { UsageDashboardPanel } from '@/features/usage/UsageDashboardPanel';
 
@@ -71,6 +72,7 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
         fonts: draft.fonts,
         showCommandSpace: draft.showCommandSpace,
         activityPanel: draft.activityPanel,
+        defaultModels: draft.defaultModels ?? {},
       });
       onSaved(res.settings, res.restartRequired);
     } catch (e) {
@@ -180,6 +182,8 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
                   <span>Open the activity panel by default</span>
                 </label>
 
+                <DefaultModelsSection draft={draft} patchDraft={patchDraft} />
+
                 <EngineSection />
               </div>
             )}
@@ -204,6 +208,86 @@ export function AppSettingsModal({ settings, onClose, onSaved }: AppSettingsModa
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/** Per-platform default model for NEW chat sessions. One picker per registered
+ *  runtime, fed by the same GET /api/runtimes discovery the header pickers
+ *  use. Empty = inherit the orchestrator agent's model (pre-existing default
+ *  source). Applies on the next new session — no restart needed. */
+function DefaultModelsSection({
+  draft,
+  patchDraft,
+}: {
+  draft: GlobalSettings;
+  patchDraft: (patch: Partial<GlobalSettings>) => void;
+}) {
+  const runtimes = useRuntimes((s) => s.runtimes);
+  const loadRegistry = useRuntimes((s) => s.loadRegistry);
+  useEffect(() => {
+    void loadRegistry();
+  }, [loadRegistry]);
+
+  const defaultModels = draft.defaultModels ?? {};
+
+  function setDefault(runtimeId: string, model: string) {
+    const next = { ...defaultModels };
+    if (model) next[runtimeId] = model;
+    else delete next[runtimeId];
+    patchDraft({ defaultModels: next });
+  }
+
+  /** Models this runtime can run today, deduped across its accounts. */
+  function modelsFor(runtime: RuntimeInfo) {
+    const seen = new Map<string, { id: string; label: string }>();
+    for (const account of runtime.accounts) {
+      for (const m of account.models) {
+        if (!seen.has(m.id)) seen.set(m.id, { id: m.id, label: m.label });
+      }
+    }
+    return [...seen.values()];
+  }
+
+  return (
+    <div className="space-y-3 border-t border-border pt-4">
+      <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Default model
+      </div>
+      <p className="text-xs text-muted-foreground">
+        The model NEW chat sessions start on, per platform. Takes effect on the next new session.
+        &ldquo;Inherit&rdquo; keeps the orchestrator agent&apos;s model (Agents tab).
+      </p>
+      {runtimes.map((runtime) => {
+        const models = modelsFor(runtime);
+        const current = defaultModels[runtime.id] ?? '';
+        // Keep a stored default visible even if discovery hasn't listed it
+        // (yet) — hiding it would silently misrepresent what's saved.
+        const currentIsListed = !current || models.some((m) => m.id === current);
+        return (
+          <Field key={runtime.id} label={runtime.label}>
+            <select
+              value={current}
+              onChange={(e) => setDefault(runtime.id, e.target.value)}
+              disabled={models.length === 0 && !current}
+              className="w-full border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
+            >
+              <option value="">Inherit (orchestrator agent&apos;s model)</option>
+              {!currentIsListed && <option value={current}>{current} (not currently offered)</option>}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            {models.length === 0 && (
+              <div className="text-xs text-muted-foreground">
+                No models discovered — the platform&apos;s account may be signed out.
+              </div>
+            )}
+          </Field>
+        );
+      })}
     </div>
   );
 }

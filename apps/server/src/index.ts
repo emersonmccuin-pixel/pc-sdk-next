@@ -22,6 +22,7 @@ import {
   bindOrGetOrchestratorProjectInstructionSnapshot,
   closeDb,
   getAgentByName,
+  getGlobalSettings,
   getProjectById,
   runMigrations,
 } from '@pc/db';
@@ -30,7 +31,7 @@ import {
   SubscriptionQuotaService,
 } from '@pc/app-services';
 import type { SubscriptionQuotaObservationBatch } from '@pc/contracts';
-import { withProjectSettingsDefaults, type ULID } from '@pc/domain';
+import { withProjectSettingsDefaults, withSettingsDefaults, type ULID } from '@pc/domain';
 import { getDataDir } from '@pc/utils';
 import {
   resolveSelectionWithModelFallback,
@@ -149,21 +150,30 @@ async function main(): Promise<void> {
     withProjectSettingsDefaults(getProjectById(projectId)?.settings).defaultRuntimeId
       ?? CLAUDE_RUNTIME_ID;
 
+  // App Settings' per-runtime default model (settings.defaultModels). Read
+  // fresh per mint, like the orchestrator row — a settings save applies to the
+  // next new session without a restart. A set entry wins over the orchestrator
+  // row's stored model; unset keeps the row as the default source.
+  const settingsDefaultModel = (runtimeId: string): string | undefined =>
+    withSettingsDefaults(getGlobalSettings() ?? {}, getDataDir(), homedir())
+      .defaultModels[runtimeId];
+
   const resolveNewSessionSelection = async (
     input: {
       projectId: ULID;
       accountId?: string;
       runtimeId?: string;
       /** Explicit model/effort override from the header pickers. Omitted ⇒
-       *  the orchestrator row's administered default (unchanged behavior). */
+       *  App Settings' per-runtime default model, then the orchestrator
+       *  row's administered default. */
       model?: string;
       effort?: string | null;
     },
   ) => {
     const orchestrator = orchestratorRow();
-    const model = (input.model ?? orchestrator?.model)?.trim();
-    if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
     const runtimeId = input.runtimeId ?? projectRuntimeId(input.projectId);
+    const model = (input.model ?? settingsDefaultModel(runtimeId) ?? orchestrator?.model)?.trim();
+    if (!model) return { status: 'invalid' as const, code: 'selection-unavailable' as const };
     if (!runtimes.has(runtimeId)) {
       return { status: 'invalid' as const, code: 'runtime-not-registered' as const };
     }
