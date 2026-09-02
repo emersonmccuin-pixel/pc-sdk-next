@@ -4,7 +4,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHostSafetyNotice, composeOrchestratorInstructions } from '../src/agents/host-safety-notice.ts';
+import {
+  buildConnectorAwarenessNotice,
+  buildHostSafetyNotice,
+  composeOrchestratorInstructions,
+} from '../src/agents/host-safety-notice.ts';
 
 test('the notice carries the exact live pid and port passed in', () => {
   const notice = buildHostSafetyNotice(41234, 5124);
@@ -30,6 +34,16 @@ test('composeOrchestratorInstructions appends the live notice to the stored prom
   assert.ok(composed!.startsWith('You are the orchestrator.'));
   assert.match(composed!, /pid 999/);
   assert.match(composed!, /port 5124/);
+});
+
+test('composeOrchestratorInstructions makes new sessions connector-aware (ToolSearch for deferred tools)', () => {
+  const composed = composeOrchestratorInstructions('You are the orchestrator.', 999, 5124);
+  assert.ok(composed);
+  assert.match(composed!, /ToolSearch/);
+  assert.match(composed!, /DEFERRED/);
+  // The awareness notice must follow the host-safety notice, not replace it.
+  assert.match(composed!, /pid 999/);
+  assert.ok(composed!.indexOf('pid 999') < composed!.indexOf(buildConnectorAwarenessNotice().trim()));
 });
 
 test('composeOrchestratorInstructions returns undefined for a missing/blank prompt', () => {

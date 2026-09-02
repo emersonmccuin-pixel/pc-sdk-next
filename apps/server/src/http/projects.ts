@@ -2,6 +2,7 @@
 // (projectRoutes). Wraps the @pc/db project repos + the create-flow folder
 // probe. The old minimal `{name,slug,folderPath}` CRUD is gone (one path).
 
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -139,6 +140,24 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
     return c.json({ ok: true, project: toProjectDto(result.project) });
   });
 
+  // Open the project's folder in the OS file explorer. The path comes only
+  // from the stored project row (never client input); the local server process
+  // runs on the user's machine, so this hands off to the native shell.
+  app.post('/api/projects/:id/reveal', (c) => {
+    const project = getProjectById(c.req.param('id') as ULID);
+    if (!project) return c.json({ ok: false, error: 'not found' }, 404);
+    const folder = project.folderPath;
+    if (!folder || !existsSync(folder)) {
+      return c.json({ ok: false, error: `folder not found: ${folder ?? '(none)'}` }, 409);
+    }
+    try {
+      revealInOsExplorer(folder);
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message }, 500);
+    }
+    return c.json({ ok: true });
+  });
+
   app.patch('/api/projects/:id/notes', async (c) => {
     const id = c.req.param('id') as ULID;
     const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -264,6 +283,25 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
     }
     return c.json({ ok: true, path: target });
   });
+}
+
+/** Hand a folder off to the native file explorer. Detached + unref so it never
+ *  ties to the server lifecycle. `explorer.exe` exits 1 even on success, so the
+ *  child's exit code is deliberately ignored; only a spawn failure (missing
+ *  binary) is caught via the async 'error' listener to avoid an unhandled
+ *  ChildProcess error crashing the host. */
+function revealInOsExplorer(folder: string): void {
+  const [command, args]: [string, string[]] =
+    process.platform === 'win32'
+      ? ['explorer.exe', [folder]]
+      : process.platform === 'darwin'
+        ? ['open', [folder]]
+        : ['xdg-open', [folder]];
+  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+  child.on('error', () => {
+    /* best-effort: the request already returned; nothing to surface here */
+  });
+  child.unref();
 }
 
 function repositoryCreationStatus(error: unknown): 409 | 503 {
