@@ -71,6 +71,14 @@ import {
 /** Current composition policy for a specialist that has no explicit model.
  *  Concrete provider vocabulary is intentionally confined to this root. */
 const DEFAULT_CLAUDE_SPECIALIST_MODEL = 'sonnet';
+/** The orchestrator is the interactive chat and is declared unbounded
+ *  (`maxTurns: null` → ∞ in the roster). The runtime still needs a finite
+ *  agentic-turn ceiling, so its ∞ intent resolves here to a high runaway
+ *  backstop — far above any real interactive turn (a heavy diagnostic sweep
+ *  is tens of turns). Without this, the adapter's generic `?? 30` fallback
+ *  silently guillotines long orchestrator turns mid-work. Specialists set
+ *  their own caps at dispatch and are unaffected. */
+const ORCHESTRATOR_MAX_TURNS = 500;
 const RESTART_ADMISSION_WAIT_ENV = 'PC_DATA_ADMISSION_RESTART_WAIT';
 const RESTART_ADMISSION_WAIT_MS = 15_000;
 /** apps/server/src → apps/web/dist, resolved from this module's own location
@@ -373,7 +381,7 @@ async function main(): Promise<void> {
       ...(ctx.seedContext ? { seedContext: ctx.seedContext } : {}),
       cwd,
       tools,
-      maxTurns: orchestrator?.maxTurns ?? undefined,
+      maxTurns: orchestrator?.maxTurns ?? ORCHESTRATOR_MAX_TURNS,
       ask: ctx.ask,
       onUnsolicitedTurn: ctx.onUnsolicitedTurn,
       // Tool prompting policy remains disabled for the current product slice.
