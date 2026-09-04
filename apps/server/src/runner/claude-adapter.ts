@@ -85,6 +85,14 @@ const STRICT_ISO_TIMESTAMP =
 /** Native tools auto-allowed for the orchestrator (read-only surface).
  *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
+/** Native interactive tools this app never wants. `bypassPermissions` makes
+ *  every built-in tool callable regardless of `allowedTools`, so the only way
+ *  to keep the model out of the structured `AskUserQuestion` card (limited,
+ *  fixed-option pickers) is to disallow it outright — the orchestrator then
+ *  asks its questions as normal chat prose, and specialists ask via
+ *  `pc_answer_pending`. Plan mode (`ExitPlanMode`) is intentionally left
+ *  available. */
+const DISALLOWED_NATIVE_TOOLS = ['AskUserQuestion'];
 const CLAUDE_EFFORT_LEVELS = new Set<EffortLevel>(['low', 'medium', 'high', 'xhigh', 'max']);
 // pc-sdk-15 — bounded wait for a manual `/compact` local command's native
 // receipt. A CLI that never reports either boundary leaves `compact()`
@@ -706,6 +714,7 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       permissionMode: this.config.bypassPermissions ? 'bypassPermissions' : 'default',
       maxTurns: this.config.maxTurns ?? 30,
       allowedTools,
+      disallowedTools: DISALLOWED_NATIVE_TOOLS,
       ...(this.config.selection.effort.kind === 'selected'
         ? { effort: this.config.selection.effort.value as EffortLevel }
         : {}),
