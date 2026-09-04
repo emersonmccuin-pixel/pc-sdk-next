@@ -19,6 +19,7 @@ interface LeftRailProps {
   onProjectReorder: (orderedIds: string[]) => void;
   unreadProjectIds: ReadonlySet<string>;
   liveSessionProjectIds: ReadonlySet<string>;
+  onSessionsChanged: () => void;
   showCommandSpace: boolean;
 }
 
@@ -32,6 +33,7 @@ export function LeftRail({
   onProjectReorder,
   unreadProjectIds,
   liveSessionProjectIds,
+  onSessionsChanged,
   showCommandSpace,
 }: LeftRailProps) {
   const mode = useRailMode((s) => s.mode);
@@ -66,6 +68,7 @@ export function LeftRail({
       onProjectReorder={onProjectReorder}
       unreadProjectIds={unreadProjectIds}
       liveSessionProjectIds={liveSessionProjectIds}
+      onSessionsChanged={onSessionsChanged}
       showCommandSpace={showCommandSpace}
     />
   );

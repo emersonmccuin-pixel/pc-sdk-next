@@ -134,6 +134,24 @@ export function createHttpApp(deps: HttpDeps): Hono {
     }
   });
 
+  app.post('/api/projects/:id/sessions/close', async (c) => {
+    const projectId = c.req.param('id') as ULID;
+    if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);
+    const service = deps.registry.get(projectId);
+    if (!service.canSwitchSession()) {
+      return c.json({ ok: false, error: 'interrupt the active turn and wait for confirmation before closing the session' }, 409);
+    }
+    try {
+      await service.closeSession();
+      return c.json({ ok: true });
+    } catch (error) {
+      if (error instanceof RuntimeSelectionRejectedError) {
+        return c.json({ ok: false, error: { code: error.code } }, 422);
+      }
+      throw error;
+    }
+  });
+
   app.post('/api/projects/:id/sessions/:sid/resume', async (c) => {
     const projectId = c.req.param('id') as ULID;
     if (!getProjectById(projectId)) return c.json({ ok: false, error: 'not found' }, 404);

@@ -75,10 +75,23 @@ test('every direct production child-process importer is classified and policy-bu
   assert.deepEqual(importers, [
     'apps/server/src/dispatch/repository-lease.ts',
     'apps/server/src/dispatch/worktrees.ts',
+    'apps/server/src/http/projects.ts',
     'apps/server/src/index.ts',
     'apps/server/src/runner/codex/app-server-client.ts',
     'apps/server/src/runner/codex/app-server-turn-client.ts',
   ]);
+
+  // Reveal-in-explorer shell handoff: two spawns (POSIX open/xdg-open and the
+  // Windows PowerShell foreground helper), each handed the sanitized
+  // OS-essential ambient env — never process.env — so no credentials reach the
+  // shell. No `shell: true`; the Windows arg vector is a fixed -EncodedCommand.
+  const projects = source('http/projects.ts');
+  assert.match(projects, /import\s*\{\s*spawn\s*\}\s*from\s*['"]node:child_process['"]/);
+  assert.equal(count(projects, /(?:node:)?child_process/g), 1);
+  assert.equal(count(projects, /\bspawn\(/g), 2, 'POSIX reveal + Windows foreground helper');
+  assert.equal(count(projects, /env:\s*buildChildEnvironment\(\)/g), 2);
+  assert.doesNotMatch(projects, /shell:\s*true/);
+  assert.doesNotMatch(projects, /process\.env/);
 
   const repositoryLease = source('dispatch/repository-lease.ts');
   assert.match(repositoryLease, /import\s*\{\s*execFile\s*\}\s*from\s*['"]node:child_process['"]/);

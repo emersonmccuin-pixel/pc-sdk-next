@@ -22,6 +22,7 @@ interface ProjectRailProps {
   onProjectReorder: (orderedIds: string[]) => void;
   unreadProjectIds: ReadonlySet<string>;
   liveSessionProjectIds?: ReadonlySet<string>;
+  onSessionsChanged?: () => void;
   showCommandSpace: boolean;
 }
 
@@ -49,6 +50,7 @@ export function ProjectRail({
   onProjectReorder,
   unreadProjectIds = EMPTY_SET,
   liveSessionProjectIds = EMPTY_SET,
+  onSessionsChanged,
   showCommandSpace,
 }: ProjectRailProps) {
   const activeSlug = useActiveProject((s) => s.activeSlug);
@@ -160,8 +162,19 @@ export function ProjectRail({
     setMenu(null);
     try {
       await sessionsApi.newSession(project.id);
+      onSessionsChanged?.();
     } catch (err) {
       alert(`Couldn't start a new session: ${(err as Error).message}`);
+    }
+  }
+
+  async function closeSession(project: Project) {
+    setMenu(null);
+    try {
+      await sessionsApi.closeSession(project.id);
+      onSessionsChanged?.();
+    } catch (err) {
+      alert(`Couldn't close the session: ${(err as Error).message}`);
     }
   }
 
@@ -315,6 +328,9 @@ export function ProjectRail({
                     (isActive
                       ? 'pc-project-row-active border-primary text-primary font-semibold '
                       : 'border-transparent text-foreground/80 hover:bg-muted ') +
+                    // No live session ⇒ dim the whole row (tile + name) so the
+                    // rail reads at a glance as "which projects am I working in".
+                    (!hasLiveSession ? 'opacity-40 ' : '') +
                     (isDragging ? 'opacity-40 ' : '') +
                     (dragEnabled ? 'cursor-grab active:cursor-grabbing' : '')
                   }
@@ -383,6 +399,9 @@ export function ProjectRail({
           <MenuItem onClick={() => revealInExplorer(menu.project)}>Open in file explorer</MenuItem>
           <MenuItem onClick={() => copyFolderPath(menu.project)}>Copy folder path</MenuItem>
           <MenuItem onClick={() => startNewSession(menu.project)}>New session</MenuItem>
+          {liveSessionProjectIds.has(menu.project.id) && (
+            <MenuItem onClick={() => closeSession(menu.project)}>Close session</MenuItem>
+          )}
           <div className="my-1 border-t border-border" />
           <MenuItem
             onClick={() => {

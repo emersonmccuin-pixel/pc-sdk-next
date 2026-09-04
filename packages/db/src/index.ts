@@ -241,6 +241,7 @@ export {
   enqueueConversationSend,
   failConversationInterrupt,
   getActiveConversationTurn,
+  closeOrchestratorSession,
   getConversationQueueSnapshot,
   getTurnInterruptRequest,
   handoffOrchestratorSession,
@@ -255,6 +256,8 @@ export {
 } from './repos/conversation-queue.ts';
 export type {
   ClaimedConversationTurn,
+  CloseOrchestratorSessionInput,
+  CloseOrchestratorSessionResult,
   ContinueOrchestratorSessionAcrossSelectionInput,
   ConversationCommandResult,
   ConversationQueueItemRow,

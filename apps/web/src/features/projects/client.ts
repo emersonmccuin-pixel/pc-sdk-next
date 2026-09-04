@@ -18,6 +18,13 @@ export const projectsApi = {
   listProjects: () =>
     getJson<ListProjectsResponse>(projectRoutes.list).then((r) => r.projects),
 
+  /** Project ids that currently hold a live orchestrator session. Drives the
+   *  rail's bright-vs-dim state; refetched after a close/new-session action. */
+  liveSessions: () =>
+    getJson<{ ok: true; projectIds: ULID[] }>('/api/projects/live-sessions').then(
+      (r) => r.projectIds,
+    ),
+
   createProject: (input: CreateProjectRequest) =>
     postJson<CreateProjectResponse>(projectRoutes.create, input).then(
       (r) => {

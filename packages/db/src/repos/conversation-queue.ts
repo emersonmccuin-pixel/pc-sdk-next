@@ -139,6 +139,20 @@ export interface ReplaceOrchestratorSessionResult {
   cancelledQueueItemIds: ULID[];
 }
 
+export interface CloseOrchestratorSessionInput {
+  projectId: ULID;
+  expectedSessionId: ULID | null;
+  queueCancellationReason: string;
+  endedReason?: SessionEndedReason;
+  now?: number;
+}
+
+export interface CloseOrchestratorSessionResult {
+  /** The row that was ended, or null when there was no active session. */
+  endedSessionId: ULID | null;
+  cancelledQueueItemIds: ULID[];
+}
+
 export interface ResumeOrchestratorSessionInput {
   projectId: ULID;
   expectedSessionId: ULID | null;
@@ -1038,6 +1052,72 @@ export function replaceOrchestratorSession(
       throw new Error('project settings changed during session transition');
     }
     return { session, cancelledQueueItemIds };
+  });
+}
+
+/** End the project's active session WITHOUT minting a replacement — the atomic
+ * counterpart to replaceOrchestratorSession for a user-initiated "close
+ * session". Leaves the project with no active row (the supported "none/launcher"
+ * state). Same optimistic-concurrency + turn-active guards as the switch paths:
+ * refuses if the active row drifted or a turn is running, so a close can never
+ * race a live turn. A no-op (returns nulls) when there is already no active
+ * session. */
+export function closeOrchestratorSession(
+  input: CloseOrchestratorSessionInput,
+): CloseOrchestratorSessionResult {
+  if (!input.queueCancellationReason.trim()) {
+    throw new Error('queue cancellation reason must be non-empty');
+  }
+  const now = input.now ?? Date.now();
+  return getDb().transaction((tx) => {
+    if (!getProjectByIdInDb(tx, input.projectId)) {
+      throw new Error('project is not active');
+    }
+    const active = tx
+      .select()
+      .from(orchestratorSessions)
+      .where(and(
+        eq(orchestratorSessions.projectId, input.projectId),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .get() as OrchestratorSessionRow | undefined;
+    if ((active?.id ?? null) !== input.expectedSessionId) {
+      throw new Error('active session changed during transition');
+    }
+    if (!active) return { endedSessionId: null, cancelledQueueItemIds: [] };
+    if (tx
+      .select({ id: conversationTurns.id })
+      .from(conversationTurns)
+      .where(and(
+        eq(conversationTurns.sessionId, active.id),
+        eq(conversationTurns.status, 'active'),
+      ))
+      .get()) {
+      throw new Error('cannot close the session while a turn is active; interrupt it and wait for confirmation first');
+    }
+    const cancelledQueueItemIds = cancelQueuedConversationSendsInDb(
+      tx,
+      active.id,
+      input.queueCancellationReason,
+      now,
+    );
+    const ended = tx.update(orchestratorSessions)
+      .set({
+        status: 'ended',
+        endedReason: input.endedReason ?? 'user_ended',
+        endedAt: now,
+      })
+      .where(and(
+        eq(orchestratorSessions.id, active.id),
+        eq(orchestratorSessions.status, 'active'),
+        isNull(orchestratorSessions.deletedAt),
+      ))
+      .run();
+    if (ended.changes !== 1) {
+      throw new Error('active session changed during transition');
+    }
+    return { endedSessionId: active.id, cancelledQueueItemIds };
   });
 }
 

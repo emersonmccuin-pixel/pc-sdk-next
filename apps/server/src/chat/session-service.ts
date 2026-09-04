@@ -12,6 +12,7 @@ import {
   editQueuedConversationSend,
   enqueueConversationSend,
   failConversationInterrupt,
+  closeOrchestratorSession,
   failRuntimeSessionResume,
   getActiveConversationTurn,
   getActiveOrchestratorSession,
@@ -764,6 +765,30 @@ export class SessionService {
 
   async startNewSession(): Promise<OrchestratorSessionRow> {
     return this.withSessionTransition(() => this.replaceSession('new session started'));
+  }
+
+  /** End the active session without minting a replacement, leaving the project
+   *  in the supported "no active session" state (the rail dims it). Mirrors the
+   *  switch-path teardown but skips the mint; idempotent when already none, and
+   *  refuses (like every switch) while a turn is active. */
+  async closeSession(): Promise<void> {
+    return this.withSessionTransition(() => this.closeSessionUnserialized());
+  }
+
+  private async closeSessionUnserialized(): Promise<void> {
+    if (this.disposed) throw new Error('session service is disposed');
+    if (!this.session) return;
+    if (!this.canSwitchSession()) throw new RuntimeSelectionRejectedError('session-active');
+    closeOrchestratorSession({
+      projectId: this.projectId,
+      expectedSessionId: this.session.id,
+      queueCancellationReason: 'session closed',
+    });
+    this.publishCommittedEvents();
+    this.teardownRunner('session-closed');
+    this.session = null;
+    this.broadcast(this.sessionChangedFrame('new-session'));
+    this.broadcast(this.orchestratorStateFrame());
   }
 
   /** Account default + a newly stamped session boundary are one DB transition.

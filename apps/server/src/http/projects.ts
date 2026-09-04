@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { Hono } from 'hono';
 import {
   createProject,
+  getActiveOrchestratorSession,
   getProjectById,
   getProjectBySlug,
   listProjects,
@@ -25,6 +26,7 @@ import {
   parseUpdateProjectRequest,
 } from '@pc/contracts';
 import type { ULID } from '@pc/domain';
+import { buildChildEnvironment } from '../operations/child-environment.ts';
 import type { SessionRegistry } from '../chat/registry.ts';
 import {
   requireRepositoryWorktreeRoot,
@@ -57,6 +59,17 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
   app.get('/api/projects', (c) => {
     const includeDeleted = c.req.query('include_deleted') === '1';
     return c.json({ projects: listProjects({ includeDeleted }).map(toProjectDto) });
+  });
+
+  // Projects that currently hold a live orchestrator session (an active,
+  // non-ended session row). Drives the rail's bright-vs-dim state on load;
+  // "Close Session" ends a row, dropping the project out of this set.
+  // Registered BEFORE /:id so it isn't captured by the :id param.
+  app.get('/api/projects/live-sessions', (c) => {
+    const projectIds = listProjects()
+      .filter((p) => getActiveOrchestratorSession(p.id) !== null)
+      .map((p) => p.id);
+    return c.json({ ok: true, projectIds });
   });
 
   // Register /reorder BEFORE /:id so it isn't captured by the :id param.
@@ -296,7 +309,12 @@ function revealInOsExplorer(folder: string): void {
   }
   const [command, args]: [string, string[]] =
     process.platform === 'darwin' ? ['open', [folder]] : ['xdg-open', [folder]];
-  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  // Sanitized OS-essential env only (no credentials leak to the shell handoff).
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    env: buildChildEnvironment(),
+  });
   child.on('error', () => {
     /* best-effort: the request already returned; nothing to surface here */
   });
@@ -342,7 +360,8 @@ function revealWindowsFolder(folder: string): void {
   const child = spawn(
     'powershell.exe',
     ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
-    { detached: true, stdio: 'ignore', windowsHide: true },
+    // Sanitized OS-essential env only (no credentials leak to the shell handoff).
+    { detached: true, stdio: 'ignore', windowsHide: true, env: buildChildEnvironment() },
   );
   child.on('error', () => {
     /* best-effort: the request already returned; nothing to surface here */

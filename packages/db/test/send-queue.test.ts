@@ -597,6 +597,53 @@ test('project deletion atomically cancels FIFO state and refuses an active turn'
   assert.equal(enqueue(idle, 'must reject', 'delete-after-command', 'delete-after-client', 736).status, 'rejected');
 });
 
+test('closeOrchestratorSession ends the active session, drains its queue, and leaves none', () => {
+  const ctx = context('close-session');
+  const queued = enqueue(ctx, 'drain me', 'close-c1', 'close-m1', 800);
+
+  // Optimistic concurrency: a stale expectation is refused, session untouched.
+  assert.throws(() => db.closeOrchestratorSession({
+    projectId: ctx.projectId,
+    expectedSessionId: db.newId(),
+    queueCancellationReason: 'session closed',
+    now: 801,
+  }), /active session changed/);
+  assert.equal(db.getActiveOrchestratorSession(ctx.projectId)?.id, ctx.sessionId);
+
+  const result = db.closeOrchestratorSession({
+    projectId: ctx.projectId,
+    expectedSessionId: ctx.sessionId,
+    queueCancellationReason: 'session closed',
+    now: 802,
+  });
+  assert.equal(result.endedSessionId, ctx.sessionId);
+  assert.deepEqual(result.cancelledQueueItemIds, [queued.queueItemId]);
+  assert.equal(db.getActiveOrchestratorSession(ctx.projectId), null);
+  assert.equal(db.getOrchestratorSession(ctx.sessionId)?.status, 'ended');
+  assert.equal(db.getOrchestratorSession(ctx.sessionId)?.endedReason, 'user_ended');
+
+  // Idempotent: closing a project that is already session-less is a no-op.
+  assert.deepEqual(db.closeOrchestratorSession({
+    projectId: ctx.projectId,
+    expectedSessionId: null,
+    queueCancellationReason: 'already none',
+    now: 803,
+  }), { endedSessionId: null, cancelledQueueItemIds: [] });
+});
+
+test('closeOrchestratorSession refuses to close while a turn is active', () => {
+  const busy = context('close-busy');
+  enqueue(busy, 'active', 'close-c2', 'close-m2', 810);
+  db.claimNextConversationTurn(busy.sessionId, 811)!;
+  assert.throws(() => db.closeOrchestratorSession({
+    projectId: busy.projectId,
+    expectedSessionId: busy.sessionId,
+    queueCancellationReason: 'session closed',
+    now: 812,
+  }), /turn is active/);
+  assert.equal(db.getActiveOrchestratorSession(busy.projectId)?.id, busy.sessionId);
+});
+
 test('historical resume rolls back old FIFO/session if target activation fails', () => {
   const project = db.createProject({
     name: 'Resume rollback', slug: `resume-rollback-${db.newId().toLowerCase()}`, folderPath: '',

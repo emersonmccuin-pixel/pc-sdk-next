@@ -132,6 +132,14 @@ export const sessionsApi = {
       {},
     ),
 
+  /** End the active session with no replacement — the project goes session-less
+   *  (the rail dims it). Server refuses (409) while a turn is active. */
+  closeSession: (projectId: ULID) =>
+    postJson<{ ok: true }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/close`,
+      {},
+    ),
+
   resumeSession: (projectId: ULID, targetSessionId: string) =>
     postJson<{ ok: true } & SessionTransition>(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(targetSessionId)}/resume`,

@@ -27,6 +27,12 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 
 export default function App() {
   const [projects, setProjects] = useState<Project[] | null>(null);
+  // Projects that currently hold a live orchestrator session (bright in the
+  // rail); everything else dims. Fetched from the server on load — background
+  // projects get no WS frames (ws-client filters to the open project) — and
+  // refreshed on every session transition or explicit close/new action.
+  const [liveSessionProjectIds, setLiveSessionProjectIds] =
+    useState<ReadonlySet<string>>(EMPTY_SET);
   const [createOpen, setCreateOpen] = useState(false);
   const [settings, setSettings] = useState<GlobalSettings | null>(null);
   const settingsOpen = useAppSettingsModal((s) => s.open);
@@ -39,6 +45,18 @@ export default function App() {
 
   const applyTransition = useSessionNav((s) => s.applyTransition);
   const sessionChangedNonce = useSessionNav((s) => s.nonce);
+
+  const refreshLiveSessions = useCallback(() => {
+    void projectsApi
+      .liveSessions()
+      .then((ids) => setLiveSessionProjectIds(new Set(ids)))
+      .catch(() => {});
+  }, []);
+  // Seed on mount and re-sync whenever a session transition bumps the nonce
+  // (new/resume/account-switch on the active project all flow through here).
+  useEffect(() => {
+    refreshLiveSessions();
+  }, [refreshLiveSessions, sessionChangedNonce]);
 
   useSubscriptionQuotaResourceSync();
 
@@ -285,7 +303,8 @@ export default function App() {
           onProjectDeleted={handleProjectDeleted}
           onProjectReorder={handleProjectReorder}
           unreadProjectIds={EMPTY_SET}
-          liveSessionProjectIds={EMPTY_SET}
+          liveSessionProjectIds={liveSessionProjectIds}
+          onSessionsChanged={refreshLiveSessions}
           sessionChangedNonce={sessionChangedNonce}
           applySessionTransition={(t) => {
             if (activeProject) applyTransition(activeProject.id, t);

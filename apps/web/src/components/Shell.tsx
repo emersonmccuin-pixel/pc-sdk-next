@@ -33,6 +33,7 @@ interface ShellProps {
   onProjectReorder: (orderedIds: string[]) => void;
   unreadProjectIds: ReadonlySet<string>;
   liveSessionProjectIds: ReadonlySet<string>;
+  onSessionsChanged: () => void;
   sessionChangedNonce: number;
   applySessionTransition: (transition: SessionTransition) => void;
   showCommandSpace: boolean;
@@ -48,6 +49,7 @@ export function Shell({
   onProjectReorder,
   unreadProjectIds,
   liveSessionProjectIds,
+  onSessionsChanged,
   sessionChangedNonce,
   applySessionTransition,
   showCommandSpace,
@@ -80,6 +82,7 @@ export function Shell({
             onProjectReorder={onProjectReorder}
             unreadProjectIds={unreadProjectIds}
             liveSessionProjectIds={liveSessionProjectIds}
+            onSessionsChanged={onSessionsChanged}
             showCommandSpace={showCommandSpace}
           />
         </Panel>
