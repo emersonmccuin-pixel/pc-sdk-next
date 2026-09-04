@@ -85,14 +85,19 @@ const STRICT_ISO_TIMESTAMP =
 /** Native tools auto-allowed for the orchestrator (read-only surface).
  *  Anything else routes through `canUseTool` → the browser ask. */
 export const BASE_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'];
-/** Native interactive tools this app never wants. `bypassPermissions` makes
- *  every built-in tool callable regardless of `allowedTools`, so the only way
- *  to keep the model out of the structured `AskUserQuestion` card (limited,
- *  fixed-option pickers) is to disallow it outright — the orchestrator then
- *  asks its questions as normal chat prose, and specialists ask via
- *  `pc_answer_pending`. Plan mode (`ExitPlanMode`) is intentionally left
- *  available. */
-const DISALLOWED_NATIVE_TOOLS = ['AskUserQuestion'];
+/** Native tools NO Claude session in this app may ever call. `bypassPermissions`
+ *  makes every built-in tool callable regardless of `allowedTools`, so an
+ *  explicit disallow is the only reliable lever.
+ *  - `AskUserQuestion`: its fixed-option card is too narrow; the orchestrator
+ *    asks questions as normal chat prose, specialists ask via `pc_answer_pending`.
+ *  - `Task`: the native subagent spawner. Every unit of delegated work must be a
+ *    visible, tracked pod dispatch (`pc_invoke_agent`) — never an invisible
+ *    in-process subagent running in the background (that misfire failed a run
+ *    that ended its turn waiting on one). Plan mode (`ExitPlanMode`) is
+ *    intentionally left available.
+ *  Per-session extras (e.g. the orchestrator's web tools) union in via
+ *  `config.disallowedTools`. */
+const DISALLOWED_NATIVE_TOOLS = ['AskUserQuestion', 'Task'];
 const CLAUDE_EFFORT_LEVELS = new Set<EffortLevel>(['low', 'medium', 'high', 'xhigh', 'max']);
 // pc-sdk-15 — bounded wait for a manual `/compact` local command's native
 // receipt. A CLI that never reports either boundary leaves `compact()`
@@ -139,6 +144,8 @@ export interface ClaudeSessionConfig {
   cwd?: string;
   /** Auto-allowed native tools; bridged MCP tool names are unioned in. */
   allowedTools?: string[];
+  /** Per-session native tools to forbid, unioned with DISALLOWED_NATIVE_TOOLS. */
+  disallowedTools?: string[];
   /** Bridge build (app-owned tool policy; may be empty). */
   bridge?: BridgeBuild;
   /** See `CreateRuntimeSession.onUnsolicitedTurn` (docs pc-sdk-16). */
@@ -714,7 +721,9 @@ export class ClaudeRuntimeSession implements RuntimeSession {
       permissionMode: this.config.bypassPermissions ? 'bypassPermissions' : 'default',
       maxTurns: this.config.maxTurns ?? 30,
       allowedTools,
-      disallowedTools: DISALLOWED_NATIVE_TOOLS,
+      disallowedTools: [
+        ...new Set([...DISALLOWED_NATIVE_TOOLS, ...(this.config.disallowedTools ?? [])]),
+      ],
       ...(this.config.selection.effort.kind === 'selected'
         ? { effort: this.config.selection.effort.value as EffortLevel }
         : {}),
@@ -1452,6 +1461,7 @@ export class ClaudeRuntimeAdapter implements AgentRuntimeAdapter {
       bridge: input.tools,
       onUnsolicitedTurn: input.onUnsolicitedTurn,
       ...(input.allowedNativeTools ? { allowedTools: input.allowedNativeTools } : {}),
+      ...(input.disallowedNativeTools ? { disallowedTools: input.disallowedNativeTools } : {}),
       maxTurns: input.maxTurns,
       bypassPermissions: input.bypassPermissions,
       hostPort: input.hostPort,

@@ -79,6 +79,11 @@ const DEFAULT_CLAUDE_SPECIALIST_MODEL = 'sonnet';
  *  silently guillotines long orchestrator turns mid-work. Specialists set
  *  their own caps at dispatch and are unaffected. */
 const ORCHESTRATOR_MAX_TURNS = 500;
+/** Native tools the orchestrator must never call, on top of the adapter's
+ *  always-off base (`AskUserQuestion`, `Task`). Web tools are delegated to a
+ *  specialist so research is a visible tracked run, not an invisible in-session
+ *  fetch — the orchestrator's charter already states it has no web access. */
+const ORCHESTRATOR_DISALLOWED_NATIVE_TOOLS = ['WebSearch', 'WebFetch'];
 const RESTART_ADMISSION_WAIT_ENV = 'PC_DATA_ADMISSION_RESTART_WAIT';
 const RESTART_ADMISSION_WAIT_MS = 15_000;
 /** apps/server/src → apps/web/dist, resolved from this module's own location
@@ -381,6 +386,11 @@ async function main(): Promise<void> {
       ...(ctx.seedContext ? { seedContext: ctx.seedContext } : {}),
       cwd,
       tools,
+      // The orchestrator has no web tools of its own: research must be handed to
+      // a specialist (e.g. the researcher pod) so the work is a visible, tracked
+      // run rather than an invisible in-session fetch. `Task` is already off
+      // globally, so the orchestrator cannot spawn native subagents either.
+      disallowedNativeTools: ORCHESTRATOR_DISALLOWED_NATIVE_TOOLS,
       maxTurns: orchestrator?.maxTurns ?? ORCHESTRATOR_MAX_TURNS,
       ask: ctx.ask,
       onUnsolicitedTurn: ctx.onUnsolicitedTurn,

@@ -225,6 +225,11 @@ export interface CreateRuntimeSession {
   tools?: BridgeBuild;
   /** Native tool names the runtime may auto-allow (e.g. Read/Glob/Grep). */
   allowedNativeTools?: string[];
+  /** Native tool names this specific session must never call, unioned with the
+   *  adapter's always-off base. The orchestrator uses this to forbid web tools
+   *  so research is always delegated to a specialist (which can be seen), not
+   *  done invisibly in-session. */
+  disallowedNativeTools?: string[];
   maxTurns?: number;
   /** Permission callback; omit ⇒ the adapter's non-interactive default. */
   ask?: AskHandler;

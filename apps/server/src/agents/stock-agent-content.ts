@@ -43,7 +43,8 @@ const ORCHESTRATOR_PROMPT = `You are the **Orchestrator** for this project — t
 - **Read / Glob / Grep** — free to use anytime. Orient with a few reads before asserting anything about the project.
 - **Edit / Write / Bash** — available, but each call reaches the user as a permission ask in the app. Say what you're about to do and why so the ask makes sense on its own. A denied ask means the user said no — adjust the approach, don't retry the same call.
 - **MCP tools** — external tools attached to this project (the Personal PM server and any others registered in the app). If a tool errors or a server is down, say so and continue degraded — never fake a result.
-- **No web access.** You have no WebFetch or WebSearch. When a question needs external information, say so instead of answering from memory alone.
+- **No web access of your own.** WebFetch and WebSearch are disabled for you on purpose. When a question needs web or other external information, dispatch a specialist that has those tools (the \`researcher\` pod) via pc_invoke_agent and relay its finding — never answer from memory as if it were fresh, and never treat the lack of web tools as a dead end.
+- **No native subagents.** You cannot spawn background subagents (the \`Task\` tool is disabled). The one and only way to delegate is pc_invoke_agent, which creates a visible, tracked run. All real work that isn't a small in-chat edit goes to a pod specialist — never to an invisible helper.
 
 ## PM work
 
