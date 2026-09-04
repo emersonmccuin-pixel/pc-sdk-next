@@ -286,18 +286,64 @@ export function mountProjects(app: Hono, deps: { registry: SessionRegistry }): v
 }
 
 /** Hand a folder off to the native file explorer. Detached + unref so it never
- *  ties to the server lifecycle. `explorer.exe` exits 1 even on success, so the
- *  child's exit code is deliberately ignored; only a spawn failure (missing
- *  binary) is caught via the async 'error' listener to avoid an unhandled
- *  ChildProcess error crashing the host. */
+ *  ties to the server lifecycle; spawn failures are swallowed (the HTTP request
+ *  already returned) to avoid an unhandled ChildProcess error crashing the host.
+ *  Windows takes a dedicated path — see revealWindowsFolder. */
 function revealInOsExplorer(folder: string): void {
+  if (process.platform === 'win32') {
+    revealWindowsFolder(folder);
+    return;
+  }
   const [command, args]: [string, string[]] =
-    process.platform === 'win32'
-      ? ['explorer.exe', [folder]]
-      : process.platform === 'darwin'
-        ? ['open', [folder]]
-        : ['xdg-open', [folder]];
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    process.platform === 'darwin' ? ['open', [folder]] : ['xdg-open', [folder]];
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => {
+    /* best-effort: the request already returned; nothing to surface here */
+  });
+  child.unref();
+}
+
+/** Open (or reuse) a folder window and pull it to the FOREGROUND on Windows.
+ *  A plain `explorer.exe <folder>` spawned by the background server process
+ *  opens the window *behind* the active app — Windows forbids a non-foreground
+ *  process from taking focus — so the user sees nothing (the original "reveal
+ *  does nothing" bug: the folder opened, just never surfaced). This drives
+ *  Windows PowerShell (always present under System32, no admin needed) to find
+ *  an existing window for the path or open one via the Shell COM object, then
+ *  lift the foreground lock with a synthetic ALT tap and raise it
+ *  (restore + BringWindowToTop + SetForegroundWindow). The path is passed as a
+ *  base64 UTF-16LE -EncodedCommand so no shell quoting can break or inject it. */
+function revealWindowsFolder(folder: string): void {
+  const psPath = `'${folder.replace(/'/g, "''")}'`;
+  const script = [
+    'Add-Type @"',
+    'using System; using System.Runtime.InteropServices;',
+    'public static class Fg {',
+    '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c);',
+    '  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);',
+    '  [DllImport("user32.dll")] public static extern void keybd_event(byte b, byte s, uint f, IntPtr e);',
+    '}',
+    '"@',
+    `$Path = ${psPath}`,
+    '$shell = New-Object -ComObject Shell.Application',
+    'function Get-Hwnd($p) { foreach ($w in $shell.Windows()) { try { if ($w.Document.Folder.Self.Path -ieq $p) { return [IntPtr]$w.HWND } } catch {} } return [IntPtr]::Zero }',
+    '$h = Get-Hwnd $Path',
+    'if ($h -eq [IntPtr]::Zero) { $shell.Open($Path); Start-Sleep -Milliseconds 800; $h = Get-Hwnd $Path }',
+    'if ($h -ne [IntPtr]::Zero) {',
+    '  [Fg]::keybd_event(0x12,0,0,[IntPtr]::Zero)',
+    '  [Fg]::keybd_event(0x12,0,2,[IntPtr]::Zero)',
+    '  [void][Fg]::ShowWindowAsync($h, 9)',
+    '  [void][Fg]::BringWindowToTop($h)',
+    '  [void][Fg]::SetForegroundWindow($h)',
+    '}',
+  ].join('\n');
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
+    { detached: true, stdio: 'ignore', windowsHide: true },
+  );
   child.on('error', () => {
     /* best-effort: the request already returned; nothing to surface here */
   });
